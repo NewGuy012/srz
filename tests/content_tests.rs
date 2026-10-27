@@ -1,5 +1,6 @@
 use srz::chunker::TextChunker;
 use srz::llm::truncate_words_preserving_lines;
+use srz::render::{markdown_to_html, render_html_document, slugify};
 use srz::scraper::WebScraper;
 use std::borrow::Cow;
 
@@ -68,4 +69,23 @@ fn test_truncate_words_preserves_newlines_and_borrows_when_under_limit() {
     assert!(out.contains("# Heading 1\n\nParagraph one with five words."));
     assert!(out.ends_with("[Context trimmed for token budget]"));
     assert!(!out.contains("Heading 2"));
+}
+
+#[test]
+fn test_markdown_to_styled_html_rendering() {
+    assert_eq!(slugify("\"Dune\" by Frank Herbert"), "dune-by-frank-herbert");
+
+    let md = "# Literary Analysis: Dune\n\n***\n\n## 1. Overview\n\n**Author:** Frank Herbert\n**Genre:** *Science Fiction*\n\n- Key item 1\n- Key item 2";
+    let html_body = markdown_to_html(md);
+    assert!(html_body.contains("<h1>Literary Analysis: Dune</h1>"));
+    assert!(html_body.contains("<hr>"));
+    assert!(html_body.contains("<h2>1. Overview</h2>"));
+    assert!(html_body.contains("<strong>Author:</strong> Frank Herbert"));
+    assert!(html_body.contains("<em>Science Fiction</em>"));
+    assert!(html_body.contains("<ul>"));
+    assert!(html_body.contains("<li>Key item 1</li>"));
+
+    let full_doc = render_html_document("\"Dune\"", md);
+    assert!(full_doc.contains("<!DOCTYPE html>"));
+    assert!(full_doc.contains("Summary: &quot;Dune&quot;"));
 }

@@ -12,6 +12,7 @@ A modular, minimalist Rust CLI for summarizing **webpages** and **books** using 
   - **Trained Knowledge Fallback**: If no online reference is found (or when `--no-search` is passed), falls back to the LLM's trained memory.
 - **Local OpenAI API-Compliant**: Built for local servers like **llama.cpp** (default: `http://localhost:9931/v1`), **Ollama**, **LM Studio**, and **vLLM**.
 - **Real-Time SSE Streaming & Live Thinking Counter**: Streams tokens (`stream: true`) to `stdout` in real time while displaying live chain-of-thought token progress on `stderr`.
+- **Clickable Styled HTML & Markdown Views**: Automatically saves a styled, responsive `.html` reader view (with light/dark mode) and `.md` file in `~/.cache/srz/views/` and prints clickable `file://` links so you can open the summary in your browser or editor with one click.
 - **Strict `stdout` / `stderr` Separation**: All spinners, headers, and diagnostics are emitted to `stderr` so `stdout` can be piped cleanly (`srz "Dune" | pbcopy`).
 - **Polished CLI**: Built using `clap` (subcommands, flags, env vars) and `indicatif` (interactive spinners and status indicators).
 - **Multiple Summary Styles**: `concise`, `detailed` (default), `bullets`, or `executive`.

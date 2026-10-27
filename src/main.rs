@@ -3,6 +3,7 @@ use clap::Parser;
 use srz::cache::Cache;
 use srz::cli::{CacheCommand, Cli, ResolvedAction};
 use srz::llm::{self, LlmClient, LlmOutput, StreamMode};
+use srz::render;
 use srz::scraper::WebScraper;
 use srz::search::BookSearcher;
 use srz::ui::Ui;
@@ -78,8 +79,21 @@ async fn main() -> Result<()> {
     match summary_result {
         Ok(outcome) => {
             if let Some(output_path) = &args.output {
-                fs::write(output_path, &outcome.summary)
-                    .with_context(|| format!("Failed to write output to {:?}", output_path))?;
+                let is_html = output_path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"))
+                    .unwrap_or(false);
+
+                if is_html {
+                    let html_doc = render::render_html_document(&outcome.title, &outcome.summary);
+                    fs::write(output_path, html_doc)
+                        .with_context(|| format!("Failed to write output to {:?}", output_path))?;
+                } else {
+                    fs::write(output_path, &outcome.summary)
+                        .with_context(|| format!("Failed to write output to {:?}", output_path))?;
+                }
+
                 Ui::success(&format!(
                     "Summary successfully saved to {}",
                     output_path.display()
@@ -87,6 +101,20 @@ async fn main() -> Result<()> {
             } else if !outcome.streamed_to_stdout {
                 Ui::header(&format!("Summary: {}", outcome.title));
                 println!("{}\n", outcome.summary);
+            }
+
+            // Always save clickable styled HTML and Markdown view files
+            if let Ok(files) =
+                render::save_view_files(&cache.views_dir(), &outcome.title, &outcome.summary)
+            {
+                Ui::success(&format!(
+                    "Styled HTML view: file://{}",
+                    files.html_path.display()
+                ));
+                Ui::success(&format!(
+                    "Markdown file:    file://{}",
+                    files.md_path.display()
+                ));
             }
         }
         Err(err) => {
@@ -106,12 +134,13 @@ fn handle_cache(cmd: CacheCommand, cache: &Cache) -> Result<()> {
         CacheCommand::Size => {
             let stats = cache.stats();
             println!(
-                "{} ({} total files: {} pages, {} searches, {} summaries)",
+                "{} ({} total files: {} pages, {} searches, {} summaries, {} views)",
                 Cache::format_bytes(stats.total_bytes),
                 stats.total_files,
                 stats.pages,
                 stats.searches,
-                stats.summaries
+                stats.summaries,
+                stats.views
             );
         }
         CacheCommand::Clean => {

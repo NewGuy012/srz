@@ -26,6 +26,7 @@ pub struct CacheStats {
     pub pages: usize,
     pub searches: usize,
     pub summaries: usize,
+    pub views: usize,
     pub total_files: usize,
     pub total_bytes: u64,
 }
@@ -65,18 +66,25 @@ impl Cache {
         &self.base_dir
     }
 
+    /// Returns the directory where rendered `.html` and `.md` view files are saved.
+    pub fn views_dir(&self) -> PathBuf {
+        self.base_dir.join("views")
+    }
+
     /// Computes entry counts and total disk usage across all cache namespaces.
     pub fn stats(&self) -> CacheStats {
         let (pages, pages_bytes) = Self::namespace_stats(&self.base_dir.join("pages"));
         let (searches, search_bytes) = Self::namespace_stats(&self.base_dir.join("search"));
         let (summaries, summary_bytes) = Self::namespace_stats(&self.base_dir.join("summaries"));
+        let (views, views_bytes) = Self::namespace_stats(&self.base_dir.join("views"));
 
         CacheStats {
             pages,
             searches,
             summaries,
-            total_files: pages + searches + summaries,
-            total_bytes: pages_bytes + search_bytes + summary_bytes,
+            views,
+            total_files: pages + searches + summaries + views,
+            total_bytes: pages_bytes + search_bytes + summary_bytes + views_bytes,
         }
     }
 
