@@ -11,6 +11,7 @@ A modular, minimalist Rust CLI for summarizing **webpages** and **books** using 
   - **Web Search by Default**: Queries free, zero-API sources (DuckDuckGo & Wikipedia) for the book's synopsis and overview to ground the LLM's summary with accurate, hallucination-free facts.
   - **Trained Knowledge Fallback**: If no online reference is found (or when `--no-search` is passed), falls back to the LLM's trained memory.
 - **Local OpenAI API-Compliant**: Built for local servers like **llama.cpp** (default: `http://localhost:9931/v1`), **Ollama**, **LM Studio**, and **vLLM**.
+- **Embedded DuckDB Engine**: Built-in DuckDB database (`~/.cache/srz/srz.duckdb`) tracking your reading history, token speeds, and providing instant full-text search across all past summaries.
 - **Real-Time SSE Streaming & Live Thinking Counter**: Streams tokens (`stream: true`) to `stdout` in real time while displaying live chain-of-thought token progress on `stderr`.
 - **Clickable Styled HTML & Markdown Views**: Automatically saves a styled, responsive `.html` reader view (with light/dark mode) and `.md` file in `~/.cache/srz/views/` and prints clickable `file://` links so you can open the summary in your browser or editor with one click.
 - **Strict `stdout` / `stderr` Separation**: All spinners, headers, and diagnostics are emitted to `stderr` so `stdout` can be piped cleanly (`srz "Dune" | pbcopy`).
@@ -91,6 +92,21 @@ srz cache size
 
 # Clear all cached pages, search results, and summaries
 srz cache clean
+```
+
+### 5. History, Stats, and Library Search (DuckDB)
+
+```bash
+# View recent reads, token metrics, and speeds
+srz history
+srz history --limit 20
+
+# View aggregate performance metrics across all runs
+srz stats
+
+# Search your local summarized library offline for keywords/topics
+srz find "spice"
+srz find "ecology"
 ```
 
 ---

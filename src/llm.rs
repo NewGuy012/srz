@@ -82,6 +82,10 @@ pub struct LlmOutput {
     pub truncated: bool,
     pub warning: Option<String>,
     pub streamed_to_stdout: bool,
+    pub prompt_tokens: Option<u32>,
+    pub completion_tokens: Option<u32>,
+    pub duration_ms: u64,
+    pub tokens_per_second: Option<f64>,
 }
 
 /// Maximum words of grounded reference context for a 32k context window (~16k-18k tokens),
@@ -142,6 +146,7 @@ impl LlmClient {
         done_label: &str,
         mode: StreamMode<'_>,
     ) -> Result<LlmOutput> {
+        let start_time = std::time::Instant::now();
         let pb = Ui::spinner(spinner_label);
 
         let combined_user_content: Cow<'_, str> = if system_prompt.is_empty() {
@@ -219,11 +224,28 @@ impl LlmClient {
             let truncated = choice.finish_reason.as_deref() == Some("length");
             let warning = Self::build_truncation_warning(truncated, completion.usage.as_ref());
 
+            let elapsed = start_time.elapsed();
+            let duration_ms = elapsed.as_millis() as u64;
+            let prompt_tokens = completion.usage.as_ref().and_then(|u| u.prompt_tokens);
+            let completion_tokens = completion.usage.as_ref().and_then(|u| u.completion_tokens);
+            let tokens_per_second = completion_tokens.and_then(|c| {
+                let s = elapsed.as_secs_f64();
+                if s > 0.05 {
+                    Some(c as f64 / s)
+                } else {
+                    None
+                }
+            });
+
             return Ok(LlmOutput {
                 content: choice.message.content.trim().to_string(),
                 truncated,
                 warning,
                 streamed_to_stdout: false,
+                prompt_tokens,
+                completion_tokens,
+                duration_ms,
+                tokens_per_second,
             });
         }
 
@@ -335,6 +357,22 @@ impl LlmClient {
             Ui::finish_spinner(&pb, done_label);
         }
 
+        let elapsed = start_time.elapsed();
+        let duration_ms = elapsed.as_millis() as u64;
+        let prompt_tokens = last_usage.as_ref().and_then(|u| u.prompt_tokens);
+        let completion_tokens = last_usage
+            .as_ref()
+            .and_then(|u| u.completion_tokens)
+            .or(Some(output_tokens as u32));
+        let tokens_per_second = completion_tokens.and_then(|c| {
+            let s = elapsed.as_secs_f64();
+            if s > 0.05 {
+                Some(c as f64 / s)
+            } else {
+                None
+            }
+        });
+
         let warning = Self::build_truncation_warning(truncated, last_usage.as_ref());
 
         Ok(LlmOutput {
@@ -342,6 +380,10 @@ impl LlmClient {
             truncated,
             warning,
             streamed_to_stdout,
+            prompt_tokens,
+            completion_tokens,
+            duration_ms,
+            tokens_per_second,
         })
     }
 

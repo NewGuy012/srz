@@ -105,6 +105,19 @@ pub enum Commands {
         #[command(subcommand)]
         action: CacheCommand,
     },
+    /// View recent summarization history and metrics
+    History {
+        /// Maximum entries to display (default: 10)
+        #[arg(short, long, default_value_t = 10)]
+        limit: usize,
+    },
+    /// Display aggregate library and LLM performance statistics
+    Stats,
+    /// Search your offline summarized library for keywords or phrases
+    Find {
+        /// Keyword or query to search for across titles and summaries
+        query: String,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,6 +141,13 @@ pub enum ResolvedAction<'a> {
         no_search: bool,
     },
     Cache(CacheCommand),
+    History {
+        limit: usize,
+    },
+    Stats,
+    Find {
+        query: &'a str,
+    },
 }
 
 impl Cli {
@@ -141,6 +161,11 @@ impl Cli {
                     no_search: self.no_search,
                 }),
                 Commands::Cache { action } => Ok(ResolvedAction::Cache(*action)),
+                Commands::History { limit } => Ok(ResolvedAction::History { limit: *limit }),
+                Commands::Stats => Ok(ResolvedAction::Stats),
+                Commands::Find { query } => Ok(ResolvedAction::Find {
+                    query: query.trim(),
+                }),
             }
         } else if let Some(target) = &self.target {
             let trimmed = target.trim();

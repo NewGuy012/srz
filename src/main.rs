@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use srz::cache::Cache;
-use srz::cli::{CacheCommand, Cli, ResolvedAction};
+use srz::cli::{CacheCommand, Cli, ResolvedAction, SummaryStyle};
+use srz::db::{Database, NewSummaryRecord};
 use srz::llm::{self, LlmClient, LlmOutput, StreamMode};
 use srz::render;
 use srz::scraper::WebScraper;
@@ -11,8 +12,17 @@ use std::fs;
 
 struct SummaryOutcome {
     title: String,
+    author: Option<String>,
+    url: Option<String>,
+    target_type: &'static str,
     summary: String,
+    word_count: usize,
     streamed_to_stdout: bool,
+    prompt_tokens: Option<u32>,
+    completion_tokens: Option<u32>,
+    duration_ms: u64,
+    tokens_per_second: Option<f64>,
+    cached: bool,
 }
 
 #[tokio::main]
@@ -28,11 +38,45 @@ async fn main() -> Result<()> {
     };
 
     let cache = Cache::new(!args.no_cache);
+    let db = match Database::open_default() {
+        Ok(d) => Some(d),
+        Err(err) => {
+            Ui::warn(&format!("Could not open DuckDB database: {}", err));
+            None
+        }
+    };
 
-    // Handle `srz cache <dir|size|clean>` immediately without initializing HTTP clients
-    if let ResolvedAction::Cache(cache_cmd) = action {
-        handle_cache(cache_cmd, &cache)?;
-        return Ok(());
+    // Handle immediate utility subcommands without initializing scraping or LLM HTTP clients
+    match action {
+        ResolvedAction::Cache(cache_cmd) => {
+            handle_cache(cache_cmd, &cache)?;
+            return Ok(());
+        }
+        ResolvedAction::History { limit } => {
+            if let Some(db) = &db {
+                handle_history(db, limit)?;
+            } else {
+                Ui::error("DuckDB database unavailable.");
+            }
+            return Ok(());
+        }
+        ResolvedAction::Stats => {
+            if let Some(db) = &db {
+                handle_stats(db)?;
+            } else {
+                Ui::error("DuckDB database unavailable.");
+            }
+            return Ok(());
+        }
+        ResolvedAction::Find { query } => {
+            if let Some(db) = &db {
+                handle_find(db, query, &cache)?;
+            } else {
+                Ui::error("DuckDB database unavailable.");
+            }
+            return Ok(());
+        }
+        _ => {}
     }
 
     if args.no_cache {
@@ -73,7 +117,7 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        ResolvedAction::Cache(_) => unreachable!(),
+        _ => unreachable!(),
     };
 
     match summary_result {
@@ -116,11 +160,122 @@ async fn main() -> Result<()> {
                     files.md_path.display()
                 ));
             }
+
+            // Record newly generated summaries in DuckDB history & library
+            if !outcome.cached {
+                if let Some(db) = &db {
+                    let style_str = match args.style {
+                        SummaryStyle::Concise => "concise",
+                        SummaryStyle::Detailed => "detailed",
+                        SummaryStyle::Bullets => "bullets",
+                        SummaryStyle::Executive => "executive",
+                    };
+                    let record = NewSummaryRecord {
+                        target_type: outcome.target_type,
+                        title: &outcome.title,
+                        author: outcome.author.as_deref(),
+                        url: outcome.url.as_deref(),
+                        style: style_str,
+                        model: &args.model,
+                        word_count: outcome.word_count,
+                        prompt_tokens: outcome.prompt_tokens,
+                        completion_tokens: outcome.completion_tokens,
+                        duration_ms: outcome.duration_ms,
+                        tokens_per_second: outcome.tokens_per_second,
+                        summary: &outcome.summary,
+                    };
+                    let _ = db.record_summary(&record);
+                }
+            }
         }
         Err(err) => {
             Ui::error(&format!("Summarization failed: {:#}", err));
             std::process::exit(1);
         }
+    }
+
+    Ok(())
+}
+
+fn handle_history(db: &Database, limit: usize) -> Result<()> {
+    let entries = db.get_history(limit)?;
+    if entries.is_empty() {
+        Ui::info("No summarization history recorded yet. Summarize a book or webpage first!");
+        return Ok(());
+    }
+
+    Ui::header(&format!("Summarization History (last {} entries)", entries.len()));
+    for entry in &entries {
+        let icon = if entry.target_type == "book" { "📚" } else { "🌐" };
+        let author_str = entry
+            .author
+            .as_ref()
+            .map(|a| format!(" by {}", a))
+            .unwrap_or_default();
+
+        println!("[#{}] {} \"{}\"{}", entry.id, icon, entry.title, author_str);
+        println!(
+            "     Words: {} | Tokens: {} prompt / {} output | Speed: {:.1} tok/s | Time: {:.2}s",
+            entry.word_count,
+            entry.prompt_tokens.unwrap_or(0),
+            entry.completion_tokens.unwrap_or(0),
+            entry.tokens_per_second.unwrap_or(0.0),
+            entry.duration_ms as f64 / 1000.0
+        );
+        println!("     Date: {} | Style: {} | Model: {}\n", entry.created_at, entry.style, entry.model);
+    }
+
+    Ok(())
+}
+
+fn handle_stats(db: &Database) -> Result<()> {
+    let stats = db.get_stats()?;
+    if stats.total_summaries == 0 {
+        Ui::info("No library statistics available yet. Run a summary to begin tracking!");
+        return Ok(());
+    }
+
+    Ui::header("Library & LLM Performance Statistics (DuckDB)");
+    println!(
+        "  Total Summaries:     {} ({} books, {} web articles)",
+        stats.total_summaries, stats.book_summaries, stats.web_summaries
+    );
+    println!("  Source Words Read:   {} words", stats.total_source_words);
+    println!("  Tokens Processed:    {} prompt tokens", stats.total_prompt_tokens);
+    println!("  Tokens Generated:    {} completion tokens", stats.total_completion_tokens);
+    println!(
+        "  Average Speed:       {:.1} tok/s (peak: {:.1} tok/s)",
+        stats.avg_tokens_per_second, stats.max_tokens_per_second
+    );
+    println!("  Total Compute Time:  {:.1}s\n", stats.total_duration_ms as f64 / 1000.0);
+
+    Ok(())
+}
+
+fn handle_find(db: &Database, query: &str, cache: &Cache) -> Result<()> {
+    let results = db.search(query)?;
+    if results.is_empty() {
+        Ui::info(&format!("No summaries found in library matching '{}'.", query));
+        return Ok(());
+    }
+
+    Ui::header(&format!("Search Results for \"{}\" ({} match(es))", query, results.len()));
+    for (i, res) in results.iter().enumerate() {
+        let icon = if res.target_type == "book" { "📚" } else { "🌐" };
+        let author_str = res
+            .author
+            .as_ref()
+            .map(|a| format!(" by {}", a))
+            .unwrap_or_default();
+
+        println!("[#{}] {} \"{}\"{} ({})", i + 1, icon, res.title, author_str, res.created_at);
+        println!("     \"{}\"", res.snippet);
+        let slug = render::slugify(&res.title);
+        let view_path = cache.views_dir().join(format!("{}.html", slug));
+        if view_path.exists() {
+            println!("     View: file://{}", view_path.display());
+        }
+        println!();
     }
 
     Ok(())
@@ -171,8 +326,17 @@ async fn handle_web(
         Ui::info("Loaded summary from local cache (pass `--no-cache` to refresh).");
         return Ok(SummaryOutcome {
             title: cached.title,
+            author: None,
+            url: Some(url.to_string()),
+            target_type: "web",
             summary: cached.summary,
+            word_count: 0,
             streamed_to_stdout: false,
+            prompt_tokens: None,
+            completion_tokens: None,
+            duration_ms: 0,
+            tokens_per_second: None,
+            cached: true,
         });
     }
 
@@ -226,8 +390,17 @@ async fn handle_web(
 
     Ok(SummaryOutcome {
         title: title_display,
+        author: None,
+        url: Some(url.to_string()),
+        target_type: "web",
         summary: output.content,
+        word_count: page.word_count,
         streamed_to_stdout: output.streamed_to_stdout,
+        prompt_tokens: output.prompt_tokens,
+        completion_tokens: output.completion_tokens,
+        duration_ms: output.duration_ms,
+        tokens_per_second: output.tokens_per_second,
+        cached: false,
     })
 }
 
@@ -252,8 +425,17 @@ async fn handle_book(
         Ui::info("Loaded book summary from local cache (pass `--no-cache` to refresh).");
         return Ok(SummaryOutcome {
             title: cached.title,
+            author: author.map(|a| a.to_string()),
+            url: None,
+            target_type: "book",
             summary: cached.summary,
+            word_count: 0,
             streamed_to_stdout: false,
+            prompt_tokens: None,
+            completion_tokens: None,
+            duration_ms: 0,
+            tokens_per_second: None,
+            cached: true,
         });
     }
 
@@ -266,7 +448,7 @@ async fn handle_book(
     };
 
     // 2. Generate summary (via grounded web search or LLM memory fallback)
-    let output =
+    let (output, word_count, source_url) =
         generate_book_summary(title, author, no_search, scraper, llm, cache, args, mode).await?;
 
     if let Some(warn) = &output.warning {
@@ -288,8 +470,17 @@ async fn handle_book(
 
     Ok(SummaryOutcome {
         title: book_display,
+        author: author.map(|a| a.to_string()),
+        url: source_url,
+        target_type: "book",
         summary: output.content,
+        word_count,
         streamed_to_stdout: output.streamed_to_stdout,
+        prompt_tokens: output.prompt_tokens,
+        completion_tokens: output.completion_tokens,
+        duration_ms: output.duration_ms,
+        tokens_per_second: output.tokens_per_second,
+        cached: false,
     })
 }
 
@@ -303,7 +494,7 @@ async fn generate_book_summary(
     cache: &Cache,
     args: &Cli,
     mode: StreamMode<'_>,
-) -> Result<LlmOutput> {
+) -> Result<(LlmOutput, usize, Option<String>)> {
     if !no_search {
         let candidates = if let Some(cached_candidates) = cache.get_search_results(title, author) {
             Ui::info(&format!(
@@ -361,7 +552,7 @@ async fn generate_book_summary(
                             llm::MAX_CONTEXT_WORDS
                         ));
 
-                        return llm
+                        let output = llm
                             .summarize_book_with_context(
                                 title,
                                 author,
@@ -370,7 +561,8 @@ async fn generate_book_summary(
                                 args.style,
                                 mode,
                             )
-                            .await;
+                            .await?;
+                        return Ok((output, page.word_count, Some(res.url.clone())));
                     }
                     Err(err) => {
                         Ui::warn(&format!(
@@ -388,11 +580,12 @@ async fn generate_book_summary(
             // If scraping all candidate pages failed, try using search snippet
             if let (Some(snippet), Some(url)) = (fallback_snippet, fallback_url) {
                 Ui::info("Using search snippet as grounded context...");
+                let word_count = snippet.split_whitespace().count();
                 if let Ok(output) = llm
                     .summarize_book_with_context(title, author, &url, &snippet, args.style, mode)
                     .await
                 {
-                    return Ok(output);
+                    return Ok((output, word_count, Some(url)));
                 }
             }
 
@@ -404,6 +597,8 @@ async fn generate_book_summary(
         Ui::info("Web search disabled. Using local LLM memory directly.");
     }
 
-    llm.summarize_book_from_memory(title, author, args.style, mode)
-        .await
+    let output = llm
+        .summarize_book_from_memory(title, author, args.style, mode)
+        .await?;
+    Ok((output, 0, None))
 }

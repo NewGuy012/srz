@@ -1,0 +1,107 @@
+use srz::db::{Database, NewSummaryRecord};
+
+#[test]
+fn test_database_record_and_history() {
+    let db = Database::open_in_memory().unwrap();
+
+    let record = NewSummaryRecord {
+        target_type: "book",
+        title: "Dune",
+        author: Some("Frank Herbert"),
+        url: Some("https://en.wikipedia.org/wiki/Dune_(novel)"),
+        style: "detailed",
+        model: "gemma-4",
+        word_count: 11106,
+        prompt_tokens: Some(5200),
+        completion_tokens: Some(1840),
+        duration_ms: 4200,
+        tokens_per_second: Some(43.8),
+        summary: "Dune is a 1965 epic sci-fi novel about Arrakis, ecology, and Melange spice.",
+    };
+
+    db.record_summary(&record).unwrap();
+
+    let history = db.get_history(10).unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].title, "Dune");
+    assert_eq!(history[0].author.as_deref(), Some("Frank Herbert"));
+    assert_eq!(history[0].word_count, 11106);
+    assert_eq!(history[0].prompt_tokens, Some(5200));
+    assert_eq!(history[0].completion_tokens, Some(1840));
+}
+
+#[test]
+fn test_database_stats() {
+    let db = Database::open_in_memory().unwrap();
+
+    let r1 = NewSummaryRecord {
+        target_type: "book",
+        title: "Dune",
+        author: Some("Frank Herbert"),
+        url: None,
+        style: "detailed",
+        model: "gemma-4",
+        word_count: 10000,
+        prompt_tokens: Some(5000),
+        completion_tokens: Some(1500),
+        duration_ms: 3000,
+        tokens_per_second: Some(50.0),
+        summary: "Book summary 1",
+    };
+    db.record_summary(&r1).unwrap();
+
+    let r2 = NewSummaryRecord {
+        target_type: "web",
+        title: "Rust Article",
+        author: None,
+        url: Some("https://example.com/rust"),
+        style: "concise",
+        model: "gemma-4",
+        word_count: 2000,
+        prompt_tokens: Some(2500),
+        completion_tokens: Some(500),
+        duration_ms: 1000,
+        tokens_per_second: Some(50.0),
+        summary: "Web summary 2",
+    };
+    db.record_summary(&r2).unwrap();
+
+    let stats = db.get_stats().unwrap();
+    assert_eq!(stats.total_summaries, 2);
+    assert_eq!(stats.book_summaries, 1);
+    assert_eq!(stats.web_summaries, 1);
+    assert_eq!(stats.total_source_words, 12000);
+    assert_eq!(stats.total_prompt_tokens, 7500);
+    assert_eq!(stats.total_completion_tokens, 2000);
+    assert_eq!(stats.total_duration_ms, 4000);
+    assert!((stats.avg_tokens_per_second - 50.0).abs() < 0.1);
+}
+
+#[test]
+fn test_database_search_library() {
+    let db = Database::open_in_memory().unwrap();
+
+    let record = NewSummaryRecord {
+        target_type: "book",
+        title: "Dune",
+        author: Some("Frank Herbert"),
+        url: Some("https://en.wikipedia.org/wiki/Dune_(novel)"),
+        style: "detailed",
+        model: "gemma-4",
+        word_count: 11106,
+        prompt_tokens: Some(5200),
+        completion_tokens: Some(1840),
+        duration_ms: 4200,
+        tokens_per_second: Some(43.8),
+        summary: "Set on the harsh desert planet Arrakis, the sole source of Melange spice in the known universe.",
+    };
+    db.record_summary(&record).unwrap();
+
+    let hits = db.search("Melange").unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].title, "Dune");
+    assert!(hits[0].snippet.contains("Melange"));
+
+    let no_hits = db.search("Cyberpunk").unwrap();
+    assert!(no_hits.is_empty());
+}

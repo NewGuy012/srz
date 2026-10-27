@@ -88,11 +88,14 @@ impl Cache {
         }
     }
 
-    /// Removes the entire cache directory and returns the stats of what was cleared.
+    /// Removes all cached files in pages, search, summaries, and views, returning stats of what was cleared.
     pub fn clean(&self) -> std::io::Result<CacheStats> {
         let current = self.stats();
-        if self.base_dir.exists() {
-            fs::remove_dir_all(&self.base_dir)?;
+        for dir_name in &["pages", "search", "summaries", "views"] {
+            let p = self.base_dir.join(dir_name);
+            if p.exists() {
+                fs::remove_dir_all(&p)?;
+            }
         }
         Ok(current)
     }

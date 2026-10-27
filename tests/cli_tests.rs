@@ -23,6 +23,24 @@ fn test_cache_subcommands() {
 }
 
 #[test]
+fn test_history_stats_find_subcommands() {
+    let hist_cli = Cli::parse_from(["srz", "history", "--limit", "20"]);
+    assert_eq!(
+        hist_cli.resolve_action().unwrap(),
+        ResolvedAction::History { limit: 20 }
+    );
+
+    let stats_cli = Cli::parse_from(["srz", "stats"]);
+    assert_eq!(stats_cli.resolve_action().unwrap(), ResolvedAction::Stats);
+
+    let find_cli = Cli::parse_from(["srz", "find", "Melange"]);
+    assert_eq!(
+        find_cli.resolve_action().unwrap(),
+        ResolvedAction::Find { query: "Melange" }
+    );
+}
+
+#[test]
 fn test_auto_detect_url() {
     let cli = Cli::parse_from(["srz", "https://example.com/article"]);
 
