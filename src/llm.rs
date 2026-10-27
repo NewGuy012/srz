@@ -22,6 +22,14 @@ struct ChatMessage {
 #[derive(Deserialize)]
 struct ChatCompletionResponse {
     choices: Vec<ChatChoice>,
+    usage: Option<TokenUsage>,
+}
+
+#[derive(Deserialize)]
+struct TokenUsage {
+    prompt_tokens: Option<u32>,
+    completion_tokens: Option<u32>,
+    total_tokens: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -29,6 +37,14 @@ struct ChatChoice {
     message: ChatMessage,
     finish_reason: Option<String>,
 }
+
+/// Maximum words of grounded reference context for a 32k context window (~16k-18k tokens),
+/// leaving ample headroom for up to 8,192 completion tokens (thinking + summary).
+pub const MAX_CONTEXT_WORDS: usize = 12_000;
+
+/// Maximum words per chunk when map-reducing extra-long articles (> 12,000 words).
+const CHUNK_MAX_WORDS: usize = 10_000;
+const CHUNK_OVERLAP_WORDS: usize = 500;
 
 pub struct LlmClient {
     client: reqwest::Client,
@@ -41,7 +57,7 @@ pub struct LlmClient {
 impl LlmClient {
     pub fn new(base_url: &str, model: &str, api_key: &str, max_tokens: u32) -> Result<Self> {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(180))
+            .timeout(Duration::from_secs(300))
             .build()
             .context("Failed to build LLM HTTP client")?;
 
@@ -133,9 +149,20 @@ impl LlmClient {
             .ok_or_else(|| anyhow::anyhow!("LLM returned empty choices"))?;
 
         if choice.finish_reason.as_deref() == Some("length") {
-            crate::ui::Ui::warn(
-                "Output reached the token limit. You can increase it with `--max-tokens <NUM>`.",
-            );
+            let usage_detail = completion
+                .usage
+                .as_ref()
+                .and_then(|u| {
+                    Some(format!(
+                        " (prompt: {} tokens, generated: {} tokens, total: {} tokens)",
+                        u.prompt_tokens?, u.completion_tokens?, u.total_tokens?
+                    ))
+                })
+                .unwrap_or_default();
+            crate::ui::Ui::warn(&format!(
+                "Output reached the token limit{}. You can increase it with `--max-tokens <NUM>` or increase your model's context length.",
+                usage_detail
+            ));
         }
 
         Ok(choice.message.content.trim().to_string())
@@ -152,9 +179,9 @@ impl LlmClient {
         let title_str = title.unwrap_or("Untitled Webpage");
         let word_count = content.split_whitespace().count();
 
-        // If the webpage exceeds 4000 words, chunk and map-reduce
-        if word_count > 4000 {
-            let chunks = TextChunker::chunk(content, 3000, 300);
+        // If the webpage exceeds MAX_CONTEXT_WORDS (12,000 words), chunk and map-reduce
+        if word_count > MAX_CONTEXT_WORDS {
+            let chunks = TextChunker::chunk(content, CHUNK_MAX_WORDS, CHUNK_OVERLAP_WORDS);
             if chunks.len() > 1 {
                 let mut section_summaries = Vec::new();
                 for (i, chunk) in chunks.iter().enumerate() {
@@ -212,9 +239,12 @@ impl LlmClient {
             .map(|a| format!("Author: {}\n", a))
             .unwrap_or_default();
 
-        // Budget context to ~3,500 words (~4,500 tokens) to safely fit within local LLM context windows
-        let bounded_context = if web_context.split_whitespace().count() > 3500 {
-            let words: Vec<&str> = web_context.split_whitespace().take(3500).collect();
+        // Budget context to MAX_CONTEXT_WORDS (12,000 words, ~16k-18k tokens) to fit within a 32k context window
+        let bounded_context = if web_context.split_whitespace().count() > MAX_CONTEXT_WORDS {
+            let words: Vec<&str> = web_context
+                .split_whitespace()
+                .take(MAX_CONTEXT_WORDS)
+                .collect();
             format!("{}\n\n[Context trimmed for token budget]", words.join(" "))
         } else {
             web_context.to_string()

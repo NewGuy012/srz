@@ -13,7 +13,8 @@ A modular, minimalist Rust CLI for summarizing **webpages** and **books** using 
 - **Local OpenAI API-Compliant**: Built for local servers like **llama.cpp** (default: `http://localhost:9931/v1`), **Ollama**, **LM Studio**, and **vLLM**.
 - **Polished CLI**: Built using `clap` (subcommands, flags, env vars) and `indicatif` (interactive spinners and status indicators).
 - **Multiple Summary Styles**: `concise`, `detailed` (default), `bullets`, or `executive`.
-- **Text Chunking**: Automatic windowed chunking and map-reduce synthesis for long web pages (> 4,000 words).
+- **Smart Disk Caching**: Automatically caches search results, scraped reference pages, and generated summaries in `~/.cache/srz` so repeat visits require zero web calls. Pass `--no-cache` to force a fresh fetch.
+- **Text Chunking**: Automatic windowed chunking and map-reduce synthesis for long web pages (> 12,000 words, tuned for a 32k context window).
 
 ---
 
@@ -58,6 +59,9 @@ srz book "Thinking, Fast and Slow" --no-search
 
 # Auto-detected positional argument
 srz "To Kill a Mockingbird"
+
+# Force fresh web scrape & LLM generation (bypass local cache)
+srz book "Dune" --no-cache
 ```
 
 ### 3. Choosing a Summary Style
@@ -103,6 +107,7 @@ The codebase is organized into modular components with single responsibilities:
 
 - [`src/main.rs`](file:///Users/myoo/Documents/Repo/srz/src/main.rs): CLI entry point coordinating the high-level summarization pipeline.
 - [`src/cli.rs`](file:///Users/myoo/Documents/Repo/srz/src/cli.rs): Argument parsing, subcommand definitions, and style guidance with `clap`.
+- [`src/cache.rs`](file:///Users/myoo/Documents/Repo/srz/src/cache.rs): Persistent disk cache (`~/.cache/srz`) for search results, scraped pages, and summaries.
 - [`src/scraper.rs`](file:///Users/myoo/Documents/Repo/srz/src/scraper.rs): Webpage fetching, DOM parsing, boilerplate removal, and text normalization.
 - [`src/search.rs`](file:///Users/myoo/Documents/Repo/srz/src/search.rs): DuckDuckGo & Wikipedia search integration (zero API keys required).
 - [`src/llm.rs`](file:///Users/myoo/Documents/Repo/srz/src/llm.rs): OpenAI API client connecting to local LLM endpoints.

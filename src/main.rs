@@ -1,3 +1,4 @@
+mod cache;
 mod chunker;
 mod cli;
 mod llm;
@@ -6,6 +7,7 @@ mod search;
 mod ui;
 
 use anyhow::{Context, Result};
+use cache::{Cache, CachedSummary};
 use clap::Parser;
 use cli::{Cli, ResolvedAction};
 use llm::LlmClient;
@@ -26,6 +28,11 @@ async fn main() -> Result<()> {
         }
     };
 
+    let cache = Cache::new(!args.no_cache);
+    if args.no_cache {
+        Ui::info("Cache bypassed (`--no-cache`). Forcing fresh fetch and generation.");
+    }
+
     let llm = match LlmClient::new(&args.base_url, &args.model, &args.api_key, args.max_tokens) {
         Ok(client) => client,
         Err(err) => {
@@ -43,12 +50,23 @@ async fn main() -> Result<()> {
     };
 
     let summary_result = match action {
-        ResolvedAction::Web { url } => handle_web(&url, &scraper, &llm, &args).await,
+        ResolvedAction::Web { url } => handle_web(&url, &scraper, &llm, &cache, &args).await,
         ResolvedAction::Book {
             title,
             author,
             no_search,
-        } => handle_book(&title, author.as_deref(), no_search, &scraper, &llm, &args).await,
+        } => {
+            handle_book(
+                &title,
+                author.as_deref(),
+                no_search,
+                &scraper,
+                &llm,
+                &cache,
+                &args,
+            )
+            .await
+        }
     };
 
     match summary_result {
@@ -78,17 +96,31 @@ async fn handle_web(
     url: &str,
     scraper: &WebScraper,
     llm: &LlmClient,
+    cache: &Cache,
     args: &Cli,
 ) -> Result<(String, String)> {
-    let spinner = Ui::spinner("Scraping and normalizing webpage content...");
-    let page = match scraper.scrape(url).await {
-        Ok(p) => {
-            spinner.finish_with_message("Webpage content scraped and normalized.");
-            p
-        }
-        Err(e) => {
-            spinner.abandon();
-            return Err(e);
+    // 1. Check for a cached summary matching URL + style + model
+    if let Some(cached) = cache.get_web_summary(url, args.style, &args.model) {
+        Ui::info("Loaded summary from local cache (pass `--no-cache` to refresh).");
+        return Ok((cached.title, cached.summary));
+    }
+
+    // 2. Check for a cached scraped page to avoid redundant network requests
+    let page = if let Some(cached_page) = cache.get_page(url) {
+        Ui::info("Loaded webpage content from local cache.");
+        cached_page
+    } else {
+        let spinner = Ui::spinner("Scraping and normalizing webpage content...");
+        match scraper.scrape(url).await {
+            Ok(p) => {
+                spinner.finish_with_message("Webpage content scraped and normalized.");
+                cache.set_page(url, &p);
+                p
+            }
+            Err(e) => {
+                spinner.abandon();
+                return Err(e);
+            }
         }
     };
 
@@ -117,6 +149,16 @@ async fn handle_web(
         }
     };
 
+    cache.set_web_summary(
+        url,
+        args.style,
+        &args.model,
+        &CachedSummary {
+            title: title_display.clone(),
+            summary: summary.clone(),
+        },
+    );
+
     Ok((title_display, summary))
 }
 
@@ -126,6 +168,7 @@ async fn handle_book(
     no_search: bool,
     scraper: &WebScraper,
     llm: &LlmClient,
+    cache: &Cache,
     args: &Cli,
 ) -> Result<(String, String)> {
     let book_display = match author {
@@ -133,32 +176,73 @@ async fn handle_book(
         None => format!("\"{}\"", title),
     };
 
+    // 1. Check for a cached summary matching title + author + style + model + search mode
+    if let Some(cached) =
+        cache.get_book_summary(title, author, args.style, &args.model, no_search)
+    {
+        Ui::info("Loaded book summary from local cache (pass `--no-cache` to refresh).");
+        return Ok((cached.title, cached.summary));
+    }
+
     // If search is enabled (default), attempt web search first
     if !no_search {
-        let spinner = Ui::spinner("Searching web for book synopsis (Wikipedia / DuckDuckGo)...");
-        let searcher = BookSearcher::new()?;
-
-        let candidates = searcher.search_candidates(title, author).await;
+        let candidates = if let Some(cached_candidates) = cache.get_search_results(title, author) {
+            Ui::info(&format!(
+                "Loaded {} search candidate(s) from local cache.",
+                cached_candidates.len()
+            ));
+            cached_candidates
+        } else {
+            let spinner = Ui::spinner("Searching web for book synopsis (Wikipedia / DuckDuckGo)...");
+            let searcher = BookSearcher::new()?;
+            let results = searcher.search_candidates(title, author).await;
+            if !results.is_empty() {
+                spinner.finish_with_message(format!(
+                    "Found {} search candidate(s) online.",
+                    results.len()
+                ));
+                cache.set_search_results(title, author, &results);
+            } else {
+                spinner.finish_with_message("No web results found.");
+            }
+            results
+        };
 
         if !candidates.is_empty() {
-            spinner.finish_with_message(format!("Found {} search candidate(s) online.", candidates.len()));
-
             let mut fallback_snippet = None;
             let mut fallback_url = None;
 
             for res in &candidates {
                 Ui::info(&format!("Attempting reference: {} ({})", res.title, res.url));
-                let scrape_spinner = Ui::spinner("Scraping reference page...");
 
-                match scraper.scrape(&res.url).await {
+                let page_result = if let Some(cached_page) = cache.get_page(&res.url) {
+                    Ui::info("Loaded reference page from local cache.");
+                    Ok(cached_page)
+                } else {
+                    let scrape_spinner = Ui::spinner("Scraping reference page...");
+                    match scraper.scrape(&res.url).await {
+                        Ok(page) => {
+                            scrape_spinner.finish_with_message("Reference page scraped.");
+                            cache.set_page(&res.url, &page);
+                            Ok(page)
+                        }
+                        Err(err) => {
+                            scrape_spinner.abandon();
+                            Err(err)
+                        }
+                    }
+                };
+
+                match page_result {
                     Ok(page) => {
-                        scrape_spinner.finish_with_message("Reference page scraped.");
                         Ui::info(&format!(
-                            "Grounded reference text: {} words (budgeted to 3,500 words for LLM context)",
-                            page.word_count
+                            "Grounded reference text: {} words (budgeted up to {} words for 32k LLM context)",
+                            page.word_count,
+                            llm::MAX_CONTEXT_WORDS
                         ));
 
-                        let llm_spinner = Ui::spinner("Synthesizing grounded book summary with local LLM...");
+                        let llm_spinner =
+                            Ui::spinner("Synthesizing grounded book summary with local LLM...");
                         match llm
                             .summarize_book_with_context(
                                 title,
@@ -171,6 +255,17 @@ async fn handle_book(
                         {
                             Ok(summary) => {
                                 llm_spinner.finish_with_message("Grounded summary complete.");
+                                cache.set_book_summary(
+                                    title,
+                                    author,
+                                    args.style,
+                                    &args.model,
+                                    no_search,
+                                    &CachedSummary {
+                                        title: book_display.clone(),
+                                        summary: summary.clone(),
+                                    },
+                                );
                                 return Ok((book_display, summary));
                             }
                             Err(e) => {
@@ -180,7 +275,6 @@ async fn handle_book(
                         }
                     }
                     Err(err) => {
-                        scrape_spinner.abandon();
                         Ui::warn(&format!(
                             "Could not scrape {}: {}. Trying next reference...",
                             res.url, err
@@ -202,6 +296,17 @@ async fn handle_book(
                     .await
                 {
                     llm_spinner.finish_with_message("Grounded summary complete.");
+                    cache.set_book_summary(
+                        title,
+                        author,
+                        args.style,
+                        &args.model,
+                        no_search,
+                        &CachedSummary {
+                            title: book_display.clone(),
+                            summary: summary.clone(),
+                        },
+                    );
                     return Ok((book_display, summary));
                 }
                 llm_spinner.abandon();
@@ -209,7 +314,6 @@ async fn handle_book(
 
             Ui::warn("All online references failed to scrape. Falling back to LLM internal memory.");
         } else {
-            spinner.finish_with_message("No web results found.");
             Ui::warn("No web synopsis found online. Falling back to LLM trained memory.");
         }
     } else {
@@ -228,6 +332,18 @@ async fn handle_book(
             return Err(e);
         }
     };
+
+    cache.set_book_summary(
+        title,
+        author,
+        args.style,
+        &args.model,
+        no_search,
+        &CachedSummary {
+            title: book_display.clone(),
+            summary: summary.clone(),
+        },
+    );
 
     Ok((book_display, summary))
 }

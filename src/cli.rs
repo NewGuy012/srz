@@ -61,13 +61,17 @@ pub struct Cli {
     #[arg(long, value_enum, default_value = "detailed")]
     pub style: SummaryStyle,
 
-    /// Maximum tokens to generate
-    #[arg(long, default_value_t = 4096)]
+    /// Maximum tokens to generate (includes thinking + summary tokens; tuned for 32k context)
+    #[arg(long, default_value_t = 8192)]
     pub max_tokens: u32,
 
     /// Skip web search for books (force using LLM trained knowledge directly)
     #[arg(long)]
     pub no_search: bool,
+
+    /// Bypass local cache and force fresh web scraping and LLM summarization
+    #[arg(long, global = true)]
+    pub no_cache: bool,
 
     /// Book author (helps search accuracy)
     #[arg(long)]
@@ -160,8 +164,9 @@ mod tests {
             model: "ggml-org/gemma-4-E4B-it-GGUF:Q8_0".to_string(),
             api_key: "".to_string(),
             style: SummaryStyle::Detailed,
-            max_tokens: 4096,
+            max_tokens: 8192,
             no_search: false,
+            no_cache: false,
             author: None,
             output: None,
         };
@@ -181,8 +186,9 @@ mod tests {
             model: "ggml-org/gemma-4-E4B-it-GGUF:Q8_0".to_string(),
             api_key: "".to_string(),
             style: SummaryStyle::Concise,
-            max_tokens: 4096,
+            max_tokens: 8192,
             no_search: false,
+            no_cache: false,
             author: Some("F. Scott Fitzgerald".to_string()),
             output: None,
         };

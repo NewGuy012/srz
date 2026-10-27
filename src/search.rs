@@ -1,10 +1,11 @@
 use anyhow::{Context, Result};
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 use scraper::{Html, Selector};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
     pub title: String,
     pub url: String,

@@ -1,9 +1,10 @@
 use anyhow::{Context, Result};
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 use scraper::{Html, Selector};
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScrapedPage {
     pub url: String,
     pub title: Option<String>,
