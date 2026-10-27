@@ -59,26 +59,3 @@ impl TextChunker {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_short_text_single_chunk() {
-        let text = "Paragraph one with some text.\n\nParagraph two with more text.";
-        let chunks = TextChunker::chunk(text, 100, 10);
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0], text);
-    }
-
-    #[test]
-    fn test_chunking_splits_on_word_limit() {
-        let p1 = "word ".repeat(50);
-        let p2 = "test ".repeat(50);
-        let text = format!("{}\n\n{}", p1.trim(), p2.trim());
-
-        let chunks = TextChunker::chunk(&text, 60, 10);
-        assert_eq!(chunks.len(), 2);
-    }
-}
-

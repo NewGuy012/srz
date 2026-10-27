@@ -235,36 +235,3 @@ impl WebScraper {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_normalize_extracts_title_and_clean_text() {
-        let scraper = WebScraper::new().unwrap();
-        let html = r#"
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>Rust Programming Language</title>
-                <meta property="og:title" content="Rust: Fast and Reliable">
-            </head>
-            <body>
-                <header><nav><a href="/">Home</a></nav></header>
-                <main>
-                    <h1>Rust Overview</h1>
-                    <p>Rust is a blazingly fast and memory-efficient language.</p>
-                    <p>It empowers everyone to build reliable and efficient software.</p>
-                </main>
-                <footer><p>© 2026 Rust</p></footer>
-            </body>
-            </html>
-        "#;
-
-        let page = scraper.normalize("https://rust-lang.org", html).unwrap();
-        assert_eq!(page.title.as_deref(), Some("Rust: Fast and Reliable"));
-        assert!(page.content.contains("blazingly fast"));
-        assert!(page.word_count > 10);
-    }
-}
-

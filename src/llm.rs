@@ -311,7 +311,7 @@ impl LlmClient {
 }
 
 /// Truncates `text` to at most `max_words` words while preserving original line and paragraph breaks.
-fn truncate_words_preserving_lines(text: &str, max_words: usize) -> String {
+pub fn truncate_words_preserving_lines(text: &str, max_words: usize) -> String {
     let mut kept_lines = Vec::new();
     let mut word_count = 0;
     let mut truncated = false;
@@ -338,20 +338,5 @@ fn truncate_words_preserving_lines(text: &str, max_words: usize) -> String {
         )
     } else {
         text.to_string()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_truncate_words_preserves_newlines() {
-        let input = "# Heading 1\n\nParagraph one with five words.\n\n## Heading 2\n\nParagraph two with extra words.";
-        // Keep 8 words ("# Heading 1" = 3, "Paragraph one with five words." = 5 -> total 8)
-        let out = truncate_words_preserving_lines(input, 8);
-        assert!(out.contains("# Heading 1\n\nParagraph one with five words."));
-        assert!(out.ends_with("[Context trimmed for token budget]"));
-        assert!(!out.contains("Heading 2"));
     }
 }

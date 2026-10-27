@@ -1,20 +1,12 @@
-mod cache;
-mod chunker;
-mod cli;
-mod llm;
-mod scraper;
-mod search;
-mod ui;
-
 use anyhow::{Context, Result};
-use cache::{Cache, CachedSummary};
 use clap::Parser;
-use cli::{Cli, ResolvedAction};
-use llm::{LlmClient, LlmOutput};
-use scraper::WebScraper;
-use search::BookSearcher;
+use srz::cache::{Cache, CachedSummary};
+use srz::cli::{Cli, ResolvedAction};
+use srz::llm::{self, LlmClient, LlmOutput};
+use srz::scraper::WebScraper;
+use srz::search::BookSearcher;
+use srz::ui::Ui;
 use std::fs;
-use ui::Ui;
 
 #[tokio::main]
 async fn main() -> Result<()> {

@@ -42,27 +42,33 @@ pub struct Cli {
     pub target: Option<String>,
 
     /// Local OpenAI-compatible base URL
-    #[arg(long, env = "OPENAI_BASE_URL", default_value = "http://localhost:9931/v1")]
+    #[arg(
+        long,
+        global = true,
+        env = "OPENAI_BASE_URL",
+        default_value = "http://localhost:9931/v1"
+    )]
     pub base_url: String,
 
     /// Model name to use
     #[arg(
         long,
+        global = true,
         env = "OPENAI_MODEL",
         default_value = "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
     )]
     pub model: String,
 
     /// OpenAI API key (optional for local LLMs)
-    #[arg(long, env = "OPENAI_API_KEY", default_value = "")]
+    #[arg(long, global = true, env = "OPENAI_API_KEY", default_value = "")]
     pub api_key: String,
 
     /// Output summary style
-    #[arg(long, value_enum, default_value = "detailed")]
+    #[arg(long, global = true, value_enum, default_value = "detailed")]
     pub style: SummaryStyle,
 
     /// Maximum tokens to generate (includes thinking + summary tokens; tuned for 32k context)
-    #[arg(long, default_value_t = 8192)]
+    #[arg(long, global = true, default_value_t = 8192)]
     pub max_tokens: u32,
 
     /// Skip web search for books (force using LLM trained knowledge directly)
@@ -135,63 +141,6 @@ impl Cli {
             }
         } else {
             Err("Please provide a URL or book title, or use `srz web <URL>` / `srz book <TITLE>`. Run `srz --help` for details.".to_string())
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_auto_detect_url() {
-        let cli = Cli {
-            command: None,
-            target: Some("https://example.com/article".to_string()),
-            base_url: "http://localhost:9931/v1".to_string(),
-            model: "ggml-org/gemma-4-E4B-it-GGUF:Q8_0".to_string(),
-            api_key: "".to_string(),
-            style: SummaryStyle::Detailed,
-            max_tokens: 8192,
-            no_search: false,
-            no_cache: false,
-            author: None,
-            output: None,
-        };
-
-        match cli.resolve_action().unwrap() {
-            ResolvedAction::Web { url } => assert_eq!(url, "https://example.com/article"),
-            _ => panic!("Expected Web action"),
-        }
-    }
-
-    #[test]
-    fn test_auto_detect_book() {
-        let cli = Cli {
-            command: None,
-            target: Some("The Great Gatsby".to_string()),
-            base_url: "http://localhost:9931/v1".to_string(),
-            model: "ggml-org/gemma-4-E4B-it-GGUF:Q8_0".to_string(),
-            api_key: "".to_string(),
-            style: SummaryStyle::Concise,
-            max_tokens: 8192,
-            no_search: false,
-            no_cache: false,
-            author: Some("F. Scott Fitzgerald".to_string()),
-            output: None,
-        };
-
-        match cli.resolve_action().unwrap() {
-            ResolvedAction::Book {
-                title,
-                author,
-                no_search,
-            } => {
-                assert_eq!(title, "The Great Gatsby");
-                assert_eq!(author, Some("F. Scott Fitzgerald".to_string()));
-                assert!(!no_search);
-            }
-            _ => panic!("Expected Book action"),
         }
     }
 }
