@@ -16,7 +16,7 @@ A modular, minimalist Rust CLI for summarizing **webpages** and **books** using 
 - **Clickable Styled HTML & Markdown Views**: Automatically saves a styled, responsive `.html` reader view (with light/dark mode) and `.md` file in `~/.cache/srz/views/` and prints clickable `file://` links so you can open the summary in your browser or editor with one click.
 - **Strict `stdout` / `stderr` Separation**: All spinners, headers, and diagnostics are emitted to `stderr` so `stdout` can be piped cleanly (`srz "Dune" | pbcopy`).
 - **Polished CLI**: Built using `clap` (subcommands, flags, env vars) and `indicatif` (interactive spinners and status indicators).
-- **Multiple Summary Styles**: `concise`, `detailed` (default), `bullets`, or `executive`.
+- **Multiple Summary Styles**: `concise` (default), `detailed`, `bullets`, or `executive`.
 - **Smart Disk Caching**: Automatically caches search results, scraped reference pages, and generated summaries in `~/.cache/srz` (`srz cache dir | size | clean`). Pass `--no-cache` to force a fresh fetch.
 - **Text Chunking**: Automatic windowed chunking and map-reduce synthesis for long web pages (> 12,000 words, tuned for a 32k context window).
 
@@ -76,8 +76,8 @@ srz book "Clean Code" --style executive
 ```
 
 Styles available:
-- `detailed` (default): Comprehensive breakdown covering all major themes and arguments.
-- `concise`: High-level summary in 2–3 concise paragraphs.
+- `concise` (default): High-level summary in 2–3 concise paragraphs.
+- `detailed`: Comprehensive breakdown covering all major themes and arguments.
 - `bullets`: Key takeaways and actionable points formatted as bullet points.
 - `executive`: Structured as Executive Overview, Core Findings, Strategic Insights, and Impact.
 

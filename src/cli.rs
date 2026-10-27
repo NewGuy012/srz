@@ -64,7 +64,7 @@ pub struct Cli {
     pub api_key: String,
 
     /// Output summary style
-    #[arg(long, global = true, value_enum, default_value = "detailed")]
+    #[arg(long, global = true, value_enum, default_value = "concise")]
     pub style: SummaryStyle,
 
     /// Maximum tokens to generate (includes thinking + summary tokens; tuned for 32k context)

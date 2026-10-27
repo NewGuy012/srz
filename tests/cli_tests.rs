@@ -41,6 +41,12 @@ fn test_history_stats_find_subcommands() {
 }
 
 #[test]
+fn test_default_style_is_concise() {
+    let cli = Cli::parse_from(["srz", "Dune"]);
+    assert_eq!(cli.style, SummaryStyle::Concise);
+}
+
+#[test]
 fn test_auto_detect_url() {
     let cli = Cli::parse_from(["srz", "https://example.com/article"]);
 
