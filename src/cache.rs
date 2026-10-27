@@ -4,14 +4,33 @@ use crate::search::SearchResult;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::env;
-use std::fs;
+use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
+use std::io::{BufReader, BufWriter};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedSummary {
     pub title: String,
     pub summary: String,
+}
+
+#[derive(Serialize)]
+struct CachedSummaryRef<'a> {
+    title: &'a str,
+    summary: &'a str,
+}
+
+/// Zero-allocation wrapper that hashes a `&str` case-insensitively (ASCII) without allocating a `String`.
+struct AsciiLower<'a>(&'a str);
+
+impl Hash for AsciiLower<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        for b in self.0.bytes() {
+            state.write_u8(b.to_ascii_lowercase());
+        }
+        state.write_u8(0xff);
+    }
 }
 
 pub struct Cache {
@@ -64,8 +83,8 @@ impl Cache {
             .base_dir
             .join(namespace)
             .join(format!("{}.json", key_hash));
-        let data = fs::read_to_string(path).ok()?;
-        serde_json::from_str(&data).ok()
+        let file = File::open(path).ok()?;
+        serde_json::from_reader(BufReader::new(file)).ok()
     }
 
     fn write_entry<T: Serialize>(&self, namespace: &str, key_hash: &str, value: &T) {
@@ -74,8 +93,8 @@ impl Cache {
             return;
         }
         let path = dir.join(format!("{}.json", key_hash));
-        if let Ok(json) = serde_json::to_string_pretty(value) {
-            let _ = fs::write(path, json);
+        if let Ok(file) = File::create(path) {
+            let _ = serde_json::to_writer_pretty(BufWriter::new(file), value);
         }
     }
 
@@ -93,12 +112,16 @@ impl Cache {
 
     // --- Book Search Candidates Cache ---
 
-    pub fn get_search_results(&self, title: &str, author: Option<&str>) -> Option<Vec<SearchResult>> {
+    fn search_key(title: &str, author: Option<&str>) -> String {
         let normalized_key = (
-            title.trim().to_ascii_lowercase(),
-            author.map(|a| a.trim().to_ascii_lowercase()),
+            AsciiLower(title.trim()),
+            author.map(|a| AsciiLower(a.trim())),
         );
-        let key = Self::hash_key(&normalized_key);
+        Self::hash_key(&normalized_key)
+    }
+
+    pub fn get_search_results(&self, title: &str, author: Option<&str>) -> Option<Vec<SearchResult>> {
+        let key = Self::search_key(title, author);
         self.read_entry("search", &key)
     }
 
@@ -108,11 +131,7 @@ impl Cache {
         author: Option<&str>,
         results: &[SearchResult],
     ) {
-        let normalized_key = (
-            title.trim().to_ascii_lowercase(),
-            author.map(|a| a.trim().to_ascii_lowercase()),
-        );
-        let key = Self::hash_key(&normalized_key);
+        let key = Self::search_key(title, author);
         self.write_entry("search", &key, &results);
     }
 
@@ -128,9 +147,9 @@ impl Cache {
     ) -> String {
         let tuple = (
             kind,
-            target.trim().to_ascii_lowercase(),
-            author.map(|a| a.trim().to_ascii_lowercase()),
-            format!("{:?}", style),
+            AsciiLower(target.trim()),
+            author.map(|a| AsciiLower(a.trim())),
+            style,
             model.trim(),
             no_search,
         );
@@ -147,15 +166,9 @@ impl Cache {
         self.read_entry("summaries", &key)
     }
 
-    pub fn set_web_summary(
-        &self,
-        url: &str,
-        style: SummaryStyle,
-        model: &str,
-        summary: &CachedSummary,
-    ) {
+    pub fn set_web_summary(&self, url: &str, style: SummaryStyle, model: &str, title: &str, summary: &str) {
         let key = Self::summary_key("web", url, None, style, model, false);
-        self.write_entry("summaries", &key, summary);
+        self.write_entry("summaries", &key, &CachedSummaryRef { title, summary });
     }
 
     pub fn get_book_summary(
@@ -177,9 +190,17 @@ impl Cache {
         style: SummaryStyle,
         model: &str,
         no_search: bool,
-        summary: &CachedSummary,
+        display_title: &str,
+        summary: &str,
     ) {
         let key = Self::summary_key("book", title, author, style, model, no_search);
-        self.write_entry("summaries", &key, summary);
+        self.write_entry(
+            "summaries",
+            &key,
+            &CachedSummaryRef {
+                title: display_title,
+                summary,
+            },
+        );
     }
 }

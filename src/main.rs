@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use srz::cache::{Cache, CachedSummary};
+use srz::cache::Cache;
 use srz::cli::{Cli, ResolvedAction};
 use srz::llm::{self, LlmClient, LlmOutput};
 use srz::scraper::WebScraper;
@@ -42,15 +42,15 @@ async fn main() -> Result<()> {
     };
 
     let summary_result = match action {
-        ResolvedAction::Web { url } => handle_web(&url, &scraper, &llm, &cache, &args).await,
+        ResolvedAction::Web { url } => handle_web(url, &scraper, &llm, &cache, &args).await,
         ResolvedAction::Book {
             title,
             author,
             no_search,
         } => {
             handle_book(
-                &title,
-                author.as_deref(),
+                title,
+                author,
                 no_search,
                 &scraper,
                 &llm,
@@ -135,10 +135,8 @@ async fn handle_web(
             url,
             args.style,
             &args.model,
-            &CachedSummary {
-                title: title_display.clone(),
-                summary: output.content.clone(),
-            },
+            &title_display,
+            &output.content,
         );
     }
 
@@ -175,7 +173,7 @@ async fn handle_book(
         Ui::warn(warn);
     }
 
-    // 3. Cache only complete, non-truncated summaries
+    // 3. Cache only complete, non-truncated summaries (zero-copy borrow of title & summary)
     if !output.truncated {
         cache.set_book_summary(
             title,
@@ -183,10 +181,8 @@ async fn handle_book(
             args.style,
             &args.model,
             no_search,
-            &CachedSummary {
-                title: book_display.clone(),
-                summary: output.content.clone(),
-            },
+            &book_display,
+            &output.content,
         );
     }
 

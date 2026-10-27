@@ -3,8 +3,17 @@ use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::HashSet;
+use std::sync::LazyLock;
 use std::time::Duration;
+
+static DDG_RESULT_SEL: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse(".result__body").unwrap());
+static DDG_TITLE_SEL: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse(".result__title a").unwrap());
+static DDG_SNIPPET_SEL: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse(".result__snippet").unwrap());
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
@@ -132,26 +141,22 @@ impl BookSearcher {
         let html = resp.text().await?;
         let document = Html::parse_document(&html);
 
-        let result_sel = Selector::parse(".result__body").unwrap();
-        let title_sel = Selector::parse(".result__title a").unwrap();
-        let snippet_sel = Selector::parse(".result__snippet").unwrap();
-
         let mut results = Vec::new();
 
-        for element in document.select(&result_sel).take(3) {
-            if let Some(link_elem) = element.select(&title_sel).next() {
+        for element in document.select(&DDG_RESULT_SEL).take(3) {
+            if let Some(link_elem) = element.select(&DDG_TITLE_SEL).next() {
                 if let Some(raw_href) = link_elem.value().attr("href") {
-                    let title_text: String = link_elem.text().collect();
-                    let snippet: Option<String> = element
-                        .select(&snippet_sel)
-                        .next()
-                        .map(|s| s.text().collect::<String>().trim().to_string());
-
                     let actual_url = extract_ddg_url(raw_href);
-                    if !actual_url.is_empty() && actual_url.starts_with("http") {
+                    if actual_url.starts_with("http") {
+                        let title_text: String = link_elem.text().collect();
+                        let snippet: Option<String> = element
+                            .select(&DDG_SNIPPET_SEL)
+                            .next()
+                            .map(|s| s.text().collect::<String>().trim().to_string());
+
                         results.push(SearchResult {
                             title: title_text.trim().to_string(),
-                            url: actual_url,
+                            url: actual_url.into_owned(),
                             snippet,
                         });
                     }
@@ -163,27 +168,26 @@ impl BookSearcher {
     }
 }
 
-/// Extracts target destination URL from DuckDuckGo redirect link
-pub fn extract_ddg_url(raw: &str) -> String {
+/// Extracts target destination URL from DuckDuckGo redirect link, returning a zero-copy
+/// `Cow::Borrowed` slice whenever no percent-decoding is needed.
+pub fn extract_ddg_url(raw: &str) -> Cow<'_, str> {
     if let Some(pos) = raw.find("uddg=") {
         let remainder = &raw[pos + 5..];
         let encoded_url = remainder.split('&').next().unwrap_or(remainder);
         if let Ok(decoded) = urlencoding::decode(encoded_url) {
-            return decoded.into_owned();
+            return decoded;
         }
     }
-    raw.to_string()
+    Cow::Borrowed(raw)
 }
 
 /// Deduplicates search results by normalized (percent-decoded, trailing-slash-trimmed) URL.
 pub fn deduplicate_candidates(candidates: Vec<SearchResult>) -> Vec<SearchResult> {
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::with_capacity(candidates.len());
     let mut unique = Vec::with_capacity(candidates.len());
 
     for item in candidates {
-        let decoded = urlencoding::decode(&item.url)
-            .map(|c| c.into_owned())
-            .unwrap_or_else(|_| item.url.clone());
+        let decoded = urlencoding::decode(&item.url).unwrap_or(Cow::Borrowed(&item.url));
         let normalized = decoded.trim_end_matches('/').to_ascii_lowercase();
         if seen.insert(normalized) {
             unique.push(item);

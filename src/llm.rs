@@ -3,20 +3,21 @@ use crate::cli::SummaryStyle;
 use anyhow::{Context, Result};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::time::Duration;
 
 #[derive(Serialize)]
-struct ChatCompletionRequest {
-    model: String,
-    messages: Vec<ChatMessage>,
+struct ChatCompletionRequest<'a> {
+    model: &'a str,
+    messages: &'a [RequestMessage<'a>],
     temperature: f32,
     max_tokens: u32,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-struct ChatMessage {
-    role: String,
-    content: String,
+#[derive(Serialize)]
+struct RequestMessage<'a> {
+    role: &'static str,
+    content: &'a str,
 }
 
 #[derive(Deserialize)]
@@ -34,8 +35,13 @@ struct TokenUsage {
 
 #[derive(Deserialize)]
 struct ChatChoice {
-    message: ChatMessage,
+    message: ResponseMessage,
     finish_reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ResponseMessage {
+    content: String,
 }
 
 /// Output returned by an LLM summarization call.
@@ -55,78 +61,73 @@ const CHUNK_OVERLAP_WORDS: usize = 500;
 
 pub struct LlmClient {
     client: reqwest::Client,
-    base_url: String,
+    endpoint: String,
+    fallback_endpoint: Option<String>,
     model: String,
-    api_key: String,
     max_tokens: u32,
 }
 
 impl LlmClient {
     pub fn new(base_url: &str, model: &str, api_key: &str, max_tokens: u32) -> Result<Self> {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        if !api_key.is_empty() {
+            if let Ok(val) = HeaderValue::from_str(&format!("Bearer {}", api_key)) {
+                headers.insert(AUTHORIZATION, val);
+            }
+        }
+
         let client = reqwest::Client::builder()
+            .default_headers(headers)
             .timeout(Duration::from_secs(300))
             .build()
             .context("Failed to build LLM HTTP client")?;
 
-        let normalized_base = base_url.trim_end_matches('/').to_string();
+        let normalized_base = base_url.trim_end_matches('/');
+        let endpoint = format!("{}/chat/completions", normalized_base);
+        let fallback_endpoint = if endpoint.contains("localhost") {
+            Some(endpoint.replace("localhost", "127.0.0.1"))
+        } else {
+            None
+        };
 
         Ok(Self {
             client,
-            base_url: normalized_base,
+            endpoint,
+            fallback_endpoint,
             model: model.to_string(),
-            api_key: api_key.to_string(),
             max_tokens,
         })
     }
 
     /// Generic completion request to OpenAI-compatible endpoint
     pub async fn complete(&self, system_prompt: &str, user_prompt: &str) -> Result<LlmOutput> {
-        let endpoint = format!("{}/chat/completions", self.base_url);
-
-        let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        if !self.api_key.is_empty() {
-            if let Ok(val) = HeaderValue::from_str(&format!("Bearer {}", self.api_key)) {
-                headers.insert(AUTHORIZATION, val);
-            }
-        }
-
-        let combined_user_content = if system_prompt.is_empty() {
-            user_prompt.to_string()
+        let combined_user_content: Cow<'_, str> = if system_prompt.is_empty() {
+            Cow::Borrowed(user_prompt)
         } else {
-            format!("Instructions:\n{}\n\n{}", system_prompt, user_prompt)
+            Cow::Owned(format!("Instructions:\n{}\n\n{}", system_prompt, user_prompt))
         };
 
+        let messages = [RequestMessage {
+            role: "user",
+            content: &combined_user_content,
+        }];
+
         let body = ChatCompletionRequest {
-            model: self.model.clone(),
-            messages: vec![ChatMessage {
-                role: "user".to_string(),
-                content: combined_user_content,
-            }],
+            model: &self.model,
+            messages: &messages,
             temperature: 0.3,
             max_tokens: self.max_tokens,
         };
 
-        let mut response = self
-            .client
-            .post(&endpoint)
-            .headers(headers.clone())
-            .json(&body)
-            .send()
-            .await;
+        let mut response = self.client.post(&self.endpoint).json(&body).send().await;
 
         // On macOS, localhost can resolve to IPv6 (::1). Fallback to 127.0.0.1 if needed.
-        if response.is_err() && endpoint.contains("localhost") {
-            let alt_endpoint = endpoint.replace("localhost", "127.0.0.1");
-            if let Ok(alt_resp) = self
-                .client
-                .post(&alt_endpoint)
-                .headers(headers)
-                .json(&body)
-                .send()
-                .await
-            {
-                response = Ok(alt_resp);
+        if response.is_err() {
+            if let Some(alt_endpoint) = &self.fallback_endpoint {
+                if let Ok(alt_resp) = self.client.post(alt_endpoint).json(&body).send().await {
+                    response = Ok(alt_resp);
+                }
             }
         }
 
@@ -134,7 +135,7 @@ impl LlmClient {
             anyhow::anyhow!(
                 "Failed to communicate with LLM endpoint at '{}': {}. \
                  Please verify your llama.cpp app is open and listening on port 9931.",
-                endpoint,
+                self.endpoint,
                 err
             )
         })?;
@@ -197,7 +198,7 @@ impl LlmClient {
         if word_count > MAX_CONTEXT_WORDS {
             let chunks = TextChunker::chunk(content, CHUNK_MAX_WORDS, CHUNK_OVERLAP_WORDS);
             if chunks.len() > 1 {
-                let mut section_summaries = Vec::new();
+                let mut section_summaries = Vec::with_capacity(chunks.len());
                 for (i, chunk) in chunks.iter().enumerate() {
                     let section_sys = "You are an assistant summarizing a section of a long article. Be factual and concise.";
                     let section_user = format!(
@@ -249,11 +250,12 @@ impl LlmClient {
         web_context: &str,
         style: SummaryStyle,
     ) -> Result<LlmOutput> {
-        let author_line = author
-            .map(|a| format!("Author: {}\n", a))
-            .unwrap_or_default();
+        let author_line: Cow<'_, str> = match author {
+            Some(a) => Cow::Owned(format!("Author: {}\n", a)),
+            None => Cow::Borrowed(""),
+        };
 
-        // Budget context to MAX_CONTEXT_WORDS (12,000 words, ~16k-18k tokens) while preserving line/paragraph structure
+        // Zero-copy slice when web_context fits within MAX_CONTEXT_WORDS (12,000 words)
         let bounded_context = truncate_words_preserving_lines(web_context, MAX_CONTEXT_WORDS);
 
         let system_prompt = "You are a literary analyst and scholar. \
@@ -285,9 +287,10 @@ impl LlmClient {
         author: Option<&str>,
         style: SummaryStyle,
     ) -> Result<LlmOutput> {
-        let author_line = author
-            .map(|a| format!("Author: {}\n", a))
-            .unwrap_or_default();
+        let author_line: Cow<'_, str> = match author {
+            Some(a) => Cow::Owned(format!("Author: {}\n", a)),
+            None => Cow::Borrowed(""),
+        };
 
         let system_prompt = "You are a literary analyst and scholar. \
             Summarize the requested book using your trained knowledge base. \
@@ -311,32 +314,24 @@ impl LlmClient {
 }
 
 /// Truncates `text` to at most `max_words` words while preserving original line and paragraph breaks.
-pub fn truncate_words_preserving_lines(text: &str, max_words: usize) -> String {
-    let mut kept_lines = Vec::new();
-    let mut word_count = 0;
-    let mut truncated = false;
-
-    for line in text.lines() {
-        let line_words: Vec<&str> = line.split_whitespace().collect();
-        if word_count + line_words.len() <= max_words {
-            kept_lines.push(line.to_string());
-            word_count += line_words.len();
-        } else {
-            let remaining = max_words.saturating_sub(word_count);
-            if remaining > 0 {
-                kept_lines.push(line_words[..remaining].join(" "));
-            }
-            truncated = true;
-            break;
-        }
+/// Returns `Cow::Borrowed(text)` with zero allocations when `text` has `<= max_words` words.
+pub fn truncate_words_preserving_lines(text: &str, max_words: usize) -> Cow<'_, str> {
+    if max_words == 0 {
+        return Cow::Borrowed("[Context trimmed for token budget]");
     }
 
-    if truncated {
-        format!(
-            "{}\n\n[Context trimmed for token budget]",
-            kept_lines.join("\n")
-        )
-    } else {
-        text.to_string()
+    let mut words = text.split_whitespace();
+    let Some(nth_word) = words.nth(max_words - 1) else {
+        return Cow::Borrowed(text);
+    };
+
+    // If there are no further words after `max_words`, return the original slice zero-copy
+    if words.next().is_none() {
+        return Cow::Borrowed(text);
     }
+
+    // Compute byte offset of the end of the `max_words`-th word within `text`
+    let end_offset = (nth_word.as_ptr() as usize) - (text.as_ptr() as usize) + nth_word.len();
+    let prefix = text[..end_offset].trim_end();
+    Cow::Owned(format!("{}\n\n[Context trimmed for token budget]", prefix))
 }

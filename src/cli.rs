@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SummaryStyle {
     /// Concise summary with key takeaways
     Concise,
@@ -102,46 +102,41 @@ pub enum Commands {
     },
 }
 
-pub enum ResolvedAction {
+pub enum ResolvedAction<'a> {
     Web {
-        url: String,
+        url: &'a str,
     },
     Book {
-        title: String,
-        author: Option<String>,
+        title: &'a str,
+        author: Option<&'a str>,
         no_search: bool,
     },
 }
 
 impl Cli {
-    pub fn resolve_action(&self) -> Result<ResolvedAction, String> {
+    pub fn resolve_action(&self) -> Result<ResolvedAction<'_>, &'static str> {
         if let Some(cmd) = &self.command {
             match cmd {
-                Commands::Web { url } => Ok(ResolvedAction::Web {
-                    url: url.clone(),
-                }),
+                Commands::Web { url } => Ok(ResolvedAction::Web { url: url.trim() }),
                 Commands::Book { title } => Ok(ResolvedAction::Book {
-                    title: title.clone(),
-                    author: self.author.clone(),
+                    title: title.trim(),
+                    author: self.author.as_deref(),
                     no_search: self.no_search,
                 }),
             }
         } else if let Some(target) = &self.target {
             let trimmed = target.trim();
             if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-                Ok(ResolvedAction::Web {
-                    url: trimmed.to_string(),
-                })
+                Ok(ResolvedAction::Web { url: trimmed })
             } else {
                 Ok(ResolvedAction::Book {
-                    title: trimmed.to_string(),
-                    author: self.author.clone(),
+                    title: trimmed,
+                    author: self.author.as_deref(),
                     no_search: self.no_search,
                 })
             }
         } else {
-            Err("Please provide a URL or book title, or use `srz web <URL>` / `srz book <TITLE>`. Run `srz --help` for details.".to_string())
+            Err("Please provide a URL or book title, or use `srz web <URL>` / `srz book <TITLE>`. Run `srz --help` for details.")
         }
     }
 }
-

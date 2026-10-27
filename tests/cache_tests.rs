@@ -1,4 +1,4 @@
-use srz::cache::{Cache, CachedSummary};
+use srz::cache::Cache;
 use srz::cli::SummaryStyle;
 use srz::scraper::ScrapedPage;
 use srz::search::SearchResult;
@@ -67,18 +67,14 @@ fn test_disabled_cache_bypasses_reads() {
     let cache_enabled = Cache::with_dir(dir.clone(), true);
     let cache_disabled = Cache::with_dir(dir.clone(), false);
 
-    let summary = CachedSummary {
-        title: "\"Dune\"".to_string(),
-        summary: "Great sci-fi novel.".to_string(),
-    };
-
     cache_enabled.set_book_summary(
         "Dune",
         None,
         SummaryStyle::Detailed,
         "gemma-4",
         false,
-        &summary,
+        "\"Dune\"",
+        "Great sci-fi novel.",
     );
 
     assert!(cache_disabled

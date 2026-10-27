@@ -2,7 +2,41 @@ use anyhow::{Context, Result};
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
 use std::time::Duration;
+
+static OG_TITLE_SEL: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("meta[property='og:title']").unwrap());
+static TITLE_SEL: LazyLock<Selector> = LazyLock::new(|| Selector::parse("title").unwrap());
+static H1_SEL: LazyLock<Selector> = LazyLock::new(|| Selector::parse("h1").unwrap());
+static MAIN_SELECTORS: LazyLock<Vec<Selector>> = LazyLock::new(|| {
+    [
+        "article",
+        "main",
+        "[role='main']",
+        "#content",
+        ".post-content",
+        ".article-content",
+        ".entry-content",
+        "body",
+    ]
+    .into_iter()
+    .filter_map(|s| Selector::parse(s).ok())
+    .collect()
+});
+
+const REFERENCE_HEADINGS: &[&str] = &[
+    "references",
+    "## references",
+    "=== references ===",
+    "== references ==",
+    "external links",
+    "## external links",
+    "=== external links ===",
+    "notes and references",
+    "## notes",
+    "## bibliography",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScrapedPage {
@@ -119,9 +153,8 @@ impl WebScraper {
         let rendered_text = html2text::from_read(target_html.as_bytes(), 100)
             .context("Failed to convert HTML to text")?;
 
-        // 4. Clean and normalize whitespace/formatting
-        let cleaned_content = self.clean_text(&rendered_text);
-        let word_count = cleaned_content.split_whitespace().count();
+        // 4. Clean and normalize whitespace/formatting + count words in a single pass
+        let (cleaned_content, word_count) = self.clean_text_and_count_words(&rendered_text);
 
         Ok(ScrapedPage {
             url: url.to_string(),
@@ -132,37 +165,31 @@ impl WebScraper {
     }
 
     fn extract_title(&self, document: &Html) -> Option<String> {
-        // Try og:title first
-        if let Ok(og_sel) = Selector::parse("meta[property='og:title']") {
-            if let Some(elem) = document.select(&og_sel).next() {
-                if let Some(content) = elem.value().attr("content") {
-                    let trimmed = content.trim();
-                    if !trimmed.is_empty() {
-                        return Some(trimmed.to_string());
-                    }
+        // Try og:title first (zero-copy attribute slice until final .to_string())
+        if let Some(elem) = document.select(&OG_TITLE_SEL).next() {
+            if let Some(content) = elem.value().attr("content") {
+                let trimmed = content.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
                 }
             }
         }
 
         // Try <title> tag
-        if let Ok(title_sel) = Selector::parse("title") {
-            if let Some(elem) = document.select(&title_sel).next() {
-                let text: String = elem.text().collect();
-                let trimmed = text.trim();
-                if !trimmed.is_empty() {
-                    return Some(trimmed.to_string());
-                }
+        if let Some(elem) = document.select(&TITLE_SEL).next() {
+            let text: String = elem.text().collect();
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
             }
         }
 
         // Try <h1> tag
-        if let Ok(h1_sel) = Selector::parse("h1") {
-            if let Some(elem) = document.select(&h1_sel).next() {
-                let text: String = elem.text().collect();
-                let trimmed = text.trim();
-                if !trimmed.is_empty() {
-                    return Some(trimmed.to_string());
-                }
+        if let Some(elem) = document.select(&H1_SEL).next() {
+            let text: String = elem.text().collect();
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
             }
         }
 
@@ -170,26 +197,11 @@ impl WebScraper {
     }
 
     fn extract_main_html(&self, document: &Html) -> String {
-        // Try prioritizing primary content selectors
-        let candidate_selectors = [
-            "article",
-            "main",
-            "[role='main']",
-            "#content",
-            ".post-content",
-            ".article-content",
-            ".entry-content",
-            "body",
-        ];
-
-        for sel_str in candidate_selectors {
-            if let Ok(sel) = Selector::parse(sel_str) {
-                if let Some(element) = document.select(&sel).next() {
-                    let html = element.html();
-                    // Basic sanity check: content should have reasonable length
-                    if html.len() > 200 {
-                        return html;
-                    }
+        for sel in MAIN_SELECTORS.iter() {
+            if let Some(element) = document.select(sel).next() {
+                let html = element.html();
+                if html.len() > 200 {
+                    return html;
                 }
             }
         }
@@ -197,41 +209,44 @@ impl WebScraper {
         document.html()
     }
 
-    fn clean_text(&self, text: &str) -> String {
-        let mut lines = Vec::new();
+    /// Cleans lines, strips trailing reference sections using zero-allocation ASCII comparison,
+    /// and computes total word count in a single pass into one pre-sized `String`.
+    fn clean_text_and_count_words(&self, text: &str) -> (String, usize) {
+        let mut out = String::with_capacity(text.len());
+        let mut word_count = 0;
         let mut empty_line_count = 0;
 
         for raw_line in text.lines() {
             let line = raw_line.trim();
 
-            // Truncate citation, reference, and external link sections common in wikis
-            let lower = line.to_ascii_lowercase();
-            if lower == "references"
-                || lower == "## references"
-                || lower == "=== references ==="
-                || lower == "== references =="
-                || lower == "external links"
-                || lower == "## external links"
-                || lower == "=== external links ==="
-                || lower == "notes and references"
-                || lower == "## notes"
-                || lower == "## bibliography"
-            {
+            if is_reference_heading(line) {
                 break;
             }
 
             if line.is_empty() {
                 empty_line_count += 1;
-                if empty_line_count <= 2 {
-                    lines.push("");
+                if empty_line_count <= 2 && !out.is_empty() {
+                    out.push('\n');
                 }
             } else {
                 empty_line_count = 0;
-                lines.push(line);
+                word_count += line.split_whitespace().count();
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(line);
             }
         }
 
-        lines.join("\n").trim().to_string()
+        let trimmed_len = out.trim_end().len();
+        out.truncate(trimmed_len);
+        (out, word_count)
     }
 }
 
+/// Checks if a line is a reference/bibliography heading in-place without allocating a lowercase `String`.
+fn is_reference_heading(line: &str) -> bool {
+    REFERENCE_HEADINGS
+        .iter()
+        .any(|heading| line.eq_ignore_ascii_case(heading))
+}
