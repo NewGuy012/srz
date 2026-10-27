@@ -79,19 +79,19 @@ Styles available:
 
 By default, `srz` connects to your local llama.cpp app:
 - **Base URL**: `http://localhost:9931/v1`
-- **Model**: `ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0`
+- **Model**: `ggml-org/gemma-4-E4B-it-GGUF:Q8_0`
 
 You can customize the endpoint and model either via CLI flags or environment variables:
 
 ### Via CLI Flags:
 ```bash
-srz book "1984" --base-url http://localhost:9931/v1 --model ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0
+srz book "1984" --base-url http://localhost:9931/v1 --model ggml-org/gemma-4-E4B-it-GGUF:Q8_0
 ```
 
 ### Via Environment Variables:
 ```bash
 export OPENAI_BASE_URL="http://localhost:9931/v1"
-export OPENAI_MODEL="ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0"
+export OPENAI_MODEL="ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
 export OPENAI_API_KEY=""   # Optional
 ```
 

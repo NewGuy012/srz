@@ -49,7 +49,7 @@ pub struct Cli {
     #[arg(
         long,
         env = "OPENAI_MODEL",
-        default_value = "ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0"
+        default_value = "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
     )]
     pub model: String,
 
@@ -153,7 +153,7 @@ mod tests {
             command: None,
             target: Some("https://example.com/article".to_string()),
             base_url: "http://localhost:9931/v1".to_string(),
-            model: "ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0".to_string(),
+            model: "ggml-org/gemma-4-E4B-it-GGUF:Q8_0".to_string(),
             api_key: "".to_string(),
             style: SummaryStyle::Detailed,
             no_search: false,
@@ -173,7 +173,7 @@ mod tests {
             command: None,
             target: Some("The Great Gatsby".to_string()),
             base_url: "http://localhost:9931/v1".to_string(),
-            model: "ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0".to_string(),
+            model: "ggml-org/gemma-4-E4B-it-GGUF:Q8_0".to_string(),
             api_key: "".to_string(),
             style: SummaryStyle::Concise,
             no_search: false,
