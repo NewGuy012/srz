@@ -10,6 +10,7 @@ struct ChatCompletionRequest {
     model: String,
     messages: Vec<ChatMessage>,
     temperature: f32,
+    max_tokens: u32,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -26,6 +27,7 @@ struct ChatCompletionResponse {
 #[derive(Deserialize)]
 struct ChatChoice {
     message: ChatMessage,
+    finish_reason: Option<String>,
 }
 
 pub struct LlmClient {
@@ -33,12 +35,13 @@ pub struct LlmClient {
     base_url: String,
     model: String,
     api_key: String,
+    max_tokens: u32,
 }
 
 impl LlmClient {
-    pub fn new(base_url: &str, model: &str, api_key: &str) -> Result<Self> {
+    pub fn new(base_url: &str, model: &str, api_key: &str, max_tokens: u32) -> Result<Self> {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(120))
+            .timeout(Duration::from_secs(180))
             .build()
             .context("Failed to build LLM HTTP client")?;
 
@@ -49,6 +52,7 @@ impl LlmClient {
             base_url: normalized_base,
             model: model.to_string(),
             api_key: api_key.to_string(),
+            max_tokens,
         })
     }
 
@@ -77,6 +81,7 @@ impl LlmClient {
                 content: combined_user_content,
             }],
             temperature: 0.3,
+            max_tokens: self.max_tokens,
         };
 
         let mut response = self
@@ -126,6 +131,12 @@ impl LlmClient {
             .choices
             .first()
             .ok_or_else(|| anyhow::anyhow!("LLM returned empty choices"))?;
+
+        if choice.finish_reason.as_deref() == Some("length") {
+            crate::ui::Ui::warn(
+                "Output reached the token limit. You can increase it with `--max-tokens <NUM>`.",
+            );
+        }
 
         Ok(choice.message.content.trim().to_string())
     }

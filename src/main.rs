@@ -26,7 +26,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    let llm = match LlmClient::new(&args.base_url, &args.model, &args.api_key) {
+    let llm = match LlmClient::new(&args.base_url, &args.model, &args.api_key, args.max_tokens) {
         Ok(client) => client,
         Err(err) => {
             Ui::error(&format!("Failed to initialize LLM client: {}", err));
