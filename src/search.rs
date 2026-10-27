@@ -3,6 +3,7 @@ use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,21 +38,23 @@ impl BookSearcher {
         Ok(Self { client })
     }
 
-    /// Searches for candidate book synopses across Wikipedia and DuckDuckGo.
+    /// Searches for candidate book synopses concurrently across Wikipedia and DuckDuckGo,
+    /// returning a deduplicated list of candidates.
     pub async fn search_candidates(&self, title: &str, author: Option<&str>) -> Vec<SearchResult> {
-        let mut candidates = Vec::new();
+        let (wiki_res, ddg_res) = tokio::join!(
+            self.search_wikipedia_fulltext(title, author),
+            self.search_duckduckgo(title, author)
+        );
 
-        // 1. Wikipedia Full-Text Search (highest quality, reliable, no 403s)
-        if let Ok(wiki_results) = self.search_wikipedia_fulltext(title, author).await {
-            candidates.extend(wiki_results);
+        let mut raw_candidates = Vec::new();
+        if let Ok(wiki_results) = wiki_res {
+            raw_candidates.extend(wiki_results);
+        }
+        if let Ok(ddg_results) = ddg_res {
+            raw_candidates.extend(ddg_results);
         }
 
-        // 2. DuckDuckGo Search (broad search across book summary sites)
-        if let Ok(ddg_results) = self.search_duckduckgo(title, author).await {
-            candidates.extend(ddg_results);
-        }
-
-        candidates
+        deduplicate_candidates(raw_candidates)
     }
 
     /// Queries Wikipedia full-text search API
@@ -172,6 +175,24 @@ pub fn extract_ddg_url(raw: &str) -> String {
     raw.to_string()
 }
 
+/// Deduplicates search results by normalized (percent-decoded, trailing-slash-trimmed) URL.
+fn deduplicate_candidates(candidates: Vec<SearchResult>) -> Vec<SearchResult> {
+    let mut seen = HashSet::new();
+    let mut unique = Vec::with_capacity(candidates.len());
+
+    for item in candidates {
+        let decoded = urlencoding::decode(&item.url)
+            .map(|c| c.into_owned())
+            .unwrap_or_else(|_| item.url.clone());
+        let normalized = decoded.trim_end_matches('/').to_ascii_lowercase();
+        if seen.insert(normalized) {
+            unique.push(item);
+        }
+    }
+
+    unique
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,5 +205,31 @@ mod tests {
 
         let direct_link = "https://example.com/summary";
         assert_eq!(extract_ddg_url(direct_link), direct_link);
+    }
+
+    #[test]
+    fn test_deduplicate_candidates_normalizes_encoded_urls() {
+        let list = vec![
+            SearchResult {
+                title: "Dune (novel) (Wikipedia)".to_string(),
+                url: "https://en.wikipedia.org/wiki/Dune_%28novel%29".to_string(),
+                snippet: None,
+            },
+            SearchResult {
+                title: "Dune (novel) - Wikipedia".to_string(),
+                url: "https://en.wikipedia.org/wiki/Dune_(novel)/".to_string(),
+                snippet: Some("Duplicate URL from DDG".to_string()),
+            },
+            SearchResult {
+                title: "Other Source".to_string(),
+                url: "https://example.com/dune".to_string(),
+                snippet: None,
+            },
+        ];
+
+        let deduped = deduplicate_candidates(list);
+        assert_eq!(deduped.len(), 2);
+        assert_eq!(deduped[0].title, "Dune (novel) (Wikipedia)");
+        assert_eq!(deduped[1].url, "https://example.com/dune");
     }
 }

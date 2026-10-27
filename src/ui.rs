@@ -1,4 +1,5 @@
 use indicatif::{ProgressBar, ProgressStyle};
+use std::future::Future;
 use std::time::Duration;
 
 pub struct Ui;
@@ -16,6 +17,35 @@ impl Ui {
         pb.set_message(message);
         pb.enable_steady_tick(Duration::from_millis(80));
         pb
+    }
+
+    /// Clears the spinner from stderr and prints a clean, newline-terminated completion line.
+    pub fn finish_spinner(pb: &ProgressBar, message: &str) {
+        pb.finish_and_clear();
+        Self::success(message);
+    }
+
+    /// Runs an async operation with a spinner, cleanly clearing the spinner before printing
+    /// the completion message or propagating an error.
+    pub async fn with_spinner<T, E, F>(
+        start_message: &'static str,
+        done_message: &str,
+        fut: F,
+    ) -> Result<T, E>
+    where
+        F: Future<Output = Result<T, E>>,
+    {
+        let pb = Self::spinner(start_message);
+        match fut.await {
+            Ok(val) => {
+                Self::finish_spinner(&pb, done_message);
+                Ok(val)
+            }
+            Err(err) => {
+                pb.finish_and_clear();
+                Err(err)
+            }
+        }
     }
 
     /// Prints a section header.

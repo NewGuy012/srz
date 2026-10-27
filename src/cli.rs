@@ -66,7 +66,7 @@ pub struct Cli {
     pub max_tokens: u32,
 
     /// Skip web search for books (force using LLM trained knowledge directly)
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub no_search: bool,
 
     /// Bypass local cache and force fresh web scraping and LLM summarization
@@ -74,11 +74,11 @@ pub struct Cli {
     pub no_cache: bool,
 
     /// Book author (helps search accuracy)
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub author: Option<String>,
 
     /// Save the summary to an output file
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     pub output: Option<PathBuf>,
 }
 
@@ -93,14 +93,6 @@ pub enum Commands {
     Book {
         /// Title of the book
         title: String,
-
-        /// Author of the book (optional)
-        #[arg(long)]
-        author: Option<String>,
-
-        /// Skip web search and rely purely on local LLM memory
-        #[arg(long)]
-        no_search: bool,
     },
 }
 
@@ -122,14 +114,10 @@ impl Cli {
                 Commands::Web { url } => Ok(ResolvedAction::Web {
                     url: url.clone(),
                 }),
-                Commands::Book {
-                    title,
-                    author,
-                    no_search,
-                } => Ok(ResolvedAction::Book {
+                Commands::Book { title } => Ok(ResolvedAction::Book {
                     title: title.clone(),
-                    author: author.clone().or_else(|| self.author.clone()),
-                    no_search: *no_search || self.no_search,
+                    author: self.author.clone(),
+                    no_search: self.no_search,
                 }),
             }
         } else if let Some(target) = &self.target {

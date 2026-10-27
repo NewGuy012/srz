@@ -38,6 +38,13 @@ struct ChatChoice {
     finish_reason: Option<String>,
 }
 
+/// Output returned by an LLM summarization call.
+pub struct LlmOutput {
+    pub content: String,
+    pub truncated: bool,
+    pub warning: Option<String>,
+}
+
 /// Maximum words of grounded reference context for a 32k context window (~16k-18k tokens),
 /// leaving ample headroom for up to 8,192 completion tokens (thinking + summary).
 pub const MAX_CONTEXT_WORDS: usize = 12_000;
@@ -73,7 +80,7 @@ impl LlmClient {
     }
 
     /// Generic completion request to OpenAI-compatible endpoint
-    pub async fn complete(&self, system_prompt: &str, user_prompt: &str) -> Result<String> {
+    pub async fn complete(&self, system_prompt: &str, user_prompt: &str) -> Result<LlmOutput> {
         let endpoint = format!("{}/chat/completions", self.base_url);
 
         let mut headers = HeaderMap::new();
@@ -148,7 +155,8 @@ impl LlmClient {
             .first()
             .ok_or_else(|| anyhow::anyhow!("LLM returned empty choices"))?;
 
-        if choice.finish_reason.as_deref() == Some("length") {
+        let truncated = choice.finish_reason.as_deref() == Some("length");
+        let warning = if truncated {
             let usage_detail = completion
                 .usage
                 .as_ref()
@@ -159,13 +167,19 @@ impl LlmClient {
                     ))
                 })
                 .unwrap_or_default();
-            crate::ui::Ui::warn(&format!(
+            Some(format!(
                 "Output reached the token limit{}. You can increase it with `--max-tokens <NUM>` or increase your model's context length.",
                 usage_detail
-            ));
-        }
+            ))
+        } else {
+            None
+        };
 
-        Ok(choice.message.content.trim().to_string())
+        Ok(LlmOutput {
+            content: choice.message.content.trim().to_string(),
+            truncated,
+            warning,
+        })
     }
 
     /// Summarize webpage content (with automatic chunking for long articles)
@@ -175,7 +189,7 @@ impl LlmClient {
         url: &str,
         content: &str,
         style: SummaryStyle,
-    ) -> Result<String> {
+    ) -> Result<LlmOutput> {
         let title_str = title.unwrap_or("Untitled Webpage");
         let word_count = content.split_whitespace().count();
 
@@ -193,8 +207,8 @@ impl LlmClient {
                         chunks.len(),
                         chunk
                     );
-                    let part_summary = self.complete(section_sys, &section_user).await?;
-                    section_summaries.push(part_summary);
+                    let part = self.complete(section_sys, &section_user).await?;
+                    section_summaries.push(part.content);
                 }
 
                 let combined_sections = section_summaries.join("\n\n---\n\n");
@@ -234,21 +248,13 @@ impl LlmClient {
         source_url: &str,
         web_context: &str,
         style: SummaryStyle,
-    ) -> Result<String> {
+    ) -> Result<LlmOutput> {
         let author_line = author
             .map(|a| format!("Author: {}\n", a))
             .unwrap_or_default();
 
-        // Budget context to MAX_CONTEXT_WORDS (12,000 words, ~16k-18k tokens) to fit within a 32k context window
-        let bounded_context = if web_context.split_whitespace().count() > MAX_CONTEXT_WORDS {
-            let words: Vec<&str> = web_context
-                .split_whitespace()
-                .take(MAX_CONTEXT_WORDS)
-                .collect();
-            format!("{}\n\n[Context trimmed for token budget]", words.join(" "))
-        } else {
-            web_context.to_string()
-        };
+        // Budget context to MAX_CONTEXT_WORDS (12,000 words, ~16k-18k tokens) while preserving line/paragraph structure
+        let bounded_context = truncate_words_preserving_lines(web_context, MAX_CONTEXT_WORDS);
 
         let system_prompt = "You are a literary analyst and scholar. \
             You provide thorough, objective, and deeply insightful book summaries grounded in the provided reference materials. \
@@ -278,7 +284,7 @@ impl LlmClient {
         title: &str,
         author: Option<&str>,
         style: SummaryStyle,
-    ) -> Result<String> {
+    ) -> Result<LlmOutput> {
         let author_line = author
             .map(|a| format!("Author: {}\n", a))
             .unwrap_or_default();
@@ -301,5 +307,51 @@ impl LlmClient {
         );
 
         self.complete(system_prompt, &user_prompt).await
+    }
+}
+
+/// Truncates `text` to at most `max_words` words while preserving original line and paragraph breaks.
+fn truncate_words_preserving_lines(text: &str, max_words: usize) -> String {
+    let mut kept_lines = Vec::new();
+    let mut word_count = 0;
+    let mut truncated = false;
+
+    for line in text.lines() {
+        let line_words: Vec<&str> = line.split_whitespace().collect();
+        if word_count + line_words.len() <= max_words {
+            kept_lines.push(line.to_string());
+            word_count += line_words.len();
+        } else {
+            let remaining = max_words.saturating_sub(word_count);
+            if remaining > 0 {
+                kept_lines.push(line_words[..remaining].join(" "));
+            }
+            truncated = true;
+            break;
+        }
+    }
+
+    if truncated {
+        format!(
+            "{}\n\n[Context trimmed for token budget]",
+            kept_lines.join("\n")
+        )
+    } else {
+        text.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncate_words_preserves_newlines() {
+        let input = "# Heading 1\n\nParagraph one with five words.\n\n## Heading 2\n\nParagraph two with extra words.";
+        // Keep 8 words ("# Heading 1" = 3, "Paragraph one with five words." = 5 -> total 8)
+        let out = truncate_words_preserving_lines(input, 8);
+        assert!(out.contains("# Heading 1\n\nParagraph one with five words."));
+        assert!(out.ends_with("[Context trimmed for token budget]"));
+        assert!(!out.contains("Heading 2"));
     }
 }

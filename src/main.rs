@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use cache::{Cache, CachedSummary};
 use clap::Parser;
 use cli::{Cli, ResolvedAction};
-use llm::LlmClient;
+use llm::{LlmClient, LlmOutput};
 use scraper::WebScraper;
 use search::BookSearcher;
 use std::fs;
@@ -110,56 +110,47 @@ async fn handle_web(
         Ui::info("Loaded webpage content from local cache.");
         cached_page
     } else {
-        let spinner = Ui::spinner("Scraping and normalizing webpage content...");
-        match scraper.scrape(url).await {
-            Ok(p) => {
-                spinner.finish_with_message("Webpage content scraped and normalized.");
-                cache.set_page(url, &p);
-                p
-            }
-            Err(e) => {
-                spinner.abandon();
-                return Err(e);
-            }
-        }
+        let p = Ui::with_spinner(
+            "Scraping and normalizing webpage content...",
+            "Webpage content scraped and normalized.",
+            scraper.scrape(url),
+        )
+        .await?;
+        cache.set_page(url, &p);
+        p
     };
 
-    let title_display = page
-        .title
-        .clone()
-        .unwrap_or_else(|| url.to_string());
+    let title_display = page.title.clone().unwrap_or_else(|| url.to_string());
 
     Ui::info(&format!(
         "Extracted {} words from '{}' ({})",
         page.word_count, title_display, page.url
     ));
 
-    let spinner = Ui::spinner("Generating summary with local LLM...");
-    let summary = match llm
-        .summarize_webpage(page.title.as_deref(), url, &page.content, args.style)
-        .await
-    {
-        Ok(s) => {
-            spinner.finish_with_message("Summary generated.");
-            s
-        }
-        Err(e) => {
-            spinner.abandon();
-            return Err(e);
-        }
-    };
+    let output = Ui::with_spinner(
+        "Generating summary with local LLM...",
+        "Summary generated.",
+        llm.summarize_webpage(page.title.as_deref(), url, &page.content, args.style),
+    )
+    .await?;
 
-    cache.set_web_summary(
-        url,
-        args.style,
-        &args.model,
-        &CachedSummary {
-            title: title_display.clone(),
-            summary: summary.clone(),
-        },
-    );
+    if let Some(warn) = &output.warning {
+        Ui::warn(warn);
+    }
 
-    Ok((title_display, summary))
+    if !output.truncated {
+        cache.set_web_summary(
+            url,
+            args.style,
+            &args.model,
+            &CachedSummary {
+                title: title_display.clone(),
+                summary: output.content.clone(),
+            },
+        );
+    }
+
+    Ok((title_display, output.content))
 }
 
 async fn handle_book(
@@ -184,7 +175,41 @@ async fn handle_book(
         return Ok((cached.title, cached.summary));
     }
 
-    // If search is enabled (default), attempt web search first
+    // 2. Generate summary (via grounded web search or LLM memory fallback)
+    let output =
+        generate_book_summary(title, author, no_search, scraper, llm, cache, args).await?;
+
+    if let Some(warn) = &output.warning {
+        Ui::warn(warn);
+    }
+
+    // 3. Cache only complete, non-truncated summaries
+    if !output.truncated {
+        cache.set_book_summary(
+            title,
+            author,
+            args.style,
+            &args.model,
+            no_search,
+            &CachedSummary {
+                title: book_display.clone(),
+                summary: output.content.clone(),
+            },
+        );
+    }
+
+    Ok((book_display, output.content))
+}
+
+async fn generate_book_summary(
+    title: &str,
+    author: Option<&str>,
+    no_search: bool,
+    scraper: &WebScraper,
+    llm: &LlmClient,
+    cache: &Cache,
+    args: &Cli,
+) -> Result<LlmOutput> {
     if !no_search {
         let candidates = if let Some(cached_candidates) = cache.get_search_results(title, author) {
             Ui::info(&format!(
@@ -197,13 +222,13 @@ async fn handle_book(
             let searcher = BookSearcher::new()?;
             let results = searcher.search_candidates(title, author).await;
             if !results.is_empty() {
-                spinner.finish_with_message(format!(
-                    "Found {} search candidate(s) online.",
-                    results.len()
-                ));
+                Ui::finish_spinner(
+                    &spinner,
+                    &format!("Found {} search candidate(s) online.", results.len()),
+                );
                 cache.set_search_results(title, author, &results);
             } else {
-                spinner.finish_with_message("No web results found.");
+                Ui::finish_spinner(&spinner, "No web results found.");
             }
             results
         };
@@ -219,17 +244,18 @@ async fn handle_book(
                     Ui::info("Loaded reference page from local cache.");
                     Ok(cached_page)
                 } else {
-                    let scrape_spinner = Ui::spinner("Scraping reference page...");
-                    match scraper.scrape(&res.url).await {
+                    match Ui::with_spinner(
+                        "Scraping reference page...",
+                        "Reference page scraped.",
+                        scraper.scrape(&res.url),
+                    )
+                    .await
+                    {
                         Ok(page) => {
-                            scrape_spinner.finish_with_message("Reference page scraped.");
                             cache.set_page(&res.url, &page);
                             Ok(page)
                         }
-                        Err(err) => {
-                            scrape_spinner.abandon();
-                            Err(err)
-                        }
+                        Err(err) => Err(err),
                     }
                 };
 
@@ -241,38 +267,18 @@ async fn handle_book(
                             llm::MAX_CONTEXT_WORDS
                         ));
 
-                        let llm_spinner =
-                            Ui::spinner("Synthesizing grounded book summary with local LLM...");
-                        match llm
-                            .summarize_book_with_context(
+                        return Ui::with_spinner(
+                            "Synthesizing grounded book summary with local LLM...",
+                            "Grounded summary complete.",
+                            llm.summarize_book_with_context(
                                 title,
                                 author,
                                 &res.url,
                                 &page.content,
                                 args.style,
-                            )
-                            .await
-                        {
-                            Ok(summary) => {
-                                llm_spinner.finish_with_message("Grounded summary complete.");
-                                cache.set_book_summary(
-                                    title,
-                                    author,
-                                    args.style,
-                                    &args.model,
-                                    no_search,
-                                    &CachedSummary {
-                                        title: book_display.clone(),
-                                        summary: summary.clone(),
-                                    },
-                                );
-                                return Ok((book_display, summary));
-                            }
-                            Err(e) => {
-                                llm_spinner.abandon();
-                                return Err(e);
-                            }
-                        }
+                            ),
+                        )
+                        .await;
                     }
                     Err(err) => {
                         Ui::warn(&format!(
@@ -290,26 +296,15 @@ async fn handle_book(
             // If scraping all candidate pages failed, try using search snippet
             if let (Some(snippet), Some(url)) = (fallback_snippet, fallback_url) {
                 Ui::info("Using search snippet as grounded context...");
-                let llm_spinner = Ui::spinner("Synthesizing summary from snippet...");
-                if let Ok(summary) = llm
-                    .summarize_book_with_context(title, author, &url, &snippet, args.style)
-                    .await
+                if let Ok(output) = Ui::with_spinner(
+                    "Synthesizing summary from snippet...",
+                    "Grounded summary complete.",
+                    llm.summarize_book_with_context(title, author, &url, &snippet, args.style),
+                )
+                .await
                 {
-                    llm_spinner.finish_with_message("Grounded summary complete.");
-                    cache.set_book_summary(
-                        title,
-                        author,
-                        args.style,
-                        &args.model,
-                        no_search,
-                        &CachedSummary {
-                            title: book_display.clone(),
-                            summary: summary.clone(),
-                        },
-                    );
-                    return Ok((book_display, summary));
+                    return Ok(output);
                 }
-                llm_spinner.abandon();
             }
 
             Ui::warn("All online references failed to scrape. Falling back to LLM internal memory.");
@@ -320,30 +315,10 @@ async fn handle_book(
         Ui::info("Web search disabled. Using local LLM memory directly.");
     }
 
-    // Fallback: summarize from local LLM trained memory
-    let spinner = Ui::spinner("Generating book summary from LLM trained knowledge...");
-    let summary = match llm.summarize_book_from_memory(title, author, args.style).await {
-        Ok(s) => {
-            spinner.finish_with_message("Summary generated from LLM memory.");
-            s
-        }
-        Err(e) => {
-            spinner.abandon();
-            return Err(e);
-        }
-    };
-
-    cache.set_book_summary(
-        title,
-        author,
-        args.style,
-        &args.model,
-        no_search,
-        &CachedSummary {
-            title: book_display.clone(),
-            summary: summary.clone(),
-        },
-    );
-
-    Ok((book_display, summary))
+    Ui::with_spinner(
+        "Generating book summary from LLM trained knowledge...",
+        "Summary generated from LLM memory.",
+        llm.summarize_book_from_memory(title, author, args.style),
+    )
+    .await
 }
