@@ -86,3 +86,38 @@ fn test_disabled_cache_bypasses_reads() {
 
     let _ = fs::remove_dir_all(dir);
 }
+
+#[test]
+fn test_cache_stats_and_clean() {
+    let dir = temp_test_dir("stats_clean");
+    let cache = Cache::with_dir(dir.clone(), true);
+
+    assert_eq!(cache.stats().total_files, 0);
+
+    let page = ScrapedPage {
+        url: "https://example.com".to_string(),
+        title: Some("Example".to_string()),
+        content: "Some article body".to_string(),
+        word_count: 3,
+    };
+    cache.set_page("https://example.com", &page);
+    cache.set_book_summary(
+        "Dune",
+        None,
+        SummaryStyle::Concise,
+        "gemma-4",
+        false,
+        "\"Dune\"",
+        "Summary text",
+    );
+
+    let stats = cache.stats();
+    assert_eq!(stats.pages, 1);
+    assert_eq!(stats.summaries, 1);
+    assert_eq!(stats.total_files, 2);
+    assert!(stats.total_bytes > 0);
+
+    let removed = cache.clean().unwrap();
+    assert_eq!(removed.total_files, 2);
+    assert_eq!(cache.stats().total_files, 0);
+}

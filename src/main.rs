@@ -1,12 +1,18 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use srz::cache::Cache;
-use srz::cli::{Cli, ResolvedAction};
-use srz::llm::{self, LlmClient, LlmOutput};
+use srz::cli::{CacheCommand, Cli, ResolvedAction};
+use srz::llm::{self, LlmClient, LlmOutput, StreamMode};
 use srz::scraper::WebScraper;
 use srz::search::BookSearcher;
 use srz::ui::Ui;
 use std::fs;
+
+struct SummaryOutcome {
+    title: String,
+    summary: String,
+    streamed_to_stdout: bool,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -15,12 +21,19 @@ async fn main() -> Result<()> {
     let action = match args.resolve_action() {
         Ok(action) => action,
         Err(msg) => {
-            Ui::error(&msg);
+            Ui::error(msg);
             std::process::exit(1);
         }
     };
 
     let cache = Cache::new(!args.no_cache);
+
+    // Handle `srz cache <dir|size|clean>` immediately without initializing HTTP clients
+    if let ResolvedAction::Cache(cache_cmd) = action {
+        handle_cache(cache_cmd, &cache)?;
+        return Ok(());
+    }
+
     if args.no_cache {
         Ui::info("Cache bypassed (`--no-cache`). Forcing fresh fetch and generation.");
     }
@@ -59,20 +72,21 @@ async fn main() -> Result<()> {
             )
             .await
         }
+        ResolvedAction::Cache(_) => unreachable!(),
     };
 
     match summary_result {
-        Ok((title, summary)) => {
+        Ok(outcome) => {
             if let Some(output_path) = &args.output {
-                fs::write(output_path, &summary)
+                fs::write(output_path, &outcome.summary)
                     .with_context(|| format!("Failed to write output to {:?}", output_path))?;
                 Ui::success(&format!(
                     "Summary successfully saved to {}",
                     output_path.display()
                 ));
-            } else {
-                Ui::header(&format!("Summary: {}", title));
-                println!("{}\n", summary);
+            } else if !outcome.streamed_to_stdout {
+                Ui::header(&format!("Summary: {}", outcome.title));
+                println!("{}\n", outcome.summary);
             }
         }
         Err(err) => {
@@ -84,17 +98,53 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+fn handle_cache(cmd: CacheCommand, cache: &Cache) -> Result<()> {
+    match cmd {
+        CacheCommand::Dir => {
+            println!("{}", cache.dir().display());
+        }
+        CacheCommand::Size => {
+            let stats = cache.stats();
+            println!(
+                "{} ({} total files: {} pages, {} searches, {} summaries)",
+                Cache::format_bytes(stats.total_bytes),
+                stats.total_files,
+                stats.pages,
+                stats.searches,
+                stats.summaries
+            );
+        }
+        CacheCommand::Clean => {
+            let stats = cache.clean().context("Failed to clean cache directory")?;
+            if stats.total_files == 0 {
+                Ui::info("Cache is already empty.");
+            } else {
+                Ui::success(&format!(
+                    "Removed {} cached file(s) ({})",
+                    stats.total_files,
+                    Cache::format_bytes(stats.total_bytes)
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn handle_web(
     url: &str,
     scraper: &WebScraper,
     llm: &LlmClient,
     cache: &Cache,
     args: &Cli,
-) -> Result<(String, String)> {
+) -> Result<SummaryOutcome> {
     // 1. Check for a cached summary matching URL + style + model
     if let Some(cached) = cache.get_web_summary(url, args.style, &args.model) {
         Ui::info("Loaded summary from local cache (pass `--no-cache` to refresh).");
-        return Ok((cached.title, cached.summary));
+        return Ok(SummaryOutcome {
+            title: cached.title,
+            summary: cached.summary,
+            streamed_to_stdout: false,
+        });
     }
 
     // 2. Check for a cached scraped page to avoid redundant network requests
@@ -119,12 +169,17 @@ async fn handle_web(
         page.word_count, title_display, page.url
     ));
 
-    let output = Ui::with_spinner(
-        "Generating summary with local LLM...",
-        "Summary generated.",
-        llm.summarize_webpage(page.title.as_deref(), url, &page.content, args.style),
-    )
-    .await?;
+    let mode = if args.output.is_none() {
+        StreamMode::Stdout {
+            header_title: &title_display,
+        }
+    } else {
+        StreamMode::Buffered
+    };
+
+    let output = llm
+        .summarize_webpage(page.title.as_deref(), url, &page.content, args.style, mode)
+        .await?;
 
     if let Some(warn) = &output.warning {
         Ui::warn(warn);
@@ -140,7 +195,11 @@ async fn handle_web(
         );
     }
 
-    Ok((title_display, output.content))
+    Ok(SummaryOutcome {
+        title: title_display,
+        summary: output.content,
+        streamed_to_stdout: output.streamed_to_stdout,
+    })
 }
 
 async fn handle_book(
@@ -151,7 +210,7 @@ async fn handle_book(
     llm: &LlmClient,
     cache: &Cache,
     args: &Cli,
-) -> Result<(String, String)> {
+) -> Result<SummaryOutcome> {
     let book_display = match author {
         Some(auth) => format!("\"{}\" by {}", title, auth),
         None => format!("\"{}\"", title),
@@ -162,12 +221,24 @@ async fn handle_book(
         cache.get_book_summary(title, author, args.style, &args.model, no_search)
     {
         Ui::info("Loaded book summary from local cache (pass `--no-cache` to refresh).");
-        return Ok((cached.title, cached.summary));
+        return Ok(SummaryOutcome {
+            title: cached.title,
+            summary: cached.summary,
+            streamed_to_stdout: false,
+        });
     }
+
+    let mode = if args.output.is_none() {
+        StreamMode::Stdout {
+            header_title: &book_display,
+        }
+    } else {
+        StreamMode::Buffered
+    };
 
     // 2. Generate summary (via grounded web search or LLM memory fallback)
     let output =
-        generate_book_summary(title, author, no_search, scraper, llm, cache, args).await?;
+        generate_book_summary(title, author, no_search, scraper, llm, cache, args, mode).await?;
 
     if let Some(warn) = &output.warning {
         Ui::warn(warn);
@@ -186,9 +257,14 @@ async fn handle_book(
         );
     }
 
-    Ok((book_display, output.content))
+    Ok(SummaryOutcome {
+        title: book_display,
+        summary: output.content,
+        streamed_to_stdout: output.streamed_to_stdout,
+    })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn generate_book_summary(
     title: &str,
     author: Option<&str>,
@@ -197,6 +273,7 @@ async fn generate_book_summary(
     llm: &LlmClient,
     cache: &Cache,
     args: &Cli,
+    mode: StreamMode<'_>,
 ) -> Result<LlmOutput> {
     if !no_search {
         let candidates = if let Some(cached_candidates) = cache.get_search_results(title, author) {
@@ -255,18 +332,16 @@ async fn generate_book_summary(
                             llm::MAX_CONTEXT_WORDS
                         ));
 
-                        return Ui::with_spinner(
-                            "Synthesizing grounded book summary with local LLM...",
-                            "Grounded summary complete.",
-                            llm.summarize_book_with_context(
+                        return llm
+                            .summarize_book_with_context(
                                 title,
                                 author,
                                 &res.url,
                                 &page.content,
                                 args.style,
-                            ),
-                        )
-                        .await;
+                                mode,
+                            )
+                            .await;
                     }
                     Err(err) => {
                         Ui::warn(&format!(
@@ -284,12 +359,9 @@ async fn generate_book_summary(
             // If scraping all candidate pages failed, try using search snippet
             if let (Some(snippet), Some(url)) = (fallback_snippet, fallback_url) {
                 Ui::info("Using search snippet as grounded context...");
-                if let Ok(output) = Ui::with_spinner(
-                    "Synthesizing summary from snippet...",
-                    "Grounded summary complete.",
-                    llm.summarize_book_with_context(title, author, &url, &snippet, args.style),
-                )
-                .await
+                if let Ok(output) = llm
+                    .summarize_book_with_context(title, author, &url, &snippet, args.style, mode)
+                    .await
                 {
                     return Ok(output);
                 }
@@ -303,10 +375,6 @@ async fn generate_book_summary(
         Ui::info("Web search disabled. Using local LLM memory directly.");
     }
 
-    Ui::with_spinner(
-        "Generating book summary from LLM trained knowledge...",
-        "Summary generated from LLM memory.",
-        llm.summarize_book_from_memory(title, author, args.style),
-    )
-    .await
+    llm.summarize_book_from_memory(title, author, args.style, mode)
+        .await
 }

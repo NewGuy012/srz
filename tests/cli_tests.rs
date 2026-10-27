@@ -1,5 +1,26 @@
 use clap::Parser;
-use srz::cli::{Cli, ResolvedAction, SummaryStyle};
+use srz::cli::{CacheCommand, Cli, ResolvedAction, SummaryStyle};
+
+#[test]
+fn test_cache_subcommands() {
+    let dir_cli = Cli::parse_from(["srz", "cache", "dir"]);
+    assert_eq!(
+        dir_cli.resolve_action().unwrap(),
+        ResolvedAction::Cache(CacheCommand::Dir)
+    );
+
+    let size_cli = Cli::parse_from(["srz", "cache", "size"]);
+    assert_eq!(
+        size_cli.resolve_action().unwrap(),
+        ResolvedAction::Cache(CacheCommand::Size)
+    );
+
+    let clean_cli = Cli::parse_from(["srz", "cache", "clean"]);
+    assert_eq!(
+        clean_cli.resolve_action().unwrap(),
+        ResolvedAction::Cache(CacheCommand::Clean)
+    );
+}
 
 #[test]
 fn test_auto_detect_url() {

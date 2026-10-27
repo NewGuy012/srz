@@ -1,9 +1,11 @@
 use crate::chunker::TextChunker;
 use crate::cli::SummaryStyle;
+use crate::ui::Ui;
 use anyhow::{Context, Result};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::io::{self, Write};
 use std::time::Duration;
 
 #[derive(Serialize)]
@@ -12,12 +14,33 @@ struct ChatCompletionRequest<'a> {
     messages: &'a [RequestMessage<'a>],
     temperature: f32,
     max_tokens: u32,
+    stream: bool,
 }
 
 #[derive(Serialize)]
 struct RequestMessage<'a> {
     role: &'static str,
     content: &'a str,
+}
+
+#[derive(Deserialize)]
+struct ChatCompletionChunk {
+    #[serde(default)]
+    choices: Vec<ChunkChoice>,
+    usage: Option<TokenUsage>,
+}
+
+#[derive(Deserialize)]
+struct ChunkChoice {
+    delta: ChunkDelta,
+    finish_reason: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct ChunkDelta {
+    content: Option<String>,
+    /// Emitted by llama.cpp / Gemma 4 / DeepSeek during internal chain-of-thought
+    reasoning_content: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -44,11 +67,21 @@ struct ResponseMessage {
     content: String,
 }
 
+/// Controls whether tokens are streamed live to stdout or buffered silently behind a spinner.
+#[derive(Clone, Copy)]
+pub enum StreamMode<'a> {
+    /// Stream visible content tokens directly to stdout as they arrive.
+    Stdout { header_title: &'a str },
+    /// Buffer tokens silently while updating the spinner token count (e.g. for `-o <FILE>` or map-reduce sections).
+    Buffered,
+}
+
 /// Output returned by an LLM summarization call.
 pub struct LlmOutput {
     pub content: String,
     pub truncated: bool,
     pub warning: Option<String>,
+    pub streamed_to_stdout: bool,
 }
 
 /// Maximum words of grounded reference context for a 32k context window (~16k-18k tokens),
@@ -100,8 +133,17 @@ impl LlmClient {
         })
     }
 
-    /// Generic completion request to OpenAI-compatible endpoint
-    pub async fn complete(&self, system_prompt: &str, user_prompt: &str) -> Result<LlmOutput> {
+    /// Streams completion tokens via SSE (`stream: true`) with live thinking token feedback on stderr.
+    pub async fn complete_streaming(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        spinner_label: &'static str,
+        done_label: &str,
+        mode: StreamMode<'_>,
+    ) -> Result<LlmOutput> {
+        let pb = Ui::spinner(spinner_label);
+
         let combined_user_content: Cow<'_, str> = if system_prompt.is_empty() {
             Cow::Borrowed(user_prompt)
         } else {
@@ -118,6 +160,7 @@ impl LlmClient {
             messages: &messages,
             temperature: 0.3,
             max_tokens: self.max_tokens,
+            stream: true,
         };
 
         let mut response = self.client.post(&self.endpoint).json(&body).send().await;
@@ -131,56 +174,193 @@ impl LlmClient {
             }
         }
 
-        let response = response.map_err(|err| {
-            anyhow::anyhow!(
-                "Failed to communicate with LLM endpoint at '{}': {}. \
-                 Please verify your llama.cpp app is open and listening on port 9931.",
-                self.endpoint,
-                err
-            )
-        })?;
+        let mut response = match response {
+            Ok(resp) => resp,
+            Err(err) => {
+                pb.finish_and_clear();
+                anyhow::bail!(
+                    "Failed to communicate with LLM endpoint at '{}': {}. \
+                     Please verify your llama.cpp app is open and listening on port 9931.",
+                    self.endpoint,
+                    err
+                );
+            }
+        };
 
         if !response.status().is_success() {
+            pb.finish_and_clear();
             let status = response.status();
             let err_text = response.text().await.unwrap_or_default();
             anyhow::bail!("LLM server returned HTTP error {}: {}", status, err_text);
         }
 
-        let completion: ChatCompletionResponse = response
-            .json()
+        // Fallback if server responds with a non-streaming JSON body instead of text/event-stream
+        let is_event_stream = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|ct| ct.contains("text/event-stream"))
+            .unwrap_or(true);
+
+        if !is_event_stream {
+            let completion: ChatCompletionResponse = match response.json().await {
+                Ok(c) => c,
+                Err(e) => {
+                    pb.finish_and_clear();
+                    return Err(e).context("Failed to parse LLM JSON response");
+                }
+            };
+            Ui::finish_spinner(&pb, done_label);
+
+            let choice = completion
+                .choices
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("LLM returned empty choices"))?;
+            let truncated = choice.finish_reason.as_deref() == Some("length");
+            let warning = Self::build_truncation_warning(truncated, completion.usage.as_ref());
+
+            return Ok(LlmOutput {
+                content: choice.message.content.trim().to_string(),
+                truncated,
+                warning,
+                streamed_to_stdout: false,
+            });
+        }
+
+        let mut line_buf: Vec<u8> = Vec::with_capacity(512);
+        let mut content_buf = String::with_capacity(2048);
+        let mut thinking_tokens: usize = 0;
+        let mut output_tokens: usize = 0;
+        let mut started_visible = false;
+        let mut truncated = false;
+        let mut last_usage: Option<TokenUsage> = None;
+
+        while let Some(chunk) = response
+            .chunk()
             .await
-            .context("Failed to parse LLM JSON response")?;
+            .context("Error reading LLM stream")?
+        {
+            line_buf.extend_from_slice(&chunk);
 
-        let choice = completion
-            .choices
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("LLM returned empty choices"))?;
+            while let Some(newline_pos) = line_buf.iter().position(|&b| b == b'\n') {
+                let line_bytes = &line_buf[..newline_pos];
+                if let Ok(line_str) = std::str::from_utf8(line_bytes) {
+                    let trimmed = line_str.trim();
+                    if let Some(data) = trimmed.strip_prefix("data:") {
+                        let payload = data.trim();
+                        if payload == "[DONE]" {
+                            line_buf.drain(..=newline_pos);
+                            break;
+                        }
 
-        let truncated = choice.finish_reason.as_deref() == Some("length");
-        let warning = if truncated {
-            let usage_detail = completion
-                .usage
-                .as_ref()
-                .and_then(|u| {
-                    Some(format!(
-                        " (prompt: {} tokens, generated: {} tokens, total: {} tokens)",
-                        u.prompt_tokens?, u.completion_tokens?, u.total_tokens?
-                    ))
-                })
-                .unwrap_or_default();
-            Some(format!(
-                "Output reached the token limit{}. You can increase it with `--max-tokens <NUM>` or increase your model's context length.",
-                usage_detail
-            ))
+                        if let Ok(event) = serde_json::from_str::<ChatCompletionChunk>(payload) {
+                            if event.usage.is_some() {
+                                last_usage = event.usage;
+                            }
+
+                            if let Some(choice) = event.choices.first() {
+                                if choice.finish_reason.as_deref() == Some("length") {
+                                    truncated = true;
+                                }
+
+                                if let Some(reasoning) = &choice.delta.reasoning_content {
+                                    if !reasoning.is_empty() && !started_visible {
+                                        thinking_tokens += 1;
+                                        pb.set_message(format!(
+                                            "{} (thinking: {} tokens)",
+                                            spinner_label, thinking_tokens
+                                        ));
+                                    }
+                                }
+
+                                if let Some(delta_text) = &choice.delta.content {
+                                    if !delta_text.is_empty() {
+                                        if !started_visible {
+                                            let clean_start = delta_text.trim_start();
+                                            if !clean_start.is_empty() {
+                                                started_visible = true;
+                                                output_tokens += 1;
+                                                content_buf.push_str(clean_start);
+
+                                                match mode {
+                                                    StreamMode::Stdout { header_title } => {
+                                                        pb.finish_and_clear();
+                                                        Ui::header(&format!(
+                                                            "Summary: {}",
+                                                            header_title
+                                                        ));
+                                                        print!("{}", clean_start);
+                                                        let _ = io::stdout().flush();
+                                                    }
+                                                    StreamMode::Buffered => {
+                                                        pb.set_message(format!(
+                                                            "{} ({} tokens)",
+                                                            spinner_label, output_tokens
+                                                        ));
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            output_tokens += 1;
+                                            content_buf.push_str(delta_text);
+
+                                            match mode {
+                                                StreamMode::Stdout { .. } => {
+                                                    print!("{}", delta_text);
+                                                    let _ = io::stdout().flush();
+                                                }
+                                                StreamMode::Buffered => {
+                                                    pb.set_message(format!(
+                                                        "{} ({} tokens)",
+                                                        spinner_label, output_tokens
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                line_buf.drain(..=newline_pos);
+            }
+        }
+
+        let streamed_to_stdout = matches!(mode, StreamMode::Stdout { .. }) && started_visible;
+        if streamed_to_stdout {
+            println!("\n");
+            Ui::success(done_label);
         } else {
-            None
-        };
+            Ui::finish_spinner(&pb, done_label);
+        }
+
+        let warning = Self::build_truncation_warning(truncated, last_usage.as_ref());
 
         Ok(LlmOutput {
-            content: choice.message.content.trim().to_string(),
+            content: content_buf.trim().to_string(),
             truncated,
             warning,
+            streamed_to_stdout,
         })
+    }
+
+    fn build_truncation_warning(truncated: bool, usage: Option<&TokenUsage>) -> Option<String> {
+        if !truncated {
+            return None;
+        }
+        let usage_detail = usage
+            .and_then(|u| {
+                Some(format!(
+                    " (prompt: {} tokens, generated: {} tokens, total: {} tokens)",
+                    u.prompt_tokens?, u.completion_tokens?, u.total_tokens?
+                ))
+            })
+            .unwrap_or_default();
+        Some(format!(
+            "Output reached the token limit{}. You can increase it with `--max-tokens <NUM>` or increase your model's context length.",
+            usage_detail
+        ))
     }
 
     /// Summarize webpage content (with automatic chunking for long articles)
@@ -190,6 +370,7 @@ impl LlmClient {
         url: &str,
         content: &str,
         style: SummaryStyle,
+        mode: StreamMode<'_>,
     ) -> Result<LlmOutput> {
         let title_str = title.unwrap_or("Untitled Webpage");
         let word_count = content.split_whitespace().count();
@@ -208,7 +389,15 @@ impl LlmClient {
                         chunks.len(),
                         chunk
                     );
-                    let part = self.complete(section_sys, &section_user).await?;
+                    let part = self
+                        .complete_streaming(
+                            section_sys,
+                            &section_user,
+                            "Summarizing article chunk...",
+                            &format!("Chunk {}/{} summarized.", i + 1, chunks.len()),
+                            StreamMode::Buffered,
+                        )
+                        .await?;
                     section_summaries.push(part.content);
                 }
 
@@ -221,7 +410,15 @@ impl LlmClient {
                     style.prompt_guidance(),
                     combined_sections
                 );
-                return self.complete(synthesis_sys, &synthesis_user).await;
+                return self
+                    .complete_streaming(
+                        synthesis_sys,
+                        &synthesis_user,
+                        "Synthesizing final webpage summary...",
+                        "Summary generated.",
+                        mode,
+                    )
+                    .await;
             }
         }
 
@@ -238,7 +435,14 @@ impl LlmClient {
             content
         );
 
-        self.complete(system_prompt, &user_prompt).await
+        self.complete_streaming(
+            system_prompt,
+            &user_prompt,
+            "Generating summary with local LLM...",
+            "Summary generated.",
+            mode,
+        )
+        .await
     }
 
     /// Summarize a book using retrieved web synopsis context
@@ -249,6 +453,7 @@ impl LlmClient {
         source_url: &str,
         web_context: &str,
         style: SummaryStyle,
+        mode: StreamMode<'_>,
     ) -> Result<LlmOutput> {
         let author_line: Cow<'_, str> = match author {
             Some(a) => Cow::Owned(format!("Author: {}\n", a)),
@@ -277,7 +482,14 @@ impl LlmClient {
             bounded_context
         );
 
-        self.complete(system_prompt, &user_prompt).await
+        self.complete_streaming(
+            system_prompt,
+            &user_prompt,
+            "Synthesizing grounded book summary with local LLM...",
+            "Grounded summary complete.",
+            mode,
+        )
+        .await
     }
 
     /// Summarize a book purely from the LLM's trained memory
@@ -286,6 +498,7 @@ impl LlmClient {
         title: &str,
         author: Option<&str>,
         style: SummaryStyle,
+        mode: StreamMode<'_>,
     ) -> Result<LlmOutput> {
         let author_line: Cow<'_, str> = match author {
             Some(a) => Cow::Owned(format!("Author: {}\n", a)),
@@ -309,7 +522,14 @@ impl LlmClient {
             style.prompt_guidance()
         );
 
-        self.complete(system_prompt, &user_prompt).await
+        self.complete_streaming(
+            system_prompt,
+            &user_prompt,
+            "Generating book summary from LLM trained knowledge...",
+            "Summary generated from LLM memory.",
+            mode,
+        )
+        .await
     }
 }
 

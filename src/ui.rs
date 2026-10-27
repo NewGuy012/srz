@@ -5,8 +5,8 @@ use std::time::Duration;
 pub struct Ui;
 
 impl Ui {
-    /// Creates a styled spinner with a status message.
-    pub fn spinner(message: &'static str) -> ProgressBar {
+    /// Creates a styled spinner on stderr with a status message.
+    pub fn spinner(message: impl Into<std::borrow::Cow<'static, str>>) -> ProgressBar {
         let pb = ProgressBar::new_spinner();
         pb.set_style(
             ProgressStyle::default_spinner()
@@ -19,7 +19,7 @@ impl Ui {
         pb
     }
 
-    /// Clears the spinner from stderr and prints a clean, newline-terminated completion line.
+    /// Clears the spinner from stderr and prints a clean, newline-terminated completion line to stderr.
     pub fn finish_spinner(pb: &ProgressBar, message: &str) {
         pb.finish_and_clear();
         Self::success(message);
@@ -48,27 +48,27 @@ impl Ui {
         }
     }
 
-    /// Prints a section header.
+    /// Prints a section header to stderr (keeping stdout pure for piped Markdown).
     pub fn header(title: &str) {
-        println!("\n\x1b[1;36m=== {} ===\x1b[0m\n", title);
+        eprintln!("\n\x1b[1;36m=== {} ===\x1b[0m\n", title);
     }
 
-    /// Prints an informational message.
+    /// Prints an informational message to stderr.
     pub fn info(message: &str) {
-        println!("\x1b[1;34mℹ\x1b[0m {}", message);
+        eprintln!("\x1b[1;34mℹ\x1b[0m {}", message);
     }
 
-    /// Prints a success message.
+    /// Prints a success message to stderr.
     pub fn success(message: &str) {
-        println!("\x1b[1;32m✔\x1b[0m {}", message);
+        eprintln!("\x1b[1;32m✔\x1b[0m {}", message);
     }
 
-    /// Prints a warning message.
+    /// Prints a warning message to stderr.
     pub fn warn(message: &str) {
-        println!("\x1b[1;33m⚠\x1b[0m {}", message);
+        eprintln!("\x1b[1;33m⚠\x1b[0m {}", message);
     }
 
-    /// Prints an error message.
+    /// Prints an error message to stderr.
     pub fn error(message: &str) {
         eprintln!("\x1b[1;31m✖\x1b[0m {}", message);
     }

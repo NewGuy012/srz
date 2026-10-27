@@ -7,7 +7,7 @@ use std::env;
 use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::io::{BufReader, BufWriter};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedSummary {
@@ -19,6 +19,15 @@ pub struct CachedSummary {
 struct CachedSummaryRef<'a> {
     title: &'a str,
     summary: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CacheStats {
+    pub pages: usize,
+    pub searches: usize,
+    pub summaries: usize,
+    pub total_files: usize,
+    pub total_bytes: u64,
 }
 
 /// Zero-allocation wrapper that hashes a `&str` case-insensitively (ASCII) without allocating a `String`.
@@ -49,6 +58,70 @@ impl Cache {
     /// Creates a cache instance rooted in a custom directory (useful for testing).
     pub fn with_dir(base_dir: PathBuf, enabled: bool) -> Self {
         Self { base_dir, enabled }
+    }
+
+    /// Returns the root cache directory path.
+    pub fn dir(&self) -> &Path {
+        &self.base_dir
+    }
+
+    /// Computes entry counts and total disk usage across all cache namespaces.
+    pub fn stats(&self) -> CacheStats {
+        let (pages, pages_bytes) = Self::namespace_stats(&self.base_dir.join("pages"));
+        let (searches, search_bytes) = Self::namespace_stats(&self.base_dir.join("search"));
+        let (summaries, summary_bytes) = Self::namespace_stats(&self.base_dir.join("summaries"));
+
+        CacheStats {
+            pages,
+            searches,
+            summaries,
+            total_files: pages + searches + summaries,
+            total_bytes: pages_bytes + search_bytes + summary_bytes,
+        }
+    }
+
+    /// Removes the entire cache directory and returns the stats of what was cleared.
+    pub fn clean(&self) -> std::io::Result<CacheStats> {
+        let current = self.stats();
+        if self.base_dir.exists() {
+            fs::remove_dir_all(&self.base_dir)?;
+        }
+        Ok(current)
+    }
+
+    /// Formats a byte count into a human-readable string (e.g., `14.2 KB`, `1.8 MB`).
+    pub fn format_bytes(bytes: u64) -> String {
+        const KB: f64 = 1024.0;
+        const MB: f64 = KB * 1024.0;
+        const GB: f64 = MB * 1024.0;
+
+        let b = bytes as f64;
+        if bytes >= GB as u64 {
+            format!("{:.2} GB", b / GB)
+        } else if bytes >= MB as u64 {
+            format!("{:.2} MB", b / MB)
+        } else if bytes >= KB as u64 {
+            format!("{:.1} KB", b / KB)
+        } else {
+            format!("{} B", bytes)
+        }
+    }
+
+    fn namespace_stats(dir: &Path) -> (usize, u64) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return (0, 0);
+        };
+        let mut count = 0;
+        let mut bytes = 0;
+        for entry in entries.flatten() {
+            if let Ok(meta) = entry.metadata() {
+                if meta.is_file() {
+                    count += 1;
+                    bytes += meta.len();
+                }
+            }
+        }
+        (count, bytes)
     }
 
     fn default_cache_dir() -> PathBuf {

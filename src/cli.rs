@@ -100,8 +100,24 @@ pub enum Commands {
         /// Title of the book
         title: String,
     },
+    /// Manage the local disk cache (dir, size, clean)
+    Cache {
+        #[command(subcommand)]
+        action: CacheCommand,
+    },
 }
 
+#[derive(Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheCommand {
+    /// Print the cache directory path
+    Dir,
+    /// Show total disk usage and entry counts in the cache
+    Size,
+    /// Remove all cached pages, search results, and summaries
+    Clean,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub enum ResolvedAction<'a> {
     Web {
         url: &'a str,
@@ -111,6 +127,7 @@ pub enum ResolvedAction<'a> {
         author: Option<&'a str>,
         no_search: bool,
     },
+    Cache(CacheCommand),
 }
 
 impl Cli {
@@ -123,6 +140,7 @@ impl Cli {
                     author: self.author.as_deref(),
                     no_search: self.no_search,
                 }),
+                Commands::Cache { action } => Ok(ResolvedAction::Cache(*action)),
             }
         } else if let Some(target) = &self.target {
             let trimmed = target.trim();
@@ -136,7 +154,7 @@ impl Cli {
                 })
             }
         } else {
-            Err("Please provide a URL or book title, or use `srz web <URL>` / `srz book <TITLE>`. Run `srz --help` for details.")
+            Err("Please provide a URL or book title, or use `srz web <URL>` / `srz book <TITLE>` / `srz cache <ACTION>`. Run `srz --help` for details.")
         }
     }
 }

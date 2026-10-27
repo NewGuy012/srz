@@ -11,9 +11,11 @@ A modular, minimalist Rust CLI for summarizing **webpages** and **books** using 
   - **Web Search by Default**: Queries free, zero-API sources (DuckDuckGo & Wikipedia) for the book's synopsis and overview to ground the LLM's summary with accurate, hallucination-free facts.
   - **Trained Knowledge Fallback**: If no online reference is found (or when `--no-search` is passed), falls back to the LLM's trained memory.
 - **Local OpenAI API-Compliant**: Built for local servers like **llama.cpp** (default: `http://localhost:9931/v1`), **Ollama**, **LM Studio**, and **vLLM**.
+- **Real-Time SSE Streaming & Live Thinking Counter**: Streams tokens (`stream: true`) to `stdout` in real time while displaying live chain-of-thought token progress on `stderr`.
+- **Strict `stdout` / `stderr` Separation**: All spinners, headers, and diagnostics are emitted to `stderr` so `stdout` can be piped cleanly (`srz "Dune" | pbcopy`).
 - **Polished CLI**: Built using `clap` (subcommands, flags, env vars) and `indicatif` (interactive spinners and status indicators).
 - **Multiple Summary Styles**: `concise`, `detailed` (default), `bullets`, or `executive`.
-- **Smart Disk Caching**: Automatically caches search results, scraped reference pages, and generated summaries in `~/.cache/srz` so repeat visits require zero web calls. Pass `--no-cache` to force a fresh fetch.
+- **Smart Disk Caching**: Automatically caches search results, scraped reference pages, and generated summaries in `~/.cache/srz` (`srz cache dir | size | clean`). Pass `--no-cache` to force a fresh fetch.
 - **Text Chunking**: Automatic windowed chunking and map-reduce synthesis for long web pages (> 12,000 words, tuned for a 32k context window).
 
 ---
@@ -76,6 +78,19 @@ Styles available:
 - `concise`: High-level summary in 2–3 concise paragraphs.
 - `bullets`: Key takeaways and actionable points formatted as bullet points.
 - `executive`: Structured as Executive Overview, Core Findings, Strategic Insights, and Impact.
+
+### 4. Managing the Local Cache
+
+```bash
+# Print the cache directory path
+srz cache dir
+
+# Inspect cached file counts and disk size
+srz cache size
+
+# Clear all cached pages, search results, and summaries
+srz cache clean
+```
 
 ---
 
