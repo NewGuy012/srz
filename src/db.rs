@@ -213,75 +213,17 @@ impl Database {
 
     /// Fetches the most recent `limit` entries from the summarization history.
     pub fn get_history(&self, limit: usize) -> Result<Vec<HistoryEntry>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, target_type, title, author, url, style, model,
-                    word_count, prompt_tokens, completion_tokens,
-                    duration_ms, tokens_per_second,
-                    strftime(created_at, '%Y-%m-%d %H:%M')
-             FROM history
-             ORDER BY id DESC
-             LIMIT ?"
-        )?;
-
-        let rows = stmt.query_map(params![limit as i64], |row| {
-            Ok(HistoryEntry {
-                id: row.get(0)?,
-                target_type: row.get(1)?,
-                title: row.get(2)?,
-                author: row.get(3)?,
-                url: row.get(4)?,
-                style: row.get(5)?,
-                model: row.get(6)?,
-                word_count: row.get(7)?,
-                prompt_tokens: row.get(8)?,
-                completion_tokens: row.get(9)?,
-                duration_ms: row.get::<_, u32>(10)? as u64,
-                tokens_per_second: row.get(11)?,
-                created_at: row.get(12)?,
-            })
-        })?;
-
-        let mut entries = Vec::new();
-        for r in rows {
-            entries.push(r?);
-        }
-        Ok(entries)
+        let sql = format!("{SELECT_HISTORY_SQL} LIMIT ?");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![limit as i64], map_history_row)?;
+        rows.collect::<duckdb::Result<Vec<_>>>().map_err(Into::into)
     }
 
     /// Fetches all records from history ordered descending by ID for the library index view.
     pub fn get_all_for_index(&self) -> Result<Vec<HistoryEntry>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, target_type, title, author, url, style, model,
-                    word_count, prompt_tokens, completion_tokens,
-                    duration_ms, tokens_per_second,
-                    strftime(created_at, '%Y-%m-%d %H:%M')
-             FROM history
-             ORDER BY id DESC"
-        )?;
-
-        let rows = stmt.query_map([], |row| {
-            Ok(HistoryEntry {
-                id: row.get(0)?,
-                target_type: row.get(1)?,
-                title: row.get(2)?,
-                author: row.get(3)?,
-                url: row.get(4)?,
-                style: row.get(5)?,
-                model: row.get(6)?,
-                word_count: row.get(7)?,
-                prompt_tokens: row.get(8)?,
-                completion_tokens: row.get(9)?,
-                duration_ms: row.get::<_, u32>(10)? as u64,
-                tokens_per_second: row.get(11)?,
-                created_at: row.get(12)?,
-            })
-        })?;
-
-        let mut entries = Vec::new();
-        for r in rows {
-            entries.push(r?);
-        }
-        Ok(entries)
+        let mut stmt = self.conn.prepare(SELECT_HISTORY_SQL)?;
+        let rows = stmt.query_map([], map_history_row)?;
+        rows.collect::<duckdb::Result<Vec<_>>>().map_err(Into::into)
     }
 
     /// Computes aggregated analytics across all past summarization runs.
@@ -362,12 +304,34 @@ impl Database {
             })
         })?;
 
-        let mut results = Vec::new();
-        for r in rows {
-            results.push(r?);
-        }
-        Ok(results)
+        rows.collect::<duckdb::Result<Vec<_>>>().map_err(Into::into)
     }
+}
+
+const SELECT_HISTORY_SQL: &str =
+    "SELECT id, target_type, title, author, url, style, model,
+            word_count, prompt_tokens, completion_tokens,
+            duration_ms, tokens_per_second,
+            strftime(created_at, '%Y-%m-%d %H:%M')
+     FROM history
+     ORDER BY id DESC";
+
+fn map_history_row(row: &duckdb::Row<'_>) -> duckdb::Result<HistoryEntry> {
+    Ok(HistoryEntry {
+        id: row.get(0)?,
+        target_type: row.get(1)?,
+        title: row.get(2)?,
+        author: row.get(3)?,
+        url: row.get(4)?,
+        style: row.get(5)?,
+        model: row.get(6)?,
+        word_count: row.get(7)?,
+        prompt_tokens: row.get(8)?,
+        completion_tokens: row.get(9)?,
+        duration_ms: row.get::<_, u32>(10)? as u64,
+        tokens_per_second: row.get(11)?,
+        created_at: row.get(12)?,
+    })
 }
 
 /// Extracts a surrounding text excerpt (~200 characters) around the first match of `query`
