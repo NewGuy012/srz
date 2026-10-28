@@ -37,6 +37,7 @@ max_tokens = 4096
 [profiles.fast]
 model = "qwen2.5:3b"
 base_url = "http://localhost:9931/v1"
+stream = true
 
 [profiles.deep]
 model = "deepseek-r1:14b"
@@ -52,6 +53,7 @@ style = "detailed"
     let fast = config.profiles.get("fast").unwrap();
     assert_eq!(fast.model.as_deref(), Some("qwen2.5:3b"));
     assert_eq!(fast.base_url.as_deref(), Some("http://localhost:9931/v1"));
+    assert_eq!(fast.stream, Some(true));
 
     let deep = config.profiles.get("deep").unwrap();
     assert_eq!(deep.model.as_deref(), Some("deepseek-r1:14b"));
@@ -65,6 +67,7 @@ fn test_config_applied_to_cli_when_not_specified_on_command_line() {
         model: Some("custom-model:latest".to_string()),
         style: Some(SummaryStyle::Detailed),
         max_tokens: Some(2048),
+        stream: Some(true),
         ..Default::default()
     };
 
@@ -77,6 +80,7 @@ fn test_config_applied_to_cli_when_not_specified_on_command_line() {
     assert_eq!(args.model, "custom-model:latest");
     assert_eq!(args.style, SummaryStyle::Detailed);
     assert_eq!(args.max_tokens, 2048);
+    assert!(args.stream);
 }
 
 #[test]

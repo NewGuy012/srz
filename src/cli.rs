@@ -179,6 +179,10 @@ pub struct Cli {
     /// Concurrency limit for parallel map-reduce document chunking
     #[arg(long, global = true, default_value_t = 1)]
     pub concurrency: usize,
+
+    /// Stream LLM output tokens live to stdout as they are generated (default: false)
+    #[arg(long, global = true)]
+    pub stream: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -304,7 +308,7 @@ pub enum ResolvedAction<'a> {
 
 impl Cli {
     pub fn stream_mode<'a>(&self, header_title: &'a str) -> crate::llm::StreamMode<'a> {
-        if self.output.is_none() && !self.json {
+        if self.stream && self.output.is_none() && !self.json {
             crate::llm::StreamMode::Stdout { header_title }
         } else {
             crate::llm::StreamMode::Buffered
@@ -424,6 +428,7 @@ impl Cli {
         apply_field!(verbose);
         apply_field!(open);
         apply_field!(concurrency);
+        apply_field!(stream);
     }
 }
 

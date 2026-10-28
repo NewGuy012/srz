@@ -338,3 +338,34 @@ fn test_google_news_url_extraction() {
         Some("https://www.sitepoint.com/javascript-news/".to_string())
     );
 }
+
+#[test]
+fn test_stream_flag_and_mode_defaults() {
+    use srz::llm::StreamMode;
+
+    // Default: stream is false, stream_mode is Buffered
+    let default_cli = Cli::parse_from(["srz", "Dune"]);
+    assert!(!default_cli.stream);
+    assert!(matches!(
+        default_cli.stream_mode("Dune"),
+        StreamMode::Buffered
+    ));
+
+    // When --stream is provided: stream is true, stream_mode is Stdout
+    let stream_cli = Cli::parse_from(["srz", "Dune", "--stream"]);
+    assert!(stream_cli.stream);
+    match stream_cli.stream_mode("Dune") {
+        StreamMode::Stdout { header_title } => assert_eq!(header_title, "Dune"),
+        _ => panic!("Expected StreamMode::Stdout"),
+    }
+
+    // When --stream is provided but with -o, stream_mode is Buffered
+    let file_cli = Cli::parse_from(["srz", "Dune", "--stream", "-o", "out.md"]);
+    assert!(file_cli.stream);
+    assert!(matches!(file_cli.stream_mode("Dune"), StreamMode::Buffered));
+
+    // When --stream is provided but with --json, stream_mode is Buffered
+    let json_cli = Cli::parse_from(["srz", "Dune", "--stream", "--json"]);
+    assert!(json_cli.stream);
+    assert!(matches!(json_cli.stream_mode("Dune"), StreamMode::Buffered));
+}

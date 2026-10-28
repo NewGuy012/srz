@@ -83,7 +83,7 @@ struct ResponseMessage {
 pub enum StreamMode<'a> {
     /// Stream visible content tokens directly to stdout as they arrive.
     Stdout { header_title: &'a str },
-    /// Buffer tokens silently while updating the spinner token count (e.g. for `-o <FILE>` or map-reduce sections).
+    /// Buffer tokens silently behind a spinner until complete (default).
     Buffered,
 }
 
@@ -136,6 +136,7 @@ struct SseStreamState {
     thinking_tokens: usize,
     output_tokens: usize,
     started_visible: bool,
+    is_thinking: bool,
     truncated: bool,
     last_usage: Option<TokenUsage>,
     needs_stdout_flush: bool,
@@ -187,11 +188,9 @@ impl SseStreamState {
             && !self.started_visible
         {
             self.thinking_tokens += 1;
-            if self.thinking_tokens == 1 || self.thinking_tokens.is_multiple_of(4) {
-                pb.set_message(format!(
-                    "{} (thinking: {} tokens)",
-                    spinner_label, self.thinking_tokens
-                ));
+            if !self.is_thinking {
+                self.is_thinking = true;
+                pb.set_message(format!("{} (thinking...)", spinner_label));
             }
         }
 
@@ -228,7 +227,7 @@ impl SseStreamState {
                     self.needs_stdout_flush = true;
                 }
                 StreamMode::Buffered => {
-                    pb.set_message(format!("{} ({} tokens)", spinner_label, self.output_tokens));
+                    pb.set_message(format!("{} (generating...)", spinner_label));
                 }
             }
         } else {
@@ -240,14 +239,7 @@ impl SseStreamState {
                     print!("{}", delta_text);
                     self.needs_stdout_flush = true;
                 }
-                StreamMode::Buffered => {
-                    if self.output_tokens.is_multiple_of(4) {
-                        pb.set_message(format!(
-                            "{} ({} tokens)",
-                            spinner_label, self.output_tokens
-                        ));
-                    }
-                }
+                StreamMode::Buffered => {}
             }
         }
     }
@@ -424,7 +416,7 @@ impl LlmClient {
         })
     }
 
-    /// Streams completion tokens via SSE (`stream: true`) with live thinking token feedback on stderr.
+    /// Streams completion tokens via SSE (`stream: true`) with live spinner feedback on stderr.
     pub async fn complete_streaming(
         &self,
         system_prompt: &str,

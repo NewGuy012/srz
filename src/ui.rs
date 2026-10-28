@@ -31,7 +31,7 @@ static USE_COLOR: LazyLock<bool> = LazyLock::new(|| {
 
 static SPINNER_STYLE: LazyLock<ProgressStyle> = LazyLock::new(|| {
     ProgressStyle::default_spinner()
-        .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ ")
+        .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
         .template("{spinner:.green} {msg}")
         .expect("Valid spinner template")
 });

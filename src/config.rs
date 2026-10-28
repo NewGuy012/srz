@@ -19,6 +19,7 @@ pub struct ProfileConfig {
     pub verbose: Option<bool>,
     pub open: Option<bool>,
     pub concurrency: Option<usize>,
+    pub stream: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -34,6 +35,7 @@ pub struct Config {
     pub verbose: Option<bool>,
     pub open: Option<bool>,
     pub concurrency: Option<usize>,
+    pub stream: Option<bool>,
     #[serde(default)]
     pub profiles: HashMap<String, ProfileConfig>,
 }
@@ -96,6 +98,9 @@ impl Config {
 
 # Parallel chunk concurrency for map-reduce
 # concurrency = 1
+
+# Stream tokens live to stdout (default: false)
+# stream = false
 
 # Named profiles (switch with `srz --profile <name> ...`)
 # [profiles.fast]

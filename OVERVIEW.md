@@ -82,10 +82,11 @@ sequenceDiagram
         CLI->>Scraper: Fetch or cache canonical reference page (.mw-parser-output)
         Scraper-->>CLI: Cleaned article text without footnote bloat
         CLI->>LLM: POST /v1/chat/completions (stream: true, include_usage: true)
-        loop Zero-Copy SSE Token Stream
-            LLM-->>User: Stream visible tokens to stdout (flushed per chunk)
-            LLM-->>CLI: Update throttled thinking/token counter on stderr
+        loop Zero-Copy SSE Stream
+            LLM-->>CLI: Smooth loading spinner on stderr (thinking / generating phases)
+            Note over CLI,User: Optional live stdout streaming if --stream is enabled
         end
+        CLI-->>User: Display complete summary at once upon completion
         CLI->>Cache: Save summary and render HTML/MD view files
         CLI->>DB: Lazily open srz.duckdb & transactional INSERT (history + library)
         CLI-->>User: Complete with clickable file:// view links

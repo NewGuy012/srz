@@ -79,7 +79,7 @@ Run `srz --help` to see all available subcommands (`web`, `book`, `file`, `news`
 
 - **8 Summary Styles**: Tailor summaries with presets: `concise`, `detailed`, `bullets`, `executive`, `tldr`, `critique`, `eli5`, or `flashcards`.
 - **Parallel Chunking for Long Texts**: Automatically splits large documents and map-reduces sections in parallel (`--concurrency <N>`).
-- **Live Token Streaming**: Streams response tokens to `stdout` in real time while tracking model speed and thinking tokens.
+- **Loading Spinners & Optional Live Streaming**: Clean loading spinner and phase feedback with summary presented cleanly upon completion; live token streaming is available on demand via `--stream`.
 
 ### Offline Library & Storage
 
