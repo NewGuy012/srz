@@ -70,11 +70,14 @@ srz Cargo.toml -q | pbcopy
 ### 3. Summarizing a Book
 
 ```bash
-# Default: Searches web for book synopsis and synthesizes with local LLM
-srz book "Atomic Habits"
+# Default: Resolves canonical metadata (Open Library), searches web, and synthesizes with local LLM
+srz book "The Hobbit"
 
 # Provide author to refine search
 srz book "Dune" --author "Frank Herbert"
+
+# Automatically accept top candidate without interactive disambiguation prompt
+srz book "The Hobbit" -y
 
 # Skip web search and query local LLM memory directly
 srz book "Thinking, Fast and Slow" --no-search
