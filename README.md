@@ -26,119 +26,30 @@ The compiled binary will be located at `target/release/srz`.
 
 ## Usage
 
-### 1. Summarizing a Webpage
+`srz` automatically detects whether you pass a URL, a local file, piped text, or a book title:
 
 ```bash
-# Using the `web` subcommand
-srz web https://example.com/article
-
-# Or using auto-detection
+# Summarize a webpage
 srz https://example.com/article
 
-# Save summary as Markdown or standalone styled HTML (.html / .htm)
-srz web https://example.com/article -o summary.md
-srz web https://example.com/article -o summary.html
-```
-
-### 2. Summarizing Local Files and Stdin
-
-```bash
-# Summarize a local file
-srz file path/to/document.md
-
-# Or auto-detect existing local file
-srz README.md
-
-# Summarize standard input from a Unix pipeline
-git diff | srz -
-cat report.txt | srz -
-
-# Quiet mode: suppress spinners and headers when piping summary
-srz Cargo.toml -q | pbcopy
-```
-
-### 3. Summarizing a Book
-
-```bash
-# Default: Resolves canonical metadata (Open Library), searches web, and synthesizes with local LLM
-srz book "The Hobbit"
-
-# Provide author to refine search
+# Summarize a book by title (optionally filter by author)
+srz "The Hobbit"
 srz book "Dune" --author "Frank Herbert"
 
-# Automatically accept top candidate without interactive disambiguation prompt
-srz book "The Hobbit" -y
+# Summarize a local file or piped input
+srz README.md
+git diff | srz -
 
-# Skip web search and query local LLM memory directly
-srz book "Thinking, Fast and Slow" --no-search
+# Choose a summary style (concise, detailed, bullets, executive)
+srz https://example.com/article --style bullets
 
-# Auto-detected positional argument
-srz "To Kill a Mockingbird"
-
-# Force fresh web scrape & LLM generation (bypass local cache)
-srz book "Dune" --no-cache
-```
-
-### 4. Choosing a Summary Style
-
-```bash
-srz web https://example.com/article --style bullets
-srz book "Clean Code" --style executive
-```
-
-Styles available:
-- `concise` (default): High-level summary in 2–3 concise paragraphs.
-- `detailed`: Comprehensive breakdown covering all major themes and arguments.
-- `bullets`: Key takeaways and actionable points formatted as bullet points.
-- `executive`: Structured as Executive Overview, Core Findings, Strategic Insights, and Impact.
-
-### 5. Managing the Local Cache
-
-```bash
-# Print the cache directory path
-srz cache dir
-
-# Inspect cached file counts and disk size
-srz cache size
-
-# Clear all cached metadata, search results, pages, summaries, views, and reset DuckDB tables
-srz cache clean
-```
-
-### 6. History, Stats, and Library Search (DuckDB)
-
-```bash
-# View recent reads, token metrics, and speeds
-srz history
-srz history --limit 20
-
-# View aggregate performance metrics across all runs (books, web, files, stdin)
-srz stats
-
-# Search your local summarized library offline for keywords/topics
-srz find "spice"
+# Search and browse your local library
 srz find "ecology"
-
-# Machine-readable JSON output for scripting
-srz history --json
-srz stats --json
-srz find "rust" --json
+srz history
+srz stats
 ```
 
-### 7. Shell Completions
-
-Generate shell completions for your shell (`bash`, `zsh`, `fish`, `powershell`, `elvish`):
-
-```bash
-# Zsh
-srz completions zsh > ~/.zfunc/_srz
-
-# Bash
-srz completions bash > ~/.bash_completion
-
-# Fish
-srz completions fish > ~/.config/fish/completions/srz.fish
-```
+Run `srz --help` to see all available subcommands (`web`, `book`, `file`, `cache`, `completions`) and flags.
 
 ## Features
 
