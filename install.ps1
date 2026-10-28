@@ -1,6 +1,6 @@
-# srz (Summarize CLI) installer for Windows PowerShell
-# Usage:
-#   irm https://raw.githubusercontent.com/NewGuy012/srz/master/install.ps1 | iex
+# srz (Summarize CLI) installer for Windows
+# Usage (PowerShell or CMD):
+#   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/NewGuy012/srz/master/install.ps1 | iex"
 
 $ErrorActionPreference = 'Stop'
 

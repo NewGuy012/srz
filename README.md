@@ -39,10 +39,10 @@ See [Configuring Your LLM Backend](#configuring-your-llm-backend) below for step
 curl -LsSf https://raw.githubusercontent.com/NewGuy012/srz/master/install.sh | sh
 ```
 
-**Windows (PowerShell)**:
+**Windows**:
 
 ```powershell
-irm https://raw.githubusercontent.com/NewGuy012/srz/master/install.ps1 | iex
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/NewGuy012/srz/master/install.ps1 | iex"
 ```
 
 ### Build from Source (Cargo)
