@@ -9,3 +9,4 @@ pub mod render;
 pub mod scraper;
 pub mod search;
 pub mod ui;
+pub mod upgrade;

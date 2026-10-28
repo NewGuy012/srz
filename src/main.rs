@@ -172,6 +172,22 @@ async fn main() -> Result<()> {
             );
             return Ok(());
         }
+        ResolvedAction::Upgrade {
+            check,
+            force,
+            version,
+            dry_run,
+        } => {
+            srz::upgrade::run_upgrade(
+                check,
+                force,
+                version.as_deref(),
+                dry_run,
+                args.json,
+            )
+            .await?;
+            return Ok(());
+        }
         _ => {}
     }
 
