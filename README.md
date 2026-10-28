@@ -127,29 +127,20 @@ srz "1984" --base-url https://api.openai.com/v1 --model gpt-4o-mini --api-key "s
 
 ### Profile Switching (`~/.config/srz/config.toml`)
 
-Run `srz config init` to create a config file. Define local and cloud profiles to switch instantly:
+Run `srz config init` to generate a starter config, then switch profiles with `--profile`:
 
 ```toml
-# Default local backend
 base_url = "http://localhost:9931/v1"
 model = "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
 
-# Local Ollama profile
 [profiles.ollama]
 base_url = "http://localhost:11434/v1"
 model = "gemma2:9b"
-
-# Cloud profile (Groq)
-[profiles.groq]
-base_url = "https://api.groq.com/openai/v1"
-model = "llama-3.3-70b-versatile"
-api_key = "gsk_..."
 ```
 
 ```bash
-srz "Dune"                   # Uses default local model
-srz "Dune" --profile ollama  # Uses local Ollama
-srz "Dune" --profile groq    # Uses Groq cloud
+srz "Dune"                  # Default profile
+srz "Dune" --profile ollama # Named profile
 ```
 
 ## Architecture & Modules
