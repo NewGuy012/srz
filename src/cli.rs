@@ -401,77 +401,29 @@ impl Cli {
             }
         };
 
-        if !was_provided("base_url")
-            && let Some(url) = profile
-                .and_then(|p| p.base_url.as_ref())
-                .or(config.base_url.as_ref())
-        {
-            self.base_url = url.clone();
+        macro_rules! apply_field {
+            ($field:ident) => {
+                if !was_provided(stringify!($field))
+                    && let Some(val) = profile
+                        .and_then(|p| p.$field.clone())
+                        .or_else(|| config.$field.clone())
+                {
+                    self.$field = val;
+                }
+            };
         }
 
-        if !was_provided("model")
-            && let Some(m) = profile
-                .and_then(|p| p.model.as_ref())
-                .or(config.model.as_ref())
-        {
-            self.model = m.clone();
-        }
-
-        if !was_provided("api_key")
-            && let Some(k) = profile
-                .and_then(|p| p.api_key.as_ref())
-                .or(config.api_key.as_ref())
-        {
-            self.api_key = k.clone();
-        }
-
-        if !was_provided("style")
-            && let Some(s) = profile.and_then(|p| p.style).or(config.style)
-        {
-            self.style = s;
-        }
-
-        if !was_provided("max_tokens")
-            && let Some(t) = profile.and_then(|p| p.max_tokens).or(config.max_tokens)
-        {
-            self.max_tokens = t;
-        }
-
-        if !was_provided("no_search")
-            && let Some(ns) = profile.and_then(|p| p.no_search).or(config.no_search)
-        {
-            self.no_search = ns;
-        }
-
-        if !was_provided("no_cache")
-            && let Some(nc) = profile.and_then(|p| p.no_cache).or(config.no_cache)
-        {
-            self.no_cache = nc;
-        }
-
-        if !was_provided("quiet")
-            && let Some(q) = profile.and_then(|p| p.quiet).or(config.quiet)
-        {
-            self.quiet = q;
-        }
-
-        if !was_provided("verbose")
-            && let Some(v) = profile.and_then(|p| p.verbose).or(config.verbose)
-        {
-            self.verbose = v;
-        }
-
-        if !was_provided("open")
-            && let Some(o) = profile.and_then(|p| p.open).or(config.open)
-        {
-            self.open = o;
-        }
-
-        if !was_provided("concurrency")
-            && let Some(c) = profile.and_then(|p| p.concurrency).or(config.concurrency)
-        {
-            self.concurrency = c;
-        }
+        apply_field!(base_url);
+        apply_field!(model);
+        apply_field!(api_key);
+        apply_field!(style);
+        apply_field!(max_tokens);
+        apply_field!(no_search);
+        apply_field!(no_cache);
+        apply_field!(quiet);
+        apply_field!(verbose);
+        apply_field!(open);
+        apply_field!(concurrency);
     }
 }
 
