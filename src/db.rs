@@ -74,6 +74,11 @@ impl Database {
         let base_dir = Cache::default_cache_dir();
         fs::create_dir_all(&base_dir)
             .with_context(|| format!("Failed to create directory {:?}", base_dir))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&base_dir, fs::Permissions::from_mode(0o700));
+        }
         let db_path = base_dir.join("srz.duckdb");
         Self::open_at(&db_path)
     }
@@ -82,6 +87,11 @@ impl Database {
     pub fn open_at(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)
             .with_context(|| format!("Failed to open DuckDB database at {:?}", path))?;
+        #[cfg(unix)]
+        if path.exists() {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        }
         let db = Self { conn };
         db.init_schema()?;
         Ok(db)

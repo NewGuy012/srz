@@ -43,10 +43,21 @@ pub fn ensure_view_files(
     }
 
     fs::create_dir_all(views_dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(views_dir, fs::Permissions::from_mode(0o700));
+    }
     fs::write(&md_path, markdown)?;
 
     let html_doc = render_html_document(title, markdown);
     fs::write(&html_path, html_doc)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&md_path, fs::Permissions::from_mode(0o600));
+        let _ = fs::set_permissions(&html_path, fs::Permissions::from_mode(0o600));
+    }
 
     Ok(RenderedFiles { html_path, md_path })
 }
@@ -821,8 +832,18 @@ pub fn ensure_index_file(
     entries: &[HistoryEntry],
 ) -> std::io::Result<PathBuf> {
     fs::create_dir_all(views_dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(views_dir, fs::Permissions::from_mode(0o700));
+    }
     let html = render_index_html(stats, entries);
     let index_path = views_dir.join("index.html");
     fs::write(&index_path, html)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&index_path, fs::Permissions::from_mode(0o600));
+    }
     Ok(index_path)
 }

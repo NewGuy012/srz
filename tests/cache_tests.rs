@@ -143,3 +143,33 @@ fn test_book_metadata_cache_roundtrip() {
 
     let _ = fs::remove_dir_all(dir);
 }
+
+#[cfg(unix)]
+#[test]
+fn test_cache_file_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = temp_test_dir("perms");
+    let cache = Cache::with_dir(dir.clone(), true);
+
+    let page = ScrapedPage {
+        url: "https://secure.example.com".to_string(),
+        title: Some("Secure".to_string()),
+        content: "Secret content".to_string(),
+        word_count: 2,
+    };
+    cache.set_page("https://secure.example.com", &page);
+
+    // Verify directory has 0700 permissions
+    let pages_dir = dir.join("pages");
+    let dir_meta = fs::metadata(&pages_dir).unwrap();
+    assert_eq!(dir_meta.permissions().mode() & 0o777, 0o700);
+
+    // Verify cache entry file has 0600 permissions
+    let entries = fs::read_dir(&pages_dir).unwrap().collect::<Vec<_>>();
+    assert_eq!(entries.len(), 1);
+    let file_meta = entries[0].as_ref().unwrap().metadata().unwrap();
+    assert_eq!(file_meta.permissions().mode() & 0o777, 0o600);
+
+    let _ = fs::remove_dir_all(dir);
+}

@@ -188,9 +188,19 @@ impl Cache {
         if fs::create_dir_all(&dir).is_err() {
             return;
         }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+        }
         let path = dir.join(format!("{}.json", key_hash));
-        if let Ok(file) = File::create(path) {
+        if let Ok(file) = File::create(&path) {
             let _ = serde_json::to_writer_pretty(BufWriter::new(file), value);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+            }
         }
     }
 

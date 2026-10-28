@@ -256,6 +256,11 @@ async fn main() -> Result<()> {
                     fs::write(output_path, &outcome.summary)
                         .with_context(|| format!("Failed to write output to {:?}", output_path))?;
                 }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = fs::set_permissions(output_path, fs::Permissions::from_mode(0o600));
+                }
 
                 Ui::success(&format!(
                     "Summary successfully saved to {}",
@@ -547,8 +552,18 @@ fn handle_config(
             } else {
                 if let Some(parent) = default_path.parent() {
                     fs::create_dir_all(parent)?;
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+                    }
                 }
                 fs::write(&default_path, Config::default_template())?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = fs::set_permissions(&default_path, fs::Permissions::from_mode(0o600));
+                }
                 Ui::success(&format!(
                     "Initialized config file template at {}",
                     default_path.display()
