@@ -238,11 +238,6 @@ fn is_reference_heading(line: &str) -> bool {
         .any(|heading| line.eq_ignore_ascii_case(heading))
 }
 
-/// Returns `true` if `path` has a `.pdf` extension (case-insensitive).
-pub fn is_pdf_path(path: &Path) -> bool {
-    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
-}
-
 /// Returns `true` if `path` has an `.epub` extension (case-insensitive).
 pub fn is_epub_path(path: &Path) -> bool {
     path.extension().is_some_and(|e| e.eq_ignore_ascii_case("epub"))
@@ -255,32 +250,6 @@ pub struct ExtractedDocument {
     pub author: Option<String>,
     pub content: String,
     pub word_count: usize,
-}
-
-/// Extracts text and word count from a PDF document.
-pub fn extract_pdf(path: &Path) -> Result<ExtractedDocument> {
-    let text = pdf_extract::extract_text(path)
-        .with_context(|| format!("Failed to extract text from PDF file: {:?}", path))?;
-
-    let title = path
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "PDF Document".to_string());
-
-    let (content, word_count) = clean_raw_text(&text);
-    if content.trim().is_empty() {
-        anyhow::bail!(
-            "PDF document {:?} contained no extractable text (it may be scanned/image-only).",
-            path
-        );
-    }
-
-    Ok(ExtractedDocument {
-        title,
-        author: None,
-        content,
-        word_count,
-    })
 }
 
 /// Extracts text, chapter contents, and metadata from an EPUB document.

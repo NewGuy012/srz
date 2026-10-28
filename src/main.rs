@@ -772,10 +772,14 @@ async fn handle_file(
         anyhow::bail!("File not found: {:?}", path);
     }
 
-    let (content, word_count, title, author, target_type) = if srz::scraper::is_pdf_path(path) {
-        let doc = srz::scraper::extract_pdf(path)?;
-        (doc.content, doc.word_count, doc.title, doc.author, "file")
-    } else if srz::scraper::is_epub_path(path) {
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf")) {
+        anyhow::bail!(
+            "PDF files are not supported: {:?}. Supported formats include EPUB, HTML, Markdown, and plain text.",
+            path
+        );
+    }
+
+    let (content, word_count, title, author, target_type) = if srz::scraper::is_epub_path(path) {
         let doc = srz::scraper::extract_epub(path)?;
         (doc.content, doc.word_count, doc.title, doc.author, "book")
     } else {

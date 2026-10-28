@@ -13,7 +13,7 @@ flowchart TD
     subgraph Inputs["1. Input Ingestion & Routing"]
         CLI["CLI Args / Env / config.toml"] --> Router{"Router / Auto-Detect"}
         Router -->|"URL (http://...)"| WebFlow["Web Scraper"]
-        Router -->|"Local Path or Stdin (-)"| FileFlow["File / PDF / EPUB / Stdin Reader"]
+        Router -->|"Local Path or Stdin (-)"| FileFlow["File / EPUB / Stdin Reader"]
         Router -->|"Book Title"| BookFlow["Book Pipeline"]
         Router -->|"News Query or Subcommand"| NewsFlow["Google News RSS Client"]
         Router -->|"cache / config / history / stats / find / index / models / doctor / completions"| UtilFlow["Utility Handlers"]
@@ -128,7 +128,7 @@ graph LR
 | [`src/news.rs`](src/news.rs) | `news` | Google News RSS client, `batchexecute` RPC redirect URL decoding, and concurrent multi-article scraping. |
 | [`src/llm.rs`](src/llm.rs) | `llm` | Zero-copy SSE client (`SseStreamState`), localhost IPv4 fallback, parallel map-reduce synthesis, and untrusted-content prompt framing. |
 | [`src/search.rs`](src/search.rs) | `search` | Open Library metadata, Wikipedia OpenSearch/fulltext, DDG search, and hoisted `PreparedQuery` candidate scoring. |
-| [`src/scraper.rs`](src/scraper.rs) | `scraper` | HTTP client (10 MB response cap), MediaWiki/article DOM extraction, PDF/EPUB document extraction, and single-pass text cleaning. |
+| [`src/scraper.rs`](src/scraper.rs) | `scraper` | HTTP client (10 MB response cap), MediaWiki/article DOM extraction, EPUB document extraction, and single-pass text cleaning. |
 | [`src/chunker.rs`](src/chunker.rs) | `chunker` | Zero-copy `Cow` text windowing and paragraph chunking for long documents (> 12k words). |
 | [`src/cache.rs`](src/cache.rs) | `cache` | Disk caching in `~/.cache/srz/`, zero-allocation `AsciiLower` hashing, and private `0700`/`0600` permission helpers. |
 | [`src/db.rs`](src/db.rs) | `db` | Embedded DuckDB engine with transactional writes, reading telemetry (`book`, `web`, `news`, `file`, `stdin`), and zero-copy snippet search. |
@@ -151,7 +151,7 @@ graph LR
 
 ## 6. Key CLI Features & Flags
 
-- **Universal Input**: `srz <URL>`, `srz <BOOK>`, `srz <FILE>` (`.pdf`, `.epub`, `.html`, `.md`, `.txt`), `cat ... | srz -`, or `srz news <TOPIC>` (with auto-detection for `"current ... news"`).
+- **Universal Input**: `srz <URL>`, `srz <BOOK>`, `srz <FILE>` (`.epub`, `.html`, `.md`, `.txt`), `cat ... | srz -`, or `srz news <TOPIC>` (with auto-detection for `"current ... news"`).
 - **8 Summary Styles**: `--style` supports `concise`, `detailed`, `bullets`, `executive`, `tldr`, `critique`, `eli5`, and `flashcards`.
 - **Profiles & Config Management**: `srz config init|show|path` and `--profile <NAME>` to switch between local and cloud LLM backends.
 - **Parallel Map-Reduce**: `--concurrency <N>` controls parallel chunk summarization for documents exceeding 12,000 words.
