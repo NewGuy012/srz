@@ -70,7 +70,9 @@
 
   <!-- Right Section: Minimalist Title & Tagline -->
   <g transform="translate(252, 0)">
-    <text x="0" y="92" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" font-size="56" font-weight="800" fill="#f0f6fc" letter-spacing="-1">srz</text>
+    <text x="0" y="92" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" font-size="56" font-weight="800" fill="#f0f6fc" letter-spacing="-1">
+      <tspan fill="#ff7b47">&gt;_ </tspan>srz
+    </text>
     <text x="2" y="132" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="17.5" font-weight="500" fill="#c9d1d9">
       Distill <tspan fill="#ffffff" font-weight="700">webpages</tspan>, <tspan fill="#ffffff" font-weight="700">books</tspan>, <tspan fill="#ffffff" font-weight="700">files</tspan> &amp; <tspan fill="#ffffff" font-weight="700">streams</tspan> with local LLMs.
     </text>
