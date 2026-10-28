@@ -124,6 +124,19 @@ impl Database {
         Ok(())
     }
 
+    /// Resets all DuckDB tables and sequences, clearing reading history and the search library.
+    pub fn reset(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "DROP TABLE IF EXISTS history;
+             DROP TABLE IF EXISTS library;
+             DROP SEQUENCE IF EXISTS history_id_seq;
+             DROP SEQUENCE IF EXISTS library_id_seq;",
+        ).context("Failed to drop DuckDB tables")?;
+
+        self.init_schema()?;
+        Ok(())
+    }
+
     /// Records a newly generated summary into both the `history` and `library` tables.
     pub fn record_summary(&self, record: &NewSummaryRecord<'_>) -> Result<()> {
         self.conn.execute(

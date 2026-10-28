@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
     // Handle immediate utility subcommands without initializing scraping or LLM HTTP clients
     match action {
         ResolvedAction::Cache(cache_cmd) => {
-            handle_cache(cache_cmd, &cache)?;
+            handle_cache(cache_cmd, &cache, db.as_ref())?;
             return Ok(());
         }
         ResolvedAction::History { limit } => {
@@ -281,7 +281,7 @@ fn handle_find(db: &Database, query: &str, cache: &Cache) -> Result<()> {
     Ok(())
 }
 
-fn handle_cache(cmd: CacheCommand, cache: &Cache) -> Result<()> {
+fn handle_cache(cmd: CacheCommand, cache: &Cache, db: Option<&Database>) -> Result<()> {
     match cmd {
         CacheCommand::Dir => {
             println!("{}", cache.dir().display());
@@ -300,11 +300,18 @@ fn handle_cache(cmd: CacheCommand, cache: &Cache) -> Result<()> {
         }
         CacheCommand::Clean => {
             let stats = cache.clean().context("Failed to clean cache directory")?;
-            if stats.total_files == 0 {
+            let mut db_reset = false;
+            if let Some(database) = db {
+                database.reset().context("Failed to reset DuckDB database")?;
+                db_reset = true;
+            }
+            if stats.total_files == 0 && !db_reset {
                 Ui::info("Cache is already empty.");
+            } else if stats.total_files == 0 && db_reset {
+                Ui::success("Cache was already empty. DuckDB database tables reset.");
             } else {
                 Ui::success(&format!(
-                    "Removed {} cached file(s) ({})",
+                    "Removed {} cached file(s) ({}) and reset DuckDB database tables.",
                     stats.total_files,
                     Cache::format_bytes(stats.total_bytes)
                 ));

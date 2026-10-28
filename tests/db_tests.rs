@@ -105,3 +105,33 @@ fn test_database_search_library() {
     let no_hits = db.search("Cyberpunk").unwrap();
     assert!(no_hits.is_empty());
 }
+
+#[test]
+fn test_database_reset() {
+    let db = Database::open_in_memory().unwrap();
+
+    let record = NewSummaryRecord {
+        target_type: "book",
+        title: "Dune",
+        author: Some("Frank Herbert"),
+        url: None,
+        style: "concise",
+        model: "gemma-4",
+        word_count: 5000,
+        prompt_tokens: Some(2000),
+        completion_tokens: Some(600),
+        duration_ms: 1500,
+        tokens_per_second: Some(40.0),
+        summary: "Dune summary text",
+    };
+    db.record_summary(&record).unwrap();
+    assert_eq!(db.get_history(10).unwrap().len(), 1);
+    assert_eq!(db.get_stats().unwrap().total_summaries, 1);
+    assert_eq!(db.search("Dune").unwrap().len(), 1);
+
+    db.reset().unwrap();
+
+    assert_eq!(db.get_history(10).unwrap().len(), 0);
+    assert_eq!(db.get_stats().unwrap().total_summaries, 0);
+    assert_eq!(db.search("Dune").unwrap().len(), 0);
+}
