@@ -74,35 +74,30 @@ Run `srz --help` to see all available subcommands (`web`, `book`, `file`, `news`
 
 ### Content Sources & Ingestion
 
-- **Webpage Summarization**: Scrapes any URL, strips boilerplate (ads, navigation, footers, footnote tables), normalizes the article text into clean paragraphs, and generates a structured summary.
-- **Book Summarization by Title**: Summarizes books without needing to supply ebook files.
-  - **Canonical Metadata & Web Grounding**: Resolves author and publication year via Open Library, then queries Wikipedia (OpenSearch + full-text) and DuckDuckGo with candidate scoring and interactive disambiguation (`-y` to auto-accept).
-  - **Trained Knowledge Fallback**: If no online reference is found (or when `--no-search` is passed), falls back to the LLM's trained memory.
-- **Live News Briefings & Natural Query Routing**: Aggregates top stories from Google News RSS (`srz news <topic> [-t/--timeframe <day|week|month|all>] [-l/--limit <N>]`).
-  - **Canonical URL Resolution**: Decodes Google News' opaque redirect tokens into real publisher URLs via Google's `batchexecute` RPC, then scrapes the full articles concurrently.
-  - **Natural Language Auto-Routing**: Automatically recognizes natural prompts like `srz "current javascript news"`, `srz "latest rust news"`, or `srz "tech news"`, strips conversational filler words while preserving the subject matter, and generates a structured executive briefing.
-- **Local Documents, Ebooks, & Stdin**: Summarizes local files (`srz file <path>` or auto-detected `srz README.md`), PDF documents (`srz paper.pdf`), EPUB books (`srz book.epub`), and standard input (`git diff | srz -`).
+- **Web Articles**: Cleanly extracts and summarizes any webpage, stripping ads, navbars, and cookie banners.
+- **Books by Title**: Synthesizes verified book overviews from Wikipedia and Open Library without needing an ebook file (`srz "Dune"`).
+- **Live News Briefings**: Aggregates top stories from Google News on any topic or timeframe, with natural prompt support (`srz "current javascript news"`).
+- **Files, PDFs, EPUBs & Stdin**: Summarizes local Markdown, text files, PDF papers, EPUB ebooks, or piped terminal output (`git diff | srz -`).
 
 ### LLM Engine & Synthesis
 
-- **Multiple Summary Styles**: Choose between `concise` (default), `detailed`, `bullets`, `executive`, `tldr`, `critique`, `eli5`, and `flashcards` to fit your use case.
-- **Parallel Text Chunking**: Automatic windowed chunking and parallel map-reduce synthesis (`--concurrency <N>`) with aggregated token telemetry for long documents (> 12,000 words, tuned for a 32k context window).
-- **Universal Token Tracking**: Streams tokens (`stream: true`) with `stream_options` to `stdout` in real time while displaying live chain-of-thought token progress on `stderr`.
+- **8 Summary Styles**: Tailor summaries with presets: `concise`, `detailed`, `bullets`, `executive`, `tldr`, `critique`, `eli5`, or `flashcards`.
+- **Parallel Chunking for Long Texts**: Automatically splits large documents and map-reduces sections in parallel (`--concurrency <N>`).
+- **Live Token Streaming**: Streams response tokens to `stdout` in real time while tracking model speed and thinking tokens.
 
-### Offline Library, Storage & Analytics
+### Offline Library & Storage
 
-- **Embedded DuckDB Engine**: Built-in DuckDB database (`~/.cache/srz/srz.duckdb`) tracking your reading history, token speeds, and providing instant full-text search across all past summaries (`srz find "query"`, `srz history`, `srz stats`).
-- **Standalone HTML Library Dashboard**: Run `srz index` (or `srz index --open`) to view an offline, searchable dashboard of all past reads with interactive filtering by category (`📚 Books`, `🌐 Web`, `📰 News`, `📄 Files`, `⌨️ Stdin`).
-- **Clickable Styled HTML & Markdown Views**: Automatically saves a styled, responsive `.html` reader view (with light/dark mode) and `.md` file in `~/.cache/srz/views/` and prints clickable `file://` links so you can open the summary in your browser or editor with one click (`--open` / `-b` to launch browser automatically).
-- **Smart Disk Caching**: Automatically caches book metadata, search candidates, scraped reference pages, and generated summaries in `~/.cache/srz` (`srz cache dir | size | clean`). Pass `--no-cache` to force a fresh fetch.
+- **Offline Full-Text Search**: Built-in DuckDB database keeps a searchable history of past summaries (`srz find <query>`).
+- **Visual Library Dashboard**: Run `srz index --open` to browse, search, and filter your past summaries in an interactive HTML dashboard.
+- **Instant Reader Views**: Generates clean, dark/light-mode HTML reader files and prints one-click `file://` links (`--open` to launch in browser).
+- **Smart Local Cache**: Caches fetched pages, book synopses, and summaries locally so repeated lookups are instant (`--no-cache` to bypass).
 
 ### Configuration & CLI Experience
 
-- **Optional Config File & Named Profiles**: Persist settings in `~/.config/srz/config.toml` (initialize with `srz config init`) and switch named model presets on the fly (`srz --profile fast ...` vs `srz --profile deep ...`).
-- **Server Health & Model Discovery**: Run `srz doctor` to verify LLM backend latency, database integrity, cache health, and config files. Run `srz models` to list available backend models.
-- **Machine-Readable JSON Output**: Pass `--json` to `history`, `stats`, `find`, `models`, `doctor`, or summarization commands for automated scripting and editor integrations.
-- **Strict I/O & Terminal Hygiene**: Strict separation—summary on `stdout`, diagnostics on `stderr`. Respects `NO_COLOR` and terminal detection (`is_terminal`). Supports quiet (`-q`) and verbose (`-v`) flags.
-- **Shell Auto-Completions**: Generate tab-completion scripts out-of-the-box (`srz completions <bash|zsh|fish|powershell>`).
+- **Config File & Profiles**: Save settings in `~/.config/srz/config.toml` and toggle named model profiles on the fly (`--profile fast`).
+- **Health Checks & Model Discovery**: Run `srz doctor` to test server connectivity and `srz models` to see available backend models.
+- **Pipeline & Scripting Friendly**: Pass `--json` for automation, `-o` to save files, and enjoy clean `stdout`/`stderr` separation.
+- **Shell Auto-Completions**: Instant tab-completion setup for `bash`, `zsh`, `fish`, and `powershell`.
 
 ## Configuring Your Local LLM
 
