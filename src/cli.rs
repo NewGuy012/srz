@@ -163,6 +163,10 @@ pub enum Commands {
         /// Keyword or query to search for across titles and summaries
         query: String,
     },
+    /// List available models from the local LLM backend
+    Models,
+    /// Diagnose system health, LLM connectivity, database, and cache
+    Doctor,
     /// Generate shell auto-completion script
     Completions {
         /// Target shell to generate completions for
@@ -214,6 +218,8 @@ pub enum ResolvedAction<'a> {
     Find {
         query: &'a str,
     },
+    Models,
+    Doctor,
     Completions {
         shell: clap_complete::Shell,
     },
@@ -253,6 +259,8 @@ impl Cli {
                 Commands::Find { query } => Ok(ResolvedAction::Find {
                     query: query.trim(),
                 }),
+                Commands::Models => Ok(ResolvedAction::Models),
+                Commands::Doctor => Ok(ResolvedAction::Doctor),
                 Commands::Completions { shell } => Ok(ResolvedAction::Completions { shell: *shell }),
             }
         } else if let Some(target) = &self.target {

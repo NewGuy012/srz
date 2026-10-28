@@ -99,6 +99,19 @@ pub struct LlmOutput {
     pub tokens_per_second: Option<f64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelInfo {
+    pub id: String,
+    #[serde(default)]
+    pub owned_by: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ModelsListResponse {
+    #[serde(default)]
+    data: Vec<ModelInfo>,
+}
+
 /// Maximum words of grounded reference context for a 32k context window (~16k-18k tokens),
 /// leaving ample headroom for up to 8,192 completion tokens (thinking + summary).
 pub const MAX_CONTEXT_WORDS: usize = 12_000;
@@ -281,6 +294,53 @@ impl LlmClient {
             model: model.to_string(),
             max_tokens,
         })
+    }
+
+    pub fn base_url(&self) -> &str {
+        self.endpoint.trim_end_matches("/chat/completions")
+    }
+
+    /// Fetches the list of available models from the server's `GET /models` endpoint.
+    pub async fn list_models(&self) -> Result<Vec<ModelInfo>> {
+        let models_url = format!("{}/models", self.base_url());
+        let mut response = self.client.get(&models_url).send().await;
+
+        if response.is_err()
+            && let Some(alt) = &self.fallback_endpoint
+        {
+            let alt_base = alt.trim_end_matches("/chat/completions");
+            let alt_models = format!("{}/models", alt_base);
+            if let Ok(alt_resp) = self.client.get(&alt_models).send().await {
+                response = Ok(alt_resp);
+            }
+        }
+
+        let resp = response.with_context(|| {
+            format!(
+                "Failed to reach LLM endpoint at '{}'. Ensure your local LLM server is running.",
+                models_url
+            )
+        })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let err_text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Server returned HTTP {} for /models: {}", status, err_text);
+        }
+
+        let body: ModelsListResponse = resp
+            .json()
+            .await
+            .context("Failed to parse models JSON response from server")?;
+
+        Ok(body.data)
+    }
+
+    /// Measures ping round-trip latency to the server in milliseconds.
+    pub async fn ping(&self) -> Result<u64> {
+        let start = std::time::Instant::now();
+        let _ = self.list_models().await?;
+        Ok(start.elapsed().as_millis() as u64)
     }
 
     async fn send_completion_request(

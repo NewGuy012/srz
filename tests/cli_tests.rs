@@ -38,6 +38,12 @@ fn test_history_stats_find_subcommands() {
         find_cli.resolve_action().unwrap(),
         ResolvedAction::Find { query: "Melange" }
     );
+
+    let models_cli = Cli::parse_from(["srz", "models"]);
+    assert_eq!(models_cli.resolve_action().unwrap(), ResolvedAction::Models);
+
+    let doctor_cli = Cli::parse_from(["srz", "doctor"]);
+    assert_eq!(doctor_cli.resolve_action().unwrap(), ResolvedAction::Doctor);
 }
 
 #[test]
