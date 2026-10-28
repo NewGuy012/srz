@@ -15,12 +15,12 @@ A fast, modular Rust CLI for distilling **webpages**, **local files**, **stdin s
 - **Searchable personal library**: saves every summary locally so you can search past reads offline.
 - **Clean reader views**: generates one-click HTML and Markdown pages with automatic light and dark mode.
 
-## Prerequisites: Local LLM Server
+## Prerequisites: LLM Backend Server
 
-`srz` requires an OpenAI API-compliant LLM server running on your machine (or access to a cloud provider API). Local inference is preferred for total privacy, zero fees, and offline use:
+`srz` requires an OpenAI API-compliant LLM server. While cloud provider APIs (OpenAI, Groq) are supported, running a **local LLM is strongly preferred** for complete privacy, zero subscription fees, and offline capability:
 
-- **macOS**: [Llama-macOS](https://github.com/ggml-org/Llama-macOS) (recommended; connects out-of-the-box on port `9931`).
-- **Windows & Linux**: [Ollama](https://ollama.com/) (recommended; port `11434`).
+- **macOS**: [Llama-macOS](https://github.com/ggml-org/Llama-macOS) (recommended local default; connects out-of-the-box on port `9931`).
+- **Windows & Linux**: [Ollama](https://ollama.com/) (recommended local default; port `11434`).
 - **Other Backends**: Compatible with LM Studio, llama.cpp, vLLM, or cloud providers (OpenAI, Groq).
 
 See [Configuring Your LLM Backend](#configuring-your-llm-backend) below for step-by-step setup instructions and profile templates.
