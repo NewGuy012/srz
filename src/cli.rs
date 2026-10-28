@@ -125,6 +125,10 @@ pub struct Cli {
     /// Automatically open the styled HTML summary in the default web browser
     #[arg(short = 'b', long, global = true)]
     pub open: bool,
+
+    /// Concurrency limit for parallel map-reduce document chunking
+    #[arg(long, global = true, default_value_t = 1)]
+    pub concurrency: usize,
 }
 
 #[derive(Subcommand, Debug)]
@@ -377,6 +381,12 @@ impl Cli {
         if !was_provided("open") {
             if let Some(o) = profile.and_then(|p| p.open).or(config.open) {
                 self.open = o;
+            }
+        }
+
+        if !was_provided("concurrency") {
+            if let Some(c) = profile.and_then(|p| p.concurrency).or(config.concurrency) {
+                self.concurrency = c;
             }
         }
     }

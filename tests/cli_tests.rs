@@ -204,4 +204,7 @@ fn test_yes_flag() {
 
     let long_open_cli = Cli::parse_from(["srz", "The Hobbit", "--open"]);
     assert!(long_open_cli.open);
+
+    let concurrency_cli = Cli::parse_from(["srz", "The Hobbit", "--concurrency", "4"]);
+    assert_eq!(concurrency_cli.concurrency, 4);
 }

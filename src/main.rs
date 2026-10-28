@@ -192,7 +192,7 @@ async fn main() -> Result<()> {
     }
 
     let llm = match LlmClient::new(&args.base_url, &args.model, &args.api_key, args.max_tokens) {
-        Ok(client) => client,
+        Ok(client) => client.with_concurrency(args.concurrency),
         Err(err) => {
             Ui::error(&format!("Failed to initialize LLM client: {}", err));
             std::process::exit(1);

@@ -120,12 +120,14 @@ pub const MAX_CONTEXT_WORDS: usize = 12_000;
 const CHUNK_MAX_WORDS: usize = 10_000;
 const CHUNK_OVERLAP_WORDS: usize = 500;
 
+#[derive(Clone)]
 pub struct LlmClient {
     client: reqwest::Client,
     endpoint: String,
     fallback_endpoint: Option<String>,
     model: String,
     max_tokens: u32,
+    concurrency: usize,
 }
 
 #[derive(Default)]
@@ -293,7 +295,13 @@ impl LlmClient {
             fallback_endpoint,
             model: model.to_string(),
             max_tokens,
+            concurrency: 1,
         })
+    }
+
+    pub fn with_concurrency(mut self, concurrency: usize) -> Self {
+        self.concurrency = concurrency.max(1);
+        self
     }
 
     pub fn base_url(&self) -> &str {
@@ -599,29 +607,51 @@ impl LlmClient {
         if word_count > MAX_CONTEXT_WORDS {
             let chunks = TextChunker::chunk(content, CHUNK_MAX_WORDS, CHUNK_OVERLAP_WORDS);
             if chunks.len() > 1 {
-                let mut section_summaries = Vec::with_capacity(chunks.len());
+                let chunks_len = chunks.len();
+                let client_arc = std::sync::Arc::new(self.clone());
+                let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(self.concurrency.max(1)));
+                let mut handles = Vec::with_capacity(chunks_len);
+
+                for (i, chunk) in chunks.into_iter().enumerate() {
+                    let sem = semaphore.clone();
+                    let client = client_arc.clone();
+                    let doc_title = title.to_string();
+                    let chunk_owned = chunk.into_owned();
+
+                    handles.push(tokio::spawn(async move {
+                        let _permit = sem
+                            .acquire()
+                            .await
+                            .map_err(|e| anyhow::anyhow!("Semaphore closed: {}", e))?;
+                        let section_sys = "You are an assistant summarizing a section of a long document. Be factual and concise.";
+                        let section_user = format!(
+                            "Document: '{}'\nSection {} of {}:\n\n{}",
+                            doc_title,
+                            i + 1,
+                            chunks_len,
+                            chunk_owned
+                        );
+                        client
+                            .complete_streaming(
+                                section_sys,
+                                &section_user,
+                                "Summarizing document chunk...",
+                                &format!("Chunk {}/{} summarized.", i + 1, chunks_len),
+                                StreamMode::Buffered,
+                            )
+                            .await
+                    }));
+                }
+
+                let mut section_summaries = Vec::with_capacity(chunks_len);
                 let mut total_prompt_tokens: u32 = 0;
                 let mut total_completion_tokens: u32 = 0;
                 let mut total_duration_ms: u64 = 0;
 
-                for (i, chunk) in chunks.iter().enumerate() {
-                    let section_sys = "You are an assistant summarizing a section of a long document. Be factual and concise.";
-                    let section_user = format!(
-                        "Document: '{}'\nSection {} of {}:\n\n{}",
-                        title,
-                        i + 1,
-                        chunks.len(),
-                        chunk
-                    );
-                    let part = self
-                        .complete_streaming(
-                            section_sys,
-                            &section_user,
-                            "Summarizing document chunk...",
-                            &format!("Chunk {}/{} summarized.", i + 1, chunks.len()),
-                            StreamMode::Buffered,
-                        )
-                        .await?;
+                for handle in handles {
+                    let part = handle
+                        .await
+                        .context("Parallel chunk summarization task panicked")??;
                     total_prompt_tokens += part.prompt_tokens.unwrap_or(0);
                     total_completion_tokens += part.completion_tokens.unwrap_or(0);
                     total_duration_ms += part.duration_ms;
