@@ -17,6 +17,8 @@ anyhow = "1.0"
 duckdb = { version = "1.20000.0", features = ["bundled"] }
 clap_complete = "4"
 toml = "0.8"
+pdf-extract = "0.12.1"
+epub = "2.1.5"
 
 [profile.release]
 lto = "thin"

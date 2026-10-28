@@ -770,24 +770,33 @@ async fn handle_file(
     if !path.exists() {
         anyhow::bail!("File not found: {:?}", path);
     }
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("Failed to read file: {:?}", path))?;
 
-    let (content, word_count, title) = if render::is_html_path(path) {
-        let norm = scraper.normalize(&path.display().to_string(), &raw)?;
-        let t = norm.title.unwrap_or_else(|| {
-            path.file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "Local File".to_string())
-        });
-        (norm.content, norm.word_count, t)
+    let (content, word_count, title, author, target_type) = if srz::scraper::is_pdf_path(path) {
+        let doc = srz::scraper::extract_pdf(path)?;
+        (doc.content, doc.word_count, doc.title, doc.author, "file")
+    } else if srz::scraper::is_epub_path(path) {
+        let doc = srz::scraper::extract_epub(path)?;
+        (doc.content, doc.word_count, doc.title, doc.author, "book")
     } else {
-        let words = raw.split_whitespace().count();
-        let t = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "Local File".to_string());
-        (raw, words, t)
+        let raw = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read file: {:?}", path))?;
+
+        if render::is_html_path(path) {
+            let norm = scraper.normalize(&path.display().to_string(), &raw)?;
+            let t = norm.title.unwrap_or_else(|| {
+                path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "Local File".to_string())
+            });
+            (norm.content, norm.word_count, t, None, "file")
+        } else {
+            let words = raw.split_whitespace().count();
+            let t = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Local File".to_string());
+            (raw, words, t, None, "file")
+        }
     };
 
     if content.trim().is_empty() {
@@ -814,9 +823,9 @@ async fn handle_file(
         .await?;
 
     Ok(SummaryOutcome::from_llm(
-        "file",
+        target_type,
         title,
-        None,
+        author,
         Some(path_str),
         word_count,
         output,

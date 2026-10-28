@@ -108,6 +108,25 @@ fn test_markdown_to_styled_html_rendering() {
 }
 
 #[test]
+fn test_pdf_and_epub_detection_and_clean() {
+    use srz::scraper::{clean_raw_text, is_epub_path, is_pdf_path};
+    use std::path::Path;
+
+    assert!(is_pdf_path(Path::new("paper.pdf")));
+    assert!(is_pdf_path(Path::new("/docs/REPORT.PDF")));
+    assert!(!is_pdf_path(Path::new("paper.txt")));
+
+    assert!(is_epub_path(Path::new("book.epub")));
+    assert!(is_epub_path(Path::new("/library/Dune.EPUB")));
+    assert!(!is_epub_path(Path::new("book.pdf")));
+
+    let dirty = "  Hello world!   \n\n\n\n  This is a clean test.  \n";
+    let (cleaned, count) = clean_raw_text(dirty);
+    assert_eq!(count, 7);
+    assert!(cleaned.contains("Hello world!\n\nThis is a clean test."));
+}
+
+#[test]
 fn test_render_index_html() {
     use srz::db::{HistoryEntry, LibraryStats};
     use srz::render::{ensure_index_file, render_index_html};

@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -257,4 +258,133 @@ fn is_reference_heading(line: &str) -> bool {
     REFERENCE_HEADINGS
         .iter()
         .any(|heading| line.eq_ignore_ascii_case(heading))
+}
+
+/// Returns `true` if `path` has a `.pdf` extension (case-insensitive).
+pub fn is_pdf_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("pdf"))
+        .unwrap_or(false)
+}
+
+/// Returns `true` if `path` has an `.epub` extension (case-insensitive).
+pub fn is_epub_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("epub"))
+        .unwrap_or(false)
+}
+
+/// Extracted text content and metadata from a local file.
+#[derive(Debug, Clone)]
+pub struct ExtractedDocument {
+    pub title: String,
+    pub author: Option<String>,
+    pub content: String,
+    pub word_count: usize,
+}
+
+/// Extracts text and word count from a PDF document.
+pub fn extract_pdf(path: &Path) -> Result<ExtractedDocument> {
+    let text = pdf_extract::extract_text(path)
+        .with_context(|| format!("Failed to extract text from PDF file: {:?}", path))?;
+
+    let title = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "PDF Document".to_string());
+
+    let (content, word_count) = clean_raw_text(&text);
+    if content.trim().is_empty() {
+        anyhow::bail!(
+            "PDF document {:?} contained no extractable text (it may be scanned/image-only).",
+            path
+        );
+    }
+
+    Ok(ExtractedDocument {
+        title,
+        author: None,
+        content,
+        word_count,
+    })
+}
+
+/// Extracts text, chapter contents, and metadata from an EPUB document.
+pub fn extract_epub(path: &Path) -> Result<ExtractedDocument> {
+    let mut doc = epub::doc::EpubDoc::new(path)
+        .map_err(|e| anyhow::anyhow!("Failed to open EPUB file: {:?}", e))?;
+
+    let title = doc
+        .mdata("title")
+        .map(|v| v.value.clone())
+        .or_else(|| {
+            path.file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+        })
+        .unwrap_or_else(|| "EPUB Book".to_string());
+
+    let author = doc.mdata("creator").map(|v| v.value.clone());
+
+    let mut full_text = String::new();
+    let num_chapters = doc.get_num_chapters();
+    for _ in 0..num_chapters {
+        if let Some((page_html, _mime)) = doc.get_current_str() {
+            let rendered = html2text::config::plain()
+                .link_footnotes(false)
+                .no_table_borders()
+                .string_from_read(page_html.as_bytes(), 10_000)
+                .unwrap_or_default();
+            if !rendered.trim().is_empty() {
+                if !full_text.is_empty() {
+                    full_text.push_str("\n\n");
+                }
+                full_text.push_str(rendered.trim());
+            }
+        }
+        if !doc.go_next() {
+            break;
+        }
+    }
+
+    let (content, word_count) = clean_raw_text(&full_text);
+    if content.trim().is_empty() {
+        anyhow::bail!("EPUB file {:?} contained no extractable text.", path);
+    }
+
+    Ok(ExtractedDocument {
+        title,
+        author,
+        content,
+        word_count,
+    })
+}
+
+/// Cleans lines and counts words in a single pass.
+pub fn clean_raw_text(text: &str) -> (String, usize) {
+    let mut out = String::with_capacity(text.len());
+    let mut word_count = 0;
+    let mut empty_line_count = 0;
+
+    for raw_line in text.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            empty_line_count += 1;
+            if empty_line_count == 1 && !out.is_empty() {
+                out.push('\n');
+            }
+        } else {
+            empty_line_count = 0;
+            word_count += line.split_whitespace().count();
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(line);
+        }
+    }
+
+    let trimmed_len = out.trim_end().len();
+    out.truncate(trimmed_len);
+    (out, word_count)
 }
