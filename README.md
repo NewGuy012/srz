@@ -17,11 +17,12 @@ A fast, modular Rust CLI for distilling **webpages**, **local files**, **stdin s
 
 ## Prerequisites: LLM Backend Server
 
-`srz` requires an OpenAI API-compliant LLM server. While cloud provider APIs (OpenAI, Groq) are supported, running a **local LLM is strongly preferred** for complete privacy, zero subscription fees, and offline capability:
+`srz` requires an OpenAI API-compliant LLM server. While cloud provider APIs (OpenAI, Anthropic, Google, Groq, etc.) are supported, running a **local LLM is strongly preferred** for complete privacy, zero subscription fees, and offline capability:
 
 - **macOS**: [Llama-macOS](https://github.com/ggml-org/Llama-macOS) (recommended local default; connects out-of-the-box on port `9931`).
-- **Windows & Linux**: [Ollama](https://ollama.com/) (recommended local default; port `11434`).
-- **Other Backends**: Compatible with LM Studio, llama.cpp, vLLM, or cloud providers (OpenAI, Groq).
+- **Windows**: [Llama-Windows](https://github.com/ggml-org/Llama-Windows) (recommended local default; connects out-of-the-box on port `9931`).
+- **Linux**: [llama.cpp](https://github.com/ggml-org/llama.cpp) (recommended local default; run `llama-server`).
+- **Other Backends**: Compatible with Ollama, LM Studio, vLLM, or cloud providers (OpenAI, Anthropic, Google Gemini, Groq, etc.).
 
 See [Configuring Your LLM Backend](#configuring-your-llm-backend) below for step-by-step setup instructions and profile templates.
 
@@ -37,14 +38,7 @@ curl -LsSf https://raw.githubusercontent.com/NewGuy012/srz/master/install.sh | s
 
 ### Manual Download (GitHub Releases)
 
-Download precompiled standalone binaries from [GitHub Releases](https://github.com/NewGuy012/srz/releases):
-
-- **macOS (Apple Silicon)**: `srz-aarch64-apple-darwin.tar.gz`
-- **macOS (Intel)**: `srz-x86_64-apple-darwin.tar.gz`
-- **Linux (x86_64)**: `srz-x86_64-unknown-linux-gnu.tar.gz`
-- **Windows (x86_64)**: `srz-x86_64-pc-windows-msvc.zip`
-
-Extract and move `srz` to any folder in your `$PATH` (e.g. `~/.local/bin` or `/usr/local/bin`).
+Download precompiled standalone binaries from [GitHub Releases](https://github.com/NewGuy012/srz/releases). Extract and move `srz` to any folder in your `$PATH` (e.g. `~/.local/bin` or `/usr/local/bin`).
 
 ### Build from Source (Cargo)
 
@@ -56,59 +50,49 @@ cargo install --path .
 
 ## Usage
 
-`srz` auto-detects whether you pass a URL, book title, local document, news query, or piped stream:
+Pass any target directly—`srz` auto-detects URLs, books, files, news, or stdin:
 
 ```bash
-# Summarize anything (URLs, books, documents, piped text)
-srz https://example.com/article
-srz "The Hobbit"                        # Searches Wikipedia & Open Library
-srz paper.pdf                           # Supports PDF, EPUB, MD, and TXT
-git diff | srz -                        # Reads standard input
-
-# Live news briefings & natural queries
-srz news "javascript"                   # Today's news digest
-srz "current AI news" -t week           # Auto-detected news query (day/week/month)
-
-# Custom styles & browser reader view
-srz "The Hobbit" --style tldr --open    # Presets: concise, detailed, bullets, tldr, eli5...
-
-# Offline library, search & diagnostics
-srz index --open                        # Interactive HTML library dashboard
-srz find "ecology"                      # Full-text search past summaries
-srz history                             # View past summaries & token metrics
-srz doctor                              # Verify LLM connection, cache, and database
+srz https://example.com/article         # Webpage
+srz "The Hobbit"                        # Book title (Wikipedia + Open Library)
+srz paper.pdf                           # Local document (PDF, EPUB, MD, TXT)
+git diff | srz -                        # Standard input
+srz news "AI updates"                   # Live Google News briefing
+srz "The Hobbit" --style tldr --open    # Custom style & open reader in browser
+srz find "ecology"                      # Search past summaries offline
+srz index --open                        # Open interactive HTML library
 ```
 
-Run `srz --help` to see all available subcommands (`web`, `book`, `file`, `news`, `index`, `find`, `history`, `stats`, `doctor`, `models`, `config`, `cache`, `completions`) and flags.
+Run `srz --help` to see all available subcommands and flags.
 
 ## Features
 
 ### Content Sources & Ingestion
 
-- **Web Articles**: Cleanly extracts and summarizes any webpage, stripping ads, navbars, and cookie banners.
-- **Books by Title**: Synthesizes verified book overviews from Wikipedia and Open Library without needing an ebook file (`srz "The Hobbit"`).
-- **Live News Briefings**: Aggregates top stories from Google News on any topic or timeframe, with natural prompt support (`srz "current javascript news"`).
-- **Files, PDFs, EPUBs & Stdin**: Summarizes local Markdown, text files, PDF papers, EPUB ebooks, or piped terminal output (`git diff | srz -`).
+- **Web Articles**: Summarizes any webpage, cleanly removing ads and clutter.
+- **Books by Title**: Generates verified overviews from Wikipedia and Open Library without needing an ebook file.
+- **Live News Briefings**: Curates and summarizes top stories on any topic from Google News.
+- **Files, PDFs, EPUBs & Stdin**: Summarizes local documents, ebooks, papers, and piped text.
 
 ### LLM Engine & Synthesis
 
-- **8 Summary Styles**: Tailor summaries with presets: `concise`, `detailed`, `bullets`, `executive`, `tldr`, `critique`, `eli5`, or `flashcards`.
-- **Parallel Chunking for Long Texts**: Automatically splits large documents and map-reduces sections in parallel (`--concurrency <N>`).
-- **Loading Spinners & Optional Live Streaming**: Clean loading spinner and phase feedback with summary presented cleanly upon completion; live token streaming is available on demand via `--stream`.
+- **8 Summary Styles**: Tailor output with presets like concise, detailed, bullet points, executive, or quick takeaways.
+- **Parallel Chunking for Long Texts**: Automatically splits and processes long documents in parallel.
+- **Loading Spinners & Optional Live Streaming**: Clean progress indicators with optional real-time streaming.
 
 ### Offline Library & Storage
 
-- **Offline Full-Text Search**: Built-in DuckDB database keeps a searchable history of past summaries (`srz find <query>`).
-- **Visual Library Dashboard**: Run `srz index --open` to browse, search, and filter your past summaries in an interactive HTML dashboard.
-- **Instant Reader Views**: Generates clean, dark/light-mode HTML reader files and prints one-click `file://` links (`--open` to launch in browser).
-- **Smart Local Cache**: Caches fetched pages, book synopses, and summaries locally so repeated lookups are instant (`--no-cache` to bypass).
+- **Offline Full-Text Search**: Search through your entire history of past summaries anytime offline.
+- **Visual Library Dashboard**: Browse, filter, and review your saved summaries in an interactive visual dashboard.
+- **Instant Reader Views**: Generates clean, distraction-free reading pages with automatic light and dark mode.
+- **Smart Local Cache**: Saves past queries locally so repeated lookups load instantly.
 
 ### Configuration & CLI Experience
 
-- **Config File & Profiles**: Save settings in `~/.config/srz/config.toml` and toggle named model profiles on the fly (`--profile fast`).
-- **Health Checks & Model Discovery**: Run `srz doctor` to test server connectivity and `srz models` to see available backend models.
-- **Pipeline & Scripting Friendly**: Pass `--json` for automation, `-o` to save files, and enjoy clean `stdout`/`stderr` separation.
-- **Shell Auto-Completions**: Instant tab-completion setup for `bash`, `zsh`, `fish`, and `powershell`.
+- **Config File & Profiles**: Save default preferences and switch between different models with ease.
+- **Health Checks & Model Discovery**: Verify backend connectivity and view available models with built-in diagnostics.
+- **Pipeline & Scripting Friendly**: Export structured JSON or save output directly to files for automated workflows.
+- **Shell Auto-Completions**: Fast tab-completion support for Bash, Zsh, Fish, and PowerShell.
 
 ## Configuring Your LLM Backend
 
@@ -116,46 +100,64 @@ Run `srz --help` to see all available subcommands (`web`, `book`, `file`, `news`
 
 ### Local LLMs (Preferred)
 
-- **macOS (Default)**: Install [Llama-macOS](https://github.com/ggml-org/Llama-macOS). Launch the app and load a model—`srz` connects automatically to `http://localhost:9931/v1` with zero setup.
-- **Windows & Linux**: Install [Ollama](https://ollama.com/) and run a model:
+- **macOS & Windows (Default)**: Install [Llama-macOS](https://github.com/ggml-org/Llama-macOS) (macOS) or [Llama-Windows](https://github.com/ggml-org/Llama-Windows) (Windows). Launch the app and load a model—`srz` connects automatically to `http://localhost:9931/v1` with zero setup.
+- **Linux**: Build or install [llama.cpp](https://github.com/ggml-org/llama.cpp) and launch `llama-server`:
   ```bash
-  ollama run gemma2:9b
-  export OPENAI_BASE_URL="http://localhost:11434/v1" OPENAI_MODEL="gemma2:9b"
-  # Windows PowerShell: $env:OPENAI_BASE_URL="http://localhost:11434/v1"; $env:OPENAI_MODEL="gemma2:9b"
+  # Start llama-server on port 9931 for zero configuration:
+  llama-server -m model.gguf --port 9931
+
+  # Or on default port 8080:
+  llama-server -m model.gguf --port 8080
+  export OPENAI_BASE_URL="http://localhost:8080/v1"
   ```
 - **Diagnostics**: Run `srz doctor` to test server latency and `srz models` to list loaded models.
 
 ### Cloud Providers (Optional)
 
-Set your endpoint and API key via environment variables or CLI flags:
+`srz` works with any OpenAI-compatible provider (OpenAI, Anthropic, Google, Groq, OpenRouter):
 
 ```bash
-# Groq
-export OPENAI_BASE_URL="https://api.groq.com/openai/v1" OPENAI_MODEL="llama-3.3-70b-versatile" OPENAI_API_KEY="gsk_..."
-
-# OpenAI
 export OPENAI_BASE_URL="https://api.openai.com/v1" OPENAI_MODEL="gpt-4o-mini" OPENAI_API_KEY="sk-..."
 
-# Or via CLI flag
+# Or on the fly via CLI flag:
 srz "1984" --base-url https://api.openai.com/v1 --model gpt-4o-mini --api-key "sk-..."
 ```
 
 ### Profile Switching (`~/.config/srz/config.toml`)
 
-Run `srz config init` to generate a starter config, then switch profiles with `--profile`:
+Run `srz config init` to generate a starter config, then configure named profiles for your favorite local or cloud models:
 
 ```toml
+# Default local backend (runs out-of-the-box with Llama-macOS / Llama-Windows / llama-server)
 base_url = "http://localhost:9931/v1"
 model = "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
 
-[profiles.ollama]
-base_url = "http://localhost:11434/v1"
-model = "gemma2:9b"
+# Cloud profile: OpenAI
+[profiles.openai]
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
+api_key = "sk-..."
+
+# Cloud profile: Anthropic Claude
+[profiles.anthropic]
+base_url = "https://api.anthropic.com/v1"
+model = "claude-3-5-sonnet-20241022"
+api_key = "sk-ant-..."
+
+# Cloud profile: Google Gemini
+[profiles.google]
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+model = "gemini-2.0-flash"
+api_key = "..."
 ```
 
+Run with your default local model, or switch to any cloud profile seamlessly:
+
 ```bash
-srz "The Hobbit"                  # Default profile
-srz "The Hobbit" --profile ollama # Named profile
+srz "The Hobbit"                      # Runs 100% locally
+srz "The Hobbit" --profile openai      # Runs via OpenAI
+srz "The Hobbit" --profile anthropic   # Runs via Anthropic Claude
+srz "The Hobbit" --profile google      # Runs via Google Gemini
 ```
 
 ## Architecture & Modules
