@@ -140,13 +140,13 @@ impl WebScraper {
             );
         }
 
-        if let Some(content_len) = response.content_length() {
-            if content_len as usize > MAX_SCRAPE_BYTES {
-                anyhow::bail!(
-                    "Webpage content length ({} bytes) exceeds security limit of 10 MB",
-                    content_len
-                );
-            }
+        if let Some(content_len) = response.content_length()
+            && content_len as usize > MAX_SCRAPE_BYTES
+        {
+            anyhow::bail!(
+                "Webpage content length ({} bytes) exceeds security limit of 10 MB",
+                content_len
+            );
         }
 
         let mut bytes = Vec::new();

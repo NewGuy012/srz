@@ -268,9 +268,10 @@ impl LlmClient {
     pub fn new(base_url: &str, model: &str, api_key: &str, max_tokens: u32) -> Result<Self> {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        if !api_key.is_empty()
-            && let Ok(val) = HeaderValue::from_str(&format!("Bearer {}", api_key))
-        {
+        let clean_key = api_key.trim();
+        if !clean_key.is_empty() {
+            let val = HeaderValue::from_str(&format!("Bearer {}", clean_key))
+                .with_context(|| "Configured API key contains invalid characters for an HTTP header")?;
             headers.insert(AUTHORIZATION, val);
         }
 

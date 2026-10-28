@@ -401,79 +401,76 @@ impl Cli {
             }
         };
 
-        if !was_provided("base_url") {
-            if let Some(url) = profile
+        if !was_provided("base_url")
+            && let Some(url) = profile
                 .and_then(|p| p.base_url.as_ref())
                 .or(config.base_url.as_ref())
-            {
-                self.base_url = url.clone();
-            }
+        {
+            self.base_url = url.clone();
         }
 
-        if !was_provided("model") {
-            if let Some(m) = profile
+        if !was_provided("model")
+            && let Some(m) = profile
                 .and_then(|p| p.model.as_ref())
                 .or(config.model.as_ref())
-            {
-                self.model = m.clone();
-            }
+        {
+            self.model = m.clone();
         }
 
-        if !was_provided("api_key") {
-            if let Some(k) = profile
+        if !was_provided("api_key")
+            && let Some(k) = profile
                 .and_then(|p| p.api_key.as_ref())
                 .or(config.api_key.as_ref())
-            {
-                self.api_key = k.clone();
-            }
+        {
+            self.api_key = k.clone();
         }
 
-        if !was_provided("style") {
-            if let Some(s) = profile.and_then(|p| p.style).or(config.style) {
-                self.style = s;
-            }
+        if !was_provided("style")
+            && let Some(s) = profile.and_then(|p| p.style).or(config.style)
+        {
+            self.style = s;
         }
 
-        if !was_provided("max_tokens") {
-            if let Some(t) = profile.and_then(|p| p.max_tokens).or(config.max_tokens) {
-                self.max_tokens = t;
-            }
+        if !was_provided("max_tokens")
+            && let Some(t) = profile.and_then(|p| p.max_tokens).or(config.max_tokens)
+        {
+            self.max_tokens = t;
         }
 
-        if !was_provided("no_search") {
-            if let Some(ns) = profile.and_then(|p| p.no_search).or(config.no_search) {
-                self.no_search = ns;
-            }
+        if !was_provided("no_search")
+            && let Some(ns) = profile.and_then(|p| p.no_search).or(config.no_search)
+        {
+            self.no_search = ns;
         }
 
-        if !was_provided("no_cache") {
-            if let Some(nc) = profile.and_then(|p| p.no_cache).or(config.no_cache) {
-                self.no_cache = nc;
-            }
+        if !was_provided("no_cache")
+            && let Some(nc) = profile.and_then(|p| p.no_cache).or(config.no_cache)
+        {
+            self.no_cache = nc;
         }
 
-        if !was_provided("quiet") {
-            if let Some(q) = profile.and_then(|p| p.quiet).or(config.quiet) {
-                self.quiet = q;
-            }
+        if !was_provided("quiet")
+            && let Some(q) = profile.and_then(|p| p.quiet).or(config.quiet)
+        {
+            self.quiet = q;
         }
 
-        if !was_provided("verbose") {
-            if let Some(v) = profile.and_then(|p| p.verbose).or(config.verbose) {
-                self.verbose = v;
-            }
+        if !was_provided("verbose")
+            && let Some(v) = profile.and_then(|p| p.verbose).or(config.verbose)
+        {
+            self.verbose = v;
         }
 
-        if !was_provided("open") {
-            if let Some(o) = profile.and_then(|p| p.open).or(config.open) {
-                self.open = o;
-            }
+        if !was_provided("open")
+            && let Some(o) = profile.and_then(|p| p.open).or(config.open)
+        {
+            self.open = o;
         }
 
-        if !was_provided("concurrency") {
-            if let Some(c) = profile.and_then(|p| p.concurrency).or(config.concurrency) {
-                self.concurrency = c;
-            }
+        if !was_provided("concurrency")
+            && let Some(c) = profile.and_then(|p| p.concurrency).or(config.concurrency)
+        {
+            self.concurrency = c;
         }
     }
 }

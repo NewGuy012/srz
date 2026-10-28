@@ -1,2 +1,14 @@
 /target
 .DS_Store
+
+# Local configuration files and environment secrets
+config.toml
+*.local.toml
+.env
+.env.*
+*.pem
+*.key
+
+# Local database and cache storage
+*.duckdb*
+*.db
