@@ -23,7 +23,7 @@ A fast, modular Rust CLI for distilling **webpages**, **local files**, **stdin s
 - **Windows & Linux**: [Ollama](https://ollama.com/) (recommended; port `11434`).
 - **Other Backends**: Compatible with LM Studio, llama.cpp, vLLM, or cloud providers (OpenAI, Groq).
 
-See [Configuring Your Local LLM](#configuring-your-local-llm) below for step-by-step setup instructions and profile templates.
+See [Configuring Your LLM Backend](#configuring-your-llm-backend) below for step-by-step setup instructions and profile templates.
 
 ## Installation
 
@@ -113,7 +113,7 @@ Run `srz --help` to see all available subcommands (`web`, `book`, `file`, `news`
 - **Pipeline & Scripting Friendly**: Pass `--json` for automation, `-o` to save files, and enjoy clean `stdout`/`stderr` separation.
 - **Shell Auto-Completions**: Instant tab-completion setup for `bash`, `zsh`, `fish`, and `powershell`.
 
-## Configuring Your Local LLM
+## Configuring Your LLM Backend
 
 While local inference is preferred, `srz` works with both local servers and cloud providers.
 
