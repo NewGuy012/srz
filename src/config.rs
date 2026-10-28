@@ -85,7 +85,7 @@ impl Config {
 # model = "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
 # api_key = ""
 
-# Default summary style (concise, detailed, bullets, executive)
+# Default summary style (concise, detailed, bullets, executive, tldr, critique, eli5, flashcards)
 # style = "concise"
 
 # Maximum completion tokens (thinking + summary tokens)

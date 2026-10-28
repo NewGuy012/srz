@@ -64,7 +64,7 @@ srz history                             # View past summaries & token metrics
 srz doctor                              # Verify LLM connection, cache, and database
 ```
 
-Run `srz --help` to see all available subcommands (`web`, `book`, `file`, `news`, `index`, `find`, `history`, `doctor`, `models`, `config`, `cache`, `completions`) and flags.
+Run `srz --help` to see all available subcommands (`web`, `book`, `file`, `news`, `index`, `find`, `history`, `stats`, `doctor`, `models`, `config`, `cache`, `completions`) and flags.
 
 ## Features
 
@@ -156,16 +156,17 @@ srz "Dune" --profile groq    # Uses Groq cloud
 
 See [`OVERVIEW.md`](OVERVIEW.md) for detailed Mermaid architecture and sequence diagrams. The codebase is organized into modular components with single responsibilities:
 
-- `src/main.rs`: CLI entry point coordinating the high-level summarization pipeline.
-- `src/cli.rs`: Argument parsing, subcommand definitions, and style guidance with `clap`.
-- `src/cache.rs`: Persistent disk cache (`~/.cache/srz`) for metadata, search results, scraped pages, and summaries.
+- `src/main.rs`: CLI entry point coordinating the high-level summarization pipeline and subcommand handlers.
+- `src/cli.rs`: Argument parsing, subcommand definitions, natural news query detection, and style guidance with `clap`.
+- `src/config.rs`: Configuration file (`~/.config/srz/config.toml`) loading, template generation, and named profile support.
+- `src/cache.rs`: Persistent disk cache (`~/.cache/srz`) and private `0700`/`0600` file/directory permission helpers.
 - `src/db.rs`: Embedded DuckDB engine for reading history, performance telemetry, and offline full-text library search.
-- `src/scraper.rs`: Webpage fetching, DOM parsing, boilerplate removal, and text normalization.
-- `src/news.rs`: Google News RSS client, batchexecute RPC redirect decoding, and concurrent article aggregation.
+- `src/scraper.rs`: Webpage fetching (with 10 MB cap), DOM normalization, and local PDF/EPUB document text extraction.
+- `src/news.rs`: Google News RSS client, `batchexecute` RPC redirect decoding, and concurrent article aggregation.
 - `src/search.rs`: Open Library metadata resolution plus Wikipedia & DuckDuckGo candidate search and ranking.
-- `src/llm.rs`: Zero-copy OpenAI SSE streaming client and map-reduce synthesis engine.
-- `src/chunker.rs`: Text windowing and paragraph chunking for long articles.
-- `src/render.rs`: Standalone HTML5 reader view and Markdown rendering.
+- `src/llm.rs`: Zero-copy OpenAI SSE streaming client and parallel map-reduce synthesis engine.
+- `src/chunker.rs`: Zero-copy text windowing and paragraph chunking for long documents.
+- `src/render.rs`: Standalone HTML5 reader views, interactive library dashboard (`srz index`), and Markdown rendering.
 - `src/ui.rs`: Terminal spinners, `NO_COLOR` detection, and status output with `indicatif`.
 
 ## Running Tests
