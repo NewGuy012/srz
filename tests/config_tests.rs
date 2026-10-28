@@ -60,11 +60,13 @@ style = "detailed"
 
 #[test]
 fn test_config_applied_to_cli_when_not_specified_on_command_line() {
-    let mut config = Config::default();
-    config.base_url = Some("http://ollama:11434/v1".to_string());
-    config.model = Some("custom-model:latest".to_string());
-    config.style = Some(SummaryStyle::Detailed);
-    config.max_tokens = Some(2048);
+    let config = Config {
+        base_url: Some("http://ollama:11434/v1".to_string()),
+        model: Some("custom-model:latest".to_string()),
+        style: Some(SummaryStyle::Detailed),
+        max_tokens: Some(2048),
+        ..Default::default()
+    };
 
     let matches = Cli::command().get_matches_from(["srz", "The Hobbit"]);
     let mut args = Cli::from_arg_matches(&matches).unwrap();
@@ -79,10 +81,12 @@ fn test_config_applied_to_cli_when_not_specified_on_command_line() {
 
 #[test]
 fn test_cli_flags_take_precedence_over_config() {
-    let mut config = Config::default();
-    config.base_url = Some("http://config-url/v1".to_string());
-    config.model = Some("config-model".to_string());
-    config.style = Some(SummaryStyle::Executive);
+    let config = Config {
+        base_url: Some("http://config-url/v1".to_string()),
+        model: Some("config-model".to_string()),
+        style: Some(SummaryStyle::Executive),
+        ..Default::default()
+    };
 
     let matches = Cli::command().get_matches_from([
         "srz",
@@ -105,12 +109,16 @@ fn test_cli_flags_take_precedence_over_config() {
 
 #[test]
 fn test_profile_flag_overrides_root_config() {
-    let mut config = Config::default();
-    config.model = Some("root-model".to_string());
+    let mut config = Config {
+        model: Some("root-model".to_string()),
+        ..Default::default()
+    };
 
-    let mut profile = ProfileConfig::default();
-    profile.model = Some("profile-model".to_string());
-    profile.style = Some(SummaryStyle::Executive);
+    let profile = ProfileConfig {
+        model: Some("profile-model".to_string()),
+        style: Some(SummaryStyle::Executive),
+        ..Default::default()
+    };
     config.profiles.insert("deep".to_string(), profile);
 
     let matches = Cli::command().get_matches_from(["srz", "The Hobbit", "--profile", "deep"]);

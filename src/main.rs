@@ -289,10 +289,10 @@ async fn main() -> Result<()> {
                     files.md_path.display()
                 ));
 
-                if args.open {
-                    if let Err(err) = render::open_in_browser(&files.html_path) {
-                        Ui::warn(&format!("Could not open browser: {}", err));
-                    }
+                if args.open
+                    && let Err(err) = render::open_in_browser(&files.html_path)
+                {
+                    Ui::warn(&format!("Could not open browser: {}", err));
                 }
             }
 
