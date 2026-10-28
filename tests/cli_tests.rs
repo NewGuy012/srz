@@ -119,3 +119,14 @@ fn test_missing_target_returns_error() {
     let cli = Cli::parse_from(["srz"]);
     assert!(cli.resolve_action().is_err());
 }
+
+#[test]
+fn test_quiet_and_verbose_flags() {
+    let quiet_cli = Cli::parse_from(["srz", "Dune", "-q"]);
+    assert!(quiet_cli.quiet);
+    assert!(!quiet_cli.verbose);
+
+    let verbose_cli = Cli::parse_from(["srz", "web", "https://example.com", "--verbose"]);
+    assert!(!verbose_cli.quiet);
+    assert!(verbose_cli.verbose);
+}

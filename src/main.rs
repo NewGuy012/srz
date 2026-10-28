@@ -29,6 +29,13 @@ struct SummaryOutcome {
 async fn main() -> Result<()> {
     let args = Cli::parse();
 
+    if args.quiet {
+        Ui::set_quiet(true);
+    }
+    if args.verbose {
+        Ui::set_verbose(true);
+    }
+
     let action = match args.resolve_action() {
         Ok(action) => action,
         Err(msg) => {

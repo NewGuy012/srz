@@ -86,6 +86,14 @@ pub struct Cli {
     /// Save the summary to an output file
     #[arg(short, long, global = true)]
     pub output: Option<PathBuf>,
+
+    /// Suppress status messages, spinners, and diagnostics
+    #[arg(short, long, global = true)]
+    pub quiet: bool,
+
+    /// Display verbose diagnostic and timing logs
+    #[arg(short, long, global = true)]
+    pub verbose: bool,
 }
 
 #[derive(Subcommand, Debug)]
