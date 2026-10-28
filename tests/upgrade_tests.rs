@@ -198,7 +198,11 @@ fn test_sha256_verification_computation() {
     let test_data = b"Arbitrary release archive test data for SHA256 hashing.";
     let mut hasher = Sha256::new();
     hasher.update(test_data);
-    let computed_hash = format!("{:x}", hasher.finalize());
+    let computed_hash: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect();
 
     let sha256_file = format!("{}  srz.tar.gz", computed_hash);
     let parsed_hash = parse_sha256_checksum(&sha256_file).expect("Parsed hash");

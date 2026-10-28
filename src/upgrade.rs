@@ -142,7 +142,10 @@ pub fn extract_binary_from_zip(bytes: &[u8], binary_name: &str) -> Result<Vec<u8
     let mut zip = ZipArchive::new(Cursor::new(bytes)).context("Failed to read zip archive")?;
     for i in 0..zip.len() {
         let mut file = zip.by_index(i).context("Corrupt zip entry")?;
-        let name = file.name().to_string();
+        let name = file
+            .name()
+            .context("Failed to read zip entry name")?
+            .to_string();
         if name == binary_name || name.ends_with(&format!("/{}", binary_name)) || name.ends_with(&format!("\\{}", binary_name)) {
             let mut buf = Vec::new();
             std::io::copy(&mut file, &mut buf).context("Failed to extract binary from zip entry")?;
@@ -265,7 +268,11 @@ async fn download_and_verify_archive(
             if let Some(expected_hash) = parse_sha256_checksum(&sha_text) {
                 let mut hasher = Sha256::new();
                 hasher.update(&archive_bytes);
-                let computed_hash = format!("{:x}", hasher.finalize());
+                let computed_hash: String = hasher
+                    .finalize()
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect();
 
                 if !expected_hash.eq_ignore_ascii_case(&computed_hash) {
                     sha_pb.finish_and_clear();
