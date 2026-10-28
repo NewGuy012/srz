@@ -174,21 +174,22 @@ pub struct UpgradeResult {
 /// Uses a HEAD request to inspect the redirect URL to avoid GitHub's REST API rate limit (60 req/hr).
 pub async fn resolve_latest_version(client: &reqwest::Client, repo: &str) -> Result<String> {
     let redirect_url = format!("https://github.com/{}/releases/latest", repo);
-    let response = client
-        .head(&redirect_url)
-        .send()
-        .await;
+    let no_redirect = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build();
 
-    if let Ok(resp) = response {
-        let status = resp.status();
-        if status.is_redirection() {
-            if let Some(loc) = resp.headers().get(reqwest::header::LOCATION) {
-                if let Ok(loc_str) = loc.to_str() {
-                    if let Some(pos) = loc_str.rfind("/tag/") {
-                        let tag = &loc_str[pos + 5..];
-                        let clean_tag = tag.trim_matches('/').to_string();
-                        if !clean_tag.is_empty() {
-                            return Ok(clean_tag);
+    if let Ok(no_redirect_client) = no_redirect {
+        if let Ok(resp) = no_redirect_client.head(&redirect_url).send().await {
+            let status = resp.status();
+            if status.is_redirection() {
+                if let Some(loc) = resp.headers().get(reqwest::header::LOCATION) {
+                    if let Ok(loc_str) = loc.to_str() {
+                        if let Some(pos) = loc_str.rfind("/tag/") {
+                            let tag = &loc_str[pos + 5..];
+                            let clean_tag = tag.trim_matches('/').to_string();
+                            if !clean_tag.is_empty() {
+                                return Ok(clean_tag);
+                            }
                         }
                     }
                 }
@@ -226,24 +227,25 @@ async fn download_and_verify_archive(
     latest_alias: &str,
 ) -> Result<Vec<u8>> {
     let base_dl = format!("https://github.com/{}/releases/download/{}", repo, tag);
-    let (archive_url, sha_url) = {
-        let v_url = format!("{}/{}", base_dl, versioned_name);
-        let check_res = client.head(&v_url).send().await;
-        if check_res.map(|r| r.status().is_success()).unwrap_or(false) {
-            (v_url.clone(), format!("{}.sha256", v_url))
-        } else {
-            let alias_url = format!("{}/{}", base_dl, latest_alias);
-            (alias_url.clone(), format!("{}.sha256", alias_url))
+    let v_url = format!("{}/{}", base_dl, versioned_name);
+    let alias_url = format!("{}/{}", base_dl, latest_alias);
+
+    let (archive_url, sha_url, archive_res) = {
+        let resp = client.get(&v_url).send().await;
+        match resp {
+            Ok(r) if r.status().is_success() => (v_url.clone(), format!("{}.sha256", v_url), r),
+            _ => {
+                let r2 = client
+                    .get(&alias_url)
+                    .send()
+                    .await
+                    .context("Failed to initiate archive download")?;
+                (alias_url.clone(), format!("{}.sha256", alias_url), r2)
+            }
         }
     };
 
     let archive_pb = Ui::spinner(format!("Downloading {}...", archive_url));
-    let archive_res = client
-        .get(&archive_url)
-        .send()
-        .await
-        .context("Failed to initiate archive download")?;
-
     let archive_bytes = archive_res
         .error_for_status()
         .context("Failed to download release archive")?
@@ -338,7 +340,6 @@ pub async fn run_upgrade(
 
     // 3. Setup HTTP client
     let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
         .user_agent(format!("srz/{}", current_version_str))
         .build()
         .context("Failed to build HTTP client")?;
