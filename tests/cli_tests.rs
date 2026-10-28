@@ -75,6 +75,25 @@ fn test_default_style_is_concise() {
 }
 
 #[test]
+fn test_new_summary_styles() {
+    let tldr_cli = Cli::parse_from(["srz", "Dune", "--style", "tldr"]);
+    assert_eq!(tldr_cli.style, SummaryStyle::Tldr);
+    assert_eq!(tldr_cli.style.as_str(), "tldr");
+
+    let critique_cli = Cli::parse_from(["srz", "Dune", "--style", "critique"]);
+    assert_eq!(critique_cli.style, SummaryStyle::Critique);
+    assert_eq!(critique_cli.style.as_str(), "critique");
+
+    let eli5_cli = Cli::parse_from(["srz", "Dune", "--style", "eli5"]);
+    assert_eq!(eli5_cli.style, SummaryStyle::Eli5);
+    assert_eq!(eli5_cli.style.as_str(), "eli5");
+
+    let flashcards_cli = Cli::parse_from(["srz", "Dune", "--style", "flashcards"]);
+    assert_eq!(flashcards_cli.style, SummaryStyle::Flashcards);
+    assert_eq!(flashcards_cli.style.as_str(), "flashcards");
+}
+
+#[test]
 fn test_auto_detect_url() {
     let cli = Cli::parse_from(["srz", "https://example.com/article"]);
 
