@@ -61,7 +61,7 @@ cargo install --path .
 ```bash
 # Summarize anything (URLs, books, documents, piped text)
 srz https://example.com/article
-srz "Dune"                              # Searches Wikipedia & Open Library
+srz "The Hobbit"                        # Searches Wikipedia & Open Library
 srz paper.pdf                           # Supports PDF, EPUB, MD, and TXT
 git diff | srz -                        # Reads standard input
 
@@ -70,7 +70,7 @@ srz news "javascript"                   # Today's news digest
 srz "current AI news" -t week           # Auto-detected news query (day/week/month)
 
 # Custom styles & browser reader view
-srz "Dune" --style tldr --open          # Presets: concise, detailed, bullets, tldr, eli5...
+srz "The Hobbit" --style tldr --open    # Presets: concise, detailed, bullets, tldr, eli5...
 
 # Offline library, search & diagnostics
 srz index --open                        # Interactive HTML library dashboard
@@ -86,7 +86,7 @@ Run `srz --help` to see all available subcommands (`web`, `book`, `file`, `news`
 ### Content Sources & Ingestion
 
 - **Web Articles**: Cleanly extracts and summarizes any webpage, stripping ads, navbars, and cookie banners.
-- **Books by Title**: Synthesizes verified book overviews from Wikipedia and Open Library without needing an ebook file (`srz "Dune"`).
+- **Books by Title**: Synthesizes verified book overviews from Wikipedia and Open Library without needing an ebook file (`srz "The Hobbit"`).
 - **Live News Briefings**: Aggregates top stories from Google News on any topic or timeframe, with natural prompt support (`srz "current javascript news"`).
 - **Files, PDFs, EPUBs & Stdin**: Summarizes local Markdown, text files, PDF papers, EPUB ebooks, or piped terminal output (`git diff | srz -`).
 
@@ -154,8 +154,8 @@ model = "gemma2:9b"
 ```
 
 ```bash
-srz "Dune"                  # Default profile
-srz "Dune" --profile ollama # Named profile
+srz "The Hobbit"                  # Default profile
+srz "The Hobbit" --profile ollama # Named profile
 ```
 
 ## Architecture & Modules
