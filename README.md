@@ -60,8 +60,9 @@ srz web https://example.com/article
 # Or using auto-detection
 srz https://example.com/article
 
-# Save summary to a file
+# Save summary as Markdown or standalone styled HTML (.html / .htm)
 srz web https://example.com/article -o summary.md
+srz web https://example.com/article -o summary.html
 ```
 
 ### 2. Summarizing Local Files and Stdin
@@ -125,7 +126,7 @@ srz cache dir
 # Inspect cached file counts and disk size
 srz cache size
 
-# Clear all cached pages, search results, and summaries
+# Clear all cached metadata, search results, pages, summaries, views, and reset DuckDB tables
 srz cache clean
 ```
 
@@ -136,7 +137,7 @@ srz cache clean
 srz history
 srz history --limit 20
 
-# View aggregate performance metrics across all runs
+# View aggregate performance metrics across all runs (books, web, files, stdin)
 srz stats
 
 # Search your local summarized library offline for keywords/topics
