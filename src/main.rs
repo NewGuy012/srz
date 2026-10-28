@@ -6,7 +6,7 @@ use srz::db::{Database, NewSummaryRecord};
 use srz::llm::{self, LlmClient, LlmOutput, StreamMode};
 use srz::render;
 use srz::scraper::{ScrapedPage, WebScraper};
-use srz::search::BookSearcher;
+use srz::search::{BookSearcher, SearchResult};
 use srz::ui::Ui;
 use serde::Serialize;
 use std::fs;
@@ -646,10 +646,15 @@ async fn handle_book(
     }
 
     let mode = args.stream_mode(&book_display);
+    let query = BookQuery {
+        title,
+        author,
+        no_search,
+    };
 
     // 2. Generate summary (via grounded web search or LLM memory fallback)
     let (output, word_count, source_url) =
-        generate_book_summary(title, author, no_search, scraper, llm, cache, args, mode).await?;
+        generate_book_summary(&query, scraper, llm, cache, args, mode).await?;
 
     // 3. Cache only complete, non-truncated summaries (zero-copy borrow of title & summary)
     if !output.truncated {
@@ -674,150 +679,171 @@ async fn handle_book(
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn generate_book_summary(
+struct BookQuery<'a> {
+    title: &'a str,
+    author: Option<&'a str>,
+    no_search: bool,
+}
+
+async fn resolve_book_identity(
     title: &str,
     author: Option<&str>,
-    no_search: bool,
+    cache: &Cache,
+    searcher: &mut Option<BookSearcher>,
+) -> (String, Option<String>) {
+    if let Some(auth) = author {
+        return (title.to_string(), Some(auth.to_string()));
+    }
+
+    let meta_opt = if let Some(cached_meta) = cache.get_book_metadata(title, None) {
+        cached_meta
+    } else if let Ok(s) = BookSearcher::new() {
+        let fetched = s.resolve_book_metadata(title, None).await;
+        cache.set_book_metadata(title, None, &fetched);
+        *searcher = Some(s);
+        fetched
+    } else {
+        None
+    };
+
+    if let Some(meta) = meta_opt {
+        let year_str = meta
+            .first_publish_year
+            .map(|y| format!(" ({})", y))
+            .unwrap_or_default();
+        if let Some(ref a) = meta.author {
+            Ui::info(&format!(
+                "Identified book: \"{}\" by {}{}",
+                meta.canonical_title, a, year_str
+            ));
+        }
+        (meta.canonical_title, meta.author)
+    } else {
+        (title.to_string(), None)
+    }
+}
+
+async fn fetch_or_cache_candidates(
+    effective_title: &str,
+    effective_author: Option<&str>,
+    cache: &Cache,
+    searcher: &mut Option<BookSearcher>,
+) -> Result<Vec<SearchResult>> {
+    if let Some(cached_candidates) = cache.get_search_results(effective_title, effective_author) {
+        Ui::info(&format!(
+            "Loaded {} search candidate(s) from local cache.",
+            cached_candidates.len()
+        ));
+        return Ok(cached_candidates);
+    }
+
+    let spinner = Ui::spinner("Searching web for book synopsis (Wikipedia / DuckDuckGo)...");
+    let active_searcher = match searcher {
+        Some(s) => s,
+        None => searcher.insert(BookSearcher::new()?),
+    };
+    let results = active_searcher
+        .search_candidates(effective_title, effective_author)
+        .await;
+    if !results.is_empty() {
+        Ui::finish_spinner(
+            &spinner,
+            &format!("Found {} search candidate(s) online.", results.len()),
+        );
+        cache.set_search_results(effective_title, effective_author, &results);
+    } else {
+        Ui::finish_spinner(&spinner, "No web results found.");
+    }
+    Ok(results)
+}
+
+fn disambiguate_candidates_if_needed(
+    effective_title: &str,
+    ordered_candidates: &mut Vec<SearchResult>,
+    args: &Cli,
+) {
+    if ordered_candidates.len() <= 1
+        || args.yes
+        || args.quiet
+        || args.json
+        || !io::stdin().is_terminal()
+    {
+        return;
+    }
+
+    let top_score = ordered_candidates[0].score;
+    let second_score = ordered_candidates[1].score;
+    let is_high_confidence = top_score >= 90 && (top_score - second_score) >= 30;
+    if is_high_confidence {
+        return;
+    }
+
+    Ui::header(&format!("Reference Disambiguation for \"{}\"", effective_title));
+    eprintln!("Multiple references found online:");
+    let display_limit = ordered_candidates.len().min(4);
+    for (i, cand) in ordered_candidates[..display_limit].iter().enumerate() {
+        let tag = if i == 0 { " [Recommended]" } else { "" };
+        eprintln!("  [{}] {}{}", i + 1, cand.title, tag);
+        if let Some(snippet) = &cand.snippet {
+            eprintln!("      \"{}\"", snippet);
+        }
+    }
+    eprint!("\nSelect reference [1-{}, Enter for 1]: ", display_limit);
+    let _ = io::stderr().flush();
+
+    let mut input = String::new();
+    if io::stdin().read_line(&mut input).is_ok()
+        && let Ok(choice) = input.trim().parse::<usize>()
+        && (1..=display_limit).contains(&choice)
+    {
+        let selected = ordered_candidates.remove(choice - 1);
+        ordered_candidates.insert(0, selected);
+    }
+    eprintln!();
+}
+
+async fn generate_book_summary(
+    query: &BookQuery<'_>,
     scraper: &WebScraper,
     llm: &LlmClient,
     cache: &Cache,
     args: &Cli,
     mode: StreamMode<'_>,
 ) -> Result<(LlmOutput, usize, Option<String>)> {
-    if !no_search {
+    if !query.no_search {
         let mut searcher: Option<BookSearcher> = None;
-
-        // Resolve canonical title and author if not supplied (using local metadata cache first)
-        let (resolved_title, resolved_author) = if author.is_none() {
-            let meta_opt = if let Some(cached_meta) = cache.get_book_metadata(title, None) {
-                cached_meta
-            } else if let Ok(s) = BookSearcher::new() {
-                let fetched = s.resolve_book_metadata(title, None).await;
-                cache.set_book_metadata(title, None, &fetched);
-                searcher = Some(s);
-                fetched
-            } else {
-                None
-            };
-
-            if let Some(meta) = meta_opt {
-                let year_str = meta
-                    .first_publish_year
-                    .map(|y| format!(" ({})", y))
-                    .unwrap_or_default();
-                if let Some(ref a) = meta.author {
-                    Ui::info(&format!(
-                        "Identified book: \"{}\" by {}{}",
-                        meta.canonical_title, a, year_str
-                    ));
-                }
-                (meta.canonical_title, meta.author)
-            } else {
-                (title.to_string(), None)
-            }
-        } else {
-            (title.to_string(), author.map(|a| a.to_string()))
-        };
+        let (resolved_title, resolved_author) =
+            resolve_book_identity(query.title, query.author, cache, &mut searcher).await;
 
         let effective_title = resolved_title.as_str();
-        let effective_author = resolved_author.as_deref().or(author);
+        let effective_author = resolved_author.as_deref().or(query.author);
 
-        let candidates = if let Some(cached_candidates) =
-            cache.get_search_results(effective_title, effective_author)
-        {
-            Ui::info(&format!(
-                "Loaded {} search candidate(s) from local cache.",
-                cached_candidates.len()
-            ));
-            cached_candidates
-        } else {
-            let spinner = Ui::spinner("Searching web for book synopsis (Wikipedia / DuckDuckGo)...");
-            let active_searcher = match searcher {
-                Some(ref s) => s,
-                None => searcher.insert(BookSearcher::new()?),
-            };
-            let results = active_searcher
-                .search_candidates(effective_title, effective_author)
-                .await;
-            if !results.is_empty() {
-                Ui::finish_spinner(
-                    &spinner,
-                    &format!("Found {} search candidate(s) online.", results.len()),
-                );
-                cache.set_search_results(effective_title, effective_author, &results);
-            } else {
-                Ui::finish_spinner(&spinner, "No web results found.");
-            }
-            results
-        };
+        let mut candidates = fetch_or_cache_candidates(
+            effective_title,
+            effective_author,
+            cache,
+            &mut searcher,
+        )
+        .await?;
 
         if !candidates.is_empty() {
-            let mut ordered_candidates = candidates;
-
-            // Interactive disambiguation if multiple candidates exist and top match is ambiguous
-            if ordered_candidates.len() > 1
-                && !args.yes
-                && !args.quiet
-                && !args.json
-                && io::stdin().is_terminal()
-            {
-                let top_score = ordered_candidates[0].score;
-                let second_score = ordered_candidates[1].score;
-                let is_high_confidence = top_score >= 90 && (top_score - second_score) >= 30;
-
-                if !is_high_confidence {
-                    Ui::header(&format!("Reference Disambiguation for \"{}\"", effective_title));
-                    eprintln!("Multiple references found online:");
-                    let display_limit = ordered_candidates.len().min(4);
-                    for (i, cand) in ordered_candidates[..display_limit].iter().enumerate() {
-                        let tag = if i == 0 { " [Recommended]" } else { "" };
-                        eprintln!("  [{}] {}{}", i + 1, cand.title, tag);
-                        if let Some(snippet) = &cand.snippet {
-                            eprintln!("      \"{}\"", snippet);
-                        }
-                    }
-                    eprint!("\nSelect reference [1-{}, Enter for 1]: ", display_limit);
-                    let _ = io::stderr().flush();
-
-                    let mut input = String::new();
-                    if io::stdin().read_line(&mut input).is_ok() {
-                        let trimmed = input.trim();
-                        if let Ok(choice) = trimmed.parse::<usize>()
-                            && (1..=display_limit).contains(&choice)
-                        {
-                            let selected = ordered_candidates.remove(choice - 1);
-                            ordered_candidates.insert(0, selected);
-                        }
-                    }
-                    eprintln!();
-                }
-            }
+            disambiguate_candidates_if_needed(effective_title, &mut candidates, args);
 
             let mut fallback_snippet = None;
             let mut fallback_url = None;
 
-            for res in &ordered_candidates {
+            for res in &candidates {
                 Ui::info(&format!("Attempting reference: {} ({})", res.title, res.url));
 
-                let page_result = if let Some(cached_page) = cache.get_page(&res.url) {
-                    Ui::info("Loaded reference page from local cache.");
-                    Ok(cached_page)
-                } else {
-                    match Ui::with_spinner(
-                        "Scraping reference page...",
-                        "Reference page scraped.",
-                        scraper.scrape(&res.url),
-                    )
-                    .await
-                    {
-                        Ok(page) => {
-                            cache.set_page(&res.url, &page);
-                            Ok(page)
-                        }
-                        Err(err) => Err(err),
-                    }
-                };
+                let page_result = fetch_or_cache_page(
+                    &res.url,
+                    scraper,
+                    cache,
+                    "Loaded reference page from local cache.",
+                    "Scraping reference page...",
+                    "Reference page scraped.",
+                )
+                .await;
 
                 match page_result {
                     Ok(page) => {
@@ -857,7 +883,14 @@ async fn generate_book_summary(
                 Ui::info("Using search snippet as grounded context...");
                 let word_count = snippet.split_whitespace().count();
                 if let Ok(output) = llm
-                    .summarize_book_with_context(effective_title, effective_author, &url, &snippet, args.style, mode)
+                    .summarize_book_with_context(
+                        effective_title,
+                        effective_author,
+                        &url,
+                        &snippet,
+                        args.style,
+                        mode,
+                    )
                     .await
                 {
                     return Ok((output, word_count, Some(url)));
@@ -873,7 +906,7 @@ async fn generate_book_summary(
     }
 
     let output = llm
-        .summarize_book_from_memory(title, author, args.style, mode)
+        .summarize_book_from_memory(query.title, query.author, args.style, mode)
         .await?;
     Ok((output, 0, None))
 }
