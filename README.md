@@ -6,6 +6,7 @@
 
 A fast, modular Rust CLI for distilling **webpages**, **local files**, **stdin streams**, **books**, and **live news digests** into structured summaries using any local OpenAI-compliant LLM (such as **llama.cpp**, **Ollama**, **LM Studio**, or **vLLM**).
 
+
 ## Highlights
 
 - **Summarize anything**: works with web links, book titles, local files, piped text, and news topics.
@@ -14,6 +15,7 @@ A fast, modular Rust CLI for distilling **webpages**, **local files**, **stdin s
 - **100% local & private**: runs on your own machine using `llama.cpp`, `Ollama`, `LM Studio`, or `vLLM`.
 - **Searchable personal library**: saves every summary locally so you can search past reads offline.
 - **Clean reader views**: generates one-click HTML and Markdown pages with automatic light and dark mode.
+
 
 ## Prerequisites: LLM Backend Server
 
@@ -26,6 +28,7 @@ A fast, modular Rust CLI for distilling **webpages**, **local files**, **stdin s
 
 See [Configuring Your LLM Backend](#configuring-your-llm-backend) below for step-by-step setup instructions and profile templates.
 
+
 ## Installation
 
 ### Quick Install (macOS & Linux)
@@ -36,10 +39,6 @@ Install the precompiled binary directly with `curl`:
 curl -LsSf https://raw.githubusercontent.com/NewGuy012/srz/master/install.sh | sh
 ```
 
-### Manual Download (GitHub Releases)
-
-Download precompiled standalone binaries from [GitHub Releases](https://github.com/NewGuy012/srz/releases). Extract and move `srz` to any folder in your `$PATH` (e.g. `~/.local/bin` or `/usr/local/bin`).
-
 ### Build from Source (Cargo)
 
 If you prefer building with Rust from source:
@@ -48,22 +47,44 @@ If you prefer building with Rust from source:
 cargo install --path .
 ```
 
+
 ## Usage
 
-Pass any target directly—`srz` auto-detects URLs, books, files, news, or stdin:
+Pass any target directly—`srz` auto-detects URLs, books, files, news, or stdin.
+
+### Summarizing Content
 
 ```bash
-srz https://example.com/article         # Webpage
+srz "https://example.com/article"       # Web article
 srz "The Hobbit"                        # Book title (Wikipedia + Open Library)
-srz paper.pdf                           # Local document (PDF, EPUB, MD, TXT)
-git diff | srz -                        # Standard input
-srz news "AI updates"                   # Live Google News briefing
-srz "The Hobbit" --style tldr --open    # Custom style & open reader in browser
+srz "paper.pdf"                         # Local document (PDF, EPUB, MD, TXT)
+git diff | srz "-"                      # Standard input
+```
+
+### Live News Briefings
+
+```bash
+srz news "AI updates"                   # Today's news digest
+srz "current AI news" -t "week"         # Auto-detected news query (day/week/month)
+```
+
+### Styles & Reader Views
+
+```bash
+srz "The Hobbit" --style "tldr"         # Presets: concise, detailed, bullets, tldr...
+srz "The Hobbit" --open                 # Open distraction-free reader in browser
+```
+
+### Offline Library & Search
+
+```bash
 srz find "ecology"                      # Search past summaries offline
-srz index --open                        # Open interactive HTML library
+srz index --open                        # Interactive HTML library dashboard
+srz history                             # View past summaries & token metrics
 ```
 
 Run `srz --help` to see all available subcommands and flags.
+
 
 ## Features
 
@@ -91,6 +112,7 @@ Run `srz --help` to see all available subcommands and flags.
 - **Health Checks & Diagnostics**: Verify backend connectivity and inspect available models with built-in tools.
 - **Automation & Scripting**: Export structured JSON or save output directly to files for automated workflows.
 
+
 ## Configuring Your LLM Backend
 
 `srz` connects to any OpenAI-compatible API. Local inference is preferred for privacy and zero cost, but cloud providers are fully supported.
@@ -117,7 +139,7 @@ Run `srz --help` to see all available subcommands and flags.
 export OPENAI_BASE_URL="https://api.openai.com/v1" OPENAI_MODEL="gpt-4o-mini" OPENAI_API_KEY="sk-..."
 
 # Or on the fly via CLI flag:
-srz "1984" --base-url https://api.openai.com/v1 --model gpt-4o-mini --api-key "sk-..."
+srz "1984" --base-url "https://api.openai.com/v1" --model "gpt-4o-mini" --api-key "sk-..."
 ```
 
 ### Profile Switching (`~/.config/srz/config.toml`)
@@ -152,14 +174,16 @@ Run with your default local model, or switch to any cloud profile seamlessly:
 
 ```bash
 srz "The Hobbit"                      # Runs 100% locally
-srz "The Hobbit" --profile openai      # Runs via OpenAI
-srz "The Hobbit" --profile anthropic   # Runs via Anthropic Claude
-srz "The Hobbit" --profile google      # Runs via Google Gemini
+srz "The Hobbit" --profile "openai"    # Runs via OpenAI
+srz "The Hobbit" --profile "anthropic" # Runs via Anthropic Claude
+srz "The Hobbit" --profile "google"    # Runs via Google Gemini
 ```
+
 
 ## Architecture & Modules
 
 See [`OVERVIEW.md`](OVERVIEW.md) for detailed Mermaid architecture and sequence diagrams.
+
 
 ## Running Tests
 
