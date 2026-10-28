@@ -42,6 +42,8 @@ pub struct LibraryStats {
     pub total_summaries: i64,
     pub book_summaries: i64,
     pub web_summaries: i64,
+    pub file_summaries: i64,
+    pub stdin_summaries: i64,
     pub total_source_words: i64,
     pub total_prompt_tokens: i64,
     pub total_completion_tokens: i64,
@@ -138,42 +140,64 @@ impl Database {
         Ok(())
     }
 
-    /// Records a newly generated summary into both the `history` and `library` tables.
+    /// Records a newly generated summary into both the `history` and `library` tables within a single transaction.
     pub fn record_summary(&self, record: &NewSummaryRecord<'_>) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO history (
-                target_type, title, author, url, style, model,
-                word_count, prompt_tokens, completion_tokens,
-                duration_ms, tokens_per_second
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            params![
-                record.target_type,
-                record.title,
-                record.author,
-                record.url,
-                record.style,
-                record.model,
-                record.word_count as u32,
-                record.prompt_tokens,
-                record.completion_tokens,
-                record.duration_ms as u32,
-                record.tokens_per_second,
-            ],
-        ).context("Failed to record entry in DuckDB history table")?;
+        self.conn
+            .execute_batch("BEGIN TRANSACTION;")
+            .context("Failed to start DuckDB transaction")?;
 
-        self.conn.execute(
-            "INSERT INTO library (target_type, title, author, url, summary)
-             VALUES (?, ?, ?, ?, ?)",
-            params![
-                record.target_type,
-                record.title,
-                record.author,
-                record.url,
-                record.summary,
-            ],
-        ).context("Failed to record entry in DuckDB library table")?;
+        let insert_res = (|| -> Result<()> {
+            self.conn
+                .execute(
+                    "INSERT INTO history (
+                        target_type, title, author, url, style, model,
+                        word_count, prompt_tokens, completion_tokens,
+                        duration_ms, tokens_per_second
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    params![
+                        record.target_type,
+                        record.title,
+                        record.author,
+                        record.url,
+                        record.style,
+                        record.model,
+                        record.word_count as u32,
+                        record.prompt_tokens,
+                        record.completion_tokens,
+                        record.duration_ms as u32,
+                        record.tokens_per_second,
+                    ],
+                )
+                .context("Failed to record entry in DuckDB history table")?;
 
-        Ok(())
+            self.conn
+                .execute(
+                    "INSERT INTO library (target_type, title, author, url, summary)
+                     VALUES (?, ?, ?, ?, ?)",
+                    params![
+                        record.target_type,
+                        record.title,
+                        record.author,
+                        record.url,
+                        record.summary,
+                    ],
+                )
+                .context("Failed to record entry in DuckDB library table")?;
+            Ok(())
+        })();
+
+        match insert_res {
+            Ok(()) => {
+                self.conn
+                    .execute_batch("COMMIT;")
+                    .context("Failed to commit DuckDB transaction")?;
+                Ok(())
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK;");
+                Err(err)
+            }
+        }
     }
 
     /// Fetches the most recent `limit` entries from the summarization history.
@@ -219,6 +243,8 @@ impl Database {
             "SELECT count(*),
                     coalesce(sum(case when target_type = 'book' then 1 else 0 end), 0),
                     coalesce(sum(case when target_type = 'web' then 1 else 0 end), 0),
+                    coalesce(sum(case when target_type = 'file' then 1 else 0 end), 0),
+                    coalesce(sum(case when target_type = 'stdin' then 1 else 0 end), 0),
                     coalesce(sum(word_count), 0),
                     coalesce(sum(prompt_tokens), 0),
                     coalesce(sum(completion_tokens), 0),
@@ -233,12 +259,14 @@ impl Database {
                 total_summaries: row.get(0)?,
                 book_summaries: row.get(1)?,
                 web_summaries: row.get(2)?,
-                total_source_words: row.get(3)?,
-                total_prompt_tokens: row.get(4)?,
-                total_completion_tokens: row.get(5)?,
-                avg_tokens_per_second: row.get(6)?,
-                max_tokens_per_second: row.get(7)?,
-                total_duration_ms: row.get(8)?,
+                file_summaries: row.get(3)?,
+                stdin_summaries: row.get(4)?,
+                total_source_words: row.get(5)?,
+                total_prompt_tokens: row.get(6)?,
+                total_completion_tokens: row.get(7)?,
+                avg_tokens_per_second: row.get(8)?,
+                max_tokens_per_second: row.get(9)?,
+                total_duration_ms: row.get(10)?,
             })
         })?;
 
@@ -293,33 +321,46 @@ impl Database {
     }
 }
 
-/// Extracts a surrounding text excerpt (~200 characters) around the first match of `query`.
+/// Extracts a surrounding text excerpt (~200 characters) around the first match of `query`
+/// without allocating a lowercase copy of `text`.
 /// Uses UTF-8 character boundaries to prevent indexing panics on multi-byte characters.
 fn extract_snippet(text: &str, query: &str) -> String {
-    let lower_text = text.to_ascii_lowercase();
-    let lower_query = query.to_ascii_lowercase();
+    let q_bytes = query.as_bytes();
+    let match_pos = if !q_bytes.is_empty() && text.len() >= q_bytes.len() {
+        text.as_bytes()
+            .windows(q_bytes.len())
+            .position(|window| window.eq_ignore_ascii_case(q_bytes))
+    } else {
+        None
+    };
 
-    if let Some(pos) = lower_text.find(&lower_query) {
+    let (start, end) = if let Some(pos) = match_pos {
         let raw_start = pos.saturating_sub(60);
         let raw_end = (pos + query.len() + 100).min(text.len());
-
-        let start = text.floor_char_boundary(raw_start);
-        let end = text.ceil_char_boundary(raw_end);
-
-        // Find boundary
-        let prefix = if start > 0 { "..." } else { "" };
-        let suffix = if end < text.len() { "..." } else { "" };
-
-        let clean_snippet = text[start..end].replace('\n', " ");
-        format!("{}{}{}", prefix, clean_snippet.trim(), suffix)
+        (
+            text.floor_char_boundary(raw_start),
+            text.ceil_char_boundary(raw_end),
+        )
     } else {
-        // Fallback to beginning of summary
         let raw_end = text.len().min(160);
-        let end = text.ceil_char_boundary(raw_end);
-        let suffix = if end < text.len() { "..." } else { "" };
-        let clean_snippet = text[..end].replace('\n', " ");
-        format!("{}{}", clean_snippet.trim(), suffix)
+        (0, text.ceil_char_boundary(raw_end))
+    };
+
+    let prefix = if start > 0 { "..." } else { "" };
+    let suffix = if end < text.len() { "..." } else { "" };
+    let slice = text[start..end].trim();
+
+    let mut out = String::with_capacity(prefix.len() + slice.len() + suffix.len());
+    out.push_str(prefix);
+    for ch in slice.chars() {
+        if ch == '\n' || ch == '\r' {
+            out.push(' ');
+        } else {
+            out.push(ch);
+        }
     }
+    out.push_str(suffix);
+    out
 }
 
 fn default_data_dir() -> PathBuf {

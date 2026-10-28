@@ -3,10 +3,38 @@ use std::env;
 use std::future::Future;
 use std::io::IsTerminal;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 static QUIET: AtomicBool = AtomicBool::new(false);
 static VERBOSE: AtomicBool = AtomicBool::new(false);
+
+static STDERR_IS_TERMINAL: LazyLock<bool> = LazyLock::new(|| std::io::stderr().is_terminal());
+
+static USE_COLOR: LazyLock<bool> = LazyLock::new(|| {
+    if env::var_os("CLICOLOR_FORCE")
+        .map(|v| v != "0")
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if env::var_os("NO_COLOR").is_some() {
+        return false;
+    }
+    if let Some(val) = env::var_os("CLICOLOR")
+        && val == "0"
+    {
+        return false;
+    }
+    *STDERR_IS_TERMINAL
+});
+
+static SPINNER_STYLE: LazyLock<ProgressStyle> = LazyLock::new(|| {
+    ProgressStyle::default_spinner()
+        .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ ")
+        .template("{spinner:.green} {msg}")
+        .expect("Valid spinner template")
+});
 
 pub struct Ui;
 
@@ -32,35 +60,19 @@ impl Ui {
     }
 
     /// Determines if ANSI color escapes should be emitted to stderr based on
-    /// standard `NO_COLOR`, `CLICOLOR`, `CLICOLOR_FORCE`, and terminal detection.
+    /// cached `NO_COLOR`, `CLICOLOR`, `CLICOLOR_FORCE`, and terminal detection.
     pub fn use_color() -> bool {
-        if env::var_os("CLICOLOR_FORCE").map(|v| v != "0").unwrap_or(false) {
-            return true;
-        }
-        if env::var_os("NO_COLOR").is_some() {
-            return false;
-        }
-        if let Some(val) = env::var_os("CLICOLOR")
-            && val == "0"
-        {
-            return false;
-        }
-        std::io::stderr().is_terminal()
+        *USE_COLOR
     }
 
     /// Creates a styled spinner on stderr with a status message,
     /// or a hidden progress bar if quiet mode is enabled or stderr is not a terminal.
     pub fn spinner(message: impl Into<std::borrow::Cow<'static, str>>) -> ProgressBar {
-        if Self::is_quiet() || !std::io::stderr().is_terminal() {
+        if Self::is_quiet() || !*STDERR_IS_TERMINAL {
             return ProgressBar::hidden();
         }
         let pb = ProgressBar::new_spinner();
-        pb.set_style(
-            ProgressStyle::default_spinner()
-                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ ")
-                .template("{spinner:.green} {msg}")
-                .expect("Valid spinner template"),
-        );
+        pb.set_style(SPINNER_STYLE.clone());
         pb.set_message(message);
         pb.enable_steady_tick(Duration::from_millis(80));
         pb

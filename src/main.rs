@@ -229,6 +229,15 @@ fn open_db_or_warn() -> Option<Database> {
     }
 }
 
+fn target_icon(target_type: &str) -> &'static str {
+    match target_type {
+        "book" => "📚",
+        "file" => "📄",
+        "stdin" => "⌨️",
+        _ => "🌐",
+    }
+}
+
 fn handle_history(db: &Database, limit: usize, as_json: bool) -> Result<()> {
     let entries = db.get_history(limit)?;
     if as_json {
@@ -242,7 +251,7 @@ fn handle_history(db: &Database, limit: usize, as_json: bool) -> Result<()> {
 
     Ui::header(&format!("Summarization History (last {} entries)", entries.len()));
     for entry in &entries {
-        let icon = if entry.target_type == "book" { "📚" } else { "🌐" };
+        let icon = target_icon(&entry.target_type);
         let author_str = entry
             .author
             .as_ref()
@@ -277,8 +286,12 @@ fn handle_stats(db: &Database, as_json: bool) -> Result<()> {
 
     Ui::header("Library & LLM Performance Statistics (DuckDB)");
     println!(
-        "  Total Summaries:     {} ({} books, {} web articles)",
-        stats.total_summaries, stats.book_summaries, stats.web_summaries
+        "  Total Summaries:     {} ({} books, {} web articles, {} files, {} stdin)",
+        stats.total_summaries,
+        stats.book_summaries,
+        stats.web_summaries,
+        stats.file_summaries,
+        stats.stdin_summaries
     );
     println!("  Source Words Read:   {} words", stats.total_source_words);
     println!("  Tokens Processed:    {} prompt tokens", stats.total_prompt_tokens);
@@ -305,7 +318,7 @@ fn handle_find(db: &Database, query: &str, cache: &Cache, as_json: bool) -> Resu
 
     Ui::header(&format!("Search Results for \"{}\" ({} match(es))", query, results.len()));
     for (i, res) in results.iter().enumerate() {
-        let icon = if res.target_type == "book" { "📚" } else { "🌐" };
+        let icon = target_icon(&res.target_type);
         let author_str = res
             .author
             .as_ref()
