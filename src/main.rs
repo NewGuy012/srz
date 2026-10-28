@@ -10,6 +10,7 @@ use srz::search::BookSearcher;
 use srz::ui::Ui;
 use serde::Serialize;
 use std::fs;
+use std::io::{self, IsTerminal, Write};
 
 #[derive(Serialize)]
 struct SummaryOutcome {
@@ -735,10 +736,51 @@ async fn generate_book_summary(
         };
 
         if !candidates.is_empty() {
+            let mut ordered_candidates = candidates;
+
+            // Interactive disambiguation if multiple candidates exist and top match is ambiguous
+            if ordered_candidates.len() > 1
+                && !args.yes
+                && !args.quiet
+                && !args.json
+                && io::stdin().is_terminal()
+            {
+                let top_score = ordered_candidates[0].score;
+                let second_score = ordered_candidates[1].score;
+                let is_high_confidence = top_score >= 90 && (top_score - second_score) >= 30;
+
+                if !is_high_confidence {
+                    Ui::header(&format!("Reference Disambiguation for \"{}\"", effective_title));
+                    eprintln!("Multiple references found online:");
+                    let display_limit = ordered_candidates.len().min(4);
+                    for (i, cand) in ordered_candidates[..display_limit].iter().enumerate() {
+                        let tag = if i == 0 { " [Recommended]" } else { "" };
+                        eprintln!("  [{}] {}{}", i + 1, cand.title, tag);
+                        if let Some(snippet) = &cand.snippet {
+                            eprintln!("      \"{}\"", snippet);
+                        }
+                    }
+                    eprint!("\nSelect reference [1-{}, Enter for 1]: ", display_limit);
+                    let _ = io::stderr().flush();
+
+                    let mut input = String::new();
+                    if io::stdin().read_line(&mut input).is_ok() {
+                        let trimmed = input.trim();
+                        if let Ok(choice) = trimmed.parse::<usize>()
+                            && (1..=display_limit).contains(&choice)
+                        {
+                            let selected = ordered_candidates.remove(choice - 1);
+                            ordered_candidates.insert(0, selected);
+                        }
+                    }
+                    eprintln!();
+                }
+            }
+
             let mut fallback_snippet = None;
             let mut fallback_url = None;
 
-            for res in &candidates {
+            for res in &ordered_candidates {
                 Ui::info(&format!("Attempting reference: {} ({})", res.title, res.url));
 
                 let page_result = if let Some(cached_page) = cache.get_page(&res.url) {

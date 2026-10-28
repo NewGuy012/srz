@@ -184,3 +184,12 @@ fn test_json_flag() {
     let json_summary_cli = Cli::parse_from(["srz", "Dune", "--json"]);
     assert!(json_summary_cli.json);
 }
+
+#[test]
+fn test_yes_flag() {
+    let yes_cli = Cli::parse_from(["srz", "book", "The Hobbit", "-y"]);
+    assert!(yes_cli.yes);
+
+    let long_yes_cli = Cli::parse_from(["srz", "The Hobbit", "--yes"]);
+    assert!(long_yes_cli.yes);
+}

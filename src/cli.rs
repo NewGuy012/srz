@@ -98,6 +98,10 @@ pub struct Cli {
     /// Format output as machine-readable JSON
     #[arg(long, global = true)]
     pub json: bool,
+
+    /// Automatically accept best reference match without prompting
+    #[arg(short = 'y', long, global = true)]
+    pub yes: bool,
 }
 
 #[derive(Subcommand, Debug)]
