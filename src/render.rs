@@ -13,12 +13,27 @@ pub fn save_view_files(
     title: &str,
     markdown: &str,
 ) -> std::io::Result<RenderedFiles> {
-    fs::create_dir_all(views_dir)?;
+    ensure_view_files(views_dir, title, markdown, true)
+}
 
+/// Ensures both `.md` and `.html` view files exist in `views_dir`.
+/// When `force_write` is `false` (e.g., on a cache hit) and both files already exist on disk,
+/// skips Markdown-to-HTML rendering and disk writes.
+pub fn ensure_view_files(
+    views_dir: &Path,
+    title: &str,
+    markdown: &str,
+    force_write: bool,
+) -> std::io::Result<RenderedFiles> {
     let slug = slugify(title);
     let md_path = views_dir.join(format!("{}.md", slug));
     let html_path = views_dir.join(format!("{}.html", slug));
 
+    if !force_write && md_path.exists() && html_path.exists() {
+        return Ok(RenderedFiles { html_path, md_path });
+    }
+
+    fs::create_dir_all(views_dir)?;
     fs::write(&md_path, markdown)?;
 
     let html_doc = render_html_document(title, markdown);

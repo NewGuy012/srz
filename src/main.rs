@@ -48,39 +48,33 @@ async fn main() -> Result<()> {
     };
 
     let cache = Cache::new(!args.no_cache);
-    let db = match Database::open_default() {
-        Ok(d) => Some(d),
-        Err(err) => {
-            Ui::warn(&format!("Could not open DuckDB database: {}", err));
-            None
-        }
-    };
 
-    // Handle immediate utility subcommands without initializing scraping or LLM HTTP clients
+    // Handle immediate utility subcommands without initializing scraping, LLM HTTP clients,
+    // or opening DuckDB unless the subcommand actually requires database access.
     match action {
         ResolvedAction::Cache(cache_cmd) => {
-            handle_cache(cache_cmd, &cache, db.as_ref())?;
+            handle_cache(cache_cmd, &cache)?;
             return Ok(());
         }
         ResolvedAction::History { limit } => {
-            if let Some(db) = &db {
-                handle_history(db, limit, args.json)?;
+            if let Some(db) = open_db_or_warn() {
+                handle_history(&db, limit, args.json)?;
             } else {
                 Ui::error("DuckDB database unavailable.");
             }
             return Ok(());
         }
         ResolvedAction::Stats => {
-            if let Some(db) = &db {
-                handle_stats(db, args.json)?;
+            if let Some(db) = open_db_or_warn() {
+                handle_stats(&db, args.json)?;
             } else {
                 Ui::error("DuckDB database unavailable.");
             }
             return Ok(());
         }
         ResolvedAction::Find { query } => {
-            if let Some(db) = &db {
-                handle_find(db, query, &cache, args.json)?;
+            if let Some(db) = open_db_or_warn() {
+                handle_find(&db, query, &cache, args.json)?;
             } else {
                 Ui::error("DuckDB database unavailable.");
             }
@@ -170,10 +164,14 @@ async fn main() -> Result<()> {
                 println!("{}\n", outcome.summary);
             }
 
-            // Always save clickable styled HTML and Markdown view files
+            // Always ensure clickable styled HTML and Markdown view files exist (skipping re-render on cache hit)
             if !args.json
-                && let Ok(files) =
-                    render::save_view_files(&cache.views_dir(), &outcome.title, &outcome.summary)
+                && let Ok(files) = render::ensure_view_files(
+                    &cache.views_dir(),
+                    &outcome.title,
+                    &outcome.summary,
+                    !outcome.cached,
+                )
             {
                 Ui::success(&format!(
                     "Styled HTML view: file://{}",
@@ -185,31 +183,31 @@ async fn main() -> Result<()> {
                 ));
             }
 
-            // Record newly generated summaries in DuckDB history & library
+            // Record newly generated summaries in DuckDB history & library (lazily opened)
             if !outcome.cached
-                && let Some(db) = &db
+                && let Some(db) = open_db_or_warn()
             {
                 let style_str = match args.style {
-                        SummaryStyle::Concise => "concise",
-                        SummaryStyle::Detailed => "detailed",
-                        SummaryStyle::Bullets => "bullets",
-                        SummaryStyle::Executive => "executive",
-                    };
-                    let record = NewSummaryRecord {
-                        target_type: outcome.target_type,
-                        title: &outcome.title,
-                        author: outcome.author.as_deref(),
-                        url: outcome.url.as_deref(),
-                        style: style_str,
-                        model: &args.model,
-                        word_count: outcome.word_count,
-                        prompt_tokens: outcome.prompt_tokens,
-                        completion_tokens: outcome.completion_tokens,
-                        duration_ms: outcome.duration_ms,
-                        tokens_per_second: outcome.tokens_per_second,
-                        summary: &outcome.summary,
-                    };
-                    let _ = db.record_summary(&record);
+                    SummaryStyle::Concise => "concise",
+                    SummaryStyle::Detailed => "detailed",
+                    SummaryStyle::Bullets => "bullets",
+                    SummaryStyle::Executive => "executive",
+                };
+                let record = NewSummaryRecord {
+                    target_type: outcome.target_type,
+                    title: &outcome.title,
+                    author: outcome.author.as_deref(),
+                    url: outcome.url.as_deref(),
+                    style: style_str,
+                    model: &args.model,
+                    word_count: outcome.word_count,
+                    prompt_tokens: outcome.prompt_tokens,
+                    completion_tokens: outcome.completion_tokens,
+                    duration_ms: outcome.duration_ms,
+                    tokens_per_second: outcome.tokens_per_second,
+                    summary: &outcome.summary,
+                };
+                let _ = db.record_summary(&record);
             }
         }
         Err(err) => {
@@ -219,6 +217,16 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn open_db_or_warn() -> Option<Database> {
+    match Database::open_default() {
+        Ok(d) => Some(d),
+        Err(err) => {
+            Ui::warn(&format!("Could not open DuckDB database: {}", err));
+            None
+        }
+    }
 }
 
 fn handle_history(db: &Database, limit: usize, as_json: bool) -> Result<()> {
@@ -317,7 +325,7 @@ fn handle_find(db: &Database, query: &str, cache: &Cache, as_json: bool) -> Resu
     Ok(())
 }
 
-fn handle_cache(cmd: CacheCommand, cache: &Cache, db: Option<&Database>) -> Result<()> {
+fn handle_cache(cmd: CacheCommand, cache: &Cache) -> Result<()> {
     match cmd {
         CacheCommand::Dir => {
             println!("{}", cache.dir().display());
@@ -337,7 +345,7 @@ fn handle_cache(cmd: CacheCommand, cache: &Cache, db: Option<&Database>) -> Resu
         CacheCommand::Clean => {
             let stats = cache.clean().context("Failed to clean cache directory")?;
             let mut db_reset = false;
-            if let Some(database) = db {
+            if let Some(database) = open_db_or_warn() {
                 database.reset().context("Failed to reset DuckDB database")?;
                 db_reset = true;
             }

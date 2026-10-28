@@ -1,8 +1,9 @@
 use srz::chunker::TextChunker;
 use srz::llm::truncate_words_preserving_lines;
-use srz::render::{markdown_to_html, render_html_document, slugify};
+use srz::render::{ensure_view_files, markdown_to_html, render_html_document, slugify};
 use srz::scraper::WebScraper;
 use std::borrow::Cow;
+use std::fs;
 
 #[test]
 fn test_normalize_extracts_title_and_clean_text() {
@@ -88,4 +89,19 @@ fn test_markdown_to_styled_html_rendering() {
     let full_doc = render_html_document("\"Dune\"", md);
     assert!(full_doc.contains("<!DOCTYPE html>"));
     assert!(full_doc.contains("Summary: &quot;Dune&quot;"));
+
+    // Verify ensure_view_files skips rewrite when force_write is false and files exist
+    let tmp_dir = std::env::temp_dir().join("srz_test_views_reuse");
+    let _ = fs::remove_dir_all(&tmp_dir);
+    let rendered = ensure_view_files(&tmp_dir, "Dune", "Initial summary", true).unwrap();
+    assert_eq!(fs::read_to_string(&rendered.md_path).unwrap(), "Initial summary");
+
+    // With force_write = false, existing files are reused untouched
+    let reused = ensure_view_files(&tmp_dir, "Dune", "Updated summary", false).unwrap();
+    assert_eq!(fs::read_to_string(&reused.md_path).unwrap(), "Initial summary");
+
+    // With force_write = true, files are overwritten
+    let overwritten = ensure_view_files(&tmp_dir, "Dune", "Updated summary", true).unwrap();
+    assert_eq!(fs::read_to_string(&overwritten.md_path).unwrap(), "Updated summary");
+    let _ = fs::remove_dir_all(&tmp_dir);
 }
