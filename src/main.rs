@@ -689,24 +689,33 @@ async fn generate_book_summary(
     mode: StreamMode<'_>,
 ) -> Result<(LlmOutput, usize, Option<String>)> {
     if !no_search {
-        // Resolve canonical title and author if not supplied
+        let mut searcher: Option<BookSearcher> = None;
+
+        // Resolve canonical title and author if not supplied (using local metadata cache first)
         let (resolved_title, resolved_author) = if author.is_none() {
-            if let Ok(searcher) = BookSearcher::new() {
-                if let Some(meta) = searcher.resolve_book_metadata(title, None).await {
-                    let year_str = meta
-                        .first_publish_year
-                        .map(|y| format!(" ({})", y))
-                        .unwrap_or_default();
-                    if let Some(ref a) = meta.author {
-                        Ui::info(&format!(
-                            "Identified book: \"{}\" by {}{}",
-                            meta.canonical_title, a, year_str
-                        ));
-                    }
-                    (meta.canonical_title, meta.author)
-                } else {
-                    (title.to_string(), None)
+            let meta_opt = if let Some(cached_meta) = cache.get_book_metadata(title, None) {
+                cached_meta
+            } else if let Ok(s) = BookSearcher::new() {
+                let fetched = s.resolve_book_metadata(title, None).await;
+                cache.set_book_metadata(title, None, &fetched);
+                searcher = Some(s);
+                fetched
+            } else {
+                None
+            };
+
+            if let Some(meta) = meta_opt {
+                let year_str = meta
+                    .first_publish_year
+                    .map(|y| format!(" ({})", y))
+                    .unwrap_or_default();
+                if let Some(ref a) = meta.author {
+                    Ui::info(&format!(
+                        "Identified book: \"{}\" by {}{}",
+                        meta.canonical_title, a, year_str
+                    ));
                 }
+                (meta.canonical_title, meta.author)
             } else {
                 (title.to_string(), None)
             }
@@ -727,8 +736,11 @@ async fn generate_book_summary(
             cached_candidates
         } else {
             let spinner = Ui::spinner("Searching web for book synopsis (Wikipedia / DuckDuckGo)...");
-            let searcher = BookSearcher::new()?;
-            let results = searcher
+            let active_searcher = match searcher {
+                Some(ref s) => s,
+                None => searcher.insert(BookSearcher::new()?),
+            };
+            let results = active_searcher
                 .search_candidates(effective_title, effective_author)
                 .await;
             if !results.is_empty() {

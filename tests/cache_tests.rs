@@ -1,7 +1,7 @@
 use srz::cache::{Cache, SetBookSummaryParams};
 use srz::cli::SummaryStyle;
 use srz::scraper::ScrapedPage;
-use srz::search::SearchResult;
+use srz::search::{BookMetadata, SearchResult};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -120,4 +120,26 @@ fn test_cache_stats_and_clean() {
     let removed = cache.clean().unwrap();
     assert_eq!(removed.total_files, 2);
     assert_eq!(cache.stats().total_files, 0);
+}
+
+#[test]
+fn test_book_metadata_cache_roundtrip() {
+    let dir = temp_test_dir("metadata");
+    let cache = Cache::with_dir(dir.clone(), true);
+
+    assert!(cache.get_book_metadata("The Hobbit", None).is_none());
+
+    let meta = Some(BookMetadata {
+        canonical_title: "The Hobbit".to_string(),
+        author: Some("J. R. R. Tolkien".to_string()),
+        first_publish_year: Some(1937),
+    });
+    cache.set_book_metadata("The Hobbit", None, &meta);
+
+    let loaded = cache
+        .get_book_metadata("  the hobbit ", None)
+        .expect("Should hit metadata cache");
+    assert_eq!(loaded, meta);
+
+    let _ = fs::remove_dir_all(dir);
 }

@@ -1,6 +1,6 @@
 use crate::cli::SummaryStyle;
 use crate::scraper::ScrapedPage;
-use crate::search::SearchResult;
+use crate::search::{BookMetadata, SearchResult};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::env;
@@ -205,7 +205,35 @@ impl Cache {
         self.write_entry("pages", &key, page);
     }
 
-    // --- Book Search Candidates Cache ---
+    // --- Book Metadata & Search Candidates Cache ---
+
+    fn metadata_key(title: &str, author: Option<&str>) -> String {
+        let normalized_key = (
+            "meta",
+            AsciiLower(title.trim()),
+            author.map(|a| AsciiLower(a.trim())),
+        );
+        Self::hash_key(&normalized_key)
+    }
+
+    pub fn get_book_metadata(
+        &self,
+        title: &str,
+        author: Option<&str>,
+    ) -> Option<Option<BookMetadata>> {
+        let key = Self::metadata_key(title, author);
+        self.read_entry("search", &key)
+    }
+
+    pub fn set_book_metadata(
+        &self,
+        title: &str,
+        author: Option<&str>,
+        metadata: &Option<BookMetadata>,
+    ) {
+        let key = Self::metadata_key(title, author);
+        self.write_entry("search", &key, metadata);
+    }
 
     fn search_key(title: &str, author: Option<&str>) -> String {
         let normalized_key = (

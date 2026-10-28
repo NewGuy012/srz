@@ -166,16 +166,23 @@ impl BookSearcher {
         let mut results = Vec::new();
 
         // OpenSearch returns: [ search_term, [titles], [descriptions], [urls] ]
+        let descriptions = json.get(2).and_then(|v| v.as_array());
         if let (Some(titles), Some(urls)) = (
             json.get(1).and_then(|v| v.as_array()),
             json.get(3).and_then(|v| v.as_array()),
         ) {
-            for (t_val, u_val) in titles.iter().zip(urls.iter()) {
+            for (idx, (t_val, u_val)) in titles.iter().zip(urls.iter()).enumerate() {
                 if let (Some(page_title), Some(page_url)) = (t_val.as_str(), u_val.as_str()) {
+                    let snippet = descriptions
+                        .and_then(|d| d.get(idx))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string());
                     results.push(SearchResult::new(
                         format!("{} (Wikipedia)", page_title),
                         page_url,
-                        None,
+                        snippet,
                     ));
                 }
             }
@@ -339,76 +346,116 @@ const DERIVATIVE_MARKERS: &[&str] = &[
     "cliffsnotes",
 ];
 
+struct PreparedQuery {
+    norm_req: String,
+    novel_variant: String,
+    book_variant: String,
+    norm_author: Option<String>,
+}
+
+impl PreparedQuery {
+    fn new(title_query: &str, author_query: Option<&str>) -> Self {
+        let norm_req = normalize_title_for_comparison(title_query);
+        let novel_variant = format!("{} (novel)", norm_req);
+        let book_variant = format!("{} (book)", norm_req);
+        let norm_author = author_query
+            .map(|a| a.trim().to_ascii_lowercase())
+            .filter(|a| !a.is_empty());
+
+        Self {
+            norm_req,
+            novel_variant,
+            book_variant,
+            norm_author,
+        }
+    }
+
+    fn score(&self, candidate: &SearchResult) -> i32 {
+        let mut score = 0;
+        let norm_cand = normalize_title_for_comparison(&candidate.title);
+
+        // 1. Exact match bonus
+        if norm_cand == self.norm_req {
+            score += 100;
+        } else if norm_cand == self.novel_variant || norm_cand == self.book_variant {
+            score += 95;
+        } else if let Some(stripped) = norm_cand.strip_prefix(&self.norm_req) {
+            let remainder = stripped.trim();
+            if remainder.starts_with('(') && remainder.ends_with(')') {
+                // Parenthetical qualifier like "(novel)" or "(1937)"
+                score += 85;
+            } else {
+                // Subtitle like ": an unexpected journey"
+                score += 40;
+            }
+        } else if norm_cand.ends_with(&self.norm_req) {
+            score += 30;
+        } else if norm_cand.contains(&self.norm_req) {
+            score += 20;
+        }
+
+        // 2. Heavy penalty for derivative / commentary / adaptation keywords
+        for marker in DERIVATIVE_MARKERS {
+            if norm_cand.contains(marker) && !self.norm_req.contains(marker) {
+                score -= 60;
+                break;
+            }
+        }
+
+        // 3. Author matching bonus (without concatenating title + snippet into a new String)
+        if let Some(norm_author) = &self.norm_author {
+            let last_name = norm_author.split_whitespace().last().unwrap_or(norm_author);
+            let snippet_str = candidate.snippet.as_deref().unwrap_or("");
+
+            if norm_cand.contains(norm_author.as_str())
+                || contains_ascii_case_insensitive(snippet_str, norm_author)
+            {
+                score += 50;
+            } else if last_name.len() > 2
+                && (norm_cand.contains(last_name)
+                    || contains_ascii_case_insensitive(snippet_str, last_name))
+            {
+                score += 30;
+            }
+        }
+
+        // 4. Source authority bonus for Wikipedia novel/canonical pages
+        if candidate.url.contains("wikipedia.org/wiki/") {
+            score += 15;
+        }
+
+        score
+    }
+}
+
 /// Scores each candidate against the requested book title and optional author,
 /// sorting candidates descending by relevance score.
 pub fn rank_candidates(title_query: &str, author_query: Option<&str>, candidates: &mut [SearchResult]) {
+    let prepared = PreparedQuery::new(title_query, author_query);
     for c in candidates.iter_mut() {
-        c.score = score_candidate(title_query, author_query, c);
+        c.score = prepared.score(c);
     }
     candidates.sort_by_key(|a| std::cmp::Reverse(a.score));
 }
 
 /// Evaluates relevance of a candidate search result to the user's book query.
 pub fn score_candidate(title_query: &str, author_query: Option<&str>, candidate: &SearchResult) -> i32 {
-    let mut score = 0;
+    PreparedQuery::new(title_query, author_query).score(candidate)
+}
 
-    let norm_req = normalize_title_for_comparison(title_query);
-    let norm_cand = normalize_title_for_comparison(&candidate.title);
-
-    // 1. Exact match bonus
-    if norm_cand == norm_req {
-        score += 100;
-    } else if norm_cand == format!("{} (novel)", norm_req)
-        || norm_cand == format!("{} (book)", norm_req)
-    {
-        score += 95;
-    } else if let Some(stripped) = norm_cand.strip_prefix(&norm_req) {
-        let remainder = stripped.trim();
-        if remainder.starts_with('(') && remainder.ends_with(')') {
-            // Parenthetical qualifier like "(novel)" or "(1937)"
-            score += 85;
-        } else {
-            // Subtitle like ": an unexpected journey"
-            score += 40;
-        }
-    } else if norm_cand.ends_with(&norm_req) {
-        score += 30;
-    } else if norm_cand.contains(&norm_req) {
-        score += 20;
+/// Zero-allocation case-insensitive ASCII substring check (`needle` must already be lowercase ASCII).
+pub(crate) fn contains_ascii_case_insensitive(haystack: &str, lowercase_needle: &str) -> bool {
+    let n_bytes = lowercase_needle.as_bytes();
+    if n_bytes.is_empty() {
+        return true;
     }
-
-    // 2. Heavy penalty for derivative / commentary / adaptation keywords
-    for marker in DERIVATIVE_MARKERS {
-        if norm_cand.contains(marker) && !norm_req.contains(marker) {
-            score -= 60;
-            break;
-        }
+    let h_bytes = haystack.as_bytes();
+    if h_bytes.len() < n_bytes.len() {
+        return false;
     }
-
-    // 3. Author matching bonus
-    if let Some(author) = author_query {
-        let norm_author = author.trim().to_ascii_lowercase();
-        let last_name = norm_author.split_whitespace().last().unwrap_or(&norm_author);
-
-        let candidate_text = format!(
-            "{} {}",
-            norm_cand,
-            candidate.snippet.as_deref().unwrap_or("").to_ascii_lowercase()
-        );
-
-        if candidate_text.contains(&norm_author) {
-            score += 50;
-        } else if candidate_text.contains(last_name) && last_name.len() > 2 {
-            score += 30;
-        }
-    }
-
-    // 4. Source authority bonus for Wikipedia novel/canonical pages
-    if candidate.url.contains("wikipedia.org/wiki/") {
-        score += 15;
-    }
-
-    score
+    h_bytes
+        .windows(n_bytes.len())
+        .any(|window| window.eq_ignore_ascii_case(n_bytes))
 }
 
 fn normalize_title_for_comparison(title: &str) -> String {
@@ -428,5 +475,8 @@ fn normalize_title_for_comparison(title: &str) -> String {
             prev_space = true;
         }
     }
-    out.trim().to_string()
+    if out.ends_with(' ') {
+        out.pop();
+    }
+    out
 }
