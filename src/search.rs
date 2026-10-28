@@ -435,11 +435,6 @@ pub fn rank_candidates(title_query: &str, author_query: Option<&str>, candidates
     candidates.sort_by_key(|a| std::cmp::Reverse(a.score));
 }
 
-/// Evaluates relevance of a candidate search result to the user's book query.
-pub fn score_candidate(title_query: &str, author_query: Option<&str>, candidate: &SearchResult) -> i32 {
-    PreparedQuery::new(title_query, author_query).score(candidate)
-}
-
 /// Zero-allocation case-insensitive ASCII substring check (`needle` must already be lowercase ASCII).
 pub(crate) fn contains_ascii_case_insensitive(haystack: &str, lowercase_needle: &str) -> bool {
     let n_bytes = lowercase_needle.as_bytes();

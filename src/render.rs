@@ -15,16 +15,6 @@ pub fn is_html_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Saves both a `.md` file and a standalone, styled `.html` document into `views_dir`,
-/// returning their absolute paths for clickable terminal links.
-pub fn save_view_files(
-    views_dir: &Path,
-    title: &str,
-    markdown: &str,
-) -> std::io::Result<RenderedFiles> {
-    ensure_view_files(views_dir, title, markdown, true)
-}
-
 /// Ensures both `.md` and `.html` view files exist in `views_dir`.
 /// When `force_write` is `false` (e.g., on a cache hit) and both files already exist on disk,
 /// skips Markdown-to-HTML rendering and disk writes.

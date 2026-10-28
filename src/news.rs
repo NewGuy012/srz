@@ -17,7 +17,6 @@ static SOURCE_SEL: LazyLock<Selector> = LazyLock::new(|| Selector::parse("source
 pub struct NewsArticleItem {
     pub title: String,
     pub google_link: String,
-    pub resolved_url: Option<String>,
     pub source_name: Option<String>,
     pub pub_date: Option<String>,
 }
@@ -127,7 +126,6 @@ impl GoogleNewsClient {
                 items.push(NewsArticleItem {
                     title,
                     google_link: link,
-                    resolved_url: None,
                     source_name,
                     pub_date,
                 });

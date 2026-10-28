@@ -341,13 +341,6 @@ impl LlmClient {
         Ok(body.data)
     }
 
-    /// Measures ping round-trip latency to the server in milliseconds.
-    pub async fn ping(&self) -> Result<u64> {
-        let start = std::time::Instant::now();
-        let _ = self.list_models().await?;
-        Ok(start.elapsed().as_millis() as u64)
-    }
-
     async fn send_completion_request(
         &self,
         body: &ChatCompletionRequest<'_>,
@@ -578,19 +571,6 @@ impl LlmClient {
     ) -> Result<LlmOutput> {
         let title_str = title.unwrap_or("Untitled Webpage");
         self.summarize_document_counted(title_str, Some(url), content, Some(word_count), style, mode)
-            .await
-    }
-
-    /// Summarize any document text, local file, or stdin stream (with automatic chunking for long texts)
-    pub async fn summarize_document(
-        &self,
-        title: &str,
-        source_label: Option<&str>,
-        content: &str,
-        style: SummaryStyle,
-        mode: StreamMode<'_>,
-    ) -> Result<LlmOutput> {
-        self.summarize_document_counted(title, source_label, content, None, style, mode)
             .await
     }
 
