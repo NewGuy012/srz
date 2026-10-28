@@ -131,6 +131,12 @@ pub enum Commands {
         /// Keyword or query to search for across titles and summaries
         query: String,
     },
+    /// Generate shell auto-completion script
+    Completions {
+        /// Target shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,6 +171,9 @@ pub enum ResolvedAction<'a> {
     Find {
         query: &'a str,
     },
+    Completions {
+        shell: clap_complete::Shell,
+    },
 }
 
 impl Cli {
@@ -192,6 +201,7 @@ impl Cli {
                 Commands::Find { query } => Ok(ResolvedAction::Find {
                     query: query.trim(),
                 }),
+                Commands::Completions { shell } => Ok(ResolvedAction::Completions { shell: *shell }),
             }
         } else if let Some(target) = &self.target {
             let trimmed = target.trim();

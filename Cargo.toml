@@ -15,3 +15,4 @@ html2text = "0.14"
 urlencoding = "2.1"
 anyhow = "1.0"
 duckdb = { version = "1.20000.0", features = ["bundled"] }
+clap_complete = "4"

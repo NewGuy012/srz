@@ -41,6 +41,25 @@ fn test_history_stats_find_subcommands() {
 }
 
 #[test]
+fn test_completions_subcommand() {
+    let bash_cli = Cli::parse_from(["srz", "completions", "bash"]);
+    assert_eq!(
+        bash_cli.resolve_action().unwrap(),
+        ResolvedAction::Completions {
+            shell: clap_complete::Shell::Bash
+        }
+    );
+
+    let zsh_cli = Cli::parse_from(["srz", "completions", "zsh"]);
+    assert_eq!(
+        zsh_cli.resolve_action().unwrap(),
+        ResolvedAction::Completions {
+            shell: clap_complete::Shell::Zsh
+        }
+    );
+}
+
+#[test]
 fn test_default_style_is_concise() {
     let cli = Cli::parse_from(["srz", "Dune"]);
     assert_eq!(cli.style, SummaryStyle::Concise);

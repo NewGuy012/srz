@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use srz::cache::{Cache, SetBookSummaryParams};
 use srz::cli::{CacheCommand, Cli, ResolvedAction, SummaryStyle};
 use srz::db::{Database, NewSummaryRecord};
@@ -81,6 +81,15 @@ async fn main() -> Result<()> {
             } else {
                 Ui::error("DuckDB database unavailable.");
             }
+            return Ok(());
+        }
+        ResolvedAction::Completions { shell } => {
+            clap_complete::generate(
+                shell,
+                &mut Cli::command(),
+                "srz",
+                &mut std::io::stdout(),
+            );
             return Ok(());
         }
         _ => {}
