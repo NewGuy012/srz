@@ -50,6 +50,32 @@ pub fn ensure_view_files(
     Ok(RenderedFiles { html_path, md_path })
 }
 
+/// Launches the default system browser to view the specified file or URL.
+pub fn open_in_browser(path: &Path) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(path).spawn()?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open").arg(path).spawn()?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &path.to_string_lossy()])
+            .spawn()?;
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Unsupported operating system for auto-opening browser",
+        ));
+    }
+    Ok(())
+}
+
 /// Converts a title into a clean, filesystem-safe ASCII slug (e.g. `"Dune" by Frank Herbert` -> `dune-by-frank-herbert`).
 pub fn slugify(title: &str) -> String {
     let mut slug = String::with_capacity(title.len());

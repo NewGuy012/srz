@@ -121,6 +121,10 @@ pub struct Cli {
     /// Automatically accept best reference match without prompting
     #[arg(short = 'y', long, global = true)]
     pub yes: bool,
+
+    /// Automatically open the styled HTML summary in the default web browser
+    #[arg(short = 'b', long, global = true)]
+    pub open: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -367,6 +371,12 @@ impl Cli {
         if !was_provided("verbose") {
             if let Some(v) = profile.and_then(|p| p.verbose).or(config.verbose) {
                 self.verbose = v;
+            }
+        }
+
+        if !was_provided("open") {
+            if let Some(o) = profile.and_then(|p| p.open).or(config.open) {
+                self.open = o;
             }
         }
     }

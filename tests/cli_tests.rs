@@ -198,4 +198,10 @@ fn test_yes_flag() {
 
     let long_yes_cli = Cli::parse_from(["srz", "The Hobbit", "--yes"]);
     assert!(long_yes_cli.yes);
+
+    let open_cli = Cli::parse_from(["srz", "The Hobbit", "-b"]);
+    assert!(open_cli.open);
+
+    let long_open_cli = Cli::parse_from(["srz", "The Hobbit", "--open"]);
+    assert!(long_open_cli.open);
 }
