@@ -146,7 +146,8 @@ impl Cache {
         (count, bytes)
     }
 
-    fn default_cache_dir() -> PathBuf {
+    /// Returns the default root directory (`$XDG_CACHE_HOME/srz`, `~/.cache/srz`, or `$TMPDIR/srz-cache`).
+    pub fn default_cache_dir() -> PathBuf {
         if let Ok(xdg) = env::var("XDG_CACHE_HOME") {
             let trimmed = xdg.trim();
             if !trimmed.is_empty() {

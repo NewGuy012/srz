@@ -1,9 +1,9 @@
+use crate::cache::Cache;
 use anyhow::{Context, Result};
 use duckdb::{params, Connection};
 use serde::{Deserialize, Serialize};
-use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub struct NewSummaryRecord<'a> {
     pub target_type: &'a str, // 'book' or 'web'
@@ -70,7 +70,7 @@ pub struct Database {
 impl Database {
     /// Opens the default DuckDB database located at `~/.cache/srz/srz.duckdb`.
     pub fn open_default() -> Result<Self> {
-        let base_dir = default_data_dir();
+        let base_dir = Cache::default_cache_dir();
         fs::create_dir_all(&base_dir)
             .with_context(|| format!("Failed to create directory {:?}", base_dir))?;
         let db_path = base_dir.join("srz.duckdb");
@@ -361,22 +361,4 @@ fn extract_snippet(text: &str, query: &str) -> String {
     }
     out.push_str(suffix);
     out
-}
-
-fn default_data_dir() -> PathBuf {
-    if let Ok(xdg) = env::var("XDG_CACHE_HOME") {
-        let trimmed = xdg.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed).join("srz");
-        }
-    }
-
-    if let Ok(home) = env::var("HOME") {
-        let trimmed = home.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed).join(".cache").join("srz");
-        }
-    }
-
-    env::temp_dir().join("srz-cache")
 }
