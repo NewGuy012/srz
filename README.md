@@ -15,28 +15,15 @@ A fast, modular Rust CLI for distilling **webpages**, **local files**, **stdin s
 - **Searchable personal library**: saves every summary locally so you can search past reads offline.
 - **Clean reader views**: generates one-click HTML and Markdown pages with automatic light and dark mode.
 
-## Prerequisites: Local LLM Server (Preferred)
+## Prerequisites: Local LLM Server
 
-`srz` is built **local-first** to guarantee total privacy, zero subscription fees, and offline functionality. While cloud providers are fully supported (see [Cloud Providers](#cloud-providers-optional)), a local LLM is strongly preferred.
+`srz` requires an OpenAI API-compliant LLM server running on your machine (or access to a cloud provider API). Local inference is preferred for total privacy, zero fees, and offline use:
 
-Before running `srz`, make sure you have an OpenAI API-compliant server running:
+- **macOS**: [Llama-macOS](https://github.com/ggml-org/Llama-macOS) (recommended; connects out-of-the-box on port `9931`).
+- **Windows & Linux**: [Ollama](https://ollama.com/) (recommended; port `11434`).
+- **Other Backends**: Compatible with LM Studio, llama.cpp, vLLM, or cloud providers (OpenAI, Groq).
 
-- **macOS (Recommended)**: Install [Llama-macOS](https://github.com/ggml-org/Llama-macOS), a native Apple Silicon app powered by `llama.cpp` Metal acceleration.
-  - **Default endpoint**: `http://localhost:9931/v1`
-  - **Default model**: `ggml-org/gemma-4-E4B-it-GGUF:Q8_0` (or any loaded GGUF model)
-  - Simply open the app, download/select your model, and `srz` will connect out-of-the-box with zero configuration.
-
-- **Windows & Linux (Recommended)**: Install [Ollama](https://ollama.com/).
-  - Download and run Ollama, pull your desired model (e.g., `ollama run gemma2:9b` or `ollama run llama3.1`), and configure `srz`:
-    ```powershell
-    $env:OPENAI_BASE_URL="http://localhost:11434/v1"
-    $env:OPENAI_MODEL="gemma2:9b"
-    ```
-  - Or persist it permanently in your config file (`~/.config/srz/config.toml`).
-
-- **Other Local Backends**: Any OpenAI-compatible local server works seamlessly, including **LM Studio**, **llama.cpp server**, or **vLLM**.
-
-- **Cloud Providers (Optional)**: If you prefer cloud inference, `srz` works out-of-the-box with any OpenAI API-compatible provider (OpenAI, Groq, OpenRouter, DeepSeek, etc.) by supplying your API key and endpoint.
+See [Configuring Your Local LLM](#configuring-your-local-llm) below for step-by-step setup instructions and profile templates.
 
 ## Installation
 
@@ -126,24 +113,42 @@ Run `srz --help` to see all available subcommands (`web`, `book`, `file`, `news`
 - **Pipeline & Scripting Friendly**: Pass `--json` for automation, `-o` to save files, and enjoy clean `stdout`/`stderr` separation.
 - **Shell Auto-Completions**: Instant tab-completion setup for `bash`, `zsh`, `fish`, and `powershell`.
 
-## Configuring Your LLM Backend
+## Configuring Your Local LLM
 
-While **local inference is preferred** for privacy and zero subscription costs, `srz` works with both local servers and cloud providers.
+While local inference is preferred, `srz` works with both local servers and cloud providers.
 
-By default, `srz` connects to a local [Llama-macOS](https://github.com/ggml-org/Llama-macOS) instance on port `9931`:
-- **Default Base URL**: `http://localhost:9931/v1`
-- **Default Model**: `ggml-org/gemma-4-E4B-it-GGUF:Q8_0`
+### 1. macOS Setup (Llama-macOS)
+1. Install and launch [Llama-macOS](https://github.com/ggml-org/Llama-macOS) (native Apple Silicon app powered by `llama.cpp` Metal acceleration).
+2. Download or select your preferred GGUF model in the app (e.g., Gemma 4, Llama 3, or Mistral).
+3. `srz` connects automatically to `http://localhost:9931/v1` with zero configuration needed.
 
-### Checking Connection & Loaded Models
+### 2. Windows & Linux Setup (Ollama)
+1. Install [Ollama](https://ollama.com/).
+2. Pull and run your preferred model:
+   ```bash
+   ollama run gemma2:9b
+   ```
+3. Configure `srz` to use Ollama's endpoint (`http://localhost:11434/v1`):
+   ```bash
+   # Windows (PowerShell)
+   $env:OPENAI_BASE_URL="http://localhost:11434/v1"
+   $env:OPENAI_MODEL="gemma2:9b"
+
+   # Linux / macOS (bash/zsh)
+   export OPENAI_BASE_URL="http://localhost:11434/v1"
+   export OPENAI_MODEL="gemma2:9b"
+   ```
+   *(Or save these in `~/.config/srz/config.toml` as shown below).*
+
+### 3. Verify Connection & Models
+Run diagnostic commands to ensure `srz` can reach your LLM backend:
 ```bash
 srz doctor   # Verifies endpoint latency, database, cache, and config health
-srz models   # Lists all models available on the backend
+srz models   # Lists all models currently available on the backend
 ```
 
-### Switching Backends & Models
-
-#### Via Named Profiles in `~/.config/srz/config.toml` (Recommended):
-Run `srz config init` to create a starter config, then configure your local and cloud profiles:
+### 4. Named Profiles in `~/.config/srz/config.toml` (Recommended)
+Run `srz config init` to create a starter config, then define your local and cloud profiles:
 ```toml
 # Default local backend (fast, private, zero cost)
 base_url = "http://localhost:9931/v1"
@@ -154,46 +159,32 @@ model = "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
 base_url = "http://localhost:11434/v1"
 model = "gemma2:9b"
 
-# Cloud: Groq (ultra-fast cloud inference)
+# Optional Cloud Profiles (Groq, OpenAI, OpenRouter, DeepSeek)
 [profiles.groq]
 base_url = "https://api.groq.com/openai/v1"
 model = "llama-3.3-70b-versatile"
 api_key = "gsk_..."
 
-# Cloud: OpenAI
 [profiles.openai]
 base_url = "https://api.openai.com/v1"
 model = "gpt-4o-mini"
 api_key = "sk-..."
 ```
 
-Run with your default local model, or switch to a cloud profile when needed:
+Run with your default local model or toggle profiles on the fly:
 ```bash
-srz "The Hobbit"                   # Runs 100% locally
+srz "The Hobbit"                   # Runs locally via Llama-macOS
 srz "The Hobbit" --profile ollama  # Runs via local Ollama
 srz "The Hobbit" --profile groq    # Runs via Groq cloud
 srz "The Hobbit" --profile openai  # Runs via OpenAI cloud
 ```
 
-#### Via Environment Variables:
+### 5. Overriding via Flags or Environment Variables
 ```bash
-# Local LLM: macOS (Llama-macOS)
-export OPENAI_BASE_URL="http://localhost:9931/v1"
-export OPENAI_MODEL="ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
+# Connect to local Ollama via CLI flag
+srz "1984" --base-url http://localhost:11434/v1 --model gemma2:9b
 
-# Local LLM: Windows / Linux (Ollama)
-export OPENAI_BASE_URL="http://localhost:11434/v1"
-export OPENAI_MODEL="gemma2:9b"
-
-# Cloud Providers (e.g. Groq, OpenAI, OpenRouter, DeepSeek)
-export OPENAI_BASE_URL="https://api.groq.com/openai/v1"
-export OPENAI_MODEL="llama-3.3-70b-versatile"
-export OPENAI_API_KEY="gsk_..."
-```
-
-#### Via CLI Flags:
-```bash
-# Connect to a cloud provider on the fly
+# Connect to cloud OpenAI via CLI flag
 srz "1984" --base-url https://api.openai.com/v1 --model gpt-4o-mini --api-key "sk-..."
 ```
 
