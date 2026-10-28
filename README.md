@@ -4,11 +4,12 @@
 
 # `srz` (Summarize)
 
-A fast, modular Rust CLI for distilling **webpages**, **local files**, **stdin streams**, and **books** into structured summaries using any local OpenAI-compliant LLM (such as **llama.cpp**, **Ollama**, **LM Studio**, or **vLLM**).
+A fast, modular Rust CLI for distilling **webpages**, **local files**, **stdin streams**, **books**, and **live news digests** into structured summaries using any local OpenAI-compliant LLM (such as **llama.cpp**, **Ollama**, **LM Studio**, or **vLLM**).
 
 ## Highlights
 
-- **Summarize anything**: works with web links, book titles, local files, and piped text.
+- **Summarize anything**: works with web links, book titles, local files, piped text, and news topics.
+- **Multi-source news briefings**: aggregates top articles from Google News RSS for any topic, decodes destination publisher URLs, and synthesizes executive briefings.
 - **Fact-checked book summaries**: pulls synopses from Wikipedia and Open Library—no ebook files or API keys needed.
 - **100% local & private**: runs on your own machine using `llama.cpp`, `Ollama`, `LM Studio`, or `vLLM`.
 - **Searchable personal library**: saves every summary locally so you can search past reads offline.
@@ -42,6 +43,12 @@ srz paper.pdf
 srz novel.epub
 git diff | srz -
 
+# Search and summarize latest news on any topic (today by default, or past week/month)
+srz news "javascript"
+srz news "artificial intelligence" --timeframe week --limit 6
+srz "current javascript news"
+srz "latest rust news"
+
 # Choose a summary style (concise, detailed, bullets, executive, tldr, critique, eli5, flashcards)
 srz https://example.com/article --style tldr
 srz paper.pdf --style critique
@@ -61,17 +68,20 @@ srz history
 srz stats
 ```
 
-Run `srz --help` to see all available subcommands (`web`, `book`, `file`, `cache`, `config`, `models`, `doctor`, `index`, `completions`) and flags.
+Run `srz --help` to see all available subcommands (`web`, `book`, `file`, `news`, `cache`, `config`, `models`, `doctor`, `index`, `completions`) and flags.
 
 ## Features
 
 - **Webpage Summarization**: Scrapes any URL, strips boilerplate (ads, navigation, footers, footnote tables), normalizes the article text into clean paragraphs, and generates a structured summary.
 - **Local File, PDF, EPUB, & Stdin Summarization**: Summarizes local files (`srz file <path>` or auto-detected `srz README.md`), PDF documents (`srz paper.pdf`), EPUB books (`srz book.epub`), and standard input (`git diff | srz -`).
+- **Live News Briefings & Natural Query Routing**: Aggregates top stories from Google News RSS (`srz news <topic> [-t/--timeframe <day|week|month|all>] [-l/--limit <N>]`).
+  - **Canonical URL Resolution**: Decodes Google News' opaque redirect tokens into real publisher URLs via Google's `batchexecute` RPC, then scrapes the full articles concurrently.
+  - **Natural Language Auto-Routing**: Automatically recognizes natural prompts like `srz "current javascript news"`, `srz "latest rust news"`, or `srz "tech news"`, strips conversational filler words while preserving the subject matter, and generates a structured executive briefing.
 - **Book Summarization by Title**: Summarizes books without needing to supply ebook files.
   - **Canonical Metadata & Web Grounding**: Resolves author and publication year via Open Library, then queries Wikipedia (OpenSearch + full-text) and DuckDuckGo with candidate scoring and interactive disambiguation (`-y` to auto-accept).
   - **Trained Knowledge Fallback**: If no online reference is found (or when `--no-search` is passed), falls back to the LLM's trained memory.
 - **Server Health & Model Discovery**: Run `srz doctor` to verify LLM backend latency, database integrity, cache health, and config files. Run `srz models` to list available backend models.
-- **Standalone HTML Library Dashboard**: Run `srz index` (or `srz index --open`) to view an offline, searchable dashboard of all past reads with interactive filtering by category (`📚 Books`, `🌐 Web`, `📄 Files`, `⌨️ Stdin`).
+- **Standalone HTML Library Dashboard**: Run `srz index` (or `srz index --open`) to view an offline, searchable dashboard of all past reads with interactive filtering by category (`📚 Books`, `🌐 Web`, `📰 News`, `📄 Files`, `⌨️ Stdin`).
 - **Optional Config File & Named Profiles**: Persist settings in `~/.config/srz/config.toml` (initialize with `srz config init`) and switch named model presets on the fly (`srz --profile fast ...` vs `srz --profile deep ...`).
 - **Universal Token Tracking**: Streams tokens (`stream: true`) with `stream_options` to `stdout` in real time while displaying live chain-of-thought token progress on `stderr`.
 - **Machine-Readable JSON Output**: Pass `--json` to `history`, `stats`, `find`, `models`, `doctor`, or summarization commands for automated scripting and editor integrations.
@@ -112,6 +122,7 @@ See [`OVERVIEW.md`](OVERVIEW.md) for detailed Mermaid architecture and sequence 
 - `src/cache.rs`: Persistent disk cache (`~/.cache/srz`) for metadata, search results, scraped pages, and summaries.
 - `src/db.rs`: Embedded DuckDB engine for reading history, performance telemetry, and offline full-text library search.
 - `src/scraper.rs`: Webpage fetching, DOM parsing, boilerplate removal, and text normalization.
+- `src/news.rs`: Google News RSS client, batchexecute RPC redirect decoding, and concurrent article aggregation.
 - `src/search.rs`: Open Library metadata resolution plus Wikipedia & DuckDuckGo candidate search and ranking.
 - `src/llm.rs`: Zero-copy OpenAI SSE streaming client and map-reduce synthesis engine.
 - `src/chunker.rs`: Text windowing and paragraph chunking for long articles.

@@ -1,6 +1,6 @@
 # `srz` Architectural Overview
 
-`srz` (Summarize) is a high-performance, modular Rust CLI tool for extracting and synthesizing structured summaries from **webpages**, **local files**, **Unix stdin streams**, and **books** using local OpenAI-compliant LLMs (such as llama.cpp, Ollama, LM Studio, or vLLM).
+`srz` (Summarize) is a high-performance, modular Rust CLI tool for extracting and synthesizing structured summaries from **webpages**, **local files**, **Unix stdin streams**, **books**, and **live news digests** using local OpenAI-compliant LLMs (such as llama.cpp, Ollama, LM Studio, or vLLM).
 
 ---
 
@@ -15,14 +15,19 @@ flowchart TD
         Router -->|"URL (http://...)"| WebFlow["Web Scraper"]
         Router -->|"Local Path or Stdin (-)"| FileFlow["File / Stdin Reader"]
         Router -->|"Book Title"| BookFlow["Book Pipeline"]
+        Router -->|"News Query or Subcommand"| NewsFlow["Google News RSS Client"]
         Router -->|"cache / history / stats / find / completions"| UtilFlow["Utility Handlers"]
     end
 
-    subgraph BookResolution["2. Book Resolution & Grounding"]
+    subgraph Resolution["2. Resolution & Grounding"]
         BookFlow --> Meta["Open Library Metadata (Cached / 3s API)"]
         Meta --> MultiSearch["Concurrent Search: OpenSearch + Wiki + DDG"]
         MultiSearch --> Scorer["PreparedQuery Scoring & Disambiguation (-y)"]
         Scorer --> RefScrape["Scrape Best Reference Page (Cached / Live)"]
+
+        NewsFlow --> Feed["Google News RSS (when:1d/7d/30d)"]
+        Feed --> RPC["Decode Obfuscated URLs (batchexecute RPC)"]
+        RPC --> NewsScrape["Concurrent Article Scraping"]
     end
 
     subgraph LLMEngine["3. LLM Synthesis & Streaming"]
@@ -31,8 +36,10 @@ flowchart TD
         RefScrape --> Chunker
         Chunker -->|"Yes"| MapReduce["Map-Reduce Chunk Summaries + Aggregated Telemetry"]
         Chunker -->|"No"| SinglePass["Direct Single Pass"]
+        NewsScrape --> NewsBriefing["News Digest Briefing Synthesis"]
         MapReduce --> SSE["Zero-Copy OpenAI SSE Streaming Client (SseStreamState)"]
         SinglePass --> SSE
+        NewsBriefing --> SSE
     end
 
     subgraph Outputs["4. Output & Persistence"]
@@ -102,7 +109,7 @@ graph LR
         end
         subgraph DB["Analytics Database (Lazy-Opened)"]
             D["srz.duckdb"]
-            D --> T1["Table: history (book 📚, web 🌐, file 📄, stdin ⌨️ telemetry)"]
+            D --> T1["Table: history (book 📚, web 🌐, news 📰, file 📄, stdin ⌨️ telemetry)"]
             D --> T2["Table: library (Offline full-text search for srz find)"]
         end
     end
@@ -115,14 +122,15 @@ graph LR
 | File | Module | Primary Responsibility |
 | :--- | :--- | :--- |
 | [`src/main.rs`](file:///Users/myoo/Documents/Repo/srz/src/main.rs) | `main` | Entry point, pipeline orchestration, lazy DB opening, candidate disambiguation, and subcommand handlers. |
-| [`src/cli.rs`](file:///Users/myoo/Documents/Repo/srz/src/cli.rs) | `cli` | `clap` argument parsing, `SummaryStyle` helpers, `stream_mode` selection, and target action resolution. |
+| [`src/cli.rs`](file:///Users/myoo/Documents/Repo/srz/src/cli.rs) | `cli` | `clap` argument parsing, `SummaryStyle` helpers, `stream_mode` selection, news query routing, and target action resolution. |
+| [`src/news.rs`](file:///Users/myoo/Documents/Repo/srz/src/news.rs) | `news` | Google News RSS client, `batchexecute` RPC redirect URL decoding, and concurrent multi-article scraping. |
 | [`src/llm.rs`](file:///Users/myoo/Documents/Repo/srz/src/llm.rs) | `llm` | Zero-copy SSE client (`SseStreamState`), localhost IPv4 fallback, map-reduce telemetry aggregation, and prompt crafting. |
 | [`src/search.rs`](file:///Users/myoo/Documents/Repo/srz/src/search.rs) | `search` | Open Library metadata, Wikipedia OpenSearch/fulltext, DDG search, and hoisted `PreparedQuery` candidate scoring. |
 | [`src/scraper.rs`](file:///Users/myoo/Documents/Repo/srz/src/scraper.rs) | `scraper` | HTTP client, MediaWiki/article DOM extraction, footnote-free `html2text` conversion, and single-pass word counting. |
 | [`src/chunker.rs`](file:///Users/myoo/Documents/Repo/srz/src/chunker.rs) | `chunker` | Zero-copy `Cow` text windowing and paragraph chunking for long documents (> 12k words). |
 | [`src/cache.rs`](file:///Users/myoo/Documents/Repo/srz/src/cache.rs) | `cache` | Disk caching in `~/.cache/srz/` for pages, metadata, searches, and summaries using zero-allocation `AsciiLower` hashing. |
-| [`src/db.rs`](file:///Users/myoo/Documents/Repo/srz/src/db.rs) | `db` | Embedded DuckDB engine with transactional writes, reading telemetry (`book`, `web`, `file`, `stdin`), and zero-copy snippet search. |
-| [`src/render.rs`](file:///Users/myoo/Documents/Repo/srz/src/render.rs) | `render` | Markdown-to-HTML5 reader rendering, cached view-file reuse (`ensure_view_files`), HTML path detection, and slugification. |
+| [`src/db.rs`](file:///Users/myoo/Documents/Repo/srz/src/db.rs) | `db` | Embedded DuckDB engine with transactional writes, reading telemetry (`book`, `web`, `news`, `file`, `stdin`), and zero-copy snippet search. |
+| [`src/render.rs`](file:///Users/myoo/Documents/Repo/srz/src/render.rs) | `render` | Markdown-to-HTML5 reader rendering, standalone library dashboard (`srz index`), cached view-file reuse, and slugification. |
 | [`src/ui.rs`](file:///Users/myoo/Documents/Repo/srz/src/ui.rs) | `ui` | Spinners (`indicatif`) and `LazyLock`-cached terminal detection (`is_terminal`) and `NO_COLOR`/`CLICOLOR` hygiene. |
 
 ---
@@ -139,10 +147,11 @@ graph LR
 
 ## 6. Key CLI Features & Flags
 
-- **Universal Input**: `srz <URL>`, `srz <BOOK>`, `srz <FILE>`, or `cat ... | srz -`.
+- **Universal Input**: `srz <URL>`, `srz <BOOK>`, `srz <FILE>`, `cat ... | srz -`, or `srz news <TOPIC>` (with auto-detection for `"current ... news"`).
+- **Timeframe Filtering**: `--timeframe` / `-t` (`day`, `week`, `month`, `all`) and `--limit` / `-l` for news searches.
 - **Interactive or Automated Disambiguation**: Prompts when book references have close scores, or pass `-y` / `--yes` to auto-select the top candidate.
-- **Telemetry & Stats**: `srz stats` (speeds, total tokens across books, web, files, and stdin) and `srz history` (past reads).
-- **Offline Search**: `srz find "keyword"` searches past summaries in DuckDB.
+- **Telemetry & Stats**: `srz stats` (speeds, total tokens across books, web, news, files, and stdin) and `srz history` (past reads).
+- **Offline Search & Dashboard**: `srz find "keyword"` searches past summaries in DuckDB, and `srz index [--open]` opens the interactive library dashboard.
 - **Machine-Readable**: Add `--json` to any command for JSON stdout, or `-o summary.html` / `-o summary.md` to save directly to disk.
 - **Unix Pipeline Friendly**: Strict separation—summary on `stdout`, diagnostics on `stderr`. Pass `-q` / `--quiet` to mute all stderr notices.
 - **Shell Completions**: `srz completions zsh > ~/.zfunc/_srz` (supports bash, zsh, fish, powershell, elvish).
