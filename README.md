@@ -14,23 +14,6 @@ A fast, modular Rust CLI for distilling **webpages**, **local files**, **stdin s
 - **Searchable personal library**: saves every summary locally so you can search past reads offline.
 - **Clean reader views**: generates one-click HTML and Markdown pages with automatic light and dark mode.
 
-## Features
-
-- **Webpage Summarization**: Scrapes any URL, strips boilerplate (ads, navigation, footers, footnote tables), normalizes the article text into clean paragraphs, and generates a structured summary.
-- **Local File & Stdin Summarization**: Summarizes local files (`srz file <path>` or auto-detected `srz README.md`) and standard input (`git diff | srz -`).
-- **Book Summarization by Title**: Summarizes books without needing to supply ebook files.
-  - **Canonical Metadata & Web Grounding**: Resolves author and publication year via Open Library, then queries Wikipedia (OpenSearch + full-text) and DuckDuckGo with candidate scoring and interactive disambiguation (`-y` to auto-accept).
-  - **Trained Knowledge Fallback**: If no online reference is found (or when `--no-search` is passed), falls back to the LLM's trained memory.
-- **Universal Token Tracking**: Streams tokens (`stream: true`) with `stream_options` to `stdout` in real time while displaying live chain-of-thought token progress on `stderr`.
-- **Machine-Readable JSON Output**: Pass `--json` to `history`, `stats`, `find`, or summarization commands for automated scripting and editor integrations.
-- **Embedded DuckDB Engine**: Built-in DuckDB database (`~/.cache/srz/srz.duckdb`) tracking your reading history, token speeds, and providing instant full-text search across all past summaries.
-- **Shell Auto-Completions**: Generate tab-completion scripts out-of-the-box (`srz completions <bash|zsh|fish|powershell>`).
-- **Clickable Styled HTML & Markdown Views**: Automatically saves a styled, responsive `.html` reader view (with light/dark mode) and `.md` file in `~/.cache/srz/views/` and prints clickable `file://` links so you can open the summary in your browser or editor with one click.
-- **Strict `stdout` / `stderr` & `NO_COLOR` Hygiene**: Respects `NO_COLOR` and terminal detection (`is_terminal`). Supports quiet (`-q`) and verbose (`-v`) flags.
-- **Multiple Summary Styles**: `concise` (default), `detailed`, `bullets`, or `executive`.
-- **Smart Disk Caching**: Automatically caches book metadata, search candidates, scraped reference pages, and generated summaries in `~/.cache/srz` (`srz cache dir | size | clean`). Pass `--no-cache` to force a fresh fetch.
-- **Text Chunking**: Automatic windowed chunking and map-reduce synthesis with aggregated token telemetry for long documents (> 12,000 words, tuned for a 32k context window).
-
 ## Installation
 
 Ensure you have Rust and Cargo installed:
@@ -156,6 +139,23 @@ srz completions bash > ~/.bash_completion
 # Fish
 srz completions fish > ~/.config/fish/completions/srz.fish
 ```
+
+## Features
+
+- **Webpage Summarization**: Scrapes any URL, strips boilerplate (ads, navigation, footers, footnote tables), normalizes the article text into clean paragraphs, and generates a structured summary.
+- **Local File & Stdin Summarization**: Summarizes local files (`srz file <path>` or auto-detected `srz README.md`) and standard input (`git diff | srz -`).
+- **Book Summarization by Title**: Summarizes books without needing to supply ebook files.
+  - **Canonical Metadata & Web Grounding**: Resolves author and publication year via Open Library, then queries Wikipedia (OpenSearch + full-text) and DuckDuckGo with candidate scoring and interactive disambiguation (`-y` to auto-accept).
+  - **Trained Knowledge Fallback**: If no online reference is found (or when `--no-search` is passed), falls back to the LLM's trained memory.
+- **Universal Token Tracking**: Streams tokens (`stream: true`) with `stream_options` to `stdout` in real time while displaying live chain-of-thought token progress on `stderr`.
+- **Machine-Readable JSON Output**: Pass `--json` to `history`, `stats`, `find`, or summarization commands for automated scripting and editor integrations.
+- **Embedded DuckDB Engine**: Built-in DuckDB database (`~/.cache/srz/srz.duckdb`) tracking your reading history, token speeds, and providing instant full-text search across all past summaries.
+- **Shell Auto-Completions**: Generate tab-completion scripts out-of-the-box (`srz completions <bash|zsh|fish|powershell>`).
+- **Clickable Styled HTML & Markdown Views**: Automatically saves a styled, responsive `.html` reader view (with light/dark mode) and `.md` file in `~/.cache/srz/views/` and prints clickable `file://` links so you can open the summary in your browser or editor with one click.
+- **Strict `stdout` / `stderr` & `NO_COLOR` Hygiene**: Respects `NO_COLOR` and terminal detection (`is_terminal`). Supports quiet (`-q`) and verbose (`-v`) flags.
+- **Multiple Summary Styles**: `concise` (default), `detailed`, `bullets`, or `executive`.
+- **Smart Disk Caching**: Automatically caches book metadata, search candidates, scraped reference pages, and generated summaries in `~/.cache/srz` (`srz cache dir | size | clean`). Pass `--no-cache` to force a fresh fetch.
+- **Text Chunking**: Automatic windowed chunking and map-reduce synthesis with aggregated token telemetry for long documents (> 12,000 words, tuned for a 32k context window).
 
 ## Configuring Your Local LLM
 
