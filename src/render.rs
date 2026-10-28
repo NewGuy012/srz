@@ -1,5 +1,5 @@
+use crate::cache;
 use crate::db::{HistoryEntry, LibraryStats};
-use std::fs;
 use std::path::{Path, PathBuf};
 
 pub struct RenderedFiles {
@@ -42,22 +42,11 @@ pub fn ensure_view_files(
         return Ok(RenderedFiles { html_path, md_path });
     }
 
-    fs::create_dir_all(views_dir)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(views_dir, fs::Permissions::from_mode(0o700));
-    }
-    fs::write(&md_path, markdown)?;
+    cache::create_private_dir_all(views_dir)?;
+    cache::write_private_file(&md_path, markdown)?;
 
     let html_doc = render_html_document(title, markdown);
-    fs::write(&html_path, html_doc)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&md_path, fs::Permissions::from_mode(0o600));
-        let _ = fs::set_permissions(&html_path, fs::Permissions::from_mode(0o600));
-    }
+    cache::write_private_file(&html_path, html_doc)?;
 
     Ok(RenderedFiles { html_path, md_path })
 }
@@ -837,19 +826,9 @@ pub fn ensure_index_file(
     stats: &LibraryStats,
     entries: &[HistoryEntry],
 ) -> std::io::Result<PathBuf> {
-    fs::create_dir_all(views_dir)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(views_dir, fs::Permissions::from_mode(0o700));
-    }
+    cache::create_private_dir_all(views_dir)?;
     let html = render_index_html(stats, entries);
     let index_path = views_dir.join("index.html");
-    fs::write(&index_path, html)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&index_path, fs::Permissions::from_mode(0o600));
-    }
+    cache::write_private_file(&index_path, html)?;
     Ok(index_path)
 }

@@ -248,19 +248,16 @@ async fn main() -> Result<()> {
             if args.json {
                 println!("{}", serde_json::to_string_pretty(&outcome)?);
             } else if let Some(output_path) = &args.output {
-                if render::is_html_path(output_path) {
-                    let html_doc = render::render_html_document(&outcome.title, &outcome.summary);
-                    fs::write(output_path, html_doc)
-                        .with_context(|| format!("Failed to write output to {:?}", output_path))?;
+                let content = if render::is_html_path(output_path) {
+                    std::borrow::Cow::Owned(render::render_html_document(
+                        &outcome.title,
+                        &outcome.summary,
+                    ))
                 } else {
-                    fs::write(output_path, &outcome.summary)
-                        .with_context(|| format!("Failed to write output to {:?}", output_path))?;
-                }
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = fs::set_permissions(output_path, fs::Permissions::from_mode(0o600));
-                }
+                    std::borrow::Cow::Borrowed(outcome.summary.as_str())
+                };
+                srz::cache::write_private_file(output_path, content.as_bytes())
+                    .with_context(|| format!("Failed to write output to {:?}", output_path))?;
 
                 Ui::success(&format!(
                     "Summary successfully saved to {}",
@@ -551,19 +548,9 @@ fn handle_config(
                 ));
             } else {
                 if let Some(parent) = default_path.parent() {
-                    fs::create_dir_all(parent)?;
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
-                    }
+                    srz::cache::create_private_dir_all(parent)?;
                 }
-                fs::write(&default_path, Config::default_template())?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = fs::set_permissions(&default_path, fs::Permissions::from_mode(0o600));
-                }
+                srz::cache::write_private_file(&default_path, Config::default_template())?;
                 Ui::success(&format!(
                     "Initialized config file template at {}",
                     default_path.display()

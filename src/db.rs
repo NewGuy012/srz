@@ -1,8 +1,7 @@
-use crate::cache::Cache;
+use crate::cache::{self, Cache};
 use anyhow::{Context, Result};
 use duckdb::{params, Connection};
 use serde::{Deserialize, Serialize};
-use std::fs;
 use std::path::Path;
 
 pub struct NewSummaryRecord<'a> {
@@ -72,13 +71,8 @@ impl Database {
     /// Opens the default DuckDB database located at `~/.cache/srz/srz.duckdb`.
     pub fn open_default() -> Result<Self> {
         let base_dir = Cache::default_cache_dir();
-        fs::create_dir_all(&base_dir)
+        cache::create_private_dir_all(&base_dir)
             .with_context(|| format!("Failed to create directory {:?}", base_dir))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&base_dir, fs::Permissions::from_mode(0o700));
-        }
         let db_path = base_dir.join("srz.duckdb");
         Self::open_at(&db_path)
     }
@@ -87,10 +81,8 @@ impl Database {
     pub fn open_at(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)
             .with_context(|| format!("Failed to open DuckDB database at {:?}", path))?;
-        #[cfg(unix)]
         if path.exists() {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+            cache::set_private_file_perms(path);
         }
         let db = Self { conn };
         db.init_schema()?;

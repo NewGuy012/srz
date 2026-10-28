@@ -185,22 +185,13 @@ impl Cache {
 
     fn write_entry<T: Serialize>(&self, namespace: &str, key_hash: &str, value: &T) {
         let dir = self.base_dir.join(namespace);
-        if fs::create_dir_all(&dir).is_err() {
+        if create_private_dir_all(&dir).is_err() {
             return;
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
         }
         let path = dir.join(format!("{}.json", key_hash));
         if let Ok(file) = File::create(&path) {
             let _ = serde_json::to_writer_pretty(BufWriter::new(file), value);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
-            }
+            set_private_file_perms(&path);
         }
     }
 
@@ -335,4 +326,40 @@ impl Cache {
             },
         );
     }
+}
+
+/// Sets directory permissions to `0700` on Unix systems (no-op on other platforms).
+pub fn set_private_dir_perms(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o700));
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+/// Sets file permissions to `0600` on Unix systems (no-op on other platforms).
+pub fn set_private_file_perms(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+/// Creates a directory (and parents) and restricts permissions to `0700` on Unix.
+pub fn create_private_dir_all(path: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(path)?;
+    set_private_dir_perms(path);
+    Ok(())
+}
+
+/// Writes `contents` to `path` and restricts file permissions to `0600` on Unix.
+pub fn write_private_file(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    fs::write(path, contents)?;
+    set_private_file_perms(path);
+    Ok(())
 }
