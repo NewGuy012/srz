@@ -14,6 +14,8 @@ static MAIN_SELECTORS: LazyLock<Vec<Selector>> = LazyLock::new(|| {
         "article",
         "main",
         "[role='main']",
+        ".mw-parser-output",
+        "#mw-content-text",
         "#content",
         ".post-content",
         ".article-content",
@@ -36,6 +38,8 @@ const REFERENCE_HEADINGS: &[&str] = &[
     "notes and references",
     "## notes",
     "## bibliography",
+    "see also",
+    "## see also",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,8 +154,11 @@ impl WebScraper {
         // 2. Select main content container or fallback to body
         let target_html = self.extract_main_html(&document);
 
-        // 3. Convert HTML to clean plain text
-        let rendered_text = html2text::from_read(target_html.as_bytes(), 100)
+        // 3. Convert HTML to clean plain text without link footnote bloat or 100-col artificial wraps
+        let rendered_text = html2text::config::plain()
+            .link_footnotes(false)
+            .no_table_borders()
+            .string_from_read(target_html.as_bytes(), 10_000)
             .context("Failed to convert HTML to text")?;
 
         // 4. Clean and normalize whitespace/formatting + count words in a single pass

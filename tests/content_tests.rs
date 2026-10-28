@@ -19,7 +19,7 @@ fn test_normalize_extracts_title_and_clean_text() {
             <header><nav><a href="/">Home</a></nav></header>
             <main>
                 <h1>Rust Overview</h1>
-                <p>Rust is a blazingly fast and memory-efficient language.</p>
+                <p>Rust is a <a href="https://rust-lang.org">blazingly fast</a> and memory-efficient language.</p>
                 <p>It empowers everyone to build reliable and efficient software.</p>
                 <h2>References</h2>
                 <p>Citation 1 that should be stripped.</p>
@@ -32,6 +32,7 @@ fn test_normalize_extracts_title_and_clean_text() {
     let page = scraper.normalize("https://rust-lang.org", html).unwrap();
     assert_eq!(page.title.as_deref(), Some("Rust: Fast and Reliable"));
     assert!(page.content.contains("blazingly fast"));
+    assert!(!page.content.contains("[1]"));
     assert!(!page.content.contains("Citation 1"));
     assert!(page.word_count > 10);
 }
