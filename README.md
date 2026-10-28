@@ -27,13 +27,28 @@ See [Configuring Your LLM Backend](#configuring-your-llm-backend) below for step
 
 ## Installation
 
-Ensure you have Rust and Cargo installed:
+### Quick Install (macOS & Linux)
+
+Install the precompiled binary directly with `curl`:
 
 ```bash
-cargo build --release
+curl -LsSf https://raw.githubusercontent.com/NewGuy012/srz/master/install.sh | sh
 ```
 
-The compiled binary will be located at `target/release/srz`. To install it directly to your Cargo binary path:
+### Manual Download (GitHub Releases)
+
+Download precompiled standalone binaries from [GitHub Releases](https://github.com/NewGuy012/srz/releases):
+
+- **macOS (Apple Silicon)**: `srz-aarch64-apple-darwin.tar.gz`
+- **macOS (Intel)**: `srz-x86_64-apple-darwin.tar.gz`
+- **Linux (x86_64)**: `srz-x86_64-unknown-linux-gnu.tar.gz`
+- **Windows (x86_64)**: `srz-x86_64-pc-windows-msvc.zip`
+
+Extract and move `srz` to any folder in your `$PATH` (e.g. `~/.local/bin` or `/usr/local/bin`).
+
+### Build from Source (Cargo)
+
+If you prefer building with Rust from source:
 
 ```bash
 cargo install --path .
