@@ -31,23 +31,27 @@ struct RequestMessage<'a> {
 }
 
 #[derive(Deserialize)]
-struct ChatCompletionChunk {
-    #[serde(default)]
-    choices: Vec<ChunkChoice>,
+struct ChatCompletionChunk<'a> {
+    #[serde(default, borrow)]
+    choices: Vec<ChunkChoice<'a>>,
     usage: Option<TokenUsage>,
 }
 
 #[derive(Deserialize)]
-struct ChunkChoice {
-    delta: ChunkDelta,
-    finish_reason: Option<String>,
+struct ChunkChoice<'a> {
+    #[serde(borrow)]
+    delta: ChunkDelta<'a>,
+    #[serde(borrow)]
+    finish_reason: Option<Cow<'a, str>>,
 }
 
 #[derive(Deserialize, Default)]
-struct ChunkDelta {
-    content: Option<String>,
+struct ChunkDelta<'a> {
+    #[serde(borrow)]
+    content: Option<Cow<'a, str>>,
     /// Emitted by llama.cpp / Gemma 4 / DeepSeek during internal chain-of-thought
-    reasoning_content: Option<String>,
+    #[serde(borrow)]
+    reasoning_content: Option<Cow<'a, str>>,
 }
 
 #[derive(Deserialize)]
@@ -272,18 +276,26 @@ impl LlmClient {
         {
             line_buf.extend_from_slice(&chunk);
 
-            while let Some(newline_pos) = line_buf.iter().position(|&b| b == b'\n') {
-                let line_bytes = &line_buf[..newline_pos];
+            let mut cursor = 0;
+            let mut stream_done = false;
+            let mut needs_stdout_flush = false;
+
+            while let Some(rel_pos) = line_buf[cursor..].iter().position(|&b| b == b'\n') {
+                let line_bytes = &line_buf[cursor..cursor + rel_pos];
+                cursor += rel_pos + 1;
+
                 if let Ok(line_str) = std::str::from_utf8(line_bytes) {
                     let trimmed = line_str.trim();
                     if let Some(data) = trimmed.strip_prefix("data:") {
                         let payload = data.trim();
                         if payload == "[DONE]" {
-                            line_buf.drain(..=newline_pos);
+                            stream_done = true;
                             break;
                         }
 
-                        if let Ok(event) = serde_json::from_str::<ChatCompletionChunk>(payload) {
+                        if let Ok(event) =
+                            serde_json::from_str::<ChatCompletionChunk<'_>>(payload)
+                        {
                             if event.usage.is_some() {
                                 last_usage = event.usage;
                             }
@@ -298,48 +310,33 @@ impl LlmClient {
                                     && !started_visible
                                 {
                                     thinking_tokens += 1;
-                                    pb.set_message(format!(
-                                        "{} (thinking: {} tokens)",
-                                        spinner_label, thinking_tokens
-                                    ));
+                                    if thinking_tokens == 1 || thinking_tokens.is_multiple_of(4) {
+                                        pb.set_message(format!(
+                                            "{} (thinking: {} tokens)",
+                                            spinner_label, thinking_tokens
+                                        ));
+                                    }
                                 }
 
                                 if let Some(delta_text) = &choice.delta.content
                                     && !delta_text.is_empty()
                                 {
-                                        if !started_visible {
-                                            let clean_start = delta_text.trim_start();
-                                            if !clean_start.is_empty() {
-                                                started_visible = true;
-                                                output_tokens += 1;
-                                                content_buf.push_str(clean_start);
-
-                                                match mode {
-                                                    StreamMode::Stdout { header_title } => {
-                                                        pb.finish_and_clear();
-                                                        Ui::header(&format!(
-                                                            "Summary: {}",
-                                                            header_title
-                                                        ));
-                                                        print!("{}", clean_start);
-                                                        let _ = io::stdout().flush();
-                                                    }
-                                                    StreamMode::Buffered => {
-                                                        pb.set_message(format!(
-                                                            "{} ({} tokens)",
-                                                            spinner_label, output_tokens
-                                                        ));
-                                                    }
-                                                }
-                                            }
-                                        } else {
+                                    if !started_visible {
+                                        let clean_start = delta_text.trim_start();
+                                        if !clean_start.is_empty() {
+                                            started_visible = true;
                                             output_tokens += 1;
-                                            content_buf.push_str(delta_text);
+                                            content_buf.push_str(clean_start);
 
                                             match mode {
-                                                StreamMode::Stdout { .. } => {
-                                                    print!("{}", delta_text);
-                                                    let _ = io::stdout().flush();
+                                                StreamMode::Stdout { header_title } => {
+                                                    pb.finish_and_clear();
+                                                    Ui::header(&format!(
+                                                        "Summary: {}",
+                                                        header_title
+                                                    ));
+                                                    print!("{}", clean_start);
+                                                    needs_stdout_flush = true;
                                                 }
                                                 StreamMode::Buffered => {
                                                     pb.set_message(format!(
@@ -349,12 +346,40 @@ impl LlmClient {
                                                 }
                                             }
                                         }
+                                    } else {
+                                        output_tokens += 1;
+                                        content_buf.push_str(delta_text);
+
+                                        match mode {
+                                            StreamMode::Stdout { .. } => {
+                                                print!("{}", delta_text);
+                                                needs_stdout_flush = true;
+                                            }
+                                            StreamMode::Buffered => {
+                                                if output_tokens.is_multiple_of(4) {
+                                                    pb.set_message(format!(
+                                                        "{} ({} tokens)",
+                                                        spinner_label, output_tokens
+                                                    ));
+                                                }
+                                            }
+                                        }
                                     }
+                                }
                             }
                         }
                     }
                 }
-                line_buf.drain(..=newline_pos);
+            }
+
+            if cursor > 0 {
+                line_buf.drain(..cursor);
+            }
+            if needs_stdout_flush {
+                let _ = io::stdout().flush();
+            }
+            if stream_done {
+                break;
             }
         }
 
@@ -384,8 +409,11 @@ impl LlmClient {
 
         let warning = Self::build_truncation_warning(truncated, last_usage.as_ref());
 
+        let trimmed_len = content_buf.trim_end().len();
+        content_buf.truncate(trimmed_len);
+
         Ok(LlmOutput {
-            content: content_buf.trim().to_string(),
+            content: content_buf,
             truncated,
             warning,
             streamed_to_stdout,
@@ -420,11 +448,12 @@ impl LlmClient {
         title: Option<&str>,
         url: &str,
         content: &str,
+        word_count: usize,
         style: SummaryStyle,
         mode: StreamMode<'_>,
     ) -> Result<LlmOutput> {
         let title_str = title.unwrap_or("Untitled Webpage");
-        self.summarize_document(title_str, Some(url), content, style, mode)
+        self.summarize_document_counted(title_str, Some(url), content, Some(word_count), style, mode)
             .await
     }
 
@@ -437,13 +466,32 @@ impl LlmClient {
         style: SummaryStyle,
         mode: StreamMode<'_>,
     ) -> Result<LlmOutput> {
-        let word_count = content.split_whitespace().count();
+        self.summarize_document_counted(title, source_label, content, None, style, mode)
+            .await
+    }
+
+    /// Summarize any document text with an optional pre-computed word count to avoid redundant scans,
+    /// aggregating token and latency telemetry across all map-reduce chunks when chunking is triggered.
+    pub async fn summarize_document_counted(
+        &self,
+        title: &str,
+        source_label: Option<&str>,
+        content: &str,
+        known_word_count: Option<usize>,
+        style: SummaryStyle,
+        mode: StreamMode<'_>,
+    ) -> Result<LlmOutput> {
+        let word_count = known_word_count.unwrap_or_else(|| content.split_whitespace().count());
 
         // If the document exceeds MAX_CONTEXT_WORDS (12,000 words), chunk and map-reduce
         if word_count > MAX_CONTEXT_WORDS {
             let chunks = TextChunker::chunk(content, CHUNK_MAX_WORDS, CHUNK_OVERLAP_WORDS);
             if chunks.len() > 1 {
                 let mut section_summaries = Vec::with_capacity(chunks.len());
+                let mut total_prompt_tokens: u32 = 0;
+                let mut total_completion_tokens: u32 = 0;
+                let mut total_duration_ms: u64 = 0;
+
                 for (i, chunk) in chunks.iter().enumerate() {
                     let section_sys = "You are an assistant summarizing a section of a long document. Be factual and concise.";
                     let section_user = format!(
@@ -462,6 +510,9 @@ impl LlmClient {
                             StreamMode::Buffered,
                         )
                         .await?;
+                    total_prompt_tokens += part.prompt_tokens.unwrap_or(0);
+                    total_completion_tokens += part.completion_tokens.unwrap_or(0);
+                    total_duration_ms += part.duration_ms;
                     section_summaries.push(part.content);
                 }
 
@@ -477,7 +528,7 @@ impl LlmClient {
                     style.prompt_guidance(),
                     combined_sections
                 );
-                return self
+                let mut final_out = self
                     .complete_streaming(
                         synthesis_sys,
                         &synthesis_user,
@@ -485,7 +536,25 @@ impl LlmClient {
                         "Summary generated.",
                         mode,
                     )
-                    .await;
+                    .await?;
+
+                total_prompt_tokens += final_out.prompt_tokens.unwrap_or(0);
+                total_completion_tokens += final_out.completion_tokens.unwrap_or(0);
+                total_duration_ms += final_out.duration_ms;
+
+                if total_prompt_tokens > 0 {
+                    final_out.prompt_tokens = Some(total_prompt_tokens);
+                }
+                if total_completion_tokens > 0 {
+                    final_out.completion_tokens = Some(total_completion_tokens);
+                }
+                final_out.duration_ms = total_duration_ms;
+                if total_duration_ms > 50 && total_completion_tokens > 0 {
+                    final_out.tokens_per_second = Some(
+                        total_completion_tokens as f64 / (total_duration_ms as f64 / 1000.0),
+                    );
+                }
+                return Ok(final_out);
             }
         }
 

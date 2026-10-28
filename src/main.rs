@@ -421,7 +421,14 @@ async fn handle_file(
 
     let path_str = path.display().to_string();
     let output = llm
-        .summarize_document(&title, Some(&path_str), &content, args.style, mode)
+        .summarize_document_counted(
+            &title,
+            Some(&path_str),
+            &content,
+            Some(word_count),
+            args.style,
+            mode,
+        )
         .await?;
 
     if let Some(warn) = &output.warning {
@@ -484,7 +491,14 @@ async fn handle_stdin(
     };
 
     let output = llm
-        .summarize_document(&title, Some("stdin"), &content, args.style, mode)
+        .summarize_document_counted(
+            &title,
+            Some("stdin"),
+            &content,
+            Some(word_count),
+            args.style,
+            mode,
+        )
         .await?;
 
     if let Some(warn) = &output.warning {
@@ -564,7 +578,14 @@ async fn handle_web(
     };
 
     let output = llm
-        .summarize_webpage(page.title.as_deref(), url, &page.content, args.style, mode)
+        .summarize_webpage(
+            page.title.as_deref(),
+            url,
+            &page.content,
+            page.word_count,
+            args.style,
+            mode,
+        )
         .await?;
 
     if let Some(warn) = &output.warning {
