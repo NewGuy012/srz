@@ -69,30 +69,27 @@ Run `srz --help` to see all available subcommands and flags.
 
 ### Content Sources & Ingestion
 
-- **Web Articles**: Summarizes any webpage, cleanly removing ads and clutter.
+- **Web Articles & Documents**: Summarizes webpages, PDFs, ebooks, text files, and piped terminal text.
 - **Books by Title**: Generates verified overviews from Wikipedia and Open Library without needing an ebook file.
-- **Live News Briefings**: Curates and summarizes top stories on any topic from Google News.
-- **Files, PDFs, EPUBs & Stdin**: Summarizes local documents, ebooks, papers, and piped text.
+- **Live News Briefings**: Curates and summarizes top stories on any topic or timeframe from Google News.
 
 ### LLM Engine & Synthesis
 
 - **8 Summary Styles**: Tailor output with presets like concise, detailed, bullet points, executive, or quick takeaways.
-- **Parallel Chunking for Long Texts**: Automatically splits and processes long documents in parallel.
-- **Loading Spinners & Optional Live Streaming**: Clean progress indicators with optional real-time streaming.
+- **Parallel Processing for Long Texts**: Automatically splits and processes long documents in parallel.
+- **Visual Feedback & Live Streaming**: Clean progress indicators with optional real-time streaming.
 
 ### Offline Library & Storage
 
-- **Offline Full-Text Search**: Search through your entire history of past summaries anytime offline.
-- **Visual Library Dashboard**: Browse, filter, and review your saved summaries in an interactive visual dashboard.
+- **Offline Full-Text Search**: Search through your entire history of past summaries completely offline.
+- **Visual Library Dashboard**: Browse, filter, and review all your saved summaries in an interactive dashboard.
 - **Instant Reader Views**: Generates clean, distraction-free reading pages with automatic light and dark mode.
-- **Smart Local Cache**: Saves past queries locally so repeated lookups load instantly.
 
 ### Configuration & CLI Experience
 
 - **Config File & Profiles**: Save default preferences and switch between different models with ease.
-- **Health Checks & Model Discovery**: Verify backend connectivity and view available models with built-in diagnostics.
-- **Pipeline & Scripting Friendly**: Export structured JSON or save output directly to files for automated workflows.
-- **Shell Auto-Completions**: Fast tab-completion support for Bash, Zsh, Fish, and PowerShell.
+- **Health Checks & Diagnostics**: Verify backend connectivity and inspect available models with built-in tools.
+- **Automation & Scripting**: Export structured JSON or save output directly to files for automated workflows.
 
 ## Configuring Your LLM Backend
 
