@@ -680,7 +680,37 @@ async fn generate_book_summary(
     mode: StreamMode<'_>,
 ) -> Result<(LlmOutput, usize, Option<String>)> {
     if !no_search {
-        let candidates = if let Some(cached_candidates) = cache.get_search_results(title, author) {
+        // Resolve canonical title and author if not supplied
+        let (resolved_title, resolved_author) = if author.is_none() {
+            if let Ok(searcher) = BookSearcher::new() {
+                if let Some(meta) = searcher.resolve_book_metadata(title, None).await {
+                    let year_str = meta
+                        .first_publish_year
+                        .map(|y| format!(" ({})", y))
+                        .unwrap_or_default();
+                    if let Some(ref a) = meta.author {
+                        Ui::info(&format!(
+                            "Identified book: \"{}\" by {}{}",
+                            meta.canonical_title, a, year_str
+                        ));
+                    }
+                    (meta.canonical_title, meta.author)
+                } else {
+                    (title.to_string(), None)
+                }
+            } else {
+                (title.to_string(), None)
+            }
+        } else {
+            (title.to_string(), author.map(|a| a.to_string()))
+        };
+
+        let effective_title = resolved_title.as_str();
+        let effective_author = resolved_author.as_deref().or(author);
+
+        let candidates = if let Some(cached_candidates) =
+            cache.get_search_results(effective_title, effective_author)
+        {
             Ui::info(&format!(
                 "Loaded {} search candidate(s) from local cache.",
                 cached_candidates.len()
@@ -689,13 +719,15 @@ async fn generate_book_summary(
         } else {
             let spinner = Ui::spinner("Searching web for book synopsis (Wikipedia / DuckDuckGo)...");
             let searcher = BookSearcher::new()?;
-            let results = searcher.search_candidates(title, author).await;
+            let results = searcher
+                .search_candidates(effective_title, effective_author)
+                .await;
             if !results.is_empty() {
                 Ui::finish_spinner(
                     &spinner,
                     &format!("Found {} search candidate(s) online.", results.len()),
                 );
-                cache.set_search_results(title, author, &results);
+                cache.set_search_results(effective_title, effective_author, &results);
             } else {
                 Ui::finish_spinner(&spinner, "No web results found.");
             }
@@ -738,8 +770,8 @@ async fn generate_book_summary(
 
                         let output = llm
                             .summarize_book_with_context(
-                                title,
-                                author,
+                                effective_title,
+                                effective_author,
                                 &res.url,
                                 &page.content,
                                 args.style,
@@ -766,7 +798,7 @@ async fn generate_book_summary(
                 Ui::info("Using search snippet as grounded context...");
                 let word_count = snippet.split_whitespace().count();
                 if let Ok(output) = llm
-                    .summarize_book_with_context(title, author, &url, &snippet, args.style, mode)
+                    .summarize_book_with_context(effective_title, effective_author, &url, &snippet, args.style, mode)
                     .await
                 {
                     return Ok((output, word_count, Some(url)));

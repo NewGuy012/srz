@@ -35,6 +35,13 @@ impl SearchResult {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BookMetadata {
+    pub canonical_title: String,
+    pub author: Option<String>,
+    pub first_publish_year: Option<u32>,
+}
+
 pub struct BookSearcher {
     client: reqwest::Client,
 }
@@ -59,6 +66,62 @@ impl BookSearcher {
             .context("Failed to initialize search HTTP client")?;
 
         Ok(Self { client })
+    }
+
+    /// Queries Open Library API to resolve canonical book title, author, and first publication year.
+    /// Returns None if the query times out (3s), fails, or yields no close match.
+    pub async fn resolve_book_metadata(
+        &self,
+        title: &str,
+        author: Option<&str>,
+    ) -> Option<BookMetadata> {
+        let mut endpoint = format!(
+            "https://openlibrary.org/search.json?title={}&limit=3&fields=title,author_name,first_publish_year",
+            urlencoding::encode(title)
+        );
+        if let Some(auth) = author {
+            endpoint.push_str("&author=");
+            endpoint.push_str(&urlencoding::encode(auth));
+        }
+
+        let fetch_fut = self.client.get(&endpoint).send();
+        let resp = match tokio::time::timeout(Duration::from_secs(3), fetch_fut).await {
+            Ok(Ok(r)) if r.status().is_success() => r,
+            _ => return None,
+        };
+
+        let json: Value = resp.json().await.ok()?;
+        let docs = json.get("docs")?.as_array()?;
+
+        let norm_req = normalize_title_for_comparison(title);
+
+        for doc in docs {
+            let doc_title = doc.get("title")?.as_str()?;
+            let norm_doc = normalize_title_for_comparison(doc_title);
+
+            // Require close title match
+            if norm_doc == norm_req || norm_doc.contains(&norm_req) || norm_req.contains(&norm_doc) {
+                let author_name = doc
+                    .get("author_name")
+                    .and_then(|a| a.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                let first_publish_year = doc
+                    .get("first_publish_year")
+                    .and_then(|y| y.as_u64())
+                    .map(|y| y as u32);
+
+                return Some(BookMetadata {
+                    canonical_title: doc_title.to_string(),
+                    author: author_name,
+                    first_publish_year,
+                });
+            }
+        }
+
+        None
     }
 
     /// Searches for candidate book synopses concurrently across Wikipedia (OpenSearch + fulltext) and DuckDuckGo,
