@@ -41,48 +41,30 @@ cargo install --path .
 
 ## Usage
 
-`srz` automatically detects whether you pass a URL, a local file, piped text, or a book title:
+`srz` auto-detects whether you pass a URL, book title, local document, news query, or piped stream:
 
 ```bash
-# Summarize a webpage
+# Summarize anything (URLs, books, documents, piped text)
 srz https://example.com/article
+srz "Dune"                              # Searches Wikipedia & Open Library
+srz paper.pdf                           # Supports PDF, EPUB, MD, and TXT
+git diff | srz -                        # Reads standard input
 
-# Summarize a book by title (optionally filter by author)
-srz "The Hobbit"
-srz book "Dune" --author "Frank Herbert"
+# Live news briefings & natural queries
+srz news "javascript"                   # Today's news digest
+srz "current AI news" -t week           # Auto-detected news query (day/week/month)
 
-# Summarize local files (Markdown, text, HTML, PDF, EPUB) or piped input
-srz README.md
-srz paper.pdf
-srz novel.epub
-git diff | srz -
+# Custom styles & browser reader view
+srz "Dune" --style tldr --open          # Presets: concise, detailed, bullets, tldr, eli5...
 
-# Search and summarize latest news on any topic (today by default, or past week/month)
-srz news "javascript"
-srz news "artificial intelligence" --timeframe week --limit 6
-srz "current javascript news"
-srz "latest rust news"
-
-# Choose a summary style (concise, detailed, bullets, executive, tldr, critique, eli5, flashcards)
-srz https://example.com/article --style tldr
-srz paper.pdf --style critique
-srz novel.epub --style eli5
-
-# Auto-open styled HTML reader view in browser
-srz "Dune" --open
-
-# Check server health and discover models
-srz doctor
-srz models
-
-# Search, browse, and launch standalone HTML library dashboard
-srz index --open
-srz find "ecology"
-srz history
-srz stats
+# Offline library, search & diagnostics
+srz index --open                        # Interactive HTML library dashboard
+srz find "ecology"                      # Full-text search past summaries
+srz history                             # View past summaries & token metrics
+srz doctor                              # Verify LLM connection, cache, and database
 ```
 
-Run `srz --help` to see all available subcommands (`web`, `book`, `file`, `news`, `cache`, `config`, `models`, `doctor`, `index`, `completions`) and flags.
+Run `srz --help` to see all available subcommands (`web`, `book`, `file`, `news`, `index`, `find`, `history`, `doctor`, `models`, `config`, `cache`, `completions`) and flags.
 
 ## Features
 
