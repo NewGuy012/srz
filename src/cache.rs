@@ -148,20 +148,12 @@ impl Cache {
 
     /// Returns the default root directory (`$XDG_CACHE_HOME/srz`, `~/.cache/srz`, or `$TMPDIR/srz-cache`).
     pub fn default_cache_dir() -> PathBuf {
-        if let Ok(xdg) = env::var("XDG_CACHE_HOME") {
-            let trimmed = xdg.trim();
-            if !trimmed.is_empty() {
-                return PathBuf::from(trimmed).join("srz");
-            }
+        if let Some(xdg) = non_empty_env_path("XDG_CACHE_HOME") {
+            return xdg.join("srz");
         }
-
-        if let Ok(home) = env::var("HOME") {
-            let trimmed = home.trim();
-            if !trimmed.is_empty() {
-                return PathBuf::from(trimmed).join(".cache").join("srz");
-            }
+        if let Some(home) = non_empty_env_path("HOME") {
+            return home.join(".cache").join("srz");
         }
-
         env::temp_dir().join("srz-cache")
     }
 
@@ -326,6 +318,15 @@ impl Cache {
             },
         );
     }
+}
+
+/// Reads a trimmed, non-empty path from the environment variable `var`.
+pub(crate) fn non_empty_env_path(var: &str) -> Option<PathBuf> {
+    env::var(var)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
 }
 
 /// Sets directory permissions to `0700` on Unix systems (no-op on other platforms).

@@ -41,30 +41,15 @@ pub struct Config {
 impl Config {
     /// Returns the default path for `config.toml` (`$SRZ_CONFIG`, `$XDG_CONFIG_HOME/srz/config.toml`, or `~/.config/srz/config.toml`).
     pub fn default_config_path() -> PathBuf {
-        if let Ok(env_path) = env::var("SRZ_CONFIG") {
-            let trimmed = env_path.trim();
-            if !trimmed.is_empty() {
-                return PathBuf::from(trimmed);
-            }
+        if let Some(env_path) = crate::cache::non_empty_env_path("SRZ_CONFIG") {
+            return env_path;
         }
-
-        if let Ok(xdg) = env::var("XDG_CONFIG_HOME") {
-            let trimmed = xdg.trim();
-            if !trimmed.is_empty() {
-                return PathBuf::from(trimmed).join("srz").join("config.toml");
-            }
+        if let Some(xdg) = crate::cache::non_empty_env_path("XDG_CONFIG_HOME") {
+            return xdg.join("srz").join("config.toml");
         }
-
-        if let Ok(home) = env::var("HOME") {
-            let trimmed = home.trim();
-            if !trimmed.is_empty() {
-                return PathBuf::from(trimmed)
-                    .join(".config")
-                    .join("srz")
-                    .join("config.toml");
-            }
+        if let Some(home) = crate::cache::non_empty_env_path("HOME") {
+            return home.join(".config").join("srz").join("config.toml");
         }
-
         env::temp_dir().join("srz").join("config.toml")
     }
 

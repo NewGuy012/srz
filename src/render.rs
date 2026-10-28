@@ -10,9 +10,7 @@ pub struct RenderedFiles {
 /// Returns `true` if `path` has a `.html` or `.htm` extension (case-insensitive).
 pub fn is_html_path(path: &Path) -> bool {
     path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"))
-        .unwrap_or(false)
+        .is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"))
 }
 
 /// Ensures both `.md` and `.html` view files exist in `views_dir`.

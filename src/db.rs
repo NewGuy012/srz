@@ -330,14 +330,7 @@ fn map_history_row(row: &duckdb::Row<'_>) -> duckdb::Result<HistoryEntry> {
 /// without allocating a lowercase copy of `text`.
 /// Uses UTF-8 character boundaries to prevent indexing panics on multi-byte characters.
 fn extract_snippet(text: &str, query: &str) -> String {
-    let q_bytes = query.as_bytes();
-    let match_pos = if !q_bytes.is_empty() && text.len() >= q_bytes.len() {
-        text.as_bytes()
-            .windows(q_bytes.len())
-            .position(|window| window.eq_ignore_ascii_case(q_bytes))
-    } else {
-        None
-    };
+    let match_pos = crate::search::find_ascii_case_insensitive(text, query);
 
     let (start, end) = if let Some(pos) = match_pos {
         let raw_start = pos.saturating_sub(60);

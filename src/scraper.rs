@@ -240,18 +240,12 @@ fn is_reference_heading(line: &str) -> bool {
 
 /// Returns `true` if `path` has a `.pdf` extension (case-insensitive).
 pub fn is_pdf_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("pdf"))
-        .unwrap_or(false)
+    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
 }
 
 /// Returns `true` if `path` has an `.epub` extension (case-insensitive).
 pub fn is_epub_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("epub"))
-        .unwrap_or(false)
+    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("epub"))
 }
 
 /// Extracted text content and metadata from a local file.

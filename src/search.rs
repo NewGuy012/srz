@@ -435,19 +435,21 @@ pub fn rank_candidates(title_query: &str, author_query: Option<&str>, candidates
     candidates.sort_by_key(|a| std::cmp::Reverse(a.score));
 }
 
+/// Zero-allocation case-insensitive ASCII substring search returning the first byte index of `needle`.
+pub(crate) fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    let n_bytes = needle.as_bytes();
+    if n_bytes.is_empty() || haystack.len() < n_bytes.len() {
+        return None;
+    }
+    haystack
+        .as_bytes()
+        .windows(n_bytes.len())
+        .position(|window| window.eq_ignore_ascii_case(n_bytes))
+}
+
 /// Zero-allocation case-insensitive ASCII substring check (`needle` must already be lowercase ASCII).
 pub(crate) fn contains_ascii_case_insensitive(haystack: &str, lowercase_needle: &str) -> bool {
-    let n_bytes = lowercase_needle.as_bytes();
-    if n_bytes.is_empty() {
-        return true;
-    }
-    let h_bytes = haystack.as_bytes();
-    if h_bytes.len() < n_bytes.len() {
-        return false;
-    }
-    h_bytes
-        .windows(n_bytes.len())
-        .any(|window| window.eq_ignore_ascii_case(n_bytes))
+    lowercase_needle.is_empty() || find_ascii_case_insensitive(haystack, lowercase_needle).is_some()
 }
 
 fn normalize_title_for_comparison(title: &str) -> String {
