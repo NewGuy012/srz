@@ -43,6 +43,8 @@ const REFERENCE_HEADINGS: &[&str] = &[
     "## see also",
 ];
 
+pub const MAX_SCRAPE_BYTES: usize = 10 * 1024 * 1024; // 10 MB limit for web responses
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScrapedPage {
     pub url: String,
@@ -122,9 +124,9 @@ impl WebScraper {
         Ok(Self { client })
     }
 
-    /// Fetches and normalizes the text from the given URL.
+    /// Fetches and normalizes the text from the given URL with a strict maximum response limit (10 MB).
     pub async fn scrape(&self, url: &str) -> Result<ScrapedPage> {
-        let response = self
+        let mut response = self
             .client
             .get(url)
             .send()
@@ -138,10 +140,26 @@ impl WebScraper {
             );
         }
 
-        let html = response
-            .text()
-            .await
-            .context("Failed to read response body")?;
+        if let Some(content_len) = response.content_length() {
+            if content_len as usize > MAX_SCRAPE_BYTES {
+                anyhow::bail!(
+                    "Webpage content length ({} bytes) exceeds security limit of 10 MB",
+                    content_len
+                );
+            }
+        }
+
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.context("Failed to read response body")? {
+            if bytes.len() + chunk.len() > MAX_SCRAPE_BYTES {
+                anyhow::bail!(
+                    "Webpage response body exceeded security limit of 10 MB"
+                );
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+
+        let html = String::from_utf8_lossy(&bytes);
 
         self.normalize(url, &html)
     }
