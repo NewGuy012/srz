@@ -483,6 +483,7 @@ pub fn render_index_html(stats: &LibraryStats, entries: &[HistoryEntry]) -> Stri
                 "book" => "📚",
                 "file" => "📄",
                 "stdin" => "⌨️",
+                "news" => "📰",
                 _ => "🌐",
             };
             let slug = slugify(&entry.title);
@@ -765,6 +766,7 @@ pub fn render_index_html(stats: &LibraryStats, entries: &[HistoryEntry]) -> Stri
       <button class="filter-btn active" data-filter="all">All</button>
       <button class="filter-btn" data-filter="book">📚 Books</button>
       <button class="filter-btn" data-filter="web">🌐 Web</button>
+      <button class="filter-btn" data-filter="news">📰 News</button>
       <button class="filter-btn" data-filter="file">📄 Files</button>
       <button class="filter-btn" data-filter="stdin">⌨️ Stdin</button>
     </div>

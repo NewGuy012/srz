@@ -813,6 +813,46 @@ impl LlmClient {
         )
         .await
     }
+
+    /// Summarize multiple news articles into an executive news briefing / digest
+    pub async fn summarize_news_digest(
+        &self,
+        topic: &str,
+        timeframe_label: &str,
+        articles_digest: &str,
+        style: SummaryStyle,
+        mode: StreamMode<'_>,
+    ) -> Result<LlmOutput> {
+        let bounded_context = truncate_words_preserving_lines(articles_digest, MAX_CONTEXT_WORDS);
+
+        let system_prompt = "You are a professional news editor and intelligence analyst. \
+            Your goal is to synthesize the latest news coverage from multiple articles into a comprehensive, \
+            clear, and well-structured news briefing. Highlight the major developments, consensus points, \
+            different angles or debates, and key quotes or statistics where relevant. Write in clean Markdown.";
+
+        let user_prompt = format!(
+            "Topic: {}\nTimeframe: {}\nStyle instructions: {}\n\n\
+            News Articles Collected:\n---\n{}\n---\n\n\
+            Please provide an executive news briefing covering:\n\
+            1. Executive Overview / Headline Takeaway\n\
+            2. Major Developments & Key Stories\n\
+            3. Context & Impact Analysis\n\
+            4. Notable Quotes, Figures, or Publisher Perspectives",
+            topic,
+            timeframe_label,
+            style.prompt_guidance(),
+            bounded_context
+        );
+
+        self.complete_streaming(
+            system_prompt,
+            &user_prompt,
+            "Synthesizing news briefing with local LLM...",
+            "News briefing generated.",
+            mode,
+        )
+        .await
+    }
 }
 
 /// Truncates `text` to at most `max_words` words while preserving original line and paragraph breaks.

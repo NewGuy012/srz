@@ -235,6 +235,11 @@ async fn main() -> Result<()> {
             )
             .await
         }
+        ResolvedAction::News {
+            topic,
+            timeframe,
+            limit,
+        } => handle_news(&topic, timeframe, limit, &scraper, &llm, &cache, &args).await,
         _ => unreachable!(),
     };
 
@@ -332,6 +337,7 @@ fn target_icon(target_type: &str) -> &'static str {
         "book" => "📚",
         "file" => "📄",
         "stdin" => "⌨️",
+        "news" => "📰",
         _ => "🌐",
     }
 }
@@ -384,10 +390,11 @@ fn handle_stats(db: &Database, as_json: bool) -> Result<()> {
 
     Ui::header("Library & LLM Performance Statistics (DuckDB)");
     println!(
-        "  Total Summaries:     {} ({} books, {} web articles, {} files, {} stdin)",
+        "  Total Summaries:     {} ({} books, {} web articles, {} news digests, {} files, {} stdin)",
         stats.total_summaries,
         stats.book_summaries,
         stats.web_summaries,
+        stats.news_summaries,
         stats.file_summaries,
         stats.stdin_summaries
     );
@@ -949,6 +956,83 @@ async fn handle_web(
         None,
         Some(url.to_string()),
         page.word_count,
+        output,
+    ))
+}
+
+async fn handle_news(
+    topic: &str,
+    timeframe: srz::cli::NewsTimeframe,
+    limit: usize,
+    scraper: &WebScraper,
+    llm: &LlmClient,
+    _cache: &Cache,
+    args: &Cli,
+) -> Result<SummaryOutcome> {
+    let news_client = srz::news::GoogleNewsClient::new()?;
+
+    Ui::info(&format!(
+        "Searching Google News for '{}' ({}, max articles: {})...",
+        topic,
+        timeframe.display_label(),
+        limit
+    ));
+
+    let pb = Ui::spinner("Fetching and reading news articles...");
+    let sources_res = news_client
+        .collect_news_articles(topic, timeframe, limit, scraper)
+        .await;
+    pb.finish_and_clear();
+
+    let sources = sources_res?;
+
+    Ui::success(&format!(
+        "Aggregated {} news article(s) on '{}' for briefing synthesis.",
+        sources.len(),
+        topic
+    ));
+
+    let mut digest = String::new();
+    let mut total_words = 0;
+    for (i, src) in sources.iter().enumerate() {
+        total_words += src.word_count;
+        digest.push_str(&format!(
+            "### Article {}: {}\n- Publisher: {}\n- URL: {}\n",
+            i + 1,
+            src.title,
+            src.source_name,
+            src.url
+        ));
+        if let Some(date) = &src.pub_date {
+            digest.push_str(&format!("- Published: {}\n", date));
+        }
+        digest.push_str(&format!("\n{}\n\n---\n\n", src.content));
+    }
+
+    let title_display = format!("News: {}", topic);
+    let mode = args.stream_mode(&title_display);
+    let author_str = format!("{} news sources", sources.len());
+    let search_url = format!(
+        "https://news.google.com/search?q={}",
+        urlencoding::encode(topic)
+    );
+
+    let output = llm
+        .summarize_news_digest(
+            topic,
+            timeframe.display_label(),
+            &digest,
+            args.style,
+            mode,
+        )
+        .await?;
+
+    Ok(SummaryOutcome::from_llm(
+        "news",
+        title_display,
+        Some(author_str),
+        Some(search_url),
+        total_words,
         output,
     ))
 }

@@ -51,6 +51,40 @@ impl SummaryStyle {
     }
 }
 
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum NewsTimeframe {
+    /// Past 24 hours / current day (default)
+    #[default]
+    Day,
+    /// Past 7 days / week
+    Week,
+    /// Past 30 days / month
+    Month,
+    /// Any time / all results
+    All,
+}
+
+impl NewsTimeframe {
+    pub fn as_google_query_suffix(&self) -> &'static str {
+        match self {
+            Self::Day => "when:1d",
+            Self::Week => "when:7d",
+            Self::Month => "when:30d",
+            Self::All => "",
+        }
+    }
+
+    pub fn display_label(&self) -> &'static str {
+        match self {
+            Self::Day => "Today / Past 24 Hours",
+            Self::Week => "Past Week",
+            Self::Month => "Past Month",
+            Self::All => "All Time",
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "srz",
@@ -193,6 +227,17 @@ pub enum Commands {
     Doctor,
     /// Generate and view the standalone HTML library dashboard
     Index,
+    /// Search and summarize latest news on a topic using Google News RSS
+    News {
+        /// Topic or query to search for (e.g. "javascript", "rust", "tech")
+        topic: String,
+        /// Timeframe for news recency (day, week, month, all; default: day)
+        #[arg(short = 't', long, value_enum, default_value = "day")]
+        timeframe: NewsTimeframe,
+        /// Maximum number of top articles to aggregate and summarize (default: 4)
+        #[arg(short, long, default_value_t = 4)]
+        limit: usize,
+    },
     /// Generate shell auto-completion script
     Completions {
         /// Target shell to generate completions for
@@ -247,6 +292,11 @@ pub enum ResolvedAction<'a> {
     Models,
     Doctor,
     Index,
+    News {
+        topic: String,
+        timeframe: NewsTimeframe,
+        limit: usize,
+    },
     Completions {
         shell: clap_complete::Shell,
     },
@@ -289,6 +339,15 @@ impl Cli {
                 Commands::Models => Ok(ResolvedAction::Models),
                 Commands::Doctor => Ok(ResolvedAction::Doctor),
                 Commands::Index => Ok(ResolvedAction::Index),
+                Commands::News {
+                    topic,
+                    timeframe,
+                    limit,
+                } => Ok(ResolvedAction::News {
+                    topic: topic.trim().to_string(),
+                    timeframe: *timeframe,
+                    limit: *limit,
+                }),
                 Commands::Completions { shell } => Ok(ResolvedAction::Completions { shell: *shell }),
             }
         } else if let Some(target) = &self.target {
@@ -302,6 +361,13 @@ impl Cli {
                 if candidate_path.is_file() {
                     Ok(ResolvedAction::File {
                         path: candidate_path.to_path_buf(),
+                    })
+                } else if is_news_query(trimmed) {
+                    let clean_topic = clean_news_query(trimmed);
+                    Ok(ResolvedAction::News {
+                        topic: clean_topic,
+                        timeframe: NewsTimeframe::Day,
+                        limit: 4,
                     })
                 } else {
                     Ok(ResolvedAction::Book {
@@ -409,5 +475,45 @@ impl Cli {
                 self.concurrency = c;
             }
         }
+    }
+}
+
+pub fn is_news_query(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    let words: Vec<&str> = lower.split_whitespace().collect();
+    if words.is_empty() {
+        return false;
+    }
+    words.contains(&"news")
+        || words.contains(&"headlines")
+        || ((words[0] == "current" || words[0] == "latest")
+            && words.len() > 1
+            && (words.contains(&"updates") || words.contains(&"stories")))
+}
+
+pub fn clean_news_query(s: &str) -> String {
+    let words: Vec<&str> = s.split_whitespace().collect();
+    if words.is_empty() {
+        return "top stories".to_string();
+    }
+
+    let stop_words = [
+        "current", "latest", "today's", "todays", "recent", "news", "headline", "headlines",
+        "about", "on", "regarding", "for",
+    ];
+
+    let filtered: Vec<&str> = words
+        .iter()
+        .copied()
+        .filter(|w| {
+            let lower = w.to_ascii_lowercase();
+            !stop_words.contains(&lower.as_str())
+        })
+        .collect();
+
+    if filtered.is_empty() {
+        "top stories".to_string()
+    } else {
+        filtered.join(" ")
     }
 }

@@ -4,6 +4,7 @@ pub mod cli;
 pub mod config;
 pub mod db;
 pub mod llm;
+pub mod news;
 pub mod render;
 pub mod scraper;
 pub mod search;

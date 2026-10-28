@@ -1,5 +1,7 @@
 use clap::Parser;
-use srz::cli::{CacheCommand, Cli, ResolvedAction, SummaryStyle};
+use srz::cli::{
+    clean_news_query, is_news_query, CacheCommand, Cli, NewsTimeframe, ResolvedAction, SummaryStyle,
+};
 
 #[test]
 fn test_cache_subcommands() {
@@ -229,4 +231,110 @@ fn test_yes_flag() {
 
     let concurrency_cli = Cli::parse_from(["srz", "The Hobbit", "--concurrency", "4"]);
     assert_eq!(concurrency_cli.concurrency, 4);
+}
+
+#[test]
+fn test_news_subcommand_resolution() {
+    let default_news = Cli::parse_from(["srz", "news", "javascript"]);
+    assert_eq!(
+        default_news.resolve_action().unwrap(),
+        ResolvedAction::News {
+            topic: "javascript".to_string(),
+            timeframe: NewsTimeframe::Day,
+            limit: 4,
+        }
+    );
+
+    let custom_news = Cli::parse_from([
+        "srz", "news", "artificial intelligence", "-t", "week", "-l", "8",
+    ]);
+    assert_eq!(
+        custom_news.resolve_action().unwrap(),
+        ResolvedAction::News {
+            topic: "artificial intelligence".to_string(),
+            timeframe: NewsTimeframe::Week,
+            limit: 8,
+        }
+    );
+}
+
+#[test]
+fn test_news_natural_query_auto_detection() {
+    let js_news = Cli::parse_from(["srz", "current javascript news"]);
+    assert_eq!(
+        js_news.resolve_action().unwrap(),
+        ResolvedAction::News {
+            topic: "javascript".to_string(),
+            timeframe: NewsTimeframe::Day,
+            limit: 4,
+        }
+    );
+
+    let latest_rust = Cli::parse_from(["srz", "latest rust news"]);
+    assert_eq!(
+        latest_rust.resolve_action().unwrap(),
+        ResolvedAction::News {
+            topic: "rust".to_string(),
+            timeframe: NewsTimeframe::Day,
+            limit: 4,
+        }
+    );
+
+    let news_about_tech = Cli::parse_from(["srz", "news about quantum computing"]);
+    assert_eq!(
+        news_about_tech.resolve_action().unwrap(),
+        ResolvedAction::News {
+            topic: "quantum computing".to_string(),
+            timeframe: NewsTimeframe::Day,
+            limit: 4,
+        }
+    );
+
+    let general_news = Cli::parse_from(["srz", "current news"]);
+    assert_eq!(
+        general_news.resolve_action().unwrap(),
+        ResolvedAction::News {
+            topic: "top stories".to_string(),
+            timeframe: NewsTimeframe::Day,
+            limit: 4,
+        }
+    );
+}
+
+#[test]
+fn test_news_query_helpers() {
+    assert!(is_news_query("current javascript news"));
+    assert!(is_news_query("latest AI news"));
+    assert!(is_news_query("tech news"));
+    assert!(is_news_query("news"));
+    assert!(is_news_query("current headlines"));
+    assert!(!is_news_query("The Great Gatsby"));
+    assert!(!is_news_query("Designing Data-Intensive Applications"));
+
+    assert_eq!(clean_news_query("current javascript news"), "javascript");
+    assert_eq!(clean_news_query("latest rust news"), "rust");
+    assert_eq!(clean_news_query("news about astrophysics"), "astrophysics");
+    assert_eq!(clean_news_query("current news"), "top stories");
+    assert_eq!(clean_news_query("news"), "top stories");
+}
+
+#[test]
+fn test_google_news_url_extraction() {
+    use srz::news::{extract_article_id, extract_attr_value, parse_batchexecute_destination_url};
+
+    let url = "https://news.google.com/rss/articles/CBMiWmh0dHBzOi8vd3d3LnNpdGVwb2ludC5jb20vamF2YXNjcmlwdC1uZXdzLw?oc=5";
+    assert_eq!(
+        extract_article_id(url),
+        Some("CBMiWmh0dHBzOi8vd3d3LnNpdGVwb2ludC5jb20vamF2YXNjcmlwdC1uZXdzLw")
+    );
+
+    let html = r#"<div data-n-a-sg="ABC123xyz" data-n-a-ts="1714200000"></div>"#;
+    assert_eq!(extract_attr_value(html, "data-n-a-sg="), Some("ABC123xyz"));
+    assert_eq!(extract_attr_value(html, "data-n-a-ts="), Some("1714200000"));
+
+    let rpc_text = ")]}'\n\n[[\"wrb.fr\",\"Fbv4je\",\"[\\\"garturlreq\\\",\\\"https://www.sitepoint.com/javascript-news/\\\"]\"]]";
+    assert_eq!(
+        parse_batchexecute_destination_url(rpc_text),
+        Some("https://www.sitepoint.com/javascript-news/".to_string())
+    );
 }

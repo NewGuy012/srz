@@ -137,6 +137,7 @@ fn test_render_index_html() {
         web_summaries: 1,
         file_summaries: 0,
         stdin_summaries: 0,
+        news_summaries: 0,
         total_source_words: 5000,
         total_prompt_tokens: 3500,
         total_completion_tokens: 800,

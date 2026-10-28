@@ -51,6 +51,7 @@ pub struct ScrapedPage {
     pub word_count: usize,
 }
 
+#[derive(Clone)]
 pub struct WebScraper {
     client: reqwest::Client,
 }
