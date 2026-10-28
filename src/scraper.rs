@@ -182,7 +182,7 @@ impl WebScraper {
             .context("Failed to convert HTML to text")?;
 
         // 4. Clean and normalize whitespace/formatting + count words in a single pass
-        let (cleaned_content, word_count) = self.clean_text_and_count_words(&rendered_text);
+        let (cleaned_content, word_count) = clean_text(&rendered_text, true, 2);
 
         Ok(ScrapedPage {
             url: url.to_string(),
@@ -203,21 +203,14 @@ impl WebScraper {
             }
         }
 
-        // Try <title> tag
-        if let Some(elem) = document.select(&TITLE_SEL).next() {
-            let text: String = elem.text().collect();
-            let trimmed = text.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
-            }
-        }
-
-        // Try <h1> tag
-        if let Some(elem) = document.select(&H1_SEL).next() {
-            let text: String = elem.text().collect();
-            let trimmed = text.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
+        // Try <title> tag, then <h1> tag
+        for sel in [&*TITLE_SEL, &*H1_SEL] {
+            if let Some(elem) = document.select(sel).next() {
+                let text: String = elem.text().collect();
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
             }
         }
 
@@ -235,40 +228,6 @@ impl WebScraper {
         }
 
         document.html()
-    }
-
-    /// Cleans lines, strips trailing reference sections using zero-allocation ASCII comparison,
-    /// and computes total word count in a single pass into one pre-sized `String`.
-    fn clean_text_and_count_words(&self, text: &str) -> (String, usize) {
-        let mut out = String::with_capacity(text.len());
-        let mut word_count = 0;
-        let mut empty_line_count = 0;
-
-        for raw_line in text.lines() {
-            let line = raw_line.trim();
-
-            if is_reference_heading(line) {
-                break;
-            }
-
-            if line.is_empty() {
-                empty_line_count += 1;
-                if empty_line_count <= 2 && !out.is_empty() {
-                    out.push('\n');
-                }
-            } else {
-                empty_line_count = 0;
-                word_count += line.split_whitespace().count();
-                if !out.is_empty() {
-                    out.push('\n');
-                }
-                out.push_str(line);
-            }
-        }
-
-        let trimmed_len = out.trim_end().len();
-        out.truncate(trimmed_len);
-        (out, word_count)
     }
 }
 
@@ -382,15 +341,26 @@ pub fn extract_epub(path: &Path) -> Result<ExtractedDocument> {
 
 /// Cleans lines and counts words in a single pass.
 pub fn clean_raw_text(text: &str) -> (String, usize) {
+    clean_text(text, false, 1)
+}
+
+/// Cleans lines, optionally strips trailing reference sections using zero-allocation ASCII comparison,
+/// and computes total word count in a single pass into one pre-sized `String`.
+fn clean_text(text: &str, strip_references: bool, max_empty_lines: usize) -> (String, usize) {
     let mut out = String::with_capacity(text.len());
     let mut word_count = 0;
     let mut empty_line_count = 0;
 
     for raw_line in text.lines() {
         let line = raw_line.trim();
+
+        if strip_references && is_reference_heading(line) {
+            break;
+        }
+
         if line.is_empty() {
             empty_line_count += 1;
-            if empty_line_count == 1 && !out.is_empty() {
+            if empty_line_count <= max_empty_lines && !out.is_empty() {
                 out.push('\n');
             }
         } else {
