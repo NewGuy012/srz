@@ -8,8 +8,10 @@ use srz::render;
 use srz::scraper::WebScraper;
 use srz::search::BookSearcher;
 use srz::ui::Ui;
+use serde::Serialize;
 use std::fs;
 
+#[derive(Serialize)]
 struct SummaryOutcome {
     title: String,
     author: Option<String>,
@@ -29,7 +31,7 @@ struct SummaryOutcome {
 async fn main() -> Result<()> {
     let args = Cli::parse();
 
-    if args.quiet {
+    if args.quiet || args.json {
         Ui::set_quiet(true);
     }
     if args.verbose {
@@ -61,7 +63,7 @@ async fn main() -> Result<()> {
         }
         ResolvedAction::History { limit } => {
             if let Some(db) = &db {
-                handle_history(db, limit)?;
+                handle_history(db, limit, args.json)?;
             } else {
                 Ui::error("DuckDB database unavailable.");
             }
@@ -69,7 +71,7 @@ async fn main() -> Result<()> {
         }
         ResolvedAction::Stats => {
             if let Some(db) = &db {
-                handle_stats(db)?;
+                handle_stats(db, args.json)?;
             } else {
                 Ui::error("DuckDB database unavailable.");
             }
@@ -77,7 +79,7 @@ async fn main() -> Result<()> {
         }
         ResolvedAction::Find { query } => {
             if let Some(db) = &db {
-                handle_find(db, query, &cache)?;
+                handle_find(db, query, &cache, args.json)?;
             } else {
                 Ui::error("DuckDB database unavailable.");
             }
@@ -140,7 +142,9 @@ async fn main() -> Result<()> {
 
     match summary_result {
         Ok(outcome) => {
-            if let Some(output_path) = &args.output {
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&outcome)?);
+            } else if let Some(output_path) = &args.output {
                 let is_html = output_path
                     .extension()
                     .and_then(|e| e.to_str())
@@ -166,8 +170,9 @@ async fn main() -> Result<()> {
             }
 
             // Always save clickable styled HTML and Markdown view files
-            if let Ok(files) =
-                render::save_view_files(&cache.views_dir(), &outcome.title, &outcome.summary)
+            if !args.json
+                && let Ok(files) =
+                    render::save_view_files(&cache.views_dir(), &outcome.title, &outcome.summary)
             {
                 Ui::success(&format!(
                     "Styled HTML view: file://{}",
@@ -215,8 +220,12 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn handle_history(db: &Database, limit: usize) -> Result<()> {
+fn handle_history(db: &Database, limit: usize, as_json: bool) -> Result<()> {
     let entries = db.get_history(limit)?;
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&entries)?);
+        return Ok(());
+    }
     if entries.is_empty() {
         Ui::info("No summarization history recorded yet. Summarize a book or webpage first!");
         return Ok(());
@@ -246,8 +255,12 @@ fn handle_history(db: &Database, limit: usize) -> Result<()> {
     Ok(())
 }
 
-fn handle_stats(db: &Database) -> Result<()> {
+fn handle_stats(db: &Database, as_json: bool) -> Result<()> {
     let stats = db.get_stats()?;
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&stats)?);
+        return Ok(());
+    }
     if stats.total_summaries == 0 {
         Ui::info("No library statistics available yet. Run a summary to begin tracking!");
         return Ok(());
@@ -270,8 +283,12 @@ fn handle_stats(db: &Database) -> Result<()> {
     Ok(())
 }
 
-fn handle_find(db: &Database, query: &str, cache: &Cache) -> Result<()> {
+fn handle_find(db: &Database, query: &str, cache: &Cache, as_json: bool) -> Result<()> {
     let results = db.search(query)?;
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&results)?);
+        return Ok(());
+    }
     if results.is_empty() {
         Ui::info(&format!("No summaries found in library matching '{}'.", query));
         return Ok(());
@@ -385,7 +402,7 @@ async fn handle_file(
         path.display()
     ));
 
-    let mode = if args.output.is_none() {
+    let mode = if args.output.is_none() && !args.json {
         StreamMode::Stdout {
             header_title: &title,
         }
@@ -449,7 +466,7 @@ async fn handle_stdin(
 
     Ui::info(&format!("Read {} words from standard input", word_count));
 
-    let mode = if args.output.is_none() {
+    let mode = if args.output.is_none() && !args.json {
         StreamMode::Stdout {
             header_title: &title,
         }
@@ -529,7 +546,7 @@ async fn handle_web(
         page.word_count, title_display, page.url
     ));
 
-    let mode = if args.output.is_none() {
+    let mode = if args.output.is_none() && !args.json {
         StreamMode::Stdout {
             header_title: &title_display,
         }
@@ -606,7 +623,7 @@ async fn handle_book(
         });
     }
 
-    let mode = if args.output.is_none() {
+    let mode = if args.output.is_none() && !args.json {
         StreamMode::Stdout {
             header_title: &book_display,
         }

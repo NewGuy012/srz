@@ -175,3 +175,12 @@ fn test_quiet_and_verbose_flags() {
     assert!(!verbose_cli.quiet);
     assert!(verbose_cli.verbose);
 }
+
+#[test]
+fn test_json_flag() {
+    let json_cli = Cli::parse_from(["srz", "history", "--json"]);
+    assert!(json_cli.json);
+
+    let json_summary_cli = Cli::parse_from(["srz", "Dune", "--json"]);
+    assert!(json_summary_cli.json);
+}

@@ -1,24 +1,25 @@
 # `srz` (Summarize)
 
-A modular, minimalist Rust CLI for summarizing **webpages** and **books** using any local OpenAI-compliant LLM (such as **Ollama**, **LM Studio**, **vLLM**, or **llama.cpp**).
+A modular, minimalist Rust CLI for summarizing **webpages**, **local files**, **stdin streams**, and **books** using any local OpenAI-compliant LLM (such as **Ollama**, **LM Studio**, **vLLM**, or **llama.cpp**).
 
 ---
 
 ## Features
 
 - **Webpage Summarization**: Scrapes any URL, strips boilerplate (ads, navigation, footers), normalizes the article text into clean paragraphs, and generates a structured summary.
+- **Local File & Stdin Summarization**: Summarizes local files (`srz file <path>` or auto-detected `srz README.md`) and standard input (`git diff | srz -`).
 - **Book Summarization by Title**: Summarizes books without needing to supply ebook files.
   - **Web Search by Default**: Queries free, zero-API sources (DuckDuckGo & Wikipedia) for the book's synopsis and overview to ground the LLM's summary with accurate, hallucination-free facts.
   - **Trained Knowledge Fallback**: If no online reference is found (or when `--no-search` is passed), falls back to the LLM's trained memory.
-- **Local OpenAI API-Compliant**: Built for local servers like **llama.cpp** (default: `http://localhost:9931/v1`), **Ollama**, **LM Studio**, and **vLLM**.
+- **Universal Token Tracking**: Streams tokens (`stream: true`) with `stream_options` to `stdout` in real time while displaying live chain-of-thought token progress on `stderr`.
+- **Machine-Readable JSON Output**: Pass `--json` to `history`, `stats`, `find`, or summarization commands for automated scripting and editor integrations.
 - **Embedded DuckDB Engine**: Built-in DuckDB database (`~/.cache/srz/srz.duckdb`) tracking your reading history, token speeds, and providing instant full-text search across all past summaries.
-- **Real-Time SSE Streaming & Live Thinking Counter**: Streams tokens (`stream: true`) to `stdout` in real time while displaying live chain-of-thought token progress on `stderr`.
+- **Shell Auto-Completions**: Generate tab-completion scripts out-of-the-box (`srz completions <bash|zsh|fish|powershell>`).
 - **Clickable Styled HTML & Markdown Views**: Automatically saves a styled, responsive `.html` reader view (with light/dark mode) and `.md` file in `~/.cache/srz/views/` and prints clickable `file://` links so you can open the summary in your browser or editor with one click.
-- **Strict `stdout` / `stderr` Separation**: All spinners, headers, and diagnostics are emitted to `stderr` so `stdout` can be piped cleanly (`srz "Dune" | pbcopy`).
-- **Polished CLI**: Built using `clap` (subcommands, flags, env vars) and `indicatif` (interactive spinners and status indicators).
+- **Strict `stdout` / `stderr` & `NO_COLOR` Hygiene**: Respects `NO_COLOR` and terminal detection (`is_terminal`). Supports quiet (`-q`) and verbose (`-v`) flags.
 - **Multiple Summary Styles**: `concise` (default), `detailed`, `bullets`, or `executive`.
 - **Smart Disk Caching**: Automatically caches search results, scraped reference pages, and generated summaries in `~/.cache/srz` (`srz cache dir | size | clean`). Pass `--no-cache` to force a fresh fetch.
-- **Text Chunking**: Automatic windowed chunking and map-reduce synthesis for long web pages (> 12,000 words, tuned for a 32k context window).
+- **Text Chunking**: Automatic windowed chunking and map-reduce synthesis for long documents (> 12,000 words, tuned for a 32k context window).
 
 ---
 
@@ -49,7 +50,24 @@ srz https://example.com/article
 srz web https://example.com/article -o summary.md
 ```
 
-### 2. Summarizing a Book
+### 2. Summarizing Local Files and Stdin
+
+```bash
+# Summarize a local file
+srz file path/to/document.md
+
+# Or auto-detect existing local file
+srz README.md
+
+# Summarize standard input from a Unix pipeline
+git diff | srz -
+cat report.txt | srz -
+
+# Quiet mode: suppress spinners and headers when piping summary
+srz Cargo.toml -q | pbcopy
+```
+
+### 3. Summarizing a Book
 
 ```bash
 # Default: Searches web for book synopsis and synthesizes with local LLM
@@ -68,7 +86,7 @@ srz "To Kill a Mockingbird"
 srz book "Dune" --no-cache
 ```
 
-### 3. Choosing a Summary Style
+### 4. Choosing a Summary Style
 
 ```bash
 srz web https://example.com/article --style bullets
@@ -81,7 +99,7 @@ Styles available:
 - `bullets`: Key takeaways and actionable points formatted as bullet points.
 - `executive`: Structured as Executive Overview, Core Findings, Strategic Insights, and Impact.
 
-### 4. Managing the Local Cache
+### 5. Managing the Local Cache
 
 ```bash
 # Print the cache directory path
@@ -94,7 +112,7 @@ srz cache size
 srz cache clean
 ```
 
-### 5. History, Stats, and Library Search (DuckDB)
+### 6. History, Stats, and Library Search (DuckDB)
 
 ```bash
 # View recent reads, token metrics, and speeds
@@ -107,6 +125,26 @@ srz stats
 # Search your local summarized library offline for keywords/topics
 srz find "spice"
 srz find "ecology"
+
+# Machine-readable JSON output for scripting
+srz history --json
+srz stats --json
+srz find "rust" --json
+```
+
+### 7. Shell Completions
+
+Generate shell completions for your shell (`bash`, `zsh`, `fish`, `powershell`, `elvish`):
+
+```bash
+# Zsh
+srz completions zsh > ~/.zfunc/_srz
+
+# Bash
+srz completions bash > ~/.bash_completion
+
+# Fish
+srz completions fish > ~/.config/fish/completions/srz.fish
 ```
 
 ---

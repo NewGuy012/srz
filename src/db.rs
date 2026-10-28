@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use duckdb::{params, Connection};
+use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,7 +20,7 @@ pub struct NewSummaryRecord<'a> {
     pub summary: &'a str,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryEntry {
     pub id: i64,
     pub target_type: String,
@@ -36,7 +37,7 @@ pub struct HistoryEntry {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LibraryStats {
     pub total_summaries: i64,
     pub book_summaries: i64,
@@ -49,7 +50,7 @@ pub struct LibraryStats {
     pub total_duration_ms: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LibrarySearchResult {
     pub id: i64,
     pub target_type: String,

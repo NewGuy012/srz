@@ -94,6 +94,10 @@ pub struct Cli {
     /// Display verbose diagnostic and timing logs
     #[arg(short, long, global = true)]
     pub verbose: bool,
+
+    /// Format output as machine-readable JSON
+    #[arg(long, global = true)]
+    pub json: bool,
 }
 
 #[derive(Subcommand, Debug)]
