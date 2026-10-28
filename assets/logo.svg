@@ -19,12 +19,6 @@
   <!-- Outer Card -->
   <rect x="4" y="4" width="732" height="188" rx="18" fill="url(#bgGrad)" stroke="#30363d" stroke-width="1.5" />
 
-  <!-- Subtle Grid Accent -->
-  <g stroke="#21262d" stroke-width="1" opacity="0.55">
-    <line x1="216" y1="4" x2="216" y2="192" />
-    <line x1="4" y1="98" x2="216" y2="98" />
-  </g>
-
   <!-- Left Emblem: Rust Gear + Book/Web Distillation Funnel -->
   <g transform="translate(110, 98)">
     <!-- Ambient Rust Glow -->

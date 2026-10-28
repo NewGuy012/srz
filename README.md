@@ -6,17 +6,13 @@
 
 A fast, modular Rust CLI for distilling **webpages**, **local files**, **stdin streams**, and **books** into structured summaries using any local OpenAI-compliant LLM (such as **llama.cpp**, **Ollama**, **LM Studio**, or **vLLM**).
 
----
-
 ## Highlights
 
-- **Universal Input Auto-Detection**: Summarize any **URL**, **book title**, **local file**, or **Unix `stdin` pipe** (`srz <target>`) with a single command.
-- **Zero-Key Grounded Book Search**: Resolves canonical book metadata via Open Library and cross-references Wikipedia & DuckDuckGo synopses for hallucination-free summaries.
-- **Real-Time Local LLM Streaming**: Streams tokens live via SSE (`stream: true`) with chain-of-thought token progress and automatic map-reduce chunking for long texts.
-- **Embedded DuckDB Library & Analytics**: Tracks reading history (`srz history`), LLM speed telemetry (`srz stats`), and instant offline full-text search (`srz find`) in `~/.cache/srz/srz.duckdb`.
-- **One-Click Reader Views & Pipeline Hygiene**: Saves styled light/dark `.html` and `.md` views while keeping `stdout` pure (Markdown or `--json`) and `stderr` clean for Unix pipelines.
-
----
+- **Summarize anything**: works with web links, book titles, local files, and piped text.
+- **Fact-checked book summaries**: pulls synopses from Wikipedia and Open Library—no ebook files or API keys needed.
+- **100% local & private**: runs on your own machine using `llama.cpp`, `Ollama`, `LM Studio`, or `vLLM`.
+- **Searchable personal library**: saves every summary locally so you can search past reads offline.
+- **Clean reader views**: generates one-click HTML and Markdown pages with automatic light and dark mode.
 
 ## Features
 
@@ -35,8 +31,6 @@ A fast, modular Rust CLI for distilling **webpages**, **local files**, **stdin s
 - **Smart Disk Caching**: Automatically caches book metadata, search candidates, scraped reference pages, and generated summaries in `~/.cache/srz` (`srz cache dir | size | clean`). Pass `--no-cache` to force a fresh fetch.
 - **Text Chunking**: Automatic windowed chunking and map-reduce synthesis with aggregated token telemetry for long documents (> 12,000 words, tuned for a 32k context window).
 
----
-
 ## Installation
 
 Ensure you have Rust and Cargo installed:
@@ -46,8 +40,6 @@ cargo build --release
 ```
 
 The compiled binary will be located at `target/release/srz`.
-
----
 
 ## Usage
 
@@ -165,8 +157,6 @@ srz completions bash > ~/.bash_completion
 srz completions fish > ~/.config/fish/completions/srz.fish
 ```
 
----
-
 ## Configuring Your Local LLM
 
 By default, `srz` connects to your local llama.cpp app:
@@ -187,24 +177,20 @@ export OPENAI_MODEL="ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
 export OPENAI_API_KEY=""   # Optional
 ```
 
----
-
 ## Architecture & Modules
 
-See [`OVERVIEW.md`](file:///Users/myoo/Documents/Repo/srz/OVERVIEW.md) for detailed Mermaid architecture and sequence diagrams. The codebase is organized into modular components with single responsibilities:
+See [`OVERVIEW.md`](OVERVIEW.md) for detailed Mermaid architecture and sequence diagrams. The codebase is organized into modular components with single responsibilities:
 
-- [`src/main.rs`](file:///Users/myoo/Documents/Repo/srz/src/main.rs): CLI entry point coordinating the high-level summarization pipeline.
-- [`src/cli.rs`](file:///Users/myoo/Documents/Repo/srz/src/cli.rs): Argument parsing, subcommand definitions, and style guidance with `clap`.
-- [`src/cache.rs`](file:///Users/myoo/Documents/Repo/srz/src/cache.rs): Persistent disk cache (`~/.cache/srz`) for metadata, search results, scraped pages, and summaries.
-- [`src/db.rs`](file:///Users/myoo/Documents/Repo/srz/src/db.rs): Embedded DuckDB engine for reading history, performance telemetry, and offline full-text library search.
-- [`src/scraper.rs`](file:///Users/myoo/Documents/Repo/srz/src/scraper.rs): Webpage fetching, DOM parsing, boilerplate removal, and text normalization.
-- [`src/search.rs`](file:///Users/myoo/Documents/Repo/srz/src/search.rs): Open Library metadata resolution plus Wikipedia & DuckDuckGo candidate search and ranking.
-- [`src/llm.rs`](file:///Users/myoo/Documents/Repo/srz/src/llm.rs): Zero-copy OpenAI SSE streaming client and map-reduce synthesis engine.
-- [`src/chunker.rs`](file:///Users/myoo/Documents/Repo/srz/src/chunker.rs): Text windowing and paragraph chunking for long articles.
-- [`src/render.rs`](file:///Users/myoo/Documents/Repo/srz/src/render.rs): Standalone HTML5 reader view and Markdown rendering.
-- [`src/ui.rs`](file:///Users/myoo/Documents/Repo/srz/src/ui.rs): Terminal spinners, `NO_COLOR` detection, and status output with `indicatif`.
-
----
+- `src/main.rs`: CLI entry point coordinating the high-level summarization pipeline.
+- `src/cli.rs`: Argument parsing, subcommand definitions, and style guidance with `clap`.
+- `src/cache.rs`: Persistent disk cache (`~/.cache/srz`) for metadata, search results, scraped pages, and summaries.
+- `src/db.rs`: Embedded DuckDB engine for reading history, performance telemetry, and offline full-text library search.
+- `src/scraper.rs`: Webpage fetching, DOM parsing, boilerplate removal, and text normalization.
+- `src/search.rs`: Open Library metadata resolution plus Wikipedia & DuckDuckGo candidate search and ranking.
+- `src/llm.rs`: Zero-copy OpenAI SSE streaming client and map-reduce synthesis engine.
+- `src/chunker.rs`: Text windowing and paragraph chunking for long articles.
+- `src/render.rs`: Standalone HTML5 reader view and Markdown rendering.
+- `src/ui.rs`: Terminal spinners, `NO_COLOR` detection, and status output with `indicatif`.
 
 ## Running Tests
 
