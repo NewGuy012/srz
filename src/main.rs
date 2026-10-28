@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
-use srz::cache::{Cache, SetBookSummaryParams};
+use srz::cache::{Cache, CachedSummary, SetBookSummaryParams};
 use srz::cli::{CacheCommand, Cli, ResolvedAction};
 use srz::db::{Database, NewSummaryRecord};
 use srz::llm::{self, LlmClient, LlmOutput, StreamMode};
 use srz::render;
-use srz::scraper::WebScraper;
+use srz::scraper::{ScrapedPage, WebScraper};
 use srz::search::BookSearcher;
 use srz::ui::Ui;
 use serde::Serialize;
@@ -26,6 +26,74 @@ struct SummaryOutcome {
     duration_ms: u64,
     tokens_per_second: Option<f64>,
     cached: bool,
+}
+
+impl SummaryOutcome {
+    fn from_llm(
+        target_type: &'static str,
+        title: String,
+        author: Option<String>,
+        url: Option<String>,
+        word_count: usize,
+        output: LlmOutput,
+    ) -> Self {
+        if let Some(warn) = &output.warning {
+            Ui::warn(warn);
+        }
+        Self {
+            title,
+            author,
+            url,
+            target_type,
+            summary: output.content,
+            word_count,
+            streamed_to_stdout: output.streamed_to_stdout,
+            prompt_tokens: output.prompt_tokens,
+            completion_tokens: output.completion_tokens,
+            duration_ms: output.duration_ms,
+            tokens_per_second: output.tokens_per_second,
+            cached: false,
+        }
+    }
+
+    fn from_cached(
+        target_type: &'static str,
+        cached: CachedSummary,
+        author: Option<String>,
+        url: Option<String>,
+    ) -> Self {
+        Self {
+            title: cached.title,
+            author,
+            url,
+            target_type,
+            summary: cached.summary,
+            word_count: 0,
+            streamed_to_stdout: false,
+            prompt_tokens: None,
+            completion_tokens: None,
+            duration_ms: 0,
+            tokens_per_second: None,
+            cached: true,
+        }
+    }
+}
+
+async fn fetch_or_cache_page(
+    url: &str,
+    scraper: &WebScraper,
+    cache: &Cache,
+    cache_hit_msg: &str,
+    spinner_msg: &'static str,
+    done_msg: &str,
+) -> Result<ScrapedPage> {
+    if let Some(cached_page) = cache.get_page(url) {
+        Ui::info(cache_hit_msg);
+        return Ok(cached_page);
+    }
+    let page = Ui::with_spinner(spinner_msg, done_msg, scraper.scrape(url)).await?;
+    cache.set_page(url, &page);
+    Ok(page)
 }
 
 #[tokio::main]
@@ -406,14 +474,7 @@ async fn handle_file(
         path.display()
     ));
 
-    let mode = if args.output.is_none() && !args.json {
-        StreamMode::Stdout {
-            header_title: &title,
-        }
-    } else {
-        StreamMode::Buffered
-    };
-
+    let mode = args.stream_mode(&title);
     let path_str = path.display().to_string();
     let output = llm
         .summarize_document_counted(
@@ -426,24 +487,14 @@ async fn handle_file(
         )
         .await?;
 
-    if let Some(warn) = &output.warning {
-        Ui::warn(warn);
-    }
-
-    Ok(SummaryOutcome {
+    Ok(SummaryOutcome::from_llm(
+        "file",
         title,
-        author: None,
-        url: Some(path_str),
-        target_type: "file",
-        summary: output.content,
+        None,
+        Some(path_str),
         word_count,
-        streamed_to_stdout: output.streamed_to_stdout,
-        prompt_tokens: output.prompt_tokens,
-        completion_tokens: output.completion_tokens,
-        duration_ms: output.duration_ms,
-        tokens_per_second: output.tokens_per_second,
-        cached: false,
-    })
+        output,
+    ))
 }
 
 async fn handle_stdin(
@@ -477,14 +528,7 @@ async fn handle_stdin(
 
     Ui::info(&format!("Read {} words from standard input", word_count));
 
-    let mode = if args.output.is_none() && !args.json {
-        StreamMode::Stdout {
-            header_title: &title,
-        }
-    } else {
-        StreamMode::Buffered
-    };
-
+    let mode = args.stream_mode(&title);
     let output = llm
         .summarize_document_counted(
             &title,
@@ -496,24 +540,14 @@ async fn handle_stdin(
         )
         .await?;
 
-    if let Some(warn) = &output.warning {
-        Ui::warn(warn);
-    }
-
-    Ok(SummaryOutcome {
+    Ok(SummaryOutcome::from_llm(
+        "stdin",
         title,
-        author: None,
-        url: None,
-        target_type: "stdin",
-        summary: output.content,
+        None,
+        None,
         word_count,
-        streamed_to_stdout: output.streamed_to_stdout,
-        prompt_tokens: output.prompt_tokens,
-        completion_tokens: output.completion_tokens,
-        duration_ms: output.duration_ms,
-        tokens_per_second: output.tokens_per_second,
-        cached: false,
-    })
+        output,
+    ))
 }
 
 async fn handle_web(
@@ -526,36 +560,24 @@ async fn handle_web(
     // 1. Check for a cached summary matching URL + style + model
     if let Some(cached) = cache.get_web_summary(url, args.style, &args.model) {
         Ui::info("Loaded summary from local cache (pass `--no-cache` to refresh).");
-        return Ok(SummaryOutcome {
-            title: cached.title,
-            author: None,
-            url: Some(url.to_string()),
-            target_type: "web",
-            summary: cached.summary,
-            word_count: 0,
-            streamed_to_stdout: false,
-            prompt_tokens: None,
-            completion_tokens: None,
-            duration_ms: 0,
-            tokens_per_second: None,
-            cached: true,
-        });
+        return Ok(SummaryOutcome::from_cached(
+            "web",
+            cached,
+            None,
+            Some(url.to_string()),
+        ));
     }
 
     // 2. Check for a cached scraped page to avoid redundant network requests
-    let page = if let Some(cached_page) = cache.get_page(url) {
-        Ui::info("Loaded webpage content from local cache.");
-        cached_page
-    } else {
-        let p = Ui::with_spinner(
-            "Scraping and normalizing webpage content...",
-            "Webpage content scraped and normalized.",
-            scraper.scrape(url),
-        )
-        .await?;
-        cache.set_page(url, &p);
-        p
-    };
+    let page = fetch_or_cache_page(
+        url,
+        scraper,
+        cache,
+        "Loaded webpage content from local cache.",
+        "Scraping and normalizing webpage content...",
+        "Webpage content scraped and normalized.",
+    )
+    .await?;
 
     let title_display = page.title.clone().unwrap_or_else(|| url.to_string());
 
@@ -564,14 +586,7 @@ async fn handle_web(
         page.word_count, title_display, page.url
     ));
 
-    let mode = if args.output.is_none() && !args.json {
-        StreamMode::Stdout {
-            header_title: &title_display,
-        }
-    } else {
-        StreamMode::Buffered
-    };
-
+    let mode = args.stream_mode(&title_display);
     let output = llm
         .summarize_webpage(
             page.title.as_deref(),
@@ -583,10 +598,6 @@ async fn handle_web(
         )
         .await?;
 
-    if let Some(warn) = &output.warning {
-        Ui::warn(warn);
-    }
-
     if !output.truncated {
         cache.set_web_summary(
             url,
@@ -597,20 +608,14 @@ async fn handle_web(
         );
     }
 
-    Ok(SummaryOutcome {
-        title: title_display,
-        author: None,
-        url: Some(url.to_string()),
-        target_type: "web",
-        summary: output.content,
-        word_count: page.word_count,
-        streamed_to_stdout: output.streamed_to_stdout,
-        prompt_tokens: output.prompt_tokens,
-        completion_tokens: output.completion_tokens,
-        duration_ms: output.duration_ms,
-        tokens_per_second: output.tokens_per_second,
-        cached: false,
-    })
+    Ok(SummaryOutcome::from_llm(
+        "web",
+        title_display,
+        None,
+        Some(url.to_string()),
+        page.word_count,
+        output,
+    ))
 }
 
 async fn handle_book(
@@ -632,37 +637,19 @@ async fn handle_book(
         cache.get_book_summary(title, author, args.style, &args.model, no_search)
     {
         Ui::info("Loaded book summary from local cache (pass `--no-cache` to refresh).");
-        return Ok(SummaryOutcome {
-            title: cached.title,
-            author: author.map(|a| a.to_string()),
-            url: None,
-            target_type: "book",
-            summary: cached.summary,
-            word_count: 0,
-            streamed_to_stdout: false,
-            prompt_tokens: None,
-            completion_tokens: None,
-            duration_ms: 0,
-            tokens_per_second: None,
-            cached: true,
-        });
+        return Ok(SummaryOutcome::from_cached(
+            "book",
+            cached,
+            author.map(|a| a.to_string()),
+            None,
+        ));
     }
 
-    let mode = if args.output.is_none() && !args.json {
-        StreamMode::Stdout {
-            header_title: &book_display,
-        }
-    } else {
-        StreamMode::Buffered
-    };
+    let mode = args.stream_mode(&book_display);
 
     // 2. Generate summary (via grounded web search or LLM memory fallback)
     let (output, word_count, source_url) =
         generate_book_summary(title, author, no_search, scraper, llm, cache, args, mode).await?;
-
-    if let Some(warn) = &output.warning {
-        Ui::warn(warn);
-    }
 
     // 3. Cache only complete, non-truncated summaries (zero-copy borrow of title & summary)
     if !output.truncated {
@@ -677,20 +664,14 @@ async fn handle_book(
         });
     }
 
-    Ok(SummaryOutcome {
-        title: book_display,
-        author: author.map(|a| a.to_string()),
-        url: source_url,
-        target_type: "book",
-        summary: output.content,
+    Ok(SummaryOutcome::from_llm(
+        "book",
+        book_display,
+        author.map(|a| a.to_string()),
+        source_url,
         word_count,
-        streamed_to_stdout: output.streamed_to_stdout,
-        prompt_tokens: output.prompt_tokens,
-        completion_tokens: output.completion_tokens,
-        duration_ms: output.duration_ms,
-        tokens_per_second: output.tokens_per_second,
-        cached: false,
-    })
+        output,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
