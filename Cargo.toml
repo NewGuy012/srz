@@ -2,6 +2,13 @@
 name = "srz"
 version = "0.1.0"
 edition = "2024"
+description = "Fast, modular CLI to summarize webpages, documents, books, and live news using local LLMs"
+license = "BSD-3-Clause"
+repository = "https://github.com/NewGuy012/srz"
+homepage = "https://github.com/NewGuy012/srz"
+readme = "README.md"
+keywords = ["llm", "summarizer", "cli", "news", "ai"]
+categories = ["command-line-utilities", "text-processing"]
 
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }

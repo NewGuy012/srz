@@ -12,3 +12,6 @@ config.toml
 # Local database and cache storage
 *.duckdb*
 *.db
+
+# Local security audits
+SECURITY_AUDIT.md
