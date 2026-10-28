@@ -108,10 +108,10 @@ impl LlmClient {
     pub fn new(base_url: &str, model: &str, api_key: &str, max_tokens: u32) -> Result<Self> {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        if !api_key.is_empty() {
-            if let Ok(val) = HeaderValue::from_str(&format!("Bearer {}", api_key)) {
-                headers.insert(AUTHORIZATION, val);
-            }
+        if !api_key.is_empty()
+            && let Ok(val) = HeaderValue::from_str(&format!("Bearer {}", api_key))
+        {
+            headers.insert(AUTHORIZATION, val);
         }
 
         let client = reqwest::Client::builder()
@@ -171,12 +171,11 @@ impl LlmClient {
         let mut response = self.client.post(&self.endpoint).json(&body).send().await;
 
         // On macOS, localhost can resolve to IPv6 (::1). Fallback to 127.0.0.1 if needed.
-        if response.is_err() {
-            if let Some(alt_endpoint) = &self.fallback_endpoint {
-                if let Ok(alt_resp) = self.client.post(alt_endpoint).json(&body).send().await {
-                    response = Ok(alt_resp);
-                }
-            }
+        if response.is_err()
+            && let Some(alt_endpoint) = &self.fallback_endpoint
+            && let Ok(alt_resp) = self.client.post(alt_endpoint).json(&body).send().await
+        {
+            response = Ok(alt_resp);
         }
 
         let mut response = match response {
@@ -285,18 +284,20 @@ impl LlmClient {
                                     truncated = true;
                                 }
 
-                                if let Some(reasoning) = &choice.delta.reasoning_content {
-                                    if !reasoning.is_empty() && !started_visible {
-                                        thinking_tokens += 1;
-                                        pb.set_message(format!(
-                                            "{} (thinking: {} tokens)",
-                                            spinner_label, thinking_tokens
-                                        ));
-                                    }
+                                if let Some(reasoning) = &choice.delta.reasoning_content
+                                    && !reasoning.is_empty()
+                                    && !started_visible
+                                {
+                                    thinking_tokens += 1;
+                                    pb.set_message(format!(
+                                        "{} (thinking: {} tokens)",
+                                        spinner_label, thinking_tokens
+                                    ));
                                 }
 
-                                if let Some(delta_text) = &choice.delta.content {
-                                    if !delta_text.is_empty() {
+                                if let Some(delta_text) = &choice.delta.content
+                                    && !delta_text.is_empty()
+                                {
                                         if !started_visible {
                                             let clean_start = delta_text.trim_start();
                                             if !clean_start.is_empty() {
@@ -340,7 +341,6 @@ impl LlmClient {
                                             }
                                         }
                                     }
-                                }
                             }
                         }
                     }

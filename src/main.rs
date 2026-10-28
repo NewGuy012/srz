@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use srz::cache::Cache;
+use srz::cache::{Cache, SetBookSummaryParams};
 use srz::cli::{CacheCommand, Cli, ResolvedAction, SummaryStyle};
 use srz::db::{Database, NewSummaryRecord};
 use srz::llm::{self, LlmClient, LlmOutput, StreamMode};
@@ -162,9 +162,10 @@ async fn main() -> Result<()> {
             }
 
             // Record newly generated summaries in DuckDB history & library
-            if !outcome.cached {
-                if let Some(db) = &db {
-                    let style_str = match args.style {
+            if !outcome.cached
+                && let Some(db) = &db
+            {
+                let style_str = match args.style {
                         SummaryStyle::Concise => "concise",
                         SummaryStyle::Detailed => "detailed",
                         SummaryStyle::Bullets => "bullets",
@@ -185,7 +186,6 @@ async fn main() -> Result<()> {
                         summary: &outcome.summary,
                     };
                     let _ = db.record_summary(&record);
-                }
             }
         }
         Err(err) => {
@@ -464,15 +464,15 @@ async fn handle_book(
 
     // 3. Cache only complete, non-truncated summaries (zero-copy borrow of title & summary)
     if !output.truncated {
-        cache.set_book_summary(
+        cache.set_book_summary(SetBookSummaryParams {
             title,
             author,
-            args.style,
-            &args.model,
+            style: args.style,
+            model: &args.model,
             no_search,
-            &book_display,
-            &output.content,
-        );
+            display_title: &book_display,
+            summary: &output.content,
+        });
     }
 
     Ok(SummaryOutcome {

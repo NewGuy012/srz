@@ -166,12 +166,12 @@ impl WebScraper {
 
     fn extract_title(&self, document: &Html) -> Option<String> {
         // Try og:title first (zero-copy attribute slice until final .to_string())
-        if let Some(elem) = document.select(&OG_TITLE_SEL).next() {
-            if let Some(content) = elem.value().attr("content") {
-                let trimmed = content.trim();
-                if !trimmed.is_empty() {
-                    return Some(trimmed.to_string());
-                }
+        if let Some(elem) = document.select(&OG_TITLE_SEL).next()
+            && let Some(content) = elem.value().attr("content")
+        {
+            let trimmed = content.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
             }
         }
 

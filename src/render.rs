@@ -375,38 +375,37 @@ fn render_inline(text: &str) -> String {
 
     while i < bytes.len() {
         // Inline code: `...`
-        if bytes[i] == b'`' {
-            if let Some(end) = escaped[i + 1..].find('`') {
-                out.push_str("<code>");
-                out.push_str(&escaped[i + 1..i + 1 + end]);
-                out.push_str("</code>");
-                i += end + 2;
-                continue;
-            }
+        if bytes[i] == b'`'
+            && let Some(end) = escaped[i + 1..].find('`')
+        {
+            out.push_str("<code>");
+            out.push_str(&escaped[i + 1..i + 1 + end]);
+            out.push_str("</code>");
+            i += end + 2;
+            continue;
         }
 
         // Bold: **...**
-        if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'*' {
-            if let Some(end) = escaped[i + 2..].find("**") {
-                out.push_str("<strong>");
-                out.push_str(&render_inline(&escaped[i + 2..i + 2 + end]));
-                out.push_str("</strong>");
-                i += end + 4;
-                continue;
-            }
+        if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'*'
+            && let Some(end) = escaped[i + 2..].find("**")
+        {
+            out.push_str("<strong>");
+            out.push_str(&render_inline(&escaped[i + 2..i + 2 + end]));
+            out.push_str("</strong>");
+            i += end + 4;
+            continue;
         }
 
         // Italic: *...*
-        if bytes[i] == b'*' {
-            if let Some(end) = escaped[i + 1..].find('*') {
-                if end > 0 {
-                    out.push_str("<em>");
-                    out.push_str(&escaped[i + 1..i + 1 + end]);
-                    out.push_str("</em>");
-                    i += end + 2;
-                    continue;
-                }
-            }
+        if bytes[i] == b'*'
+            && let Some(end) = escaped[i + 1..].find('*')
+            && end > 0
+        {
+            out.push_str("<em>");
+            out.push_str(&escaped[i + 1..i + 1 + end]);
+            out.push_str("</em>");
+            i += end + 2;
+            continue;
         }
 
         let ch = escaped[i..].chars().next().unwrap();

@@ -15,6 +15,17 @@ pub struct CachedSummary {
     pub summary: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct SetBookSummaryParams<'a> {
+    pub title: &'a str,
+    pub author: Option<&'a str>,
+    pub style: SummaryStyle,
+    pub model: &'a str,
+    pub no_search: bool,
+    pub display_title: &'a str,
+    pub summary: &'a str,
+}
+
 #[derive(Serialize)]
 struct CachedSummaryRef<'a> {
     title: &'a str,
@@ -125,11 +136,11 @@ impl Cache {
         let mut count = 0;
         let mut bytes = 0;
         for entry in entries.flatten() {
-            if let Ok(meta) = entry.metadata() {
-                if meta.is_file() {
-                    count += 1;
-                    bytes += meta.len();
-                }
+            if let Ok(meta) = entry.metadata()
+                && meta.is_file()
+            {
+                count += 1;
+                bytes += meta.len();
             }
         }
         (count, bytes)
@@ -267,23 +278,21 @@ impl Cache {
         self.read_entry("summaries", &key)
     }
 
-    pub fn set_book_summary(
-        &self,
-        title: &str,
-        author: Option<&str>,
-        style: SummaryStyle,
-        model: &str,
-        no_search: bool,
-        display_title: &str,
-        summary: &str,
-    ) {
-        let key = Self::summary_key("book", title, author, style, model, no_search);
+    pub fn set_book_summary(&self, params: SetBookSummaryParams<'_>) {
+        let key = Self::summary_key(
+            "book",
+            params.title,
+            params.author,
+            params.style,
+            params.model,
+            params.no_search,
+        );
         self.write_entry(
             "summaries",
             &key,
             &CachedSummaryRef {
-                title: display_title,
-                summary,
+                title: params.display_title,
+                summary: params.summary,
             },
         );
     }

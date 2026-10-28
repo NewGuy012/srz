@@ -144,10 +144,11 @@ impl BookSearcher {
         let mut results = Vec::new();
 
         for element in document.select(&DDG_RESULT_SEL).take(3) {
-            if let Some(link_elem) = element.select(&DDG_TITLE_SEL).next() {
-                if let Some(raw_href) = link_elem.value().attr("href") {
-                    let actual_url = extract_ddg_url(raw_href);
-                    if actual_url.starts_with("http") {
+            if let Some(link_elem) = element.select(&DDG_TITLE_SEL).next()
+                && let Some(raw_href) = link_elem.value().attr("href")
+            {
+                let actual_url = extract_ddg_url(raw_href);
+                if actual_url.starts_with("http") {
                         let title_text: String = link_elem.text().collect();
                         let snippet: Option<String> = element
                             .select(&DDG_SNIPPET_SEL)
@@ -162,7 +163,6 @@ impl BookSearcher {
                     }
                 }
             }
-        }
 
         Ok(results)
     }

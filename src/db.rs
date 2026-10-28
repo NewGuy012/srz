@@ -293,13 +293,17 @@ impl Database {
 }
 
 /// Extracts a surrounding text excerpt (~200 characters) around the first match of `query`.
+/// Uses UTF-8 character boundaries to prevent indexing panics on multi-byte characters.
 fn extract_snippet(text: &str, query: &str) -> String {
     let lower_text = text.to_ascii_lowercase();
     let lower_query = query.to_ascii_lowercase();
 
     if let Some(pos) = lower_text.find(&lower_query) {
-        let start = pos.saturating_sub(60);
-        let end = (pos + query.len() + 100).min(text.len());
+        let raw_start = pos.saturating_sub(60);
+        let raw_end = (pos + query.len() + 100).min(text.len());
+
+        let start = text.floor_char_boundary(raw_start);
+        let end = text.ceil_char_boundary(raw_end);
 
         // Find boundary
         let prefix = if start > 0 { "..." } else { "" };
@@ -309,8 +313,9 @@ fn extract_snippet(text: &str, query: &str) -> String {
         format!("{}{}{}", prefix, clean_snippet.trim(), suffix)
     } else {
         // Fallback to beginning of summary
-        let end = text.len().min(160);
-        let suffix = if text.len() > 160 { "..." } else { "" };
+        let raw_end = text.len().min(160);
+        let end = text.ceil_char_boundary(raw_end);
+        let suffix = if end < text.len() { "..." } else { "" };
         let clean_snippet = text[..end].replace('\n', " ");
         format!("{}{}", clean_snippet.trim(), suffix)
     }

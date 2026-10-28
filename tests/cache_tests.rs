@@ -1,4 +1,4 @@
-use srz::cache::Cache;
+use srz::cache::{Cache, SetBookSummaryParams};
 use srz::cli::SummaryStyle;
 use srz::scraper::ScrapedPage;
 use srz::search::SearchResult;
@@ -67,15 +67,15 @@ fn test_disabled_cache_bypasses_reads() {
     let cache_enabled = Cache::with_dir(dir.clone(), true);
     let cache_disabled = Cache::with_dir(dir.clone(), false);
 
-    cache_enabled.set_book_summary(
-        "Dune",
-        None,
-        SummaryStyle::Detailed,
-        "gemma-4",
-        false,
-        "\"Dune\"",
-        "Great sci-fi novel.",
-    );
+    cache_enabled.set_book_summary(SetBookSummaryParams {
+        title: "Dune",
+        author: None,
+        style: SummaryStyle::Detailed,
+        model: "gemma-4",
+        no_search: false,
+        display_title: "\"Dune\"",
+        summary: "Great sci-fi novel.",
+    });
 
     assert!(cache_disabled
         .get_book_summary("Dune", None, SummaryStyle::Detailed, "gemma-4", false)
@@ -101,15 +101,15 @@ fn test_cache_stats_and_clean() {
         word_count: 3,
     };
     cache.set_page("https://example.com", &page);
-    cache.set_book_summary(
-        "Dune",
-        None,
-        SummaryStyle::Concise,
-        "gemma-4",
-        false,
-        "\"Dune\"",
-        "Summary text",
-    );
+    cache.set_book_summary(SetBookSummaryParams {
+        title: "Dune",
+        author: None,
+        style: SummaryStyle::Concise,
+        model: "gemma-4",
+        no_search: false,
+        display_title: "\"Dune\"",
+        summary: "Summary text",
+    });
 
     let stats = cache.stats();
     assert_eq!(stats.pages, 1);

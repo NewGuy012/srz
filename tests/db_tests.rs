@@ -107,6 +107,36 @@ fn test_database_search_library() {
 }
 
 #[test]
+fn test_database_search_multibyte_utf8_snippet_safety() {
+    let db = Database::open_in_memory().unwrap();
+
+    // Text with multi-byte UTF-8 characters (emojis, accents, CJK)
+    let record = NewSummaryRecord {
+        target_type: "book",
+        title: "Le Petit Prince 👑",
+        author: Some("Antoine de Saint-Exupéry"),
+        url: None,
+        style: "concise",
+        model: "gemma-4",
+        word_count: 500,
+        prompt_tokens: Some(300),
+        completion_tokens: Some(150),
+        duration_ms: 800,
+        tokens_per_second: Some(35.0),
+        summary: "🌟 Voici mon secret. Il est très simple: on ne voit bien qu’avec le cœur. L’essentiel est invisible pour les yeux. 🚀🪐✨ 狐狸 and roses.",
+    };
+    db.record_summary(&record).unwrap();
+
+    let hits = db.search("secret").unwrap();
+    assert_eq!(hits.len(), 1);
+    assert!(hits[0].snippet.contains("secret"));
+
+    let hits_cjk = db.search("狐狸").unwrap();
+    assert_eq!(hits_cjk.len(), 1);
+    assert!(hits_cjk[0].snippet.contains("狐狸"));
+}
+
+#[test]
 fn test_database_reset() {
     let db = Database::open_in_memory().unwrap();
 

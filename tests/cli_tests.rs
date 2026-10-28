@@ -78,7 +78,7 @@ fn test_auto_detect_book_with_global_flags() {
             no_search,
         } => {
             assert_eq!(title, "The Great Gatsby");
-            assert_eq!(author.as_deref(), Some("F. Scott Fitzgerald"));
+            assert_eq!(author, Some("F. Scott Fitzgerald"));
             assert!(!no_search);
         }
         _ => panic!("Expected Book action"),
@@ -107,7 +107,7 @@ fn test_book_subcommand_flags() {
             no_search,
         } => {
             assert_eq!(title, "Dune");
-            assert_eq!(author.as_deref(), Some("Frank Herbert"));
+            assert_eq!(author, Some("Frank Herbert"));
             assert!(no_search);
         }
         _ => panic!("Expected Book action"),
