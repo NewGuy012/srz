@@ -68,6 +68,14 @@ impl BookSearcher {
         Ok(Self { client })
     }
 
+    async fn get_with_timeout(&self, url: &str, timeout_secs: u64) -> Option<reqwest::Response> {
+        let fetch_fut = self.client.get(url).send();
+        match tokio::time::timeout(Duration::from_secs(timeout_secs), fetch_fut).await {
+            Ok(Ok(r)) if r.status().is_success() => Some(r),
+            _ => None,
+        }
+    }
+
     /// Queries Open Library API to resolve canonical book title, author, and first publication year.
     /// Returns None if the query times out (3s), fails, or yields no close match.
     pub async fn resolve_book_metadata(
@@ -84,12 +92,7 @@ impl BookSearcher {
             endpoint.push_str(&urlencoding::encode(auth));
         }
 
-        let fetch_fut = self.client.get(&endpoint).send();
-        let resp = match tokio::time::timeout(Duration::from_secs(3), fetch_fut).await {
-            Ok(Ok(r)) if r.status().is_success() => r,
-            _ => return None,
-        };
-
+        let resp = self.get_with_timeout(&endpoint, 3).await?;
         let json: Value = resp.json().await.ok()?;
         let docs = json.get("docs")?.as_array()?;
 
@@ -156,10 +159,8 @@ impl BookSearcher {
             urlencoding::encode(title)
         );
 
-        let fetch_fut = self.client.get(&endpoint).send();
-        let resp = match tokio::time::timeout(Duration::from_secs(4), fetch_fut).await {
-            Ok(Ok(r)) if r.status().is_success() => r,
-            _ => return Ok(Vec::new()),
+        let Some(resp) = self.get_with_timeout(&endpoint, 4).await else {
+            return Ok(Vec::new());
         };
 
         let json: Value = resp.json().await?;
@@ -207,10 +208,8 @@ impl BookSearcher {
             urlencoding::encode(&query)
         );
 
-        let fetch_fut = self.client.get(&endpoint).send();
-        let resp = match tokio::time::timeout(Duration::from_secs(4), fetch_fut).await {
-            Ok(Ok(r)) if r.status().is_success() => r,
-            _ => return Ok(Vec::new()),
+        let Some(resp) = self.get_with_timeout(&endpoint, 4).await else {
+            return Ok(Vec::new());
         };
 
         let json: Value = resp.json().await?;
@@ -259,10 +258,8 @@ impl BookSearcher {
             urlencoding::encode(&query)
         );
 
-        let fetch_fut = self.client.get(&endpoint).send();
-        let resp = match tokio::time::timeout(Duration::from_secs(4), fetch_fut).await {
-            Ok(Ok(r)) if r.status().is_success() => r,
-            _ => return Ok(Vec::new()),
+        let Some(resp) = self.get_with_timeout(&endpoint, 4).await else {
+            return Ok(Vec::new());
         };
 
         let html = resp.text().await?;
