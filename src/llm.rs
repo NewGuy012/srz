@@ -115,6 +115,140 @@ pub struct LlmClient {
     max_tokens: u32,
 }
 
+#[derive(Default)]
+struct SseStreamState {
+    content_buf: String,
+    thinking_tokens: usize,
+    output_tokens: usize,
+    started_visible: bool,
+    truncated: bool,
+    last_usage: Option<TokenUsage>,
+    needs_stdout_flush: bool,
+}
+
+impl SseStreamState {
+    fn new() -> Self {
+        Self {
+            content_buf: String::with_capacity(2048),
+            ..Self::default()
+        }
+    }
+
+    /// Processes a single SSE line. Returns `true` if the `[DONE]` sentinel was reached.
+    fn process_line(
+        &mut self,
+        line_bytes: &[u8],
+        pb: &indicatif::ProgressBar,
+        spinner_label: &str,
+        mode: StreamMode<'_>,
+    ) -> bool {
+        let Ok(line_str) = std::str::from_utf8(line_bytes) else {
+            return false;
+        };
+        let Some(data) = line_str.trim().strip_prefix("data:") else {
+            return false;
+        };
+        let payload = data.trim();
+        if payload == "[DONE]" {
+            return true;
+        }
+
+        let Ok(event) = serde_json::from_str::<ChatCompletionChunk<'_>>(payload) else {
+            return false;
+        };
+        if event.usage.is_some() {
+            self.last_usage = event.usage;
+        }
+
+        let Some(choice) = event.choices.first() else {
+            return false;
+        };
+        if choice.finish_reason.as_deref() == Some("length") {
+            self.truncated = true;
+        }
+
+        if let Some(reasoning) = &choice.delta.reasoning_content
+            && !reasoning.is_empty()
+            && !self.started_visible
+        {
+            self.thinking_tokens += 1;
+            if self.thinking_tokens == 1 || self.thinking_tokens.is_multiple_of(4) {
+                pb.set_message(format!(
+                    "{} (thinking: {} tokens)",
+                    spinner_label, self.thinking_tokens
+                ));
+            }
+        }
+
+        if let Some(delta_text) = &choice.delta.content
+            && !delta_text.is_empty()
+        {
+            self.append_content_delta(delta_text, pb, spinner_label, mode);
+        }
+
+        false
+    }
+
+    fn append_content_delta(
+        &mut self,
+        delta_text: &str,
+        pb: &indicatif::ProgressBar,
+        spinner_label: &str,
+        mode: StreamMode<'_>,
+    ) {
+        if !self.started_visible {
+            let clean_start = delta_text.trim_start();
+            if clean_start.is_empty() {
+                return;
+            }
+            self.started_visible = true;
+            self.output_tokens += 1;
+            self.content_buf.push_str(clean_start);
+
+            match mode {
+                StreamMode::Stdout { header_title } => {
+                    pb.finish_and_clear();
+                    Ui::header(&format!("Summary: {}", header_title));
+                    print!("{}", clean_start);
+                    self.needs_stdout_flush = true;
+                }
+                StreamMode::Buffered => {
+                    pb.set_message(format!("{} ({} tokens)", spinner_label, self.output_tokens));
+                }
+            }
+        } else {
+            self.output_tokens += 1;
+            self.content_buf.push_str(delta_text);
+
+            match mode {
+                StreamMode::Stdout { .. } => {
+                    print!("{}", delta_text);
+                    self.needs_stdout_flush = true;
+                }
+                StreamMode::Buffered => {
+                    if self.output_tokens.is_multiple_of(4) {
+                        pb.set_message(format!(
+                            "{} ({} tokens)",
+                            spinner_label, self.output_tokens
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn compute_tokens_per_second(completion_tokens: Option<u32>, elapsed: Duration) -> Option<f64> {
+    completion_tokens.and_then(|c| {
+        let s = elapsed.as_secs_f64();
+        if s > 0.05 {
+            Some(c as f64 / s)
+        } else {
+            None
+        }
+    })
+}
+
 impl LlmClient {
     pub fn new(base_url: &str, model: &str, api_key: &str, max_tokens: u32) -> Result<Self> {
         let mut headers = HeaderMap::new();
@@ -146,6 +280,83 @@ impl LlmClient {
             fallback_endpoint,
             model: model.to_string(),
             max_tokens,
+        })
+    }
+
+    async fn send_completion_request(
+        &self,
+        body: &ChatCompletionRequest<'_>,
+        pb: &indicatif::ProgressBar,
+    ) -> Result<reqwest::Response> {
+        let mut response = self.client.post(&self.endpoint).json(body).send().await;
+
+        // On macOS, localhost can resolve to IPv6 (::1). Fallback to 127.0.0.1 if needed.
+        if response.is_err()
+            && let Some(alt_endpoint) = &self.fallback_endpoint
+            && let Ok(alt_resp) = self.client.post(alt_endpoint).json(body).send().await
+        {
+            response = Ok(alt_resp);
+        }
+
+        let response = match response {
+            Ok(resp) => resp,
+            Err(err) => {
+                pb.finish_and_clear();
+                anyhow::bail!(
+                    "Failed to communicate with LLM endpoint at '{}': {}. \
+                     Please verify your llama.cpp app is open and listening on port 9931.",
+                    self.endpoint,
+                    err
+                );
+            }
+        };
+
+        if !response.status().is_success() {
+            pb.finish_and_clear();
+            let status = response.status();
+            let err_text = response.text().await.unwrap_or_default();
+            anyhow::bail!("LLM server returned HTTP error {}: {}", status, err_text);
+        }
+
+        Ok(response)
+    }
+
+    async fn handle_non_streaming_response(
+        response: reqwest::Response,
+        pb: &indicatif::ProgressBar,
+        done_label: &str,
+        start_time: std::time::Instant,
+    ) -> Result<LlmOutput> {
+        let completion: ChatCompletionResponse = match response.json().await {
+            Ok(c) => c,
+            Err(e) => {
+                pb.finish_and_clear();
+                return Err(e).context("Failed to parse LLM JSON response");
+            }
+        };
+        Ui::finish_spinner(pb, done_label);
+
+        let choice = completion
+            .choices
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("LLM returned empty choices"))?;
+        let truncated = choice.finish_reason.as_deref() == Some("length");
+        let warning = Self::build_truncation_warning(truncated, completion.usage.as_ref());
+
+        let elapsed = start_time.elapsed();
+        let duration_ms = elapsed.as_millis() as u64;
+        let prompt_tokens = completion.usage.as_ref().and_then(|u| u.prompt_tokens);
+        let completion_tokens = completion.usage.as_ref().and_then(|u| u.completion_tokens);
+
+        Ok(LlmOutput {
+            content: choice.message.content.trim().to_string(),
+            truncated,
+            warning,
+            streamed_to_stdout: false,
+            prompt_tokens,
+            completion_tokens,
+            duration_ms,
+            tokens_per_second: compute_tokens_per_second(completion_tokens, elapsed),
         })
     }
 
@@ -181,35 +392,7 @@ impl LlmClient {
             stream_options: Some(StreamOptions { include_usage: true }),
         };
 
-        let mut response = self.client.post(&self.endpoint).json(&body).send().await;
-
-        // On macOS, localhost can resolve to IPv6 (::1). Fallback to 127.0.0.1 if needed.
-        if response.is_err()
-            && let Some(alt_endpoint) = &self.fallback_endpoint
-            && let Ok(alt_resp) = self.client.post(alt_endpoint).json(&body).send().await
-        {
-            response = Ok(alt_resp);
-        }
-
-        let mut response = match response {
-            Ok(resp) => resp,
-            Err(err) => {
-                pb.finish_and_clear();
-                anyhow::bail!(
-                    "Failed to communicate with LLM endpoint at '{}': {}. \
-                     Please verify your llama.cpp app is open and listening on port 9931.",
-                    self.endpoint,
-                    err
-                );
-            }
-        };
-
-        if !response.status().is_success() {
-            pb.finish_and_clear();
-            let status = response.status();
-            let err_text = response.text().await.unwrap_or_default();
-            anyhow::bail!("LLM server returned HTTP error {}: {}", status, err_text);
-        }
+        let mut response = self.send_completion_request(&body, &pb).await?;
 
         // Fallback if server responds with a non-streaming JSON body instead of text/event-stream
         let is_event_stream = response
@@ -220,54 +403,12 @@ impl LlmClient {
             .unwrap_or(true);
 
         if !is_event_stream {
-            let completion: ChatCompletionResponse = match response.json().await {
-                Ok(c) => c,
-                Err(e) => {
-                    pb.finish_and_clear();
-                    return Err(e).context("Failed to parse LLM JSON response");
-                }
-            };
-            Ui::finish_spinner(&pb, done_label);
-
-            let choice = completion
-                .choices
-                .first()
-                .ok_or_else(|| anyhow::anyhow!("LLM returned empty choices"))?;
-            let truncated = choice.finish_reason.as_deref() == Some("length");
-            let warning = Self::build_truncation_warning(truncated, completion.usage.as_ref());
-
-            let elapsed = start_time.elapsed();
-            let duration_ms = elapsed.as_millis() as u64;
-            let prompt_tokens = completion.usage.as_ref().and_then(|u| u.prompt_tokens);
-            let completion_tokens = completion.usage.as_ref().and_then(|u| u.completion_tokens);
-            let tokens_per_second = completion_tokens.and_then(|c| {
-                let s = elapsed.as_secs_f64();
-                if s > 0.05 {
-                    Some(c as f64 / s)
-                } else {
-                    None
-                }
-            });
-
-            return Ok(LlmOutput {
-                content: choice.message.content.trim().to_string(),
-                truncated,
-                warning,
-                streamed_to_stdout: false,
-                prompt_tokens,
-                completion_tokens,
-                duration_ms,
-                tokens_per_second,
-            });
+            return Self::handle_non_streaming_response(response, &pb, done_label, start_time)
+                .await;
         }
 
         let mut line_buf: Vec<u8> = Vec::with_capacity(512);
-        let mut content_buf = String::with_capacity(2048);
-        let mut thinking_tokens: usize = 0;
-        let mut output_tokens: usize = 0;
-        let mut started_visible = false;
-        let mut truncated = false;
-        let mut last_usage: Option<TokenUsage> = None;
+        let mut state = SseStreamState::new();
 
         while let Some(chunk) = response
             .chunk()
@@ -278,104 +419,22 @@ impl LlmClient {
 
             let mut cursor = 0;
             let mut stream_done = false;
-            let mut needs_stdout_flush = false;
+            state.needs_stdout_flush = false;
 
             while let Some(rel_pos) = line_buf[cursor..].iter().position(|&b| b == b'\n') {
                 let line_bytes = &line_buf[cursor..cursor + rel_pos];
                 cursor += rel_pos + 1;
 
-                if let Ok(line_str) = std::str::from_utf8(line_bytes) {
-                    let trimmed = line_str.trim();
-                    if let Some(data) = trimmed.strip_prefix("data:") {
-                        let payload = data.trim();
-                        if payload == "[DONE]" {
-                            stream_done = true;
-                            break;
-                        }
-
-                        if let Ok(event) =
-                            serde_json::from_str::<ChatCompletionChunk<'_>>(payload)
-                        {
-                            if event.usage.is_some() {
-                                last_usage = event.usage;
-                            }
-
-                            if let Some(choice) = event.choices.first() {
-                                if choice.finish_reason.as_deref() == Some("length") {
-                                    truncated = true;
-                                }
-
-                                if let Some(reasoning) = &choice.delta.reasoning_content
-                                    && !reasoning.is_empty()
-                                    && !started_visible
-                                {
-                                    thinking_tokens += 1;
-                                    if thinking_tokens == 1 || thinking_tokens.is_multiple_of(4) {
-                                        pb.set_message(format!(
-                                            "{} (thinking: {} tokens)",
-                                            spinner_label, thinking_tokens
-                                        ));
-                                    }
-                                }
-
-                                if let Some(delta_text) = &choice.delta.content
-                                    && !delta_text.is_empty()
-                                {
-                                    if !started_visible {
-                                        let clean_start = delta_text.trim_start();
-                                        if !clean_start.is_empty() {
-                                            started_visible = true;
-                                            output_tokens += 1;
-                                            content_buf.push_str(clean_start);
-
-                                            match mode {
-                                                StreamMode::Stdout { header_title } => {
-                                                    pb.finish_and_clear();
-                                                    Ui::header(&format!(
-                                                        "Summary: {}",
-                                                        header_title
-                                                    ));
-                                                    print!("{}", clean_start);
-                                                    needs_stdout_flush = true;
-                                                }
-                                                StreamMode::Buffered => {
-                                                    pb.set_message(format!(
-                                                        "{} ({} tokens)",
-                                                        spinner_label, output_tokens
-                                                    ));
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        output_tokens += 1;
-                                        content_buf.push_str(delta_text);
-
-                                        match mode {
-                                            StreamMode::Stdout { .. } => {
-                                                print!("{}", delta_text);
-                                                needs_stdout_flush = true;
-                                            }
-                                            StreamMode::Buffered => {
-                                                if output_tokens.is_multiple_of(4) {
-                                                    pb.set_message(format!(
-                                                        "{} ({} tokens)",
-                                                        spinner_label, output_tokens
-                                                    ));
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                if state.process_line(line_bytes, &pb, spinner_label, mode) {
+                    stream_done = true;
+                    break;
                 }
             }
 
             if cursor > 0 {
                 line_buf.drain(..cursor);
             }
-            if needs_stdout_flush {
+            if state.needs_stdout_flush {
                 let _ = io::stdout().flush();
             }
             if stream_done {
@@ -383,7 +442,8 @@ impl LlmClient {
             }
         }
 
-        let streamed_to_stdout = matches!(mode, StreamMode::Stdout { .. }) && started_visible;
+        let streamed_to_stdout =
+            matches!(mode, StreamMode::Stdout { .. }) && state.started_visible;
         if streamed_to_stdout {
             println!("\n");
             Ui::success(done_label);
@@ -393,34 +453,26 @@ impl LlmClient {
 
         let elapsed = start_time.elapsed();
         let duration_ms = elapsed.as_millis() as u64;
-        let prompt_tokens = last_usage.as_ref().and_then(|u| u.prompt_tokens);
-        let completion_tokens = last_usage
+        let prompt_tokens = state.last_usage.as_ref().and_then(|u| u.prompt_tokens);
+        let completion_tokens = state
+            .last_usage
             .as_ref()
             .and_then(|u| u.completion_tokens)
-            .or(Some(output_tokens as u32));
-        let tokens_per_second = completion_tokens.and_then(|c| {
-            let s = elapsed.as_secs_f64();
-            if s > 0.05 {
-                Some(c as f64 / s)
-            } else {
-                None
-            }
-        });
+            .or(Some(state.output_tokens as u32));
+        let warning = Self::build_truncation_warning(state.truncated, state.last_usage.as_ref());
 
-        let warning = Self::build_truncation_warning(truncated, last_usage.as_ref());
-
-        let trimmed_len = content_buf.trim_end().len();
-        content_buf.truncate(trimmed_len);
+        let trimmed_len = state.content_buf.trim_end().len();
+        state.content_buf.truncate(trimmed_len);
 
         Ok(LlmOutput {
-            content: content_buf,
-            truncated,
+            content: state.content_buf,
+            truncated: state.truncated,
             warning,
             streamed_to_stdout,
             prompt_tokens,
             completion_tokens,
             duration_ms,
-            tokens_per_second,
+            tokens_per_second: compute_tokens_per_second(completion_tokens, elapsed),
         })
     }
 
