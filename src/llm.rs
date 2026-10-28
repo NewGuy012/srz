@@ -123,8 +123,8 @@ const CHUNK_OVERLAP_WORDS: usize = 500;
 #[derive(Clone)]
 pub struct LlmClient {
     client: reqwest::Client,
-    endpoint: String,
-    fallback_endpoint: Option<String>,
+    base_url: String,
+    fallback_base_url: Option<String>,
     model: String,
     max_tokens: u32,
     concurrency: usize,
@@ -282,18 +282,17 @@ impl LlmClient {
             .build()
             .context("Failed to build LLM HTTP client")?;
 
-        let normalized_base = base_url.trim_end_matches('/');
-        let endpoint = format!("{}/chat/completions", normalized_base);
-        let fallback_endpoint = if endpoint.contains("localhost") {
-            Some(endpoint.replace("localhost", "127.0.0.1"))
+        let normalized_base = base_url.trim_end_matches('/').to_string();
+        let fallback_base_url = if normalized_base.contains("localhost") {
+            Some(normalized_base.replace("localhost", "127.0.0.1"))
         } else {
             None
         };
 
         Ok(Self {
             client,
-            endpoint,
-            fallback_endpoint,
+            base_url: normalized_base,
+            fallback_base_url,
             model: model.to_string(),
             max_tokens,
             concurrency: 1,
@@ -306,22 +305,19 @@ impl LlmClient {
     }
 
     pub fn base_url(&self) -> &str {
-        self.endpoint.trim_end_matches("/chat/completions")
+        &self.base_url
     }
 
     /// Fetches the list of available models from the server's `GET /models` endpoint.
     pub async fn list_models(&self) -> Result<Vec<ModelInfo>> {
-        let models_url = format!("{}/models", self.base_url());
+        let models_url = format!("{}/models", self.base_url);
         let mut response = self.client.get(&models_url).send().await;
 
         if response.is_err()
-            && let Some(alt) = &self.fallback_endpoint
+            && let Some(alt_base) = &self.fallback_base_url
+            && let Ok(alt_resp) = self.client.get(format!("{alt_base}/models")).send().await
         {
-            let alt_base = alt.trim_end_matches("/chat/completions");
-            let alt_models = format!("{}/models", alt_base);
-            if let Ok(alt_resp) = self.client.get(&alt_models).send().await {
-                response = Ok(alt_resp);
-            }
+            response = Ok(alt_resp);
         }
 
         let resp = response.with_context(|| {
@@ -357,12 +353,18 @@ impl LlmClient {
         body: &ChatCompletionRequest<'_>,
         pb: &indicatif::ProgressBar,
     ) -> Result<reqwest::Response> {
-        let mut response = self.client.post(&self.endpoint).json(body).send().await;
+        let endpoint = format!("{}/chat/completions", self.base_url);
+        let mut response = self.client.post(&endpoint).json(body).send().await;
 
         // On macOS, localhost can resolve to IPv6 (::1). Fallback to 127.0.0.1 if needed.
         if response.is_err()
-            && let Some(alt_endpoint) = &self.fallback_endpoint
-            && let Ok(alt_resp) = self.client.post(alt_endpoint).json(body).send().await
+            && let Some(alt_base) = &self.fallback_base_url
+            && let Ok(alt_resp) = self
+                .client
+                .post(format!("{alt_base}/chat/completions"))
+                .json(body)
+                .send()
+                .await
         {
             response = Ok(alt_resp);
         }
@@ -374,7 +376,7 @@ impl LlmClient {
                 anyhow::bail!(
                     "Failed to communicate with LLM endpoint at '{}': {}. \
                      Please verify your llama.cpp app is open and listening on port 9931.",
-                    self.endpoint,
+                    endpoint,
                     err
                 );
             }
@@ -741,10 +743,7 @@ impl LlmClient {
         style: SummaryStyle,
         mode: StreamMode<'_>,
     ) -> Result<LlmOutput> {
-        let author_line: Cow<'_, str> = match author {
-            Some(a) => Cow::Owned(format!("Author: {}\n", a)),
-            None => Cow::Borrowed(""),
-        };
+        let author_line = format_author_line(author);
 
         // Zero-copy slice when web_context fits within MAX_CONTEXT_WORDS (12,000 words)
         let bounded_context = truncate_words_preserving_lines(web_context, MAX_CONTEXT_WORDS);
@@ -787,10 +786,7 @@ impl LlmClient {
         style: SummaryStyle,
         mode: StreamMode<'_>,
     ) -> Result<LlmOutput> {
-        let author_line: Cow<'_, str> = match author {
-            Some(a) => Cow::Owned(format!("Author: {}\n", a)),
-            None => Cow::Borrowed(""),
-        };
+        let author_line = format_author_line(author);
 
         let system_prompt = "You are a literary analyst and scholar. \
             Summarize the requested book using your trained knowledge base. \
@@ -858,6 +854,13 @@ impl LlmClient {
             mode,
         )
         .await
+    }
+}
+
+fn format_author_line(author: Option<&str>) -> Cow<'_, str> {
+    match author {
+        Some(a) => Cow::Owned(format!("Author: {}\n", a)),
+        None => Cow::Borrowed(""),
     }
 }
 
