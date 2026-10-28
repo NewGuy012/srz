@@ -15,6 +15,25 @@ A fast, modular Rust CLI for distilling **webpages**, **local files**, **stdin s
 - **Searchable personal library**: saves every summary locally so you can search past reads offline.
 - **Clean reader views**: generates one-click HTML and Markdown pages with automatic light and dark mode.
 
+## Prerequisites: Local LLM Server
+
+Before running `srz`, you need an OpenAI API-compliant local LLM server installed and running:
+
+- **macOS (Recommended)**: Install [Llama-macOS](https://github.com/ggml-org/Llama-macOS), a native Apple Silicon app powered by `llama.cpp` Metal acceleration.
+  - **Default endpoint**: `http://localhost:9931/v1`
+  - **Default model**: `ggml-org/gemma-4-E4B-it-GGUF:Q8_0` (or any loaded GGUF model)
+  - Simply open the app, download/select your model, and `srz` will connect out-of-the-box with zero configuration.
+
+- **Windows (Recommended)**: Install [Ollama](https://ollama.com/).
+  - Download and run Ollama, pull your desired model (e.g., `ollama run gemma2:9b` or `ollama run llama3.1`), and configure `srz`:
+    ```powershell
+    $env:OPENAI_BASE_URL="http://localhost:11434/v1"
+    $env:OPENAI_MODEL="gemma2:9b"
+    ```
+  - Or persist it permanently in your config file (`~/.config/srz/config.toml`).
+
+- **Other Platforms & Backends**: Any OpenAI-compatible local server works seamlessly, including **LM Studio**, **llama.cpp server**, or **vLLM**.
+
 ## Installation
 
 Ensure you have Rust and Cargo installed:
@@ -23,7 +42,11 @@ Ensure you have Rust and Cargo installed:
 cargo build --release
 ```
 
-The compiled binary will be located at `target/release/srz`.
+The compiled binary will be located at `target/release/srz`. To install it directly to your Cargo binary path:
+
+```bash
+cargo install --path .
+```
 
 ## Usage
 
@@ -101,22 +124,47 @@ Run `srz --help` to see all available subcommands (`web`, `book`, `file`, `news`
 
 ## Configuring Your Local LLM
 
-By default, `srz` connects to your local llama.cpp app:
-- **Base URL**: `http://localhost:9931/v1`
-- **Model**: `ggml-org/gemma-4-E4B-it-GGUF:Q8_0`
+By default, `srz` connects to [Llama-macOS](https://github.com/ggml-org/Llama-macOS) on port `9931`:
+- **Default Base URL**: `http://localhost:9931/v1`
+- **Default Model**: `ggml-org/gemma-4-E4B-it-GGUF:Q8_0`
 
-You can customize the endpoint and model either via CLI flags or environment variables:
-
-### Via CLI Flags:
+### Checking Connection & Loaded Models
 ```bash
-srz book "1984" --base-url http://localhost:9931/v1 --model ggml-org/gemma-4-E4B-it-GGUF:Q8_0
+srz doctor   # Verifies endpoint latency, database, cache, and config health
+srz models   # Lists all models available on the backend
 ```
 
-### Via Environment Variables:
+### Switching Backends & Models
+
+#### Via Named Profiles in `~/.config/srz/config.toml` (Recommended):
+Run `srz config init` to create a starter config, then define your backends:
+```toml
+base_url = "http://localhost:9931/v1"
+model = "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
+
+[profiles.ollama]
+base_url = "http://localhost:11434/v1"
+model = "gemma2:9b"
+```
+Switch profiles on the fly:
 ```bash
+srz "Dune" --profile ollama
+```
+
+#### Via Environment Variables:
+```bash
+# macOS (Llama-macOS)
 export OPENAI_BASE_URL="http://localhost:9931/v1"
 export OPENAI_MODEL="ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
-export OPENAI_API_KEY=""   # Optional
+
+# Windows / Linux (Ollama)
+export OPENAI_BASE_URL="http://localhost:11434/v1"
+export OPENAI_MODEL="gemma2:9b"
+```
+
+#### Via CLI Flags:
+```bash
+srz "1984" --base-url http://localhost:11434/v1 --model gemma2:9b
 ```
 
 ## Architecture & Modules
