@@ -1,7 +1,9 @@
 use clap::{Parser, Subcommand, ValueEnum};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum SummaryStyle {
     /// Concise summary with key takeaways
     Concise,
@@ -92,6 +94,14 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub author: Option<String>,
 
+    /// Path to optional config file (defaults to ~/.config/srz/config.toml)
+    #[arg(long, global = true)]
+    pub config: Option<PathBuf>,
+
+    /// Named configuration profile from config.toml to use
+    #[arg(long, global = true)]
+    pub profile: Option<String>,
+
     /// Save the summary to an output file
     #[arg(short, long, global = true)]
     pub output: Option<PathBuf>,
@@ -135,6 +145,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: CacheCommand,
     },
+    /// Manage srz configuration (path, show, init)
+    Config {
+        #[command(subcommand)]
+        action: ConfigSubcommand,
+    },
     /// View recent summarization history and metrics
     History {
         /// Maximum entries to display (default: 10)
@@ -166,6 +181,16 @@ pub enum CacheCommand {
     Clean,
 }
 
+#[derive(Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigSubcommand {
+    /// Print the config file path and existence status
+    Path,
+    /// Display active configuration
+    Show,
+    /// Generate a default ~/.config/srz/config.toml template
+    Init,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum ResolvedAction<'a> {
     Web {
@@ -181,6 +206,7 @@ pub enum ResolvedAction<'a> {
     },
     Stdin,
     Cache(CacheCommand),
+    Config(ConfigSubcommand),
     History {
         limit: usize,
     },
@@ -221,6 +247,7 @@ impl Cli {
                     }
                 }
                 Commands::Cache { action } => Ok(ResolvedAction::Cache(*action)),
+                Commands::Config { action } => Ok(ResolvedAction::Config(*action)),
                 Commands::History { limit } => Ok(ResolvedAction::History { limit: *limit }),
                 Commands::Stats => Ok(ResolvedAction::Stats),
                 Commands::Find { query } => Ok(ResolvedAction::Find {
@@ -250,6 +277,89 @@ impl Cli {
             }
         } else {
             Err("Please provide a URL, local file, book title, or '-' for stdin. Run `srz --help` for details.")
+        }
+    }
+
+    pub fn apply_config(
+        &mut self,
+        config: &crate::config::Config,
+        matches: Option<&clap::ArgMatches>,
+    ) {
+        let profile = self
+            .profile
+            .as_deref()
+            .and_then(|p| config.profiles.get(p));
+
+        let was_provided = |id: &str| -> bool {
+            if let Some(m) = matches {
+                m.value_source(id) == Some(clap::parser::ValueSource::CommandLine)
+                    || m.value_source(id) == Some(clap::parser::ValueSource::EnvVariable)
+            } else {
+                false
+            }
+        };
+
+        if !was_provided("base_url") {
+            if let Some(url) = profile
+                .and_then(|p| p.base_url.as_ref())
+                .or(config.base_url.as_ref())
+            {
+                self.base_url = url.clone();
+            }
+        }
+
+        if !was_provided("model") {
+            if let Some(m) = profile
+                .and_then(|p| p.model.as_ref())
+                .or(config.model.as_ref())
+            {
+                self.model = m.clone();
+            }
+        }
+
+        if !was_provided("api_key") {
+            if let Some(k) = profile
+                .and_then(|p| p.api_key.as_ref())
+                .or(config.api_key.as_ref())
+            {
+                self.api_key = k.clone();
+            }
+        }
+
+        if !was_provided("style") {
+            if let Some(s) = profile.and_then(|p| p.style).or(config.style) {
+                self.style = s;
+            }
+        }
+
+        if !was_provided("max_tokens") {
+            if let Some(t) = profile.and_then(|p| p.max_tokens).or(config.max_tokens) {
+                self.max_tokens = t;
+            }
+        }
+
+        if !was_provided("no_search") {
+            if let Some(ns) = profile.and_then(|p| p.no_search).or(config.no_search) {
+                self.no_search = ns;
+            }
+        }
+
+        if !was_provided("no_cache") {
+            if let Some(nc) = profile.and_then(|p| p.no_cache).or(config.no_cache) {
+                self.no_cache = nc;
+            }
+        }
+
+        if !was_provided("quiet") {
+            if let Some(q) = profile.and_then(|p| p.quiet).or(config.quiet) {
+                self.quiet = q;
+            }
+        }
+
+        if !was_provided("verbose") {
+            if let Some(v) = profile.and_then(|p| p.verbose).or(config.verbose) {
+                self.verbose = v;
+            }
         }
     }
 }

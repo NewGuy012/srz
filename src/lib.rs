@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod chunker;
 pub mod cli;
+pub mod config;
 pub mod db;
 pub mod llm;
 pub mod render;

@@ -16,6 +16,7 @@ urlencoding = "2.1"
 anyhow = "1.0"
 duckdb = { version = "1.20000.0", features = ["bundled"] }
 clap_complete = "4"
+toml = "0.8"
 
 [profile.release]
 lto = "thin"

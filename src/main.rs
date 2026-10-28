@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
-use clap::{CommandFactory, Parser};
+use clap::{CommandFactory, FromArgMatches};
 use srz::cache::{Cache, CachedSummary, SetBookSummaryParams};
-use srz::cli::{CacheCommand, Cli, ResolvedAction};
+use srz::cli::{CacheCommand, Cli, ConfigSubcommand, ResolvedAction};
+use srz::config::Config;
 use srz::db::{Database, NewSummaryRecord};
 use srz::llm::{self, LlmClient, LlmOutput, StreamMode};
 use srz::render;
@@ -98,7 +99,21 @@ async fn fetch_or_cache_page(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Cli::parse();
+    let cmd = Cli::command();
+    let matches = cmd.get_matches();
+    let mut args = match Cli::from_arg_matches(&matches) {
+        Ok(args) => args,
+        Err(err) => err.exit(),
+    };
+
+    let (config, config_path) = match &args.config {
+        Some(p) => {
+            let cfg = Config::load_from_path(p)?;
+            (cfg, Some(p.clone()))
+        }
+        None => Config::load_default(),
+    };
+    args.apply_config(&config, Some(&matches));
 
     if args.quiet || args.json {
         Ui::set_quiet(true);
@@ -122,6 +137,10 @@ async fn main() -> Result<()> {
     match action {
         ResolvedAction::Cache(cache_cmd) => {
             handle_cache(cache_cmd, &cache)?;
+            return Ok(());
+        }
+        ResolvedAction::Config(config_cmd) => {
+            handle_config(config_cmd, &config, config_path.as_deref(), &args)?;
             return Ok(());
         }
         ResolvedAction::History { limit } => {
@@ -427,6 +446,59 @@ fn handle_cache(cmd: CacheCommand, cache: &Cache) -> Result<()> {
                     "Removed {} cached file(s) ({}) and reset DuckDB database tables.",
                     stats.total_files,
                     Cache::format_bytes(stats.total_bytes)
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn handle_config(
+    subcmd: ConfigSubcommand,
+    config: &Config,
+    config_path: Option<&std::path::Path>,
+    args: &Cli,
+) -> Result<()> {
+    match subcmd {
+        ConfigSubcommand::Path => {
+            let default_path = Config::default_config_path();
+            if let Some(p) = config_path {
+                println!("{} (active, exists: {})", p.display(), p.exists());
+            } else {
+                println!("{} (not found, using defaults)", default_path.display());
+            }
+        }
+        ConfigSubcommand::Show => {
+            println!("# Active srz Configuration");
+            println!("base_url = {:?}", args.base_url);
+            println!("model = {:?}", args.model);
+            println!("style = {:?}", args.style.as_str());
+            println!("max_tokens = {}", args.max_tokens);
+            if let Some(profile_name) = &args.profile {
+                println!("active_profile = {:?}", profile_name);
+            }
+            if !config.profiles.is_empty() {
+                println!("\n# Configured profiles in config.toml:");
+                for name in config.profiles.keys() {
+                    println!("- {}", name);
+                }
+            }
+        }
+        ConfigSubcommand::Init => {
+            let default_path = Config::default_config_path();
+            if default_path.exists() {
+                Ui::info(&format!(
+                    "Config file already exists at {}",
+                    default_path.display()
+                ));
+            } else {
+                if let Some(parent) = default_path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(&default_path, Config::default_template())?;
+                Ui::success(&format!(
+                    "Initialized config file template at {}",
+                    default_path.display()
                 ));
             }
         }
