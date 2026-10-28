@@ -44,11 +44,11 @@ fn test_search_results_cache_is_case_insensitive() {
     let dir = temp_test_dir("search");
     let cache = Cache::with_dir(dir.clone(), true);
 
-    let results = vec![SearchResult {
-        title: "Dune (Wikipedia)".to_string(),
-        url: "https://en.wikipedia.org/wiki/Dune_(novel)".to_string(),
-        snippet: Some("Sci-fi novel".to_string()),
-    }];
+    let results = vec![SearchResult::new(
+        "Dune (Wikipedia)",
+        "https://en.wikipedia.org/wiki/Dune_(novel)",
+        Some("Sci-fi novel".to_string()),
+    )];
 
     cache.set_search_results("Dune", Some("Frank Herbert"), &results);
 

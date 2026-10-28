@@ -1,4 +1,4 @@
-use srz::search::{deduplicate_candidates, extract_ddg_url, SearchResult};
+use srz::search::{deduplicate_candidates, extract_ddg_url, rank_candidates, SearchResult};
 
 #[test]
 fn test_extract_ddg_url() {
@@ -13,25 +13,54 @@ fn test_extract_ddg_url() {
 #[test]
 fn test_deduplicate_candidates_normalizes_encoded_urls() {
     let list = vec![
-        SearchResult {
-            title: "Dune (novel) (Wikipedia)".to_string(),
-            url: "https://en.wikipedia.org/wiki/Dune_%28novel%29".to_string(),
-            snippet: None,
-        },
-        SearchResult {
-            title: "Dune (novel) - Wikipedia".to_string(),
-            url: "https://en.wikipedia.org/wiki/Dune_(novel)/".to_string(),
-            snippet: Some("Duplicate URL from DDG".to_string()),
-        },
-        SearchResult {
-            title: "Other Source".to_string(),
-            url: "https://example.com/dune".to_string(),
-            snippet: None,
-        },
+        SearchResult::new(
+            "Dune (novel) (Wikipedia)",
+            "https://en.wikipedia.org/wiki/Dune_%28novel%29",
+            None,
+        ),
+        SearchResult::new(
+            "Dune (novel) - Wikipedia",
+            "https://en.wikipedia.org/wiki/Dune_(novel)/",
+            Some("Duplicate URL from DDG".to_string()),
+        ),
+        SearchResult::new("Other Source", "https://example.com/dune", None),
     ];
 
     let deduped = deduplicate_candidates(list);
     assert_eq!(deduped.len(), 2);
     assert_eq!(deduped[0].title, "Dune (novel) (Wikipedia)");
     assert_eq!(deduped[1].url, "https://example.com/dune");
+}
+
+#[test]
+fn test_rank_candidates_prioritizes_exact_novel_over_commentary_and_films() {
+    let mut candidates = vec![
+        SearchResult::new(
+            "The History of The Hobbit (Wikipedia)",
+            "https://en.wikipedia.org/wiki/The_History_of_The_Hobbit",
+            Some("A scholarly study by John D. Rateliff".to_string()),
+        ),
+        SearchResult::new(
+            "The Hobbit (film series) (Wikipedia)",
+            "https://en.wikipedia.org/wiki/The_Hobbit_(film_series)",
+            Some("Peter Jackson film trilogy".to_string()),
+        ),
+        SearchResult::new(
+            "The Hobbit (Wikipedia)",
+            "https://en.wikipedia.org/wiki/The_Hobbit",
+            Some("1937 fantasy novel by English author J. R. R. Tolkien".to_string()),
+        ),
+    ];
+
+    rank_candidates("The Hobbit", None, &mut candidates);
+
+    // "The Hobbit" should overwhelmingly rank #1 with top score
+    assert_eq!(candidates[0].title, "The Hobbit (Wikipedia)");
+    assert!(candidates[0].score > candidates[1].score);
+    assert!(candidates[0].score > candidates[2].score);
+
+    // If author is supplied, score is boosted even further
+    rank_candidates("The Hobbit", Some("J. R. R. Tolkien"), &mut candidates);
+    assert_eq!(candidates[0].title, "The Hobbit (Wikipedia)");
+    assert!(candidates[0].score >= 150);
 }

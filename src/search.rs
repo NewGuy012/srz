@@ -20,6 +20,19 @@ pub struct SearchResult {
     pub title: String,
     pub url: String,
     pub snippet: Option<String>,
+    #[serde(default)]
+    pub score: i32,
+}
+
+impl SearchResult {
+    pub fn new(title: impl Into<String>, url: impl Into<String>, snippet: Option<String>) -> Self {
+        Self {
+            title: title.into(),
+            url: url.into(),
+            snippet,
+            score: 0,
+        }
+    }
 }
 
 pub struct BookSearcher {
@@ -48,23 +61,64 @@ impl BookSearcher {
         Ok(Self { client })
     }
 
-    /// Searches for candidate book synopses concurrently across Wikipedia and DuckDuckGo,
-    /// returning a deduplicated list of candidates.
+    /// Searches for candidate book synopses concurrently across Wikipedia (OpenSearch + fulltext) and DuckDuckGo,
+    /// returning a deduplicated and scored/ranked list of candidates.
     pub async fn search_candidates(&self, title: &str, author: Option<&str>) -> Vec<SearchResult> {
-        let (wiki_res, ddg_res) = tokio::join!(
+        let (opensearch_res, fulltext_res, ddg_res) = tokio::join!(
+            self.search_wikipedia_opensearch(title),
             self.search_wikipedia_fulltext(title, author),
             self.search_duckduckgo(title, author)
         );
 
         let mut raw_candidates = Vec::new();
-        if let Ok(wiki_results) = wiki_res {
-            raw_candidates.extend(wiki_results);
+        if let Ok(results) = opensearch_res {
+            raw_candidates.extend(results);
         }
-        if let Ok(ddg_results) = ddg_res {
-            raw_candidates.extend(ddg_results);
+        if let Ok(results) = fulltext_res {
+            raw_candidates.extend(results);
+        }
+        if let Ok(results) = ddg_res {
+            raw_candidates.extend(results);
         }
 
-        deduplicate_candidates(raw_candidates)
+        let mut unique = deduplicate_candidates(raw_candidates);
+        rank_candidates(title, author, &mut unique);
+        unique
+    }
+
+    /// Queries Wikipedia OpenSearch API (canonical exact/prefix title index)
+    async fn search_wikipedia_opensearch(&self, title: &str) -> Result<Vec<SearchResult>> {
+        let endpoint = format!(
+            "https://en.wikipedia.org/w/api.php?action=opensearch&search={}&limit=5&namespace=0&format=json",
+            urlencoding::encode(title)
+        );
+
+        let fetch_fut = self.client.get(&endpoint).send();
+        let resp = match tokio::time::timeout(Duration::from_secs(4), fetch_fut).await {
+            Ok(Ok(r)) if r.status().is_success() => r,
+            _ => return Ok(Vec::new()),
+        };
+
+        let json: Value = resp.json().await?;
+        let mut results = Vec::new();
+
+        // OpenSearch returns: [ search_term, [titles], [descriptions], [urls] ]
+        if let (Some(titles), Some(urls)) = (
+            json.get(1).and_then(|v| v.as_array()),
+            json.get(3).and_then(|v| v.as_array()),
+        ) {
+            for (t_val, u_val) in titles.iter().zip(urls.iter()) {
+                if let (Some(page_title), Some(page_url)) = (t_val.as_str(), u_val.as_str()) {
+                    results.push(SearchResult::new(
+                        format!("{} (Wikipedia)", page_title),
+                        page_url,
+                        None,
+                    ));
+                }
+            }
+        }
+
+        Ok(results)
     }
 
     /// Queries Wikipedia full-text search API
@@ -107,11 +161,11 @@ impl BookSearcher {
                         urlencoding::encode(&url_title)
                     );
 
-                    results.push(SearchResult {
-                        title: format!("{} (Wikipedia)", page_title),
+                    results.push(SearchResult::new(
+                        format!("{} (Wikipedia)", page_title),
                         url,
                         snippet,
-                    });
+                    ));
                 }
             }
         }
@@ -158,11 +212,11 @@ impl BookSearcher {
                             .next()
                             .map(|s| s.text().collect::<String>().trim().to_string());
 
-                        results.push(SearchResult {
-                            title: title_text.trim().to_string(),
-                            url: actual_url.into_owned(),
+                        results.push(SearchResult::new(
+                            title_text.trim(),
+                            actual_url.into_owned(),
                             snippet,
-                        });
+                        ));
                     }
                 }
             }
@@ -198,4 +252,118 @@ pub fn deduplicate_candidates(candidates: Vec<SearchResult>) -> Vec<SearchResult
     }
 
     unique
+}
+
+const DERIVATIVE_MARKERS: &[&str] = &[
+    "history of",
+    "the history of",
+    "companion to",
+    "study of",
+    "annotated",
+    "the art of",
+    "the philosophy of",
+    "film series",
+    "(film series)",
+    "(film)",
+    "(franchise)",
+    "soundtrack",
+    "adaptations of",
+    "characters of",
+    "list of",
+    "critical reception of",
+    "themes of",
+    "sparknotes",
+    "cliffsnotes",
+];
+
+/// Scores each candidate against the requested book title and optional author,
+/// sorting candidates descending by relevance score.
+pub fn rank_candidates(title_query: &str, author_query: Option<&str>, candidates: &mut [SearchResult]) {
+    for c in candidates.iter_mut() {
+        c.score = score_candidate(title_query, author_query, c);
+    }
+    candidates.sort_by_key(|a| std::cmp::Reverse(a.score));
+}
+
+/// Evaluates relevance of a candidate search result to the user's book query.
+pub fn score_candidate(title_query: &str, author_query: Option<&str>, candidate: &SearchResult) -> i32 {
+    let mut score = 0;
+
+    let norm_req = normalize_title_for_comparison(title_query);
+    let norm_cand = normalize_title_for_comparison(&candidate.title);
+
+    // 1. Exact match bonus
+    if norm_cand == norm_req {
+        score += 100;
+    } else if norm_cand == format!("{} (novel)", norm_req)
+        || norm_cand == format!("{} (book)", norm_req)
+    {
+        score += 95;
+    } else if let Some(stripped) = norm_cand.strip_prefix(&norm_req) {
+        let remainder = stripped.trim();
+        if remainder.starts_with('(') && remainder.ends_with(')') {
+            // Parenthetical qualifier like "(novel)" or "(1937)"
+            score += 85;
+        } else {
+            // Subtitle like ": an unexpected journey"
+            score += 40;
+        }
+    } else if norm_cand.ends_with(&norm_req) {
+        score += 30;
+    } else if norm_cand.contains(&norm_req) {
+        score += 20;
+    }
+
+    // 2. Heavy penalty for derivative / commentary / adaptation keywords
+    for marker in DERIVATIVE_MARKERS {
+        if norm_cand.contains(marker) && !norm_req.contains(marker) {
+            score -= 60;
+            break;
+        }
+    }
+
+    // 3. Author matching bonus
+    if let Some(author) = author_query {
+        let norm_author = author.trim().to_ascii_lowercase();
+        let last_name = norm_author.split_whitespace().last().unwrap_or(&norm_author);
+
+        let candidate_text = format!(
+            "{} {}",
+            norm_cand,
+            candidate.snippet.as_deref().unwrap_or("").to_ascii_lowercase()
+        );
+
+        if candidate_text.contains(&norm_author) {
+            score += 50;
+        } else if candidate_text.contains(last_name) && last_name.len() > 2 {
+            score += 30;
+        }
+    }
+
+    // 4. Source authority bonus for Wikipedia novel/canonical pages
+    if candidate.url.contains("wikipedia.org/wiki/") {
+        score += 15;
+    }
+
+    score
+}
+
+fn normalize_title_for_comparison(title: &str) -> String {
+    let stripped = title
+        .strip_suffix(" (Wikipedia)")
+        .or_else(|| title.strip_suffix(" - Wikipedia"))
+        .unwrap_or(title);
+
+    let mut out = String::with_capacity(stripped.len());
+    let mut prev_space = false;
+    for ch in stripped.chars() {
+        if ch.is_alphanumeric() || ch == '(' || ch == ')' || ch == ':' {
+            out.push(ch.to_ascii_lowercase());
+            prev_space = false;
+        } else if !prev_space && !out.is_empty() {
+            out.push(' ');
+            prev_space = true;
+        }
+    }
+    out.trim().to_string()
 }
