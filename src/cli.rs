@@ -248,6 +248,24 @@ pub enum Commands {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+    /// Check for and install the latest srz release
+    Upgrade {
+        /// Only check if an update is available without downloading or installing
+        #[arg(short, long)]
+        check: bool,
+
+        /// Force reinstall even if already on the latest version
+        #[arg(short, long)]
+        force: bool,
+
+        /// Install a specific version (e.g. "0.2.0" or "v0.2.0")
+        #[arg(long)]
+        version: Option<String>,
+
+        /// Show what would be done without modifying the binary
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
@@ -304,6 +322,12 @@ pub enum ResolvedAction<'a> {
     Completions {
         shell: clap_complete::Shell,
     },
+    Upgrade {
+        check: bool,
+        force: bool,
+        version: Option<String>,
+        dry_run: bool,
+    },
 }
 
 impl Cli {
@@ -353,6 +377,17 @@ impl Cli {
                     limit: *limit,
                 }),
                 Commands::Completions { shell } => Ok(ResolvedAction::Completions { shell: *shell }),
+                Commands::Upgrade {
+                    check,
+                    force,
+                    version,
+                    dry_run,
+                } => Ok(ResolvedAction::Upgrade {
+                    check: *check,
+                    force: *force,
+                    version: version.clone(),
+                    dry_run: *dry_run,
+                }),
             }
         } else if let Some(target) = &self.target {
             let trimmed = target.trim();

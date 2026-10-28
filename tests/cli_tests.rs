@@ -369,3 +369,54 @@ fn test_stream_flag_and_mode_defaults() {
     assert!(json_cli.stream);
     assert!(matches!(json_cli.stream_mode("Dune"), StreamMode::Buffered));
 }
+
+#[test]
+fn test_upgrade_subcommand_flags() {
+    // Default srz upgrade
+    let upgrade_cli = Cli::parse_from(["srz", "upgrade"]);
+    assert_eq!(
+        upgrade_cli.resolve_action().unwrap(),
+        ResolvedAction::Upgrade {
+            check: false,
+            force: false,
+            version: None,
+            dry_run: false,
+        }
+    );
+
+    // srz upgrade --check
+    let check_cli = Cli::parse_from(["srz", "upgrade", "-c"]);
+    assert_eq!(
+        check_cli.resolve_action().unwrap(),
+        ResolvedAction::Upgrade {
+            check: true,
+            force: false,
+            version: None,
+            dry_run: false,
+        }
+    );
+
+    // srz upgrade --force --dry-run
+    let force_dry_cli = Cli::parse_from(["srz", "upgrade", "--force", "--dry-run"]);
+    assert_eq!(
+        force_dry_cli.resolve_action().unwrap(),
+        ResolvedAction::Upgrade {
+            check: false,
+            force: true,
+            version: None,
+            dry_run: true,
+        }
+    );
+
+    // srz upgrade --version 0.2.0
+    let ver_cli = Cli::parse_from(["srz", "upgrade", "--version", "0.2.0"]);
+    assert_eq!(
+        ver_cli.resolve_action().unwrap(),
+        ResolvedAction::Upgrade {
+            check: false,
+            force: false,
+            version: Some("0.2.0".to_string()),
+            dry_run: false,
+        }
+    );
+}
