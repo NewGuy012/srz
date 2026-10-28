@@ -56,6 +56,16 @@ fn test_detect_install_origin() {
         InstallOrigin::Homebrew
     );
 
+    // Linuxbrew
+    assert_eq!(
+        detect_install_origin(Path::new("/home/linuxbrew/.linuxbrew/bin/srz")),
+        InstallOrigin::Homebrew
+    );
+    assert_eq!(
+        detect_install_origin(Path::new("/home/linuxbrew/.linuxbrew/Cellar/srz/0.1.0/bin/srz")),
+        InstallOrigin::Homebrew
+    );
+
     // Cargo installation
     assert_eq!(
         detect_install_origin(Path::new("/Users/myoo/.cargo/bin/srz")),

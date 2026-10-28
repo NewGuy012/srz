@@ -84,6 +84,8 @@ pub fn detect_install_origin(exe_path: &Path) -> InstallOrigin {
     if path_str.contains("/opt/homebrew/")
         || path_str.contains("/usr/local/Cellar/")
         || path_str.contains("/Cellar/")
+        || path_str.contains("/homebrew/")
+        || path_str.contains(".linuxbrew/")
     {
         InstallOrigin::Homebrew
     } else if path_str.contains("/.cargo/bin/") || path_str.contains("\\.cargo\\bin\\") {
