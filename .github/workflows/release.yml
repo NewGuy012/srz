@@ -73,7 +73,8 @@ jobs:
       - name: Package asset (Unix)
         if: matrix.archive == 'tar.gz'
         run: |
-          VERSION="${GITHUB_REF_NAME:-v0.2.0}"
+          CARGO_VER=$(cargo metadata --no-deps --format-version 1 | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4)
+          VERSION="${GITHUB_REF_NAME:-v${CARGO_VER}}"
           ARCHIVE_VERSION="srz-${VERSION}-${{ matrix.target }}.tar.gz"
           ARCHIVE_LATEST="srz-${{ matrix.target }}.tar.gz"
           cd target/${{ matrix.target }}/release
@@ -87,7 +88,8 @@ jobs:
         if: matrix.archive == 'zip'
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME:-v0.2.0}"
+          CARGO_VER=$(cargo metadata --no-deps --format-version 1 | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4)
+          VERSION="${GITHUB_REF_NAME:-v${CARGO_VER}}"
           ARCHIVE_VERSION="srz-${VERSION}-${{ matrix.target }}.zip"
           ARCHIVE_LATEST="srz-${{ matrix.target }}.zip"
           cd target/${{ matrix.target }}/release
