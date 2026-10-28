@@ -39,7 +39,8 @@ impl BookSearcher {
 
         let client = reqwest::Client::builder()
             .default_headers(headers)
-            .timeout(Duration::from_secs(15))
+            .connect_timeout(Duration::from_secs(4))
+            .timeout(Duration::from_secs(10))
             .redirect(reqwest::redirect::Policy::limited(5))
             .build()
             .context("Failed to initialize search HTTP client")?;
@@ -82,10 +83,11 @@ impl BookSearcher {
             urlencoding::encode(&query)
         );
 
-        let resp = self.client.get(&endpoint).send().await?;
-        if !resp.status().is_success() {
-            return Ok(Vec::new());
-        }
+        let fetch_fut = self.client.get(&endpoint).send();
+        let resp = match tokio::time::timeout(Duration::from_secs(4), fetch_fut).await {
+            Ok(Ok(r)) if r.status().is_success() => r,
+            _ => return Ok(Vec::new()),
+        };
 
         let json: Value = resp.json().await?;
         let mut results = Vec::new();
@@ -133,10 +135,11 @@ impl BookSearcher {
             urlencoding::encode(&query)
         );
 
-        let resp = self.client.get(&endpoint).send().await?;
-        if !resp.status().is_success() {
-            return Ok(Vec::new());
-        }
+        let fetch_fut = self.client.get(&endpoint).send();
+        let resp = match tokio::time::timeout(Duration::from_secs(4), fetch_fut).await {
+            Ok(Ok(r)) if r.status().is_success() => r,
+            _ => return Ok(Vec::new()),
+        };
 
         let html = resp.text().await?;
         let document = Html::parse_document(&html);

@@ -107,6 +107,7 @@ impl WebScraper {
 
         let client = reqwest::Client::builder()
             .default_headers(headers)
+            .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(20))
             .redirect(reqwest::redirect::Policy::limited(10))
             .build()

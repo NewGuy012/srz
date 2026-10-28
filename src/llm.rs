@@ -9,12 +9,19 @@ use std::io::{self, Write};
 use std::time::Duration;
 
 #[derive(Serialize)]
+struct StreamOptions {
+    include_usage: bool,
+}
+
+#[derive(Serialize)]
 struct ChatCompletionRequest<'a> {
     model: &'a str,
     messages: &'a [RequestMessage<'a>],
     temperature: f32,
     max_tokens: u32,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<StreamOptions>,
 }
 
 #[derive(Serialize)]
@@ -116,6 +123,7 @@ impl LlmClient {
 
         let client = reqwest::Client::builder()
             .default_headers(headers)
+            .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(300))
             .build()
             .context("Failed to build LLM HTTP client")?;
@@ -166,6 +174,7 @@ impl LlmClient {
             temperature: 0.3,
             max_tokens: self.max_tokens,
             stream: true,
+            stream_options: Some(StreamOptions { include_usage: true }),
         };
 
         let mut response = self.client.post(&self.endpoint).json(&body).send().await;
