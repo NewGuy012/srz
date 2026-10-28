@@ -175,6 +175,8 @@ pub enum Commands {
     Models,
     /// Diagnose system health, LLM connectivity, database, and cache
     Doctor,
+    /// Generate and view the standalone HTML library dashboard
+    Index,
     /// Generate shell auto-completion script
     Completions {
         /// Target shell to generate completions for
@@ -228,6 +230,7 @@ pub enum ResolvedAction<'a> {
     },
     Models,
     Doctor,
+    Index,
     Completions {
         shell: clap_complete::Shell,
     },
@@ -269,6 +272,7 @@ impl Cli {
                 }),
                 Commands::Models => Ok(ResolvedAction::Models),
                 Commands::Doctor => Ok(ResolvedAction::Doctor),
+                Commands::Index => Ok(ResolvedAction::Index),
                 Commands::Completions { shell } => Ok(ResolvedAction::Completions { shell: *shell }),
             }
         } else if let Some(target) = &self.target {

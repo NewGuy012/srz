@@ -1,3 +1,4 @@
+use crate::db::{HistoryEntry, LibraryStats};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -463,4 +464,363 @@ fn render_inline(text: &str) -> String {
     }
 
     out
+}
+
+/// Generates a standalone HTML5 dashboard index of all past summaries in the library.
+pub fn render_index_html(stats: &LibraryStats, entries: &[HistoryEntry]) -> String {
+    let mut cards_html = String::new();
+
+    if entries.is_empty() {
+        cards_html.push_str(
+            r#"    <div class="empty-state">
+      <h3>No summaries in library yet</h3>
+      <p>Summarize a book, webpage, or file to build your personal offline library.</p>
+    </div>"#,
+        );
+    } else {
+        for entry in entries {
+            let icon = match entry.target_type.as_str() {
+                "book" => "📚",
+                "file" => "📄",
+                "stdin" => "⌨️",
+                _ => "🌐",
+            };
+            let slug = slugify(&entry.title);
+            let author_line = if let Some(a) = &entry.author {
+                format!(r#"<div class="entry-author">by {}</div>"#, escape_html(a))
+            } else {
+                String::new()
+            };
+            let speed_str = entry
+                .tokens_per_second
+                .map(|s| format!("{:.1} tok/s", s))
+                .unwrap_or_else(|| "-".to_string());
+            let time_str = format!("{:.1}s", entry.duration_ms as f64 / 1000.0);
+            let search_data = format!(
+                "{} {} {} {}",
+                entry.title,
+                entry.author.as_deref().unwrap_or(""),
+                entry.model,
+                entry.target_type
+            );
+
+            cards_html.push_str(&format!(
+                r#"    <div class="entry-card" data-type="{target_type}" data-search="{search_data}">
+      <div class="entry-header">
+        <a class="entry-title" href="./{slug}.html">{icon} {title}</a>
+        <span class="entry-date">{date}</span>
+      </div>
+      {author_line}
+      <div class="entry-badges">
+        <span class="badge">Type: {target_type}</span>
+        <span class="badge">Style: {style}</span>
+        <span class="badge">Model: {model}</span>
+        <span class="badge">{words} words</span>
+        <span class="badge">Speed: {speed_str}</span>
+        <span class="badge">Time: {time_str}</span>
+      </div>
+      <div class="actions">
+        <a class="action-link" href="./{slug}.html">Open Reader View &rarr;</a>
+        <a class="action-link" href="./{slug}.md">Markdown (.md)</a>
+      </div>
+    </div>
+"#,
+                target_type = escape_html(&entry.target_type),
+                search_data = escape_html(&search_data),
+                slug = slug,
+                icon = icon,
+                title = escape_html(&entry.title),
+                date = escape_html(&entry.created_at),
+                author_line = author_line,
+                style = escape_html(&entry.style),
+                model = escape_html(&entry.model),
+                words = entry.word_count,
+                speed_str = speed_str,
+                time_str = time_str
+            ));
+        }
+    }
+
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>srz &bull; Summary Library</title>
+  <style>
+    :root {{
+      --bg: #faf9f5;
+      --surface: #ffffff;
+      --text: #1c1e21;
+      --muted: #5f6672;
+      --accent: #0f62fe;
+      --border: #e5e4de;
+      --badge-bg: #f1f0ea;
+      --card-hover: #f7f6f0;
+    }}
+    @media (prefers-color-scheme: dark) {{
+      :root {{
+        --bg: #111317;
+        --surface: #181b20;
+        --text: #e6e8ec;
+        --muted: #9aa2b1;
+        --accent: #6ea8fe;
+        --border: #2a2f3a;
+        --badge-bg: #222630;
+        --card-hover: #1e2229;
+      }}
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      padding: 2.5rem 1.25rem 5rem;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      line-height: 1.6;
+    }}
+    .container {{
+      max-width: 900px;
+      margin: 0 auto;
+    }}
+    header.hero {{
+      margin-bottom: 2rem;
+    }}
+    header.hero h1 {{
+      font-size: 2.2rem;
+      margin: 0 0 0.5rem;
+      letter-spacing: -0.02em;
+    }}
+    header.hero p {{
+      color: var(--muted);
+      margin: 0;
+      font-size: 1.05rem;
+    }}
+    .stats-bar {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+      gap: 1rem;
+      margin-bottom: 2rem;
+    }}
+    .stat-card {{
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.25rem;
+      text-align: center;
+    }}
+    .stat-val {{
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: var(--text);
+      line-height: 1.2;
+    }}
+    .stat-lbl {{
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      margin-top: 0.25rem;
+    }}
+    .controls {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      align-items: center;
+      margin-bottom: 1.75rem;
+    }}
+    .search-box {{
+      flex: 1;
+      min-width: 240px;
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 0.95rem;
+      outline: none;
+    }}
+    .filter-btn {{
+      padding: 0.55rem 0.95rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 0.88rem;
+      font-weight: 500;
+      transition: all 0.15s ease;
+    }}
+    .filter-btn.active, .filter-btn:hover {{
+      background: var(--accent);
+      color: #ffffff;
+      border-color: var(--accent);
+    }}
+    .entry-card {{
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.25rem 1.5rem;
+      margin-bottom: 1rem;
+      transition: background 0.15s ease;
+    }}
+    .entry-card:hover {{
+      background: var(--card-hover);
+    }}
+    .entry-header {{
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 1rem;
+    }}
+    .entry-title {{
+      font-size: 1.2rem;
+      font-weight: 600;
+      color: var(--text);
+      text-decoration: none;
+    }}
+    .entry-title:hover {{
+      color: var(--accent);
+    }}
+    .entry-date {{
+      font-size: 0.85rem;
+      color: var(--muted);
+      white-space: nowrap;
+    }}
+    .entry-author {{
+      color: var(--muted);
+      font-size: 0.95rem;
+      margin: 0.2rem 0 0.6rem;
+    }}
+    .entry-badges {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      margin-top: 0.6rem;
+      font-size: 0.8rem;
+    }}
+    .badge {{
+      background: var(--badge-bg);
+      padding: 0.2rem 0.55rem;
+      border-radius: 5px;
+      color: var(--muted);
+    }}
+    .actions {{
+      display: flex;
+      gap: 1.2rem;
+      margin-top: 0.8rem;
+    }}
+    .action-link {{
+      font-size: 0.85rem;
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 500;
+    }}
+    .action-link:hover {{
+      text-decoration: underline;
+    }}
+    .empty-state {{
+      text-align: center;
+      padding: 3rem 1rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--muted);
+    }}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header class="hero">
+      <h1>srz &bull; Summary Library</h1>
+      <p>Personal searchable reading library and distillation archive</p>
+    </header>
+
+    <div class="stats-bar">
+      <div class="stat-card">
+        <div class="stat-val">{total_summaries}</div>
+        <div class="stat-lbl">Total Summaries</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-val">{book_summaries}</div>
+        <div class="stat-lbl">Books</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-val">{web_summaries}</div>
+        <div class="stat-lbl">Web Articles</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-val">{file_summaries}</div>
+        <div class="stat-lbl">Files</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-val">{total_words}</div>
+        <div class="stat-lbl">Words Read</div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <input type="text" id="search" class="search-box" placeholder="Search summaries by title, author, or model...">
+      <button class="filter-btn active" data-filter="all">All</button>
+      <button class="filter-btn" data-filter="book">📚 Books</button>
+      <button class="filter-btn" data-filter="web">🌐 Web</button>
+      <button class="filter-btn" data-filter="file">📄 Files</button>
+      <button class="filter-btn" data-filter="stdin">⌨️ Stdin</button>
+    </div>
+
+    <div id="entries-list">
+{cards_html}    </div>
+  </div>
+
+  <script>
+    const searchInput = document.getElementById('search');
+    const filterBtns = document.querySelectorAll('.filter-btn');
+    const cards = document.querySelectorAll('.entry-card');
+    let currentFilter = 'all';
+
+    function filterCards() {{
+      const q = (searchInput.value || '').toLowerCase().trim();
+      cards.forEach(card => {{
+        const type = card.getAttribute('data-type');
+        const text = (card.getAttribute('data-search') || '').toLowerCase();
+        const matchesType = (currentFilter === 'all' || type === currentFilter);
+        const matchesQuery = (!q || text.includes(q));
+        card.style.display = (matchesType && matchesQuery) ? 'block' : 'none';
+      }});
+    }}
+
+    searchInput.addEventListener('input', filterCards);
+    filterBtns.forEach(btn => {{
+      btn.addEventListener('click', () => {{
+        filterBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentFilter = btn.getAttribute('data-filter');
+        filterCards();
+      }});
+    }});
+  </script>
+</body>
+</html>
+"#,
+        total_summaries = stats.total_summaries,
+        book_summaries = stats.book_summaries,
+        web_summaries = stats.web_summaries,
+        file_summaries = stats.file_summaries,
+        total_words = stats.total_source_words,
+        cards_html = cards_html
+    )
+}
+
+/// Ensures the `index.html` library dashboard file is generated or updated in `views_dir`.
+pub fn ensure_index_file(
+    views_dir: &Path,
+    stats: &LibraryStats,
+    entries: &[HistoryEntry],
+) -> std::io::Result<PathBuf> {
+    fs::create_dir_all(views_dir)?;
+    let html = render_index_html(stats, entries);
+    let index_path = views_dir.join("index.html");
+    fs::write(&index_path, html)?;
+    Ok(index_path)
 }

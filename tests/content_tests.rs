@@ -106,3 +106,72 @@ fn test_markdown_to_styled_html_rendering() {
     assert_eq!(fs::read_to_string(&overwritten.md_path).unwrap(), "Updated summary");
     let _ = fs::remove_dir_all(&tmp_dir);
 }
+
+#[test]
+fn test_render_index_html() {
+    use srz::db::{HistoryEntry, LibraryStats};
+    use srz::render::{ensure_index_file, render_index_html};
+
+    let stats = LibraryStats {
+        total_summaries: 2,
+        book_summaries: 1,
+        web_summaries: 1,
+        file_summaries: 0,
+        stdin_summaries: 0,
+        total_source_words: 5000,
+        total_prompt_tokens: 3500,
+        total_completion_tokens: 800,
+        avg_tokens_per_second: 42.0,
+        max_tokens_per_second: 55.0,
+        total_duration_ms: 12000,
+    };
+
+    let entries = vec![
+        HistoryEntry {
+            id: 1,
+            target_type: "book".to_string(),
+            title: "Dune".to_string(),
+            author: Some("Frank Herbert".to_string()),
+            url: None,
+            style: "concise".to_string(),
+            model: "gemma-4".to_string(),
+            word_count: 3000,
+            prompt_tokens: Some(2000),
+            completion_tokens: Some(400),
+            duration_ms: 6000,
+            tokens_per_second: Some(45.0),
+            created_at: "2026-10-28 10:00".to_string(),
+        },
+        HistoryEntry {
+            id: 2,
+            target_type: "web".to_string(),
+            title: "Rust 2026 Edition".to_string(),
+            author: None,
+            url: Some("https://rust-lang.org".to_string()),
+            style: "bullets".to_string(),
+            model: "gemma-4".to_string(),
+            word_count: 2000,
+            prompt_tokens: Some(1500),
+            completion_tokens: Some(400),
+            duration_ms: 6000,
+            tokens_per_second: Some(40.0),
+            created_at: "2026-10-28 10:15".to_string(),
+        },
+    ];
+
+    let html = render_index_html(&stats, &entries);
+    assert!(html.contains("srz &bull; Summary Library"));
+    assert!(html.contains("Dune"));
+    assert!(html.contains("Frank Herbert"));
+    assert!(html.contains("Rust 2026 Edition"));
+    assert!(html.contains("data-type=\"book\""));
+    assert!(html.contains("data-type=\"web\""));
+
+    let tmp_dir = std::env::temp_dir().join("srz_test_index_dashboard");
+    let _ = fs::remove_dir_all(&tmp_dir);
+    let index_file = ensure_index_file(&tmp_dir, &stats, &entries).unwrap();
+    assert!(index_file.exists());
+    let written = fs::read_to_string(&index_file).unwrap();
+    assert_eq!(written, html);
+    let _ = fs::remove_dir_all(&tmp_dir);
+}

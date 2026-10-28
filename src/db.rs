@@ -237,6 +237,42 @@ impl Database {
         Ok(entries)
     }
 
+    /// Fetches all records from history ordered descending by ID for the library index view.
+    pub fn get_all_for_index(&self) -> Result<Vec<HistoryEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, target_type, title, author, url, style, model,
+                    word_count, prompt_tokens, completion_tokens,
+                    duration_ms, tokens_per_second,
+                    strftime(created_at, '%Y-%m-%d %H:%M')
+             FROM history
+             ORDER BY id DESC"
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok(HistoryEntry {
+                id: row.get(0)?,
+                target_type: row.get(1)?,
+                title: row.get(2)?,
+                author: row.get(3)?,
+                url: row.get(4)?,
+                style: row.get(5)?,
+                model: row.get(6)?,
+                word_count: row.get(7)?,
+                prompt_tokens: row.get(8)?,
+                completion_tokens: row.get(9)?,
+                duration_ms: row.get::<_, u32>(10)? as u64,
+                tokens_per_second: row.get(11)?,
+                created_at: row.get(12)?,
+            })
+        })?;
+
+        let mut entries = Vec::new();
+        for r in rows {
+            entries.push(r?);
+        }
+        Ok(entries)
+    }
+
     /// Computes aggregated analytics across all past summarization runs.
     pub fn get_stats(&self) -> Result<LibraryStats> {
         let mut total_stmt = self.conn.prepare(

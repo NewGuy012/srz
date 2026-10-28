@@ -175,6 +175,14 @@ async fn main() -> Result<()> {
             handle_doctor(&args, &config, config_path.as_deref(), &cache, args.json).await?;
             return Ok(());
         }
+        ResolvedAction::Index => {
+            if let Some(db) = open_db_or_warn() {
+                handle_index(&db, &cache, args.open)?;
+            } else {
+                Ui::error("DuckDB database unavailable.");
+            }
+            return Ok(());
+        }
         ResolvedAction::Completions { shell } => {
             clap_complete::generate(
                 shell,
@@ -297,6 +305,7 @@ async fn main() -> Result<()> {
                     summary: &outcome.summary,
                 };
                 let _ = db.record_summary(&record);
+                let _ = update_index_dashboard(&db, &cache);
             }
         }
         Err(err) => {
@@ -424,6 +433,29 @@ fn handle_find(db: &Database, query: &str, cache: &Cache, as_json: bool) -> Resu
         println!();
     }
 
+    Ok(())
+}
+
+fn update_index_dashboard(db: &Database, cache: &Cache) -> Result<std::path::PathBuf> {
+    let stats = db.get_stats()?;
+    let entries = db.get_all_for_index()?;
+    let index_path = render::ensure_index_file(&cache.views_dir(), &stats, &entries)?;
+    Ok(index_path)
+}
+
+fn handle_index(db: &Database, cache: &Cache, open_browser: bool) -> Result<()> {
+    let index_path = update_index_dashboard(db, cache)?;
+    Ui::success(&format!(
+        "Library dashboard generated: file://{}",
+        index_path.display()
+    ));
+    if open_browser {
+        if let Err(err) = render::open_in_browser(&index_path) {
+            Ui::warn(&format!("Could not open browser: {}", err));
+        } else {
+            Ui::info("Opened library dashboard in browser.");
+        }
+    }
     Ok(())
 }
 

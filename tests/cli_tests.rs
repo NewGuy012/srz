@@ -44,6 +44,9 @@ fn test_history_stats_find_subcommands() {
 
     let doctor_cli = Cli::parse_from(["srz", "doctor"]);
     assert_eq!(doctor_cli.resolve_action().unwrap(), ResolvedAction::Doctor);
+
+    let index_cli = Cli::parse_from(["srz", "index"]);
+    assert_eq!(index_cli.resolve_action().unwrap(), ResolvedAction::Index);
 }
 
 #[test]
