@@ -14,6 +14,15 @@ pub enum SummaryStyle {
 }
 
 impl SummaryStyle {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Concise => "concise",
+            Self::Detailed => "detailed",
+            Self::Bullets => "bullets",
+            Self::Executive => "executive",
+        }
+    }
+
     pub fn prompt_guidance(&self) -> &'static str {
         match self {
             Self::Concise => "Provide a concise, high-level summary capturing the core message in 2-3 brief paragraphs.",
@@ -185,6 +194,14 @@ pub enum ResolvedAction<'a> {
 }
 
 impl Cli {
+    pub fn stream_mode<'a>(&self, header_title: &'a str) -> crate::llm::StreamMode<'a> {
+        if self.output.is_none() && !self.json {
+            crate::llm::StreamMode::Stdout { header_title }
+        } else {
+            crate::llm::StreamMode::Buffered
+        }
+    }
+
     pub fn resolve_action(&self) -> Result<ResolvedAction<'_>, &'static str> {
         if let Some(cmd) = &self.command {
             match cmd {

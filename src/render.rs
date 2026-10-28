@@ -6,6 +6,14 @@ pub struct RenderedFiles {
     pub md_path: PathBuf,
 }
 
+/// Returns `true` if `path` has a `.html` or `.htm` extension (case-insensitive).
+pub fn is_html_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"))
+        .unwrap_or(false)
+}
+
 /// Saves both a `.md` file and a standalone, styled `.html` document into `views_dir`,
 /// returning their absolute paths for clickable terminal links.
 pub fn save_view_files(

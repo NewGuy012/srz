@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
 use srz::cache::{Cache, SetBookSummaryParams};
-use srz::cli::{CacheCommand, Cli, ResolvedAction, SummaryStyle};
+use srz::cli::{CacheCommand, Cli, ResolvedAction};
 use srz::db::{Database, NewSummaryRecord};
 use srz::llm::{self, LlmClient, LlmOutput, StreamMode};
 use srz::render;
@@ -140,13 +140,7 @@ async fn main() -> Result<()> {
             if args.json {
                 println!("{}", serde_json::to_string_pretty(&outcome)?);
             } else if let Some(output_path) = &args.output {
-                let is_html = output_path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"))
-                    .unwrap_or(false);
-
-                if is_html {
+                if render::is_html_path(output_path) {
                     let html_doc = render::render_html_document(&outcome.title, &outcome.summary);
                     fs::write(output_path, html_doc)
                         .with_context(|| format!("Failed to write output to {:?}", output_path))?;
@@ -187,18 +181,12 @@ async fn main() -> Result<()> {
             if !outcome.cached
                 && let Some(db) = open_db_or_warn()
             {
-                let style_str = match args.style {
-                    SummaryStyle::Concise => "concise",
-                    SummaryStyle::Detailed => "detailed",
-                    SummaryStyle::Bullets => "bullets",
-                    SummaryStyle::Executive => "executive",
-                };
                 let record = NewSummaryRecord {
                     target_type: outcome.target_type,
                     title: &outcome.title,
                     author: outcome.author.as_deref(),
                     url: outcome.url.as_deref(),
-                    style: style_str,
+                    style: args.style.as_str(),
                     model: &args.model,
                     word_count: outcome.word_count,
                     prompt_tokens: outcome.prompt_tokens,
@@ -391,13 +379,7 @@ async fn handle_file(
     let raw = fs::read_to_string(path)
         .with_context(|| format!("Failed to read file: {:?}", path))?;
 
-    let is_html = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"))
-        .unwrap_or(false);
-
-    let (content, word_count, title) = if is_html {
+    let (content, word_count, title) = if render::is_html_path(path) {
         let norm = scraper.normalize(&path.display().to_string(), &raw)?;
         let t = norm.title.unwrap_or_else(|| {
             path.file_name()
