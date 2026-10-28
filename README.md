@@ -36,37 +36,52 @@ srz https://example.com/article
 srz "The Hobbit"
 srz book "Dune" --author "Frank Herbert"
 
-# Summarize a local file or piped input
+# Summarize local files (Markdown, text, HTML, PDF, EPUB) or piped input
 srz README.md
+srz paper.pdf
+srz novel.epub
 git diff | srz -
 
-# Choose a summary style (concise, detailed, bullets, executive)
-srz https://example.com/article --style bullets
+# Choose a summary style (concise, detailed, bullets, executive, tldr, critique, eli5, flashcards)
+srz https://example.com/article --style tldr
+srz paper.pdf --style critique
+srz novel.epub --style eli5
 
-# Search and browse your local library
+# Auto-open styled HTML reader view in browser
+srz "Dune" --open
+
+# Check server health and discover models
+srz doctor
+srz models
+
+# Search, browse, and launch standalone HTML library dashboard
+srz index --open
 srz find "ecology"
 srz history
 srz stats
 ```
 
-Run `srz --help` to see all available subcommands (`web`, `book`, `file`, `cache`, `completions`) and flags.
+Run `srz --help` to see all available subcommands (`web`, `book`, `file`, `cache`, `config`, `models`, `doctor`, `index`, `completions`) and flags.
 
 ## Features
 
 - **Webpage Summarization**: Scrapes any URL, strips boilerplate (ads, navigation, footers, footnote tables), normalizes the article text into clean paragraphs, and generates a structured summary.
-- **Local File & Stdin Summarization**: Summarizes local files (`srz file <path>` or auto-detected `srz README.md`) and standard input (`git diff | srz -`).
+- **Local File, PDF, EPUB, & Stdin Summarization**: Summarizes local files (`srz file <path>` or auto-detected `srz README.md`), PDF documents (`srz paper.pdf`), EPUB books (`srz book.epub`), and standard input (`git diff | srz -`).
 - **Book Summarization by Title**: Summarizes books without needing to supply ebook files.
   - **Canonical Metadata & Web Grounding**: Resolves author and publication year via Open Library, then queries Wikipedia (OpenSearch + full-text) and DuckDuckGo with candidate scoring and interactive disambiguation (`-y` to auto-accept).
   - **Trained Knowledge Fallback**: If no online reference is found (or when `--no-search` is passed), falls back to the LLM's trained memory.
+- **Server Health & Model Discovery**: Run `srz doctor` to verify LLM backend latency, database integrity, cache health, and config files. Run `srz models` to list available backend models.
+- **Standalone HTML Library Dashboard**: Run `srz index` (or `srz index --open`) to view an offline, searchable dashboard of all past reads with interactive filtering by category (`📚 Books`, `🌐 Web`, `📄 Files`, `⌨️ Stdin`).
+- **Optional Config File & Named Profiles**: Persist settings in `~/.config/srz/config.toml` (initialize with `srz config init`) and switch named model presets on the fly (`srz --profile fast ...` vs `srz --profile deep ...`).
 - **Universal Token Tracking**: Streams tokens (`stream: true`) with `stream_options` to `stdout` in real time while displaying live chain-of-thought token progress on `stderr`.
-- **Machine-Readable JSON Output**: Pass `--json` to `history`, `stats`, `find`, or summarization commands for automated scripting and editor integrations.
+- **Machine-Readable JSON Output**: Pass `--json` to `history`, `stats`, `find`, `models`, `doctor`, or summarization commands for automated scripting and editor integrations.
 - **Embedded DuckDB Engine**: Built-in DuckDB database (`~/.cache/srz/srz.duckdb`) tracking your reading history, token speeds, and providing instant full-text search across all past summaries.
 - **Shell Auto-Completions**: Generate tab-completion scripts out-of-the-box (`srz completions <bash|zsh|fish|powershell>`).
-- **Clickable Styled HTML & Markdown Views**: Automatically saves a styled, responsive `.html` reader view (with light/dark mode) and `.md` file in `~/.cache/srz/views/` and prints clickable `file://` links so you can open the summary in your browser or editor with one click.
+- **Clickable Styled HTML & Markdown Views**: Automatically saves a styled, responsive `.html` reader view (with light/dark mode) and `.md` file in `~/.cache/srz/views/` and prints clickable `file://` links so you can open the summary in your browser or editor with one click (`--open` / `-b` to launch browser automatically).
 - **Strict `stdout` / `stderr` & `NO_COLOR` Hygiene**: Respects `NO_COLOR` and terminal detection (`is_terminal`). Supports quiet (`-q`) and verbose (`-v`) flags.
-- **Multiple Summary Styles**: `concise` (default), `detailed`, `bullets`, or `executive`.
+- **Multiple Summary Styles**: `concise` (default), `detailed`, `bullets`, `executive`, `tldr`, `critique`, `eli5`, and `flashcards`.
 - **Smart Disk Caching**: Automatically caches book metadata, search candidates, scraped reference pages, and generated summaries in `~/.cache/srz` (`srz cache dir | size | clean`). Pass `--no-cache` to force a fresh fetch.
-- **Text Chunking**: Automatic windowed chunking and map-reduce synthesis with aggregated token telemetry for long documents (> 12,000 words, tuned for a 32k context window).
+- **Parallel Text Chunking**: Automatic windowed chunking and parallel map-reduce synthesis (`--concurrency <N>`) with aggregated token telemetry for long documents (> 12,000 words, tuned for a 32k context window).
 
 ## Configuring Your Local LLM
 
