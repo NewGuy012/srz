@@ -154,20 +154,7 @@ srz "Dune" --profile groq    # Uses Groq cloud
 
 ## Architecture & Modules
 
-See [`OVERVIEW.md`](OVERVIEW.md) for detailed Mermaid architecture and sequence diagrams. The codebase is organized into modular components with single responsibilities:
-
-- `src/main.rs`: CLI entry point coordinating the high-level summarization pipeline and subcommand handlers.
-- `src/cli.rs`: Argument parsing, subcommand definitions, natural news query detection, and style guidance with `clap`.
-- `src/config.rs`: Configuration file (`~/.config/srz/config.toml`) loading, template generation, and named profile support.
-- `src/cache.rs`: Persistent disk cache (`~/.cache/srz`) and private `0700`/`0600` file/directory permission helpers.
-- `src/db.rs`: Embedded DuckDB engine for reading history, performance telemetry, and offline full-text library search.
-- `src/scraper.rs`: Webpage fetching (with 10 MB cap), DOM normalization, and local PDF/EPUB document text extraction.
-- `src/news.rs`: Google News RSS client, `batchexecute` RPC redirect decoding, and concurrent article aggregation.
-- `src/search.rs`: Open Library metadata resolution plus Wikipedia & DuckDuckGo candidate search and ranking.
-- `src/llm.rs`: Zero-copy OpenAI SSE streaming client and parallel map-reduce synthesis engine.
-- `src/chunker.rs`: Zero-copy text windowing and paragraph chunking for long documents.
-- `src/render.rs`: Standalone HTML5 reader views, interactive library dashboard (`srz index`), and Markdown rendering.
-- `src/ui.rs`: Terminal spinners, `NO_COLOR` detection, and status output with `indicatif`.
+See [`OVERVIEW.md`](OVERVIEW.md) for detailed Mermaid architecture and sequence diagrams.
 
 ## Running Tests
 
