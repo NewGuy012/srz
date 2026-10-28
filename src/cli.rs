@@ -108,6 +108,11 @@ pub enum Commands {
         /// Title of the book
         title: String,
     },
+    /// Summarize a local file or piped input from standard input (-)
+    File {
+        /// Path to the local file, or '-' for stdin
+        path: PathBuf,
+    },
     /// Manage the local disk cache (dir, size, clean)
     Cache {
         #[command(subcommand)]
@@ -148,6 +153,10 @@ pub enum ResolvedAction<'a> {
         author: Option<&'a str>,
         no_search: bool,
     },
+    File {
+        path: PathBuf,
+    },
+    Stdin,
     Cache(CacheCommand),
     History {
         limit: usize,
@@ -168,6 +177,15 @@ impl Cli {
                     author: self.author.as_deref(),
                     no_search: self.no_search,
                 }),
+                Commands::File { path } => {
+                    if path.as_os_str() == "-" {
+                        Ok(ResolvedAction::Stdin)
+                    } else {
+                        Ok(ResolvedAction::File {
+                            path: path.clone(),
+                        })
+                    }
+                }
                 Commands::Cache { action } => Ok(ResolvedAction::Cache(*action)),
                 Commands::History { limit } => Ok(ResolvedAction::History { limit: *limit }),
                 Commands::Stats => Ok(ResolvedAction::Stats),
@@ -177,17 +195,26 @@ impl Cli {
             }
         } else if let Some(target) = &self.target {
             let trimmed = target.trim();
-            if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+            if trimmed == "-" {
+                Ok(ResolvedAction::Stdin)
+            } else if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
                 Ok(ResolvedAction::Web { url: trimmed })
             } else {
-                Ok(ResolvedAction::Book {
-                    title: trimmed,
-                    author: self.author.as_deref(),
-                    no_search: self.no_search,
-                })
+                let candidate_path = std::path::Path::new(trimmed);
+                if candidate_path.is_file() {
+                    Ok(ResolvedAction::File {
+                        path: candidate_path.to_path_buf(),
+                    })
+                } else {
+                    Ok(ResolvedAction::Book {
+                        title: trimmed,
+                        author: self.author.as_deref(),
+                        no_search: self.no_search,
+                    })
+                }
             }
         } else {
-            Err("Please provide a URL or book title, or use `srz web <URL>` / `srz book <TITLE>` / `srz cache <ACTION>`. Run `srz --help` for details.")
+            Err("Please provide a URL, local file, book title, or '-' for stdin. Run `srz --help` for details.")
         }
     }
 }

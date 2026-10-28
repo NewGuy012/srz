@@ -57,6 +57,32 @@ fn test_auto_detect_url() {
 }
 
 #[test]
+fn test_auto_detect_stdin_and_file() {
+    let stdin_cli = Cli::parse_from(["srz", "-"]);
+    assert_eq!(stdin_cli.resolve_action().unwrap(), ResolvedAction::Stdin);
+
+    let stdin_subcmd = Cli::parse_from(["srz", "file", "-"]);
+    assert_eq!(stdin_subcmd.resolve_action().unwrap(), ResolvedAction::Stdin);
+
+    // Existing local file (Cargo.toml)
+    let file_cli = Cli::parse_from(["srz", "Cargo.toml"]);
+    match file_cli.resolve_action().unwrap() {
+        ResolvedAction::File { path } => {
+            assert_eq!(path, std::path::PathBuf::from("Cargo.toml"));
+        }
+        _ => panic!("Expected File action for Cargo.toml"),
+    }
+
+    let file_subcmd = Cli::parse_from(["srz", "file", "README.md"]);
+    match file_subcmd.resolve_action().unwrap() {
+        ResolvedAction::File { path } => {
+            assert_eq!(path, std::path::PathBuf::from("README.md"));
+        }
+        _ => panic!("Expected File action for README.md"),
+    }
+}
+
+#[test]
 fn test_auto_detect_book_with_global_flags() {
     let cli = Cli::parse_from([
         "srz",

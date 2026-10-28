@@ -424,18 +424,31 @@ impl LlmClient {
         mode: StreamMode<'_>,
     ) -> Result<LlmOutput> {
         let title_str = title.unwrap_or("Untitled Webpage");
+        self.summarize_document(title_str, Some(url), content, style, mode)
+            .await
+    }
+
+    /// Summarize any document text, local file, or stdin stream (with automatic chunking for long texts)
+    pub async fn summarize_document(
+        &self,
+        title: &str,
+        source_label: Option<&str>,
+        content: &str,
+        style: SummaryStyle,
+        mode: StreamMode<'_>,
+    ) -> Result<LlmOutput> {
         let word_count = content.split_whitespace().count();
 
-        // If the webpage exceeds MAX_CONTEXT_WORDS (12,000 words), chunk and map-reduce
+        // If the document exceeds MAX_CONTEXT_WORDS (12,000 words), chunk and map-reduce
         if word_count > MAX_CONTEXT_WORDS {
             let chunks = TextChunker::chunk(content, CHUNK_MAX_WORDS, CHUNK_OVERLAP_WORDS);
             if chunks.len() > 1 {
                 let mut section_summaries = Vec::with_capacity(chunks.len());
                 for (i, chunk) in chunks.iter().enumerate() {
-                    let section_sys = "You are an assistant summarizing a section of a long article. Be factual and concise.";
+                    let section_sys = "You are an assistant summarizing a section of a long document. Be factual and concise.";
                     let section_user = format!(
-                        "Article: '{}'\nSection {} of {}:\n\n{}",
-                        title_str,
+                        "Document: '{}'\nSection {} of {}:\n\n{}",
+                        title,
                         i + 1,
                         chunks.len(),
                         chunk
@@ -444,7 +457,7 @@ impl LlmClient {
                         .complete_streaming(
                             section_sys,
                             &section_user,
-                            "Summarizing article chunk...",
+                            "Summarizing document chunk...",
                             &format!("Chunk {}/{} summarized.", i + 1, chunks.len()),
                             StreamMode::Buffered,
                         )
@@ -453,11 +466,14 @@ impl LlmClient {
                 }
 
                 let combined_sections = section_summaries.join("\n\n---\n\n");
+                let source_line = source_label
+                    .map(|s| format!("Source: {}\n", s))
+                    .unwrap_or_default();
                 let synthesis_sys = "You are an expert analyst. Synthesize the provided section summaries into a single cohesive Markdown summary.";
                 let synthesis_user = format!(
-                    "Article: '{}'\nURL: {}\nStyle: {}\n\nSection Summaries:\n{}",
-                    title_str,
-                    url,
+                    "Document: '{}'\n{}Style: {}\n\nSection Summaries:\n{}",
+                    title,
+                    source_line,
                     style.prompt_guidance(),
                     combined_sections
                 );
@@ -465,7 +481,7 @@ impl LlmClient {
                     .complete_streaming(
                         synthesis_sys,
                         &synthesis_user,
-                        "Synthesizing final webpage summary...",
+                        "Synthesizing final document summary...",
                         "Summary generated.",
                         mode,
                     )
@@ -478,10 +494,14 @@ impl LlmClient {
             Your goal is to extract the core insights, arguments, data, and conclusions from the provided text. \
             Write in clear, clean Markdown.";
 
+        let source_line = source_label
+            .map(|s| format!("Source: {}\n", s))
+            .unwrap_or_default();
+
         let user_prompt = format!(
-            "Webpage URL: {}\nArticle Title: {}\nStyle instructions: {}\n\nContent:\n---\n{}\n---",
-            url,
-            title_str,
+            "Document: {}\n{}Style instructions: {}\n\nContent:\n---\n{}\n---",
+            title,
+            source_line,
             style.prompt_guidance(),
             content
         );

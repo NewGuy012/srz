@@ -108,6 +108,8 @@ async fn main() -> Result<()> {
 
     let summary_result = match action {
         ResolvedAction::Web { url } => handle_web(url, &scraper, &llm, &cache, &args).await,
+        ResolvedAction::File { path } => handle_file(&path, &scraper, &llm, &cache, &args).await,
+        ResolvedAction::Stdin => handle_stdin(&scraper, &llm, &args).await,
         ResolvedAction::Book {
             title,
             author,
@@ -326,6 +328,148 @@ fn handle_cache(cmd: CacheCommand, cache: &Cache, db: Option<&Database>) -> Resu
         }
     }
     Ok(())
+}
+
+async fn handle_file(
+    path: &std::path::Path,
+    scraper: &WebScraper,
+    llm: &LlmClient,
+    _cache: &Cache,
+    args: &Cli,
+) -> Result<SummaryOutcome> {
+    if !path.exists() {
+        anyhow::bail!("File not found: {:?}", path);
+    }
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("Failed to read file: {:?}", path))?;
+
+    let is_html = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"))
+        .unwrap_or(false);
+
+    let (content, word_count, title) = if is_html {
+        let norm = scraper.normalize(&path.display().to_string(), &raw)?;
+        let t = norm.title.unwrap_or_else(|| {
+            path.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Local File".to_string())
+        });
+        (norm.content, norm.word_count, t)
+    } else {
+        let words = raw.split_whitespace().count();
+        let t = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Local File".to_string());
+        (raw, words, t)
+    };
+
+    if content.trim().is_empty() {
+        anyhow::bail!("File {:?} is empty.", path);
+    }
+
+    Ui::info(&format!(
+        "Loaded {} words from file '{}'",
+        word_count,
+        path.display()
+    ));
+
+    let mode = if args.output.is_none() {
+        StreamMode::Stdout {
+            header_title: &title,
+        }
+    } else {
+        StreamMode::Buffered
+    };
+
+    let path_str = path.display().to_string();
+    let output = llm
+        .summarize_document(&title, Some(&path_str), &content, args.style, mode)
+        .await?;
+
+    if let Some(warn) = &output.warning {
+        Ui::warn(warn);
+    }
+
+    Ok(SummaryOutcome {
+        title,
+        author: None,
+        url: Some(path_str),
+        target_type: "file",
+        summary: output.content,
+        word_count,
+        streamed_to_stdout: output.streamed_to_stdout,
+        prompt_tokens: output.prompt_tokens,
+        completion_tokens: output.completion_tokens,
+        duration_ms: output.duration_ms,
+        tokens_per_second: output.tokens_per_second,
+        cached: false,
+    })
+}
+
+async fn handle_stdin(
+    scraper: &WebScraper,
+    llm: &LlmClient,
+    args: &Cli,
+) -> Result<SummaryOutcome> {
+    use std::io::Read;
+    let mut raw = String::new();
+    std::io::stdin()
+        .read_to_string(&mut raw)
+        .context("Failed to read from standard input")?;
+
+    if raw.trim().is_empty() {
+        anyhow::bail!("Standard input was empty.");
+    }
+
+    let is_html = raw.contains("<!DOCTYPE") || raw.contains("<html") || raw.contains("<body");
+    let (content, word_count, title) = if is_html {
+        if let Ok(norm) = scraper.normalize("stdin", &raw) {
+            let t = norm.title.unwrap_or_else(|| "Standard Input".to_string());
+            (norm.content, norm.word_count, t)
+        } else {
+            let words = raw.split_whitespace().count();
+            (raw, words, "Standard Input".to_string())
+        }
+    } else {
+        let words = raw.split_whitespace().count();
+        (raw, words, "Standard Input".to_string())
+    };
+
+    Ui::info(&format!("Read {} words from standard input", word_count));
+
+    let mode = if args.output.is_none() {
+        StreamMode::Stdout {
+            header_title: &title,
+        }
+    } else {
+        StreamMode::Buffered
+    };
+
+    let output = llm
+        .summarize_document(&title, Some("stdin"), &content, args.style, mode)
+        .await?;
+
+    if let Some(warn) = &output.warning {
+        Ui::warn(warn);
+    }
+
+    Ok(SummaryOutcome {
+        title,
+        author: None,
+        url: None,
+        target_type: "stdin",
+        summary: output.content,
+        word_count,
+        streamed_to_stdout: output.streamed_to_stdout,
+        prompt_tokens: output.prompt_tokens,
+        completion_tokens: output.completion_tokens,
+        duration_ms: output.duration_ms,
+        tokens_per_second: output.tokens_per_second,
+        cached: false,
+    })
 }
 
 async fn handle_web(
