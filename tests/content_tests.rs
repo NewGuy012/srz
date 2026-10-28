@@ -90,6 +90,11 @@ fn test_markdown_to_styled_html_rendering() {
     let full_doc = render_html_document("\"Dune\"", md);
     assert!(full_doc.contains("<!DOCTYPE html>"));
     assert!(full_doc.contains("Summary: &quot;Dune&quot;"));
+    assert!(full_doc.contains("<meta http-equiv=\"Content-Security-Policy\""));
+
+    let escaped_quote = render_html_document("O'Reilly", "It's a test");
+    assert!(escaped_quote.contains("O&#39;Reilly"));
+    assert!(escaped_quote.contains("It&#39;s a test"));
 
     // Verify ensure_view_files skips rewrite when force_write is false and files exist
     let tmp_dir = std::env::temp_dir().join("srz_test_views_reuse");

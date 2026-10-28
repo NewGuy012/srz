@@ -124,6 +124,7 @@ pub fn render_html_document(title: &str, markdown: &str) -> String {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: https:;">
   <title>Summary: {escaped_title}</title>
   <style>
     :root {{
@@ -421,6 +422,7 @@ fn escape_html(text: &str) -> String {
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
             _ => out.push(ch),
         }
     }
@@ -429,7 +431,10 @@ fn escape_html(text: &str) -> String {
 
 /// Renders inline Markdown (`**bold**`, `*italic*`, `` `code` ``) after HTML-escaping.
 fn render_inline(text: &str) -> String {
-    let escaped = escape_html(text);
+    render_inline_escaped(&escape_html(text))
+}
+
+fn render_inline_escaped(escaped: &str) -> String {
     let bytes = escaped.as_bytes();
     let mut out = String::with_capacity(escaped.len() + 16);
     let mut i = 0;
@@ -451,7 +456,7 @@ fn render_inline(text: &str) -> String {
             && let Some(end) = escaped[i + 2..].find("**")
         {
             out.push_str("<strong>");
-            out.push_str(&render_inline(&escaped[i + 2..i + 2 + end]));
+            out.push_str(&render_inline_escaped(&escaped[i + 2..i + 2 + end]));
             out.push_str("</strong>");
             i += end + 4;
             continue;
@@ -559,6 +564,7 @@ pub fn render_index_html(stats: &LibraryStats, entries: &[HistoryEntry]) -> Stri
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
   <title>srz &bull; Summary Library</title>
   <style>
     :root {{
