@@ -89,6 +89,14 @@ srz index --open                        # Interactive HTML library dashboard
 srz history                             # View past summaries & token metrics
 ```
 
+### Self-Update & Maintenance
+
+```bash
+srz upgrade                             # Upgrade srz in-place to latest release
+srz upgrade --check                     # Check if an update is available
+srz upgrade --force                     # Force reinstall or overwrite existing binary
+```
+
 Run `srz --help` to see all available subcommands and flags.
 
 
@@ -115,8 +123,8 @@ Run `srz --help` to see all available subcommands and flags.
 ### Configuration & CLI Experience
 
 - **Config File & Profiles**: Save default preferences and switch between different models with ease.
+- **One-Command Upgrades**: Safe in-place binary upgrades with SHA256 integrity verification (`srz upgrade`).
 - **Health Checks & Diagnostics**: Verify backend connectivity and inspect available models with built-in tools.
-- **Automation & Scripting**: Export structured JSON or save output directly to files for automated workflows.
 
 
 ## Configuring Your LLM Backend

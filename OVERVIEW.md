@@ -134,6 +134,7 @@ graph LR
 | [`src/db.rs`](src/db.rs) | `db` | Embedded DuckDB engine with transactional writes, reading telemetry (`book`, `web`, `news`, `file`, `stdin`), and zero-copy snippet search. |
 | [`src/render.rs`](src/render.rs) | `render` | Markdown-to-HTML5 reader rendering (with CSP & HTML escaping), standalone library dashboard (`srz index`), and slugification. |
 | [`src/ui.rs`](src/ui.rs) | `ui` | Spinners (`indicatif`) and `LazyLock`-cached terminal detection (`is_terminal`) and `NO_COLOR`/`CLICOLOR` hygiene. |
+| [`src/upgrade.rs`](src/upgrade.rs) | `upgrade` | In-place self-update engine: platform detection, rate-limit-safe GitHub release queries, SHA256 verification, and atomic binary swapping (`self-replace`). |
 
 ---
 
@@ -159,6 +160,7 @@ graph LR
 - **Diagnostics & Model Discovery**: `srz doctor` checks LLM reachability/latency, DuckDB, and cache health; `srz models` lists loaded models on the backend.
 - **Telemetry & Stats**: `srz stats` (speeds, total tokens across books, web, news, files, and stdin) and `srz history` (past reads).
 - **Offline Search & Dashboard**: `srz find "keyword"` searches past summaries in DuckDB, and `srz index [--open]` opens the interactive library dashboard.
+- **Self-Update**: `srz upgrade [--check] [--force] [--dry-run] [--version <TAG>]` safely downloads, verifies, and updates `srz` in-place.
 - **Machine-Readable**: Add `--json` to any command for JSON stdout, or `-o summary.html` / `-o summary.md` to save directly to disk.
 - **Unix Pipeline Friendly**: Strict separation—summary on `stdout`, diagnostics on `stderr`. Pass `-q` / `--quiet` to mute all stderr notices.
 - **Shell Completions**: `srz completions zsh > ~/.zfunc/_srz` (supports bash, zsh, fish, powershell, elvish).
