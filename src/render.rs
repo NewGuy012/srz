@@ -471,6 +471,17 @@ fn render_inline_escaped(escaped: &str) -> String {
     out
 }
 
+/// Returns the display emoji icon for a summary target type.
+pub fn target_icon(target_type: &str) -> &'static str {
+    match target_type {
+        "book" => "📚",
+        "file" => "📄",
+        "stdin" => "⌨️",
+        "news" => "📰",
+        _ => "🌐",
+    }
+}
+
 /// Generates a standalone HTML5 dashboard index of all past summaries in the library.
 pub fn render_index_html(stats: &LibraryStats, entries: &[HistoryEntry]) -> String {
     let mut cards_html = String::new();
@@ -484,13 +495,7 @@ pub fn render_index_html(stats: &LibraryStats, entries: &[HistoryEntry]) -> Stri
         );
     } else {
         for entry in entries {
-            let icon = match entry.target_type.as_str() {
-                "book" => "📚",
-                "file" => "📄",
-                "stdin" => "⌨️",
-                "news" => "📰",
-                _ => "🌐",
-            };
+            let icon = target_icon(&entry.target_type);
             let slug = slugify(&entry.title);
             let author_line = if let Some(a) = &entry.author {
                 format!(r#"<div class="entry-author">by {}</div>"#, escape_html(a))

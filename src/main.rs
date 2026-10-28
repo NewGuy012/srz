@@ -144,28 +144,13 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         ResolvedAction::History { limit } => {
-            if let Some(db) = open_db_or_warn() {
-                handle_history(&db, limit, args.json)?;
-            } else {
-                Ui::error("DuckDB database unavailable.");
-            }
-            return Ok(());
+            return with_db(|db| handle_history(db, limit, args.json));
         }
         ResolvedAction::Stats => {
-            if let Some(db) = open_db_or_warn() {
-                handle_stats(&db, args.json)?;
-            } else {
-                Ui::error("DuckDB database unavailable.");
-            }
-            return Ok(());
+            return with_db(|db| handle_stats(db, args.json));
         }
         ResolvedAction::Find { query } => {
-            if let Some(db) = open_db_or_warn() {
-                handle_find(&db, query, &cache, args.json)?;
-            } else {
-                Ui::error("DuckDB database unavailable.");
-            }
-            return Ok(());
+            return with_db(|db| handle_find(db, query, &cache, args.json));
         }
         ResolvedAction::Models => {
             handle_models(&args, args.json).await?;
@@ -176,12 +161,7 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         ResolvedAction::Index => {
-            if let Some(db) = open_db_or_warn() {
-                handle_index(&db, &cache, args.open)?;
-            } else {
-                Ui::error("DuckDB database unavailable.");
-            }
-            return Ok(());
+            return with_db(|db| handle_index(db, &cache, args.open));
         }
         ResolvedAction::Completions { shell } => {
             clap_complete::generate(
@@ -199,13 +179,7 @@ async fn main() -> Result<()> {
         Ui::info("Cache bypassed (`--no-cache`). Forcing fresh fetch and generation.");
     }
 
-    let llm = match LlmClient::new(&args.base_url, &args.model, &args.api_key, args.max_tokens) {
-        Ok(client) => client.with_concurrency(args.concurrency),
-        Err(err) => {
-            Ui::error(&format!("Failed to initialize LLM client: {}", err));
-            std::process::exit(1);
-        }
-    };
+    let llm = init_llm_or_exit(&args).with_concurrency(args.concurrency);
 
     let scraper = match WebScraper::new() {
         Ok(s) => s,
@@ -217,7 +191,7 @@ async fn main() -> Result<()> {
 
     let summary_result = match action {
         ResolvedAction::Web { url } => handle_web(url, &scraper, &llm, &cache, &args).await,
-        ResolvedAction::File { path } => handle_file(&path, &scraper, &llm, &cache, &args).await,
+        ResolvedAction::File { path } => handle_file(&path, &scraper, &llm, &args).await,
         ResolvedAction::Stdin => handle_stdin(&scraper, &llm, &args).await,
         ResolvedAction::Book {
             title,
@@ -239,7 +213,7 @@ async fn main() -> Result<()> {
             topic,
             timeframe,
             limit,
-        } => handle_news(&topic, timeframe, limit, &scraper, &llm, &cache, &args).await,
+        } => handle_news(&topic, timeframe, limit, &scraper, &llm, &args).await,
         _ => unreachable!(),
     };
 
@@ -334,13 +308,22 @@ fn open_db_or_warn() -> Option<Database> {
     }
 }
 
-fn target_icon(target_type: &str) -> &'static str {
-    match target_type {
-        "book" => "📚",
-        "file" => "📄",
-        "stdin" => "⌨️",
-        "news" => "📰",
-        _ => "🌐",
+fn with_db(f: impl FnOnce(&Database) -> Result<()>) -> Result<()> {
+    if let Some(db) = open_db_or_warn() {
+        f(&db)?;
+    } else {
+        Ui::error("DuckDB database unavailable.");
+    }
+    Ok(())
+}
+
+fn init_llm_or_exit(args: &Cli) -> LlmClient {
+    match LlmClient::new(&args.base_url, &args.model, &args.api_key, args.max_tokens) {
+        Ok(c) => c,
+        Err(err) => {
+            Ui::error(&format!("Failed to initialize LLM client: {}", err));
+            std::process::exit(1);
+        }
     }
 }
 
@@ -357,7 +340,7 @@ fn handle_history(db: &Database, limit: usize, as_json: bool) -> Result<()> {
 
     Ui::header(&format!("Summarization History (last {} entries)", entries.len()));
     for entry in &entries {
-        let icon = target_icon(&entry.target_type);
+        let icon = render::target_icon(&entry.target_type);
         let author_str = entry
             .author
             .as_ref()
@@ -425,7 +408,7 @@ fn handle_find(db: &Database, query: &str, cache: &Cache, as_json: bool) -> Resu
 
     Ui::header(&format!("Search Results for \"{}\" ({} match(es))", query, results.len()));
     for (i, res) in results.iter().enumerate() {
-        let icon = target_icon(&res.target_type);
+        let icon = render::target_icon(&res.target_type);
         let author_str = res
             .author
             .as_ref()
@@ -562,13 +545,7 @@ fn handle_config(
 }
 
 async fn handle_models(args: &Cli, as_json: bool) -> Result<()> {
-    let llm = match LlmClient::new(&args.base_url, &args.model, &args.api_key, args.max_tokens) {
-        Ok(c) => c,
-        Err(err) => {
-            Ui::error(&format!("Failed to initialize LLM client: {}", err));
-            std::process::exit(1);
-        }
-    };
+    let llm = init_llm_or_exit(args);
 
     let pb = Ui::spinner("Querying LLM server for available models...");
     let models_result = llm.list_models().await;
@@ -773,7 +750,6 @@ async fn handle_file(
     path: &std::path::Path,
     scraper: &WebScraper,
     llm: &LlmClient,
-    _cache: &Cache,
     args: &Cli,
 ) -> Result<SummaryOutcome> {
     if !path.exists() {
@@ -789,22 +765,19 @@ async fn handle_file(
     } else {
         let raw = fs::read_to_string(path)
             .with_context(|| format!("Failed to read file: {:?}", path))?;
+        let fallback_title = || {
+            path.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Local File".to_string())
+        };
 
         if render::is_html_path(path) {
             let norm = scraper.normalize(&path.display().to_string(), &raw)?;
-            let t = norm.title.unwrap_or_else(|| {
-                path.file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "Local File".to_string())
-            });
+            let t = norm.title.unwrap_or_else(fallback_title);
             (norm.content, norm.word_count, t, None, "file")
         } else {
             let words = raw.split_whitespace().count();
-            let t = path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "Local File".to_string());
-            (raw, words, t, None, "file")
+            (raw, words, fallback_title(), None, "file")
         }
     };
 
@@ -857,14 +830,11 @@ async fn handle_stdin(
     }
 
     let is_html = raw.contains("<!DOCTYPE") || raw.contains("<html") || raw.contains("<body");
-    let (content, word_count, title) = if is_html {
-        if let Ok(norm) = scraper.normalize("stdin", &raw) {
-            let t = norm.title.unwrap_or_else(|| "Standard Input".to_string());
-            (norm.content, norm.word_count, t)
-        } else {
-            let words = raw.split_whitespace().count();
-            (raw, words, "Standard Input".to_string())
-        }
+    let (content, word_count, title) = if is_html
+        && let Ok(norm) = scraper.normalize("stdin", &raw)
+    {
+        let t = norm.title.unwrap_or_else(|| "Standard Input".to_string());
+        (norm.content, norm.word_count, t)
     } else {
         let words = raw.split_whitespace().count();
         (raw, words, "Standard Input".to_string())
@@ -968,7 +938,6 @@ async fn handle_news(
     limit: usize,
     scraper: &WebScraper,
     llm: &LlmClient,
-    _cache: &Cache,
     args: &Cli,
 ) -> Result<SummaryOutcome> {
     let news_client = srz::news::GoogleNewsClient::new()?;
