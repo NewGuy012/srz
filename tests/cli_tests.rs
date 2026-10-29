@@ -364,13 +364,7 @@ fn test_json_flag() {
 }
 
 #[test]
-fn test_yes_flag() {
-    let yes_cli = Cli::parse_from(["srz", "book", "The Hobbit", "-y"]);
-    assert!(yes_cli.yes);
-
-    let long_yes_cli = Cli::parse_from(["srz", "The Hobbit", "--yes"]);
-    assert!(long_yes_cli.yes);
-
+fn test_open_flag() {
     let open_cli = Cli::parse_from(["srz", "The Hobbit", "-b"]);
     assert!(open_cli.open);
 

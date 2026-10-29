@@ -26,7 +26,7 @@ flowchart TD
         YTFlow --> YTCaptions["Timed-Text JSON3 / XML Track Resolution"]
         BookFlow --> Meta["Open Library Metadata (Cached / 3s API)"]
         Meta --> MultiSearch["Concurrent Search: OpenSearch + Wiki + DDG"]
-        MultiSearch --> Scorer["PreparedQuery Scoring & Disambiguation (-y)"]
+        MultiSearch --> Scorer["PreparedQuery Scoring & Disambiguation"]
         Scorer --> RefScrape["Scrape Best Reference Page (Cached / Live)"]
 
         NewsFlow --> Feed["Google News RSS (when:1d/7d/30d)"]
@@ -89,7 +89,7 @@ sequenceDiagram
         CLI->>Cache: Check cached book metadata & search candidates
         CLI->>Search: Resolve metadata (Open Library) & concurrent candidates (if uncached)
         Search-->>CLI: Ranked candidates via PreparedQuery (The Hobbit #1, Score: 115)
-        opt Ambiguous Top Candidates (Interactive TTY & not -y)
+        opt Ambiguous Top Candidates (Interactive TTY)
             CLI->>User: Prompt reference selection [1-4, Enter for 1]
         end
         CLI->>Scraper: Fetch or cache canonical reference page (.mw-parser-output)

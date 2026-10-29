@@ -548,7 +548,6 @@ fn disambiguate_candidates_if_needed(
     args: &Cli,
 ) {
     if ordered_candidates.len() <= 1
-        || args.yes
         || args.quiet
         || args.json
         || !io::stdin().is_terminal()
