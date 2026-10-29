@@ -183,14 +183,64 @@ jobs:
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Update Homebrew formula
+      - name: Update Homebrew formula in tap
         if: steps.check-token.outputs.skip != 'true'
-        uses: mislav/bump-homebrew-formula-action@v3
-        with:
-          formula-name: srz
-          formula-path: Formula/srz.rb
-          homebrew-tap: NewGuy012/homebrew-tap
-          base-branch: main
-          download-url: https://github.com/NewGuy012/srz/releases/download/${{ github.ref_name }}/srz-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz
         env:
-          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Updating Homebrew tap for srz v${VERSION} (${GITHUB_REF_NAME})..."
+
+          # Wait / retry downloading release assets in case GitHub API has a replication delay
+          DOWNLOAD_OK=false
+          for i in {1..6}; do
+            if gh release download "${GITHUB_REF_NAME}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --pattern "srz-${GITHUB_REF_NAME}-aarch64-apple-darwin.tar.gz" \
+              --pattern "srz-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz"; then
+              DOWNLOAD_OK=true
+              break
+            fi
+            echo "Release assets not yet ready, waiting 5 seconds (attempt $i/6)..."
+            sleep 5
+          done
+
+          if [ "$DOWNLOAD_OK" != "true" ]; then
+            echo "::error::Could not download release archives for sha256 calculation."
+            exit 1
+          fi
+
+          SHA_ARM64=$(sha256sum "srz-${GITHUB_REF_NAME}-aarch64-apple-darwin.tar.gz" | awk '{print $1}')
+          SHA_LINUX=$(sha256sum "srz-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz" | awk '{print $1}')
+
+          echo "macOS aarch64 SHA256: ${SHA_ARM64}"
+          echo "Linux x86_64  SHA256: ${SHA_LINUX}"
+
+          # Clone tap repository (automatically checks out default branch: main or master)
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/NewGuy012/homebrew-tap.git" tap
+          cd tap
+
+          mkdir -p Formula
+
+          printf 'class Srz < Formula\n  desc "Fast, modular CLI to summarize webpages, documents, books, and live news using local LLMs"\n  homepage "https://github.com/NewGuy012/srz"\n  version "%s"\n\n  on_macos do\n    on_arm do\n      url "https://github.com/NewGuy012/srz/releases/download/v#{version}/srz-v#{version}-aarch64-apple-darwin.tar.gz"\n      sha256 "%s"\n    end\n  end\n\n  on_linux do\n    url "https://github.com/NewGuy012/srz/releases/download/v#{version}/srz-v#{version}-x86_64-unknown-linux-gnu.tar.gz"\n    sha256 "%s"\n  end\n\n  def install\n    bin.install "srz"\n  end\n\n  test do\n    assert_match "srz", shell_output("#{bin}/srz --version")\n  end\nend\n' "$VERSION" "$SHA_ARM64" "$SHA_LINUX" > Formula/srz.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          TARGET_BRANCH=$(git branch --show-current)
+          if [ -z "$TARGET_BRANCH" ]; then
+            TARGET_BRANCH="main"
+            git checkout -b main
+          fi
+
+          git add Formula/srz.rb
+          if git diff --staged --quiet; then
+            echo "Formula already up-to-date. No changes to commit."
+          else
+            git commit -m "Update srz formula to v${VERSION}"
+            git push origin "$TARGET_BRANCH"
+            echo "Successfully updated Formula/srz.rb to v${VERSION} on branch ${TARGET_BRANCH}!"
+          fi
+
+
