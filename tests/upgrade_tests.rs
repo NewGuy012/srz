@@ -24,6 +24,12 @@ fn test_detect_target_mappings() {
     assert_eq!(linux.format, ArchiveFormat::TarGz);
     assert_eq!(linux.binary_name, "srz");
 
+    // Linux aarch64
+    let linux_arm = detect_target_from("linux", "aarch64").expect("Valid target");
+    assert_eq!(linux_arm.target, "aarch64-unknown-linux-gnu");
+    assert_eq!(linux_arm.format, ArchiveFormat::TarGz);
+    assert_eq!(linux_arm.binary_name, "srz");
+
     // Windows x86_64
     let win = detect_target_from("windows", "x86_64").expect("Valid target");
     assert_eq!(win.target, "x86_64-pc-windows-msvc");

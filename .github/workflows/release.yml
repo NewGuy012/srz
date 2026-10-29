@@ -66,7 +66,10 @@ jobs:
             os: macos-latest
             archive: tar.gz
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-22.04
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
             archive: tar.gz
           - target: x86_64-pc-windows-msvc
             os: windows-latest
@@ -97,7 +100,7 @@ jobs:
           cache-targets: false
 
       - name: Install Linux build dependencies
-        if: matrix.os == 'ubuntu-latest'
+        if: startsWith(matrix.os, 'ubuntu')
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev build-essential cmake
@@ -197,6 +200,27 @@ jobs:
           sha256sum srz-*.tar.gz srz-*.zip > SHA256SUMS
           cat SHA256SUMS
 
+      - name: Extract Release Notes from CHANGELOG.md
+        id: changelog
+        run: |
+          VERSION="${{ needs.verify-version.outputs.version }}"
+          echo "Extracting release notes for ${VERSION} from docs/CHANGELOG.md..."
+          awk -v ver="${VERSION}" '
+            $0 ~ "^## " ver { found=1; next }
+            found && /^## / { exit }
+            found && /^---/ { exit }
+            found { print }
+          ' docs/CHANGELOG.md > dist/release_notes.md
+
+          if [ -s dist/release_notes.md ]; then
+            echo "has_notes=true" >> $GITHUB_OUTPUT
+            echo "Extracted release notes successfully:"
+            cat dist/release_notes.md
+          else
+            echo "has_notes=false" >> $GITHUB_OUTPUT
+            echo "No custom entry found in CHANGELOG.md for ${VERSION}. Falling back to GitHub auto-generated notes."
+          fi
+
       - name: Generate Artifact Attestations (SLSA Provenance)
         uses: actions/attest-build-provenance@v2
         with:
@@ -209,7 +233,8 @@ jobs:
         with:
           tag_name: ${{ needs.verify-version.outputs.version }}
           name: Release ${{ needs.verify-version.outputs.version }}
-          generate_release_notes: true
+          body_path: ${{ steps.changelog.outputs.has_notes == 'true' && 'dist/release_notes.md' || '' }}
+          generate_release_notes: ${{ steps.changelog.outputs.has_notes != 'true' }}
           files: |
             dist/srz-*.tar.gz
             dist/srz-*.zip
@@ -292,16 +317,18 @@ jobs:
           echo "Updating Homebrew tap for srz v${VERSION} (${TAG})..."
 
           # Read checksums directly from downloaded build artifacts (no polling/download loop)
-          SHA_ARM64=$(awk '{print $1}' dist/srz-${TAG}-aarch64-apple-darwin.tar.gz.sha256 | head -1)
-          SHA_LINUX=$(awk '{print $1}' dist/srz-${TAG}-x86_64-unknown-linux-gnu.tar.gz.sha256 | head -1)
+          SHA_ARM64_MAC=$(awk '{print $1}' dist/srz-${TAG}-aarch64-apple-darwin.tar.gz.sha256 | head -1)
+          SHA_X86_LINUX=$(awk '{print $1}' dist/srz-${TAG}-x86_64-unknown-linux-gnu.tar.gz.sha256 | head -1)
+          SHA_ARM_LINUX=$(awk '{print $1}' dist/srz-${TAG}-aarch64-unknown-linux-gnu.tar.gz.sha256 | head -1)
 
-          if [ -z "$SHA_ARM64" ] || [ -z "$SHA_LINUX" ]; then
+          if [ -z "$SHA_ARM64_MAC" ] || [ -z "$SHA_X86_LINUX" ]; then
             echo "::error::Could not extract sha256 checksums from local artifacts."
             exit 1
           fi
 
-          echo "macOS aarch64 SHA256: ${SHA_ARM64}"
-          echo "Linux x86_64  SHA256: ${SHA_LINUX}"
+          echo "macOS aarch64 SHA256: ${SHA_ARM64_MAC}"
+          echo "Linux x86_64  SHA256: ${SHA_X86_LINUX}"
+          echo "Linux aarch64 SHA256: ${SHA_ARM_LINUX}"
 
           # Clone tap repository
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/NewGuy012/homebrew-tap.git" tap
@@ -309,8 +336,8 @@ jobs:
 
           mkdir -p Formula
 
-          # Generate formula with automated shell completions
-          printf 'class Srz < Formula\n  desc "Fast, modular CLI to summarize webpages, documents, books, and live news using local LLMs"\n  homepage "https://github.com/NewGuy012/srz"\n  version "%s"\n\n  on_macos do\n    on_arm do\n      url "https://github.com/NewGuy012/srz/releases/download/v#{version}/srz-v#{version}-aarch64-apple-darwin.tar.gz"\n      sha256 "%s"\n    end\n  end\n\n  on_linux do\n    url "https://github.com/NewGuy012/srz/releases/download/v#{version}/srz-v#{version}-x86_64-unknown-linux-gnu.tar.gz"\n    sha256 "%s"\n  end\n\n  def install\n    bin.install "srz"\n    generate_completions_from_executable(bin/"srz", "completions")\n  end\n\n  test do\n    assert_match "srz", shell_output("#{bin}/srz --version")\n  end\nend\n' "$VERSION" "$SHA_ARM64" "$SHA_LINUX" > Formula/srz.rb
+          # Generate formula with automated shell completions and multi-arch Linux support
+          printf 'class Srz < Formula\n  desc "Fast, modular CLI to summarize webpages, documents, books, and live news using local LLMs"\n  homepage "https://github.com/NewGuy012/srz"\n  version "%s"\n\n  on_macos do\n    on_arm do\n      url "https://github.com/NewGuy012/srz/releases/download/v#{version}/srz-v#{version}-aarch64-apple-darwin.tar.gz"\n      sha256 "%s"\n    end\n  end\n\n  on_linux do\n    on_intel do\n      url "https://github.com/NewGuy012/srz/releases/download/v#{version}/srz-v#{version}-x86_64-unknown-linux-gnu.tar.gz"\n      sha256 "%s"\n    end\n    on_arm do\n      url "https://github.com/NewGuy012/srz/releases/download/v#{version}/srz-v#{version}-aarch64-unknown-linux-gnu.tar.gz"\n      sha256 "%s"\n    end\n  end\n\n  def install\n    bin.install "srz"\n    generate_completions_from_executable(bin/"srz", "completions")\n  end\n\n  test do\n    assert_match "srz", shell_output("#{bin}/srz --version")\n  end\nend\n' "$VERSION" "$SHA_ARM64_MAC" "$SHA_X86_LINUX" "${SHA_ARM_LINUX:-$SHA_X86_LINUX}" > Formula/srz.rb
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

@@ -58,6 +58,11 @@ pub fn detect_target_from(os: &str, arch: &str) -> Result<TargetInfo, String> {
             format: ArchiveFormat::TarGz,
             binary_name: "srz",
         }),
+        ("linux", "aarch64") => Ok(TargetInfo {
+            target: "aarch64-unknown-linux-gnu",
+            format: ArchiveFormat::TarGz,
+            binary_name: "srz",
+        }),
         ("windows", "x86_64") => Ok(TargetInfo {
             target: "x86_64-pc-windows-msvc",
             format: ArchiveFormat::Zip,

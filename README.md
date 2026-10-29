@@ -46,14 +46,20 @@ flowchart LR
     C --> H2
     C --> H3
     C --> H4
+
+    style Sources fill:transparent,stroke:transparent,stroke-width:0px
+    style Core fill:transparent,stroke:transparent,stroke-width:0px
+    style Highlights fill:transparent,stroke:transparent,stroke-width:0px
 ```
 
 - 🔒 **100% Local & Private**: Runs on your machine with complete privacy, zero subscriptions, and no API keys.
 - 🎯 **3 Summary Presets**: Tailor output with `concise` (default), `bullets`, and `detailed`.
 - ⚡ **Rich Terminal Paging**: Syntax-highlighted CLI output with automatic paging for long summaries.
-- 💬 **Interactive Grounded Q&A**: Ask questions grounded on any document or past read via `srz ask`.
+- 💬 **Interactive Grounded Q&A**: Ask questions grounded on any document or past read via `srz ask`, with persistent multi-turn chat sessions.
 - 🖥️ **Interactive TUI Dashboard**: Browse, search, filter, and copy past summaries with `srz browse`.
-- 🗄️ **Offline Searchable Library**: Automatically saves and indexes every summary in embedded DuckDB.
+- 🔍 **BM25 Full-Text Search**: Embedded DuckDB indexes every read with relevance-scored BM25 search via `srz find`.
+- 📊 **Reading Habits & Model Telemetry**: Track reading streaks, time saved, active days, and P50/P95 model generation throughput with `srz stats`.
+- 🗄️ **Consolidated Embedded Storage**: High-speed, atomic caching and analytics powered entirely by embedded DuckDB (`cache.duckdb` and `srz.duckdb`).
 - 📖 **Distraction-Free Reader Views**: Generates clean HTML and Markdown pages with dark mode support.
 
 
@@ -114,17 +120,21 @@ git diff | srz -                      # Unix stdin stream
 
 ### Ask & Chat
 ```bash
-srz ask "What are the main findings?" # Grounded Q&A based on latest read
+srz ask "What are the main findings?"        # Grounded Q&A based on latest read
 srz ask assets/document.pdf "Key takeaways?" # Grounded Q&A on a specific document
-srz ask -i                            # Interactive multi-turn chat REPL
+srz ask -i                                   # Interactive multi-turn chat REPL (persisted session)
+srz ask --chats                              # List saved multi-turn chat sessions
+srz ask --resume 1                           # Resume conversation from session 1
+srz ask --show-chat 1                        # Inspect full conversation transcript
+srz ask --delete-chat 1                      # Delete a saved chat session
 ```
 
 ### Library, Search & Telemetry
 ```bash
 srz browse                            # Interactive TUI dashboard (browse, search, copy)
-srz find "keyword"                    # Offline full-text search across past summaries
+srz find "keyword"                    # Offline BM25 relevance-ranked search across past summaries
 srz history                           # Recent reads, word counts, and generation speeds
-srz stats                             # Aggregate telemetry: words read, tokens generated
+srz stats                             # Habits (streak, time saved) & model telemetry (P50/P95)
 ```
 
 ### Cache & Storage Maintenance
@@ -143,10 +153,12 @@ Run `srz --help` to see all available subcommands and flags.
 ## Features
 
 - [**Universal Ingestion**](docs/OVERVIEW.md#6-key-cli-features--commands): Webpages, YouTube captions, PDFs, local text files, Unix pipes (`-`), book synopses, and live news.
-- [**Interactive Q&A (`srz ask`)**](docs/OVERVIEW.md#module-responsibilities): Ask questions or launch a multi-turn chat REPL grounded on any document or past read.
+- [**Interactive Q&A (`srz ask`)**](docs/OVERVIEW.md#module-responsibilities): Ask questions or launch an interactive multi-turn chat REPL grounded on any document or past read, with persistent DuckDB session storage (`--chats`, `--resume`).
 - [**TUI Dashboard (`srz browse`)**](docs/OVERVIEW.md#performance--memory-efficiency): Browse, search, filter, and copy past summaries in a split-pane terminal UI.
 - [**3 Summary Presets**](docs/OVERVIEW.md#6-key-cli-features--commands): Tailor summaries with `concise` (default), `bullets`, or `detailed`.
-- [**Offline Library & Search**](docs/OVERVIEW.md#3-storage--cache-architecture): Embedded DuckDB indexes every read for instant full-text search (`srz find`) and HTML dashboards (`srz index`).
+- [**Offline BM25 Library Search**](docs/OVERVIEW.md#3-storage--cache-architecture): Embedded DuckDB indexes every read with Robertson-Sparck Jones BM25 relevance ranking (`srz find`) and HTML dashboards (`srz index`).
+- [**Rich Habit & Model Telemetry**](docs/OVERVIEW.md#6-key-cli-features--commands): Track active reading days, reading streaks, estimated reading time saved, top domains, and P50/P95 token throughput percentiles (`srz stats`).
+- [**Consolidated DuckDB Cache**](docs/OVERVIEW.md#3-storage--cache-architecture): Scraped pages, search candidates, and generated summaries are consolidated into embedded DuckDB (`cache.duckdb`) with atomic writes and instant SQL TTL pruning.
 - [**Reader Views & Paging**](docs/OVERVIEW.md#module-responsibilities): Standalone dark-mode HTML/Markdown exports, plus automatic terminal paging (`less -RFX`).
 - [**Map-Reduce Chunking**](docs/OVERVIEW.md#performance--memory-efficiency): Splits and synthesizes long documents exceeding LLM context windows in parallel.
 - [**Private & Secure**](docs/OVERVIEW.md#security--privacy): 100% local inference, zero tracking, safe Rust, private file permissions (`0700`/`0600`), and SHA-256 verified binary updates.
@@ -224,7 +236,7 @@ See [`OVERVIEW.md`](docs/OVERVIEW.md) for detailed Mermaid architecture diagrams
 ## Running Tests & Static Analysis
 
 ```bash
-# Run full automated test suite (104 tests)
+# Run full automated test suite (111 tests)
 cargo test
 
 # Strict static analysis (warnings denied)
