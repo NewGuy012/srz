@@ -138,6 +138,7 @@ pub struct LibraryItem {
 
 impl LibraryItem {
     /// Returns true if this item's title, author, url, summary, or target type matches `query` (case-insensitively).
+    /// Optimized to check short metadata fields first and avoid heap allocations.
     pub fn matches_query(&self, query: &str) -> bool {
         let q = query.trim();
         if q.is_empty() {
@@ -145,6 +146,7 @@ impl LibraryItem {
         }
         if q.is_ascii() {
             crate::search::contains_ascii_case_insensitive(&self.title, q)
+                || crate::search::contains_ascii_case_insensitive(&self.target_type, q)
                 || self
                     .author
                     .as_deref()
@@ -154,20 +156,19 @@ impl LibraryItem {
                     .as_deref()
                     .is_some_and(|u| crate::search::contains_ascii_case_insensitive(u, q))
                 || crate::search::contains_ascii_case_insensitive(&self.summary, q)
-                || crate::search::contains_ascii_case_insensitive(&self.target_type, q)
         } else {
             let q_lower = q.to_lowercase();
-            self.title.to_lowercase().contains(&q_lower)
-                || self
-                    .author
-                    .as_ref()
-                    .is_some_and(|a| a.to_lowercase().contains(&q_lower))
-                || self
-                    .url
-                    .as_ref()
-                    .is_some_and(|u| u.to_lowercase().contains(&q_lower))
-                || self.summary.to_lowercase().contains(&q_lower)
-                || self.target_type.to_lowercase().contains(&q_lower)
+            let matches_field = |field: &str| -> bool {
+                if field.is_ascii() {
+                    false
+                } else {
+                    field.to_lowercase().contains(&q_lower)
+                }
+            };
+
+            matches_field(&self.title)
+                || self.author.as_deref().is_some_and(matches_field)
+                || matches_field(&self.summary)
         }
     }
 }

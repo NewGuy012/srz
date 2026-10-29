@@ -358,6 +358,28 @@ fn test_library_item_matches_query() {
     // Non-matches
     assert!(!item.matches_query("sandworms"));
     assert!(!item.matches_query("cyberpunk"));
+
+    // Non-ASCII queries
+    let unicode_record = NewSummaryRecord {
+        target_type: "book",
+        title: "Les Misérables",
+        author: Some("Victor Hugo"),
+        url: None,
+        style: "concise",
+        model: "gemma-4",
+        word_count: 800,
+        prompt_tokens: None,
+        completion_tokens: None,
+        duration_ms: 100,
+        tokens_per_second: None,
+        summary: "Jean Valjean and Cosette in 19th-century France.",
+    };
+    db.record_summary(&unicode_record).unwrap();
+    let all_items = db.get_all_library_items().unwrap();
+    let unicode_item = all_items.iter().find(|i| i.title == "Les Misérables").unwrap();
+    assert!(unicode_item.matches_query("Misérables"));
+    assert!(unicode_item.matches_query("misérables"));
+    assert!(!unicode_item.matches_query("München"));
 }
 
 #[test]
