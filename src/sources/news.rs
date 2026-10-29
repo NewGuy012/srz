@@ -80,7 +80,7 @@ impl GoogleNewsClient {
         let xml = crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES).await?;
         let doc = Html::parse_document(&xml);
 
-        let mut items = Vec::new();
+        let mut items: Vec<NewsArticleItem> = Vec::new();
         for item_elem in doc.select(&ITEM_SEL).take(limit) {
             let title = item_elem
                 .select(&TITLE_SEL)
@@ -258,4 +258,62 @@ pub fn parse_batchexecute_destination_url(text: &str) -> Option<String> {
     let json_str = parsed.pointer("/0/2")?.as_str()?;
     let inner_json: serde_json::Value = serde_json::from_str(json_str).ok()?;
     inner_json.pointer("/1")?.as_str().map(String::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_google_news_rss_xml() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Google News</title>
+    <item>
+      <title>Pens Points: Penguins give updates on Kindel, Rust - PensBurgh</title>
+      <link>https://news.google.com/rss/articles/CBMi12345?oc=5</link>
+      <pubDate>Fri, 23 Oct 2026 10:00:00 GMT</pubDate>
+      <source url="https://www.pensburgh.com">PensBurgh</source>
+    </item>
+  </channel>
+</rss>"#;
+        let doc = Html::parse_document(xml);
+        let _items: Vec<NewsArticleItem> = Vec::new();
+        for item_elem in doc.select(&ITEM_SEL).take(5) {
+            for child in item_elem.children() {
+                if let Some(elem) = child.value().as_element() {
+                    println!("CHILD ELEMENT: <{}>", elem.name());
+                } else if let Some(txt) = child.value().as_text() {
+                    println!("CHILD TEXT: '{}'", txt.trim());
+                }
+            }
+
+            let title = item_elem
+                .select(&TITLE_SEL)
+                .next()
+                .map(|t| t.text().collect::<String>().trim().to_string())
+                .unwrap_or_default();
+
+            let link = item_elem
+                .select(&LINK_SEL)
+                .next()
+                .map(|l| l.text().collect::<String>().trim().to_string())
+                .unwrap_or_default();
+
+            let pub_date = item_elem
+                .select(&PUBDATE_SEL)
+                .next()
+                .map(|p| p.text().collect::<String>().trim().to_string())
+                .filter(|s| !s.is_empty());
+
+            let source_name = item_elem
+                .select(&SOURCE_SEL)
+                .next()
+                .map(|s| s.text().collect::<String>().trim().to_string())
+                .filter(|s| !s.is_empty());
+
+            println!("FOUND title='{}', link='{}', pub_date={:?}, source_name={:?}", title, link, pub_date, source_name);
+        }
+    }
 }

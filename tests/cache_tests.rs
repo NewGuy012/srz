@@ -189,3 +189,156 @@ fn test_write_private_file_permissions() {
 
     let _ = fs::remove_dir_all(dir);
 }
+
+#[test]
+fn test_parse_duration_and_bytes() {
+    use srz::cache::{parse_bytes, parse_duration};
+    use std::time::Duration;
+
+    assert_eq!(parse_duration("60s").unwrap(), Duration::from_secs(60));
+    assert_eq!(parse_duration("30m").unwrap(), Duration::from_secs(1800));
+    assert_eq!(parse_duration("24h").unwrap(), Duration::from_secs(86400));
+    assert_eq!(parse_duration("7d").unwrap(), Duration::from_secs(7 * 86400));
+    assert_eq!(parse_duration("2w").unwrap(), Duration::from_secs(14 * 86400));
+    assert_eq!(parse_duration("5").unwrap(), Duration::from_secs(5 * 86400));
+    assert!(parse_duration("invalid").is_err());
+
+    assert_eq!(parse_bytes("500b").unwrap(), 500);
+    assert_eq!(parse_bytes("10kb").unwrap(), 10 * 1024);
+    assert_eq!(parse_bytes("500MB").unwrap(), 500 * 1024 * 1024);
+    assert_eq!(parse_bytes("1GB").unwrap(), 1024 * 1024 * 1024);
+    assert_eq!(parse_bytes("1048576").unwrap(), 1048576);
+    assert!(parse_bytes("notabytes").is_err());
+}
+
+#[test]
+fn test_cache_ttl_expiration() {
+    use std::thread;
+    use std::time::Duration;
+
+    let dir = temp_test_dir("ttl");
+    let mut cache = Cache::with_dir(dir.clone(), true);
+    cache.policy_mut().pages_ttl = Duration::from_millis(40);
+
+    let page = ScrapedPage {
+        url: "https://expiring.com".to_string(),
+        title: Some("Expiring".to_string()),
+        content: "Temporary content".to_string(),
+        word_count: 2,
+    };
+    cache.set_page("https://expiring.com", &page);
+
+    // Immediate read should hit
+    assert!(cache.get_page("https://expiring.com").is_some());
+
+    // Wait past expiration
+    thread::sleep(Duration::from_millis(60));
+
+    // Entry should have expired and returned None
+    assert!(cache.get_page("https://expiring.com").is_none());
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn test_cache_prune_by_age() {
+    use srz::cache::{CacheNamespace, PruneOptions};
+    use std::thread;
+    use std::time::Duration;
+
+    let dir = temp_test_dir("prune_age");
+    let cache = Cache::with_dir(dir.clone(), true);
+
+    let page = ScrapedPage {
+        url: "https://prune-test.com".to_string(),
+        title: Some("Prune Test".to_string()),
+        content: "To be pruned".to_string(),
+        word_count: 3,
+    };
+    cache.set_page("https://prune-test.com", &page);
+    assert_eq!(cache.stats().pages, 1);
+
+    thread::sleep(Duration::from_millis(40));
+
+    // Pruning with older_than 20ms should prune the entry
+    let stats = cache
+        .prune(PruneOptions {
+            older_than: Some(Duration::from_millis(20)),
+            max_bytes: None,
+            namespace: Some(CacheNamespace::Pages),
+        })
+        .unwrap();
+
+    assert_eq!(stats.files_removed, 1);
+    assert!(stats.bytes_reclaimed > 0);
+    assert_eq!(cache.stats().pages, 0);
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn test_cache_prune_by_max_size_lru() {
+    use srz::cache::PruneOptions;
+    use std::thread;
+    use std::time::Duration;
+
+    let dir = temp_test_dir("prune_size");
+    let cache = Cache::with_dir(dir.clone(), true);
+
+    for i in 0..5 {
+        let page = ScrapedPage {
+            url: format!("https://example.com/{}", i),
+            title: Some(format!("Page {}", i)),
+            content: "A".repeat(1000),
+            word_count: 100,
+        };
+        cache.set_page(&format!("https://example.com/{}", i), &page);
+        thread::sleep(Duration::from_millis(15));
+    }
+
+    assert_eq!(cache.stats().pages, 5);
+    let original_bytes = cache.stats().total_bytes;
+
+    // Prune so total cache doesn't exceed 2500 bytes (should evict oldest)
+    let prune_stats = cache
+        .prune(PruneOptions {
+            older_than: None,
+            max_bytes: Some(2500),
+            namespace: None,
+        })
+        .unwrap();
+
+    assert!(prune_stats.files_removed > 0);
+    assert!(cache.stats().total_bytes <= 2500);
+    assert!(cache.stats().total_bytes < original_bytes);
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn test_cache_opportunistic_auto_prune() {
+    use std::time::Duration;
+
+    let dir = temp_test_dir("auto_prune");
+    let mut cache = Cache::with_dir(dir.clone(), true);
+    cache.policy_mut().auto_prune_interval = Duration::from_millis(10);
+
+    let page = ScrapedPage {
+        url: "https://auto.example.com".to_string(),
+        title: Some("Auto".to_string()),
+        content: "Auto prune content".to_string(),
+        word_count: 3,
+    };
+    cache.set_page("https://auto.example.com", &page);
+
+    // First auto-prune creates marker file
+    let stats = cache.maybe_auto_prune();
+    assert!(stats.is_some());
+    assert!(dir.join(".last_prune").exists());
+
+    // Immediate second call should skip because interval hasn't elapsed
+    let skipped = cache.maybe_auto_prune();
+    assert!(skipped.is_none());
+
+    let _ = fs::remove_dir_all(dir);
+}
