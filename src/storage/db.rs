@@ -443,13 +443,18 @@ fn extract_snippet(text: &str, query: &str) -> String {
 
     let mut out = String::with_capacity(prefix.len() + slice.len() + suffix.len());
     out.push_str(prefix);
-    for ch in slice.chars() {
-        if ch == '\n' || ch == '\r' {
-            out.push(' ');
-        } else {
-            out.push(ch);
+    let start_idx = out.len();
+    out.push_str(slice);
+    out.push_str(suffix);
+
+    // Replacing single-byte ASCII \n and \r with ASCII ' ' preserves valid UTF-8
+    // while avoiding char-by-char iterator allocations
+    unsafe {
+        for b in out.as_bytes_mut()[start_idx..start_idx + slice.len()].iter_mut() {
+            if *b == b'\n' || *b == b'\r' {
+                *b = b' ';
+            }
         }
     }
-    out.push_str(suffix);
     out
 }

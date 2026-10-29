@@ -27,6 +27,7 @@ enum FocusPane {
 
 struct AppState {
     items: Vec<LibraryItem>,
+    search_blobs: Vec<String>,
     filtered_indices: Vec<usize>,
     list_state: ListState,
     scroll_offset: u16,
@@ -38,14 +39,28 @@ struct AppState {
 }
 
 impl AppState {
+    fn build_search_blob(item: &LibraryItem) -> String {
+        format!(
+            "{} {} {} {} {}",
+            item.title,
+            item.author.as_deref().unwrap_or(""),
+            item.url.as_deref().unwrap_or(""),
+            item.summary,
+            item.target_type
+        )
+        .to_lowercase()
+    }
+
     fn new(items: Vec<LibraryItem>, views_dir: std::path::PathBuf) -> Self {
         let indices: Vec<usize> = (0..items.len()).collect();
+        let search_blobs = items.iter().map(Self::build_search_blob).collect();
         let mut list_state = ListState::default();
         if !indices.is_empty() {
             list_state.select(Some(0));
         }
         Self {
             items,
+            search_blobs,
             filtered_indices: indices,
             list_state,
             scroll_offset: 0,
@@ -63,24 +78,10 @@ impl AppState {
             self.filtered_indices = (0..self.items.len()).collect();
         } else {
             self.filtered_indices = self
-                .items
+                .search_blobs
                 .iter()
                 .enumerate()
-                .filter(|(_, item)| {
-                    item.title.to_lowercase().contains(&q)
-                        || item
-                            .author
-                            .as_ref()
-                            .map(|a| a.to_lowercase().contains(&q))
-                            .unwrap_or(false)
-                        || item
-                            .url
-                            .as_ref()
-                            .map(|u| u.to_lowercase().contains(&q))
-                            .unwrap_or(false)
-                        || item.summary.to_lowercase().contains(&q)
-                        || item.target_type.to_lowercase().contains(&q)
-                })
+                .filter(|(_, blob)| blob.contains(&q))
                 .map(|(i, _)| i)
                 .collect();
         }
@@ -286,7 +287,10 @@ fn run_loop(
                     KeyCode::Char('d') => {
                         if let Some(item) = state.selected_item().cloned() {
                             if db.delete_library_item(item.id).is_ok() {
-                                state.items.retain(|it| it.id != item.id);
+                                if let Some(pos) = state.items.iter().position(|it| it.id == item.id) {
+                                    state.items.remove(pos);
+                                    state.search_blobs.remove(pos);
+                                }
                                 state.apply_filter();
                                 state.set_status(format!("✓ Deleted '{}'", item.title));
                             } else {
