@@ -177,31 +177,45 @@ src/
 
 ## 5. Performance, Security & Architectural Optimizations
 
-- **Deferred DuckDB Initialization & View Reuse**: DuckDB (`srz.duckdb`) is opened lazily only when recording a newly generated summary or running `history`, `stats`, `find`, `index`, `browse`, `doctor`, or `cache clean`. Cache hits and `srz completions` execute with zero database initialization or view-file re-rendering overhead.
-- **Zero-Copy SSE Streaming (`SseStreamState`)**: SSE chunks deserialize into borrowed `Cow<'a, str>` slices (`#[serde(borrow)]`), drain network buffers once per chunk via a read cursor, batch `stdout` flushes per network read, and throttle spinner updates.
-- **Single-Client Search & Metadata Caching**: Book resolution caches Open Library metadata on disk, reuses a single `BookSearcher` HTTP connection pool across metadata and candidate queries, and hoists query normalization (`PreparedQuery`) with zero-allocation ASCII substring matching.
-- **MediaWiki-Aware, Footnote-Free Scraping**: Prioritizes `.mw-parser-output` and `#mw-content-text` selectors and configures `html2text` without hyperlink footnote tables or artificial 100-column line wraps, preserving clean paragraph structure and saving prompt tokens.
-- **Defense-in-Depth Security**: Enforces a 10 MB cap on scraped HTTP bodies (`MAX_SCRAPE_BYTES`), isolates untrusted source text inside XML tags with explicit system-role boundaries, embeds strict `Content-Security-Policy` headers in generated HTML views, and sets `0700`/`0600` owner-only permissions on local cache, config, and database files.
-- **Transactional Telemetry & Release Hardening**: Dual `history` + `library` inserts execute in a single atomic DuckDB transaction, parallel map-reduce runs aggregate token counts and durations across all chunks, and release builds enable thin LTO, single codegen-unit, symbol stripping, and integer overflow checks.
+`srz` is engineered for speed, low memory consumption, and local data privacy:
+
+### Performance & Memory Efficiency
+- **Lazy Database Initialization**: DuckDB (`srz.duckdb`) is initialized only when recording a new summary or running analytics. Cache hits and shell completions launch instantly with zero database overhead.
+- **Zero-Copy Streaming**: SSE chunks deserialize directly from network byte buffers into borrowed string slices (`Cow<str>`), batching terminal flushes per packet to minimize heap allocations.
+- **HTTP Connection Pool Sharing**: A single HTTP client connection pool is shared across Open Library metadata queries, DuckDuckGo candidate searches, and webpage scraping, reusing active TLS/HTTP2 keep-alive connections.
+- **Parallel Map-Reduce**: Large documents (> 12,000 words) are split along paragraph boundaries and processed concurrently (`--concurrency`), aggregating token metrics across chunks.
+- **Single-Pass Output Streaming**: Markdown-to-HTML conversion and HTML entity escaping stream directly into a pre-allocated output buffer without allocating intermediate strings.
+
+### Security & Privacy
+- **Strict Local Isolation**: Cache files, configuration, and database files are created with owner-only Unix permissions (`0700` directories, `0600` files).
+- **Prompt Injection Defense**: Untrusted source text is enclosed inside tagged XML blocks within the LLM prompt, separating content from system instructions.
+- **Bounded Resource Limits**: Enforces strict safety limits on network downloads (10 MB), local files (20 MB), and standard input streams (10 MB) to prevent memory exhaustion.
+- **Content Security Policy (CSP)**: Generated HTML reader views include strict CSP headers blocking external network requests and inline script execution.
+- **Verified Upgrades**: The `srz upgrade` command enforces SHA256 checksum verification and atomic file replacement before swapping binaries.
 
 
-## 6. Key CLI Features & Flags
+## 6. Key CLI Features & Commands
 
-- **Universal Input**: `srz <URL>`, `srz <YOUTUBE_URL>`, `srz <BOOK>`, `srz <FILE>` (`.pdf`, `.html`, `.md`, `.txt`), `cat ... | srz -`, or `srz news <TOPIC>` (with auto-detection for `"current ... news"`).
-- **Native Pure-Rust PDF Ingestion**: Zero-dependency PDF extraction (`srz "document.pdf"` or web PDF URLs), including trailer metadata parsing, hyphen rejoining, and scanned-document detection.
-- **YouTube Caption Ingestion**: Direct extraction of timed-text captions and transcripts into timestamped chapter summaries (`srz "https://youtube.com/watch?v=..."`).
-- **Interactive Grounded Q&A**: `srz ask [TARGET] [QUESTION]` answers questions grounded on source documents or past reads, with multi-turn chat via `-i` / `--interactive`.
-- **Interactive TUI Library Explorer**: `srz browse` (or `srz tui`) opens a split-view terminal reader to browse, search, copy (`y`), and open summaries.
-- **Rich Terminal Markdown & Paging**: Formats terminal markdown with colors and auto-pages long output via `$PAGER` / `less -RFX` (`--plain`, `--paging auto|always|never`, `--no-pager`).
-- **8 Summary Styles**: `--style` supports `concise`, `detailed`, `bullets`, `executive`, `tldr`, `critique`, `eli5`, and `flashcards`.
-- **Profiles & Config Management**: `srz config init|show|path` and `--profile <NAME>` to switch between local and cloud LLM backends.
-- **Parallel Map-Reduce**: `--concurrency <N>` controls parallel chunk summarization for documents exceeding 12,000 words.
-- **Timeframe Filtering**: `--timeframe` / `-t` (`day`, `week`, `month`, `all`) and `--limit` / `-l` for news digests.
-- **Interactive or Automated Disambiguation**: Prompts when book references have close scores, or pass `-y` / `--yes` to auto-select the top candidate.
-- **Diagnostics & Model Discovery**: `srz doctor` checks LLM reachability/latency, DuckDB, and cache health; `srz models` lists loaded models on the backend.
-- **Telemetry & Stats**: `srz stats` (speeds, total tokens across books, web, news, videos, files, and stdin) and `srz history` (past reads).
-- **Offline Search & Dashboard**: `srz find "keyword"` searches past summaries in DuckDB, and `srz index [--open]` opens the interactive library dashboard.
-- **Self-Update**: `srz upgrade [--check] [--force] [--dry-run] [--version <TAG>]` safely downloads, verifies, and updates `srz` in-place.
-- **Machine-Readable**: Add `--json` to any command for JSON stdout, or `-o summary.html` / `-o summary.md` to save directly to disk.
-- **Unix Pipeline Friendly**: Strict separation—summary on `stdout`, diagnostics on `stderr`. Pass `-q` / `--quiet` to mute all stderr notices.
-- **Shell Completions**: `srz completions zsh > ~/.zfunc/_srz` (supports bash, zsh, fish, powershell, elvish).
+| Category | Command / Flag | Description |
+| :--- | :--- | :--- |
+| **Ingestion** | `srz <URL>` | Summarizes articles, blogs, documentation, or online PDFs. |
+| | `srz <YOUTUBE_URL>` | Extracts timed-text transcripts and chapters from YouTube videos. |
+| | `srz "Book Title"` | Resolves synopses from Wikipedia and Open Library by title alone. |
+| | `srz <FILE>` | Ingests local `.pdf`, `.html`, `.md`, or `.txt` documents. |
+| | `cat ... \| srz -` | Reads piped command outputs, logs, or `git diff` streams. |
+| | `srz news "topic" [-t week]` | Aggregates and summarizes top stories from Google News RSS. |
+| **Styling & Output** | `--style <PRESET>` | 8 summary formats: `concise`, `detailed`, `bullets`, `executive`, `tldr`, `critique`, `eli5`, `flashcards`. |
+| | `--open` | Opens the summary in a distraction-free HTML reader with light/dark mode. |
+| | `--plain` | Outputs raw Markdown without terminal colors or automatic paging. |
+| | `-o <FILE.html\|md>` | Saves the rendered output directly to an HTML or Markdown file. |
+| | `--json` | Emits machine-readable JSON on `stdout` for script integration. |
+| **Interactive Tools** | `srz ask [Q]` | Grounded Q&A against full documents or your latest read (`-i` for multi-turn chat). |
+| | `srz browse` | Interactive TUI dashboard (`[j/k]` navigate, `[/]` filter, `[y]` copy, `[Enter]` open). |
+| **Library & History** | `srz find "keyword"` | Offline full-text search across all past summaries in DuckDB. |
+| | `srz history` | Displays recent reads, word counts, model usage, and generation speeds. |
+| | `srz stats` | Telemetry overview: total words read, tokens generated, and throughput. |
+| | `srz index [--open]` | Generates and opens an interactive HTML library dashboard. |
+| **System & Config** | `--profile <NAME>` | Switches LLM backends defined in `~/.config/srz/config.toml`. |
+| | `srz doctor` | Tests backend reachability, latency, cache health, and database integrity. |
+| | `srz upgrade` | Safe, in-place binary self-updater with SHA256 integrity verification. |
+| | `srz completions <SHELL>` | Generates autocomplete scripts for bash, zsh, fish, powershell, and elvish. |
