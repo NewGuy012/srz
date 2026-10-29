@@ -16,6 +16,40 @@
 
 ## Highlights
 
+```mermaid
+%%{init: {"flowchart": {"minNodeWidth": 210, "minNodeHeight": 54}}}%%
+flowchart LR
+    subgraph Sources["Input Sources"]
+        S1["🌐 Web & YouTube URLs\nArticles & Captions"]
+        S2["📄 PDFs & Documents\nFiles & Stdin Streams"]
+        S3["📚 Books & News Feeds\nSynopses & Live RSS"]
+    end
+
+    subgraph Core["srz Core (100% Private)"]
+        E1["⚡ Ingest Pipeline\nMap-Reduce Chunking"]
+        E2["🔒 100% Local Inference\nOffline LLM Engine"]
+        E1 --> E2
+    end
+
+    subgraph Highlights["Key Highlights"]
+        H1["⚡ Rich Terminal Paging\nSyntax-Colored Output"]
+        H2["💬 Grounded Q&A Chat\nInteractive srz ask"]
+        H3["🖥️ TUI Dashboard View\nRatatui srz browse"]
+        H4["🗄️ Searchable Library\nEmbedded DuckDB DB"]
+        H5["📖 Clean Reader Views\nDark-Mode HTML & MD"]
+    end
+
+    S1 --> E1
+    S2 --> E1
+    S3 --> E1
+
+    E2 --> H1
+    E2 --> H2
+    E2 --> H3
+    E2 --> H4
+    E2 --> H5
+```
+
 - 🔒 **100% Local & Private**: Runs on your machine with complete privacy, zero subscriptions, and no API keys.
 - 💬 **Interactive Grounded Q&A**: Ask questions grounded on any document via `srz ask`.
 - 🖥️ **Interactive TUI Dashboard**: Browse, search, filter, and copy past summaries with `srz browse`.
