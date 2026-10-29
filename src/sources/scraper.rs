@@ -20,7 +20,6 @@ static MAIN_SELECTORS: LazyLock<Vec<Selector>> = LazyLock::new(|| {
         ".post-content",
         ".article-content",
         ".entry-content",
-        "body",
     ]
     .into_iter()
     .filter_map(|s| Selector::parse(s).ok())

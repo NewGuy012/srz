@@ -137,13 +137,13 @@ impl GoogleNewsClient {
             );
         }
 
-        let mut handles = Vec::with_capacity(feed_items.len());
+        let mut join_set = tokio::task::JoinSet::new();
 
         // Resolve destination URLs and scrape articles concurrently
         for item in feed_items {
             let client = self.clone();
             let scraper_cloned = scraper.clone();
-            handles.push(tokio::spawn(async move {
+            join_set.spawn(async move {
                 let direct_url = match client.resolve_article_url(&item.google_link).await {
                     Some(u) => u,
                     None => item.google_link.clone(),
@@ -164,14 +164,15 @@ impl GoogleNewsClient {
                 } else {
                     None
                 }
-            }));
+            });
         }
 
         let mut sources = Vec::new();
-        for handle in handles {
-            if let Ok(Some(source)) = handle.await {
+        while let Some(res) = join_set.join_next().await {
+            if let Ok(Some(source)) = res {
                 sources.push(source);
                 if sources.len() >= limit {
+                    join_set.abort_all();
                     break;
                 }
             }
