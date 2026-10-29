@@ -131,6 +131,16 @@ srz history                           # Recent reads, word counts, and generatio
 srz stats                             # Aggregate telemetry: words read, tokens generated
 ```
 
+### Cache & Storage Maintenance
+```bash
+srz cache size                        # Total disk usage across pages, search, summaries, and views
+srz cache prune --older-than 14d      # Prune entries older than 14 days (or auto-pruned daily)
+srz cache prune --max-size 500MB      # LRU eviction to stay within storage budget
+srz cache clean                       # Safe cleanup of cache files (preserves DuckDB database)
+srz cache clean --reset-db            # Full reset including DuckDB history tables
+srz doctor                            # Diagnose LLM backend, database, and cache retention
+```
+
 Run `srz --help` to see all available subcommands and flags.
 
 
@@ -187,6 +197,14 @@ Run `srz config init` to generate a starter config, then configure named profile
 base_url = "http://localhost:9931/v1"
 model = "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
 
+# Storage limits and retention policies
+[cache]
+max_size_mb = 500         # Disk budget (LRU eviction past threshold)
+pages_ttl_days = 7        # Scraped web content & news TTL
+search_ttl_days = 14      # Book metadata & search candidates TTL
+summaries_ttl_days = 90   # Generated LLM outputs TTL
+auto_prune = true         # Opportunistic 24h background pruning
+
 # Cloud profile (e.g. OpenAI or Anthropic)
 [profiles.openai]
 base_url = "https://api.openai.com/v1"
@@ -210,7 +228,7 @@ See [`OVERVIEW.md`](OVERVIEW.md) for detailed Mermaid architecture diagrams and 
 ## Running Tests & Static Analysis
 
 ```bash
-# Run full automated test suite (79 tests)
+# Run full automated test suite (86 tests)
 cargo test
 
 # Strict static analysis (warnings denied)

@@ -109,24 +109,36 @@ sequenceDiagram
 
 ## 3. Storage & Cache Architecture
 
-All state is isolated under `~/.cache/srz/` (or `$XDG_CACHE_HOME/srz/`), unified via `Cache::default_cache_dir()`, enforced with `0700`/`0600` owner-only Unix permissions, completely bypassable via `--no-cache`, and resettable via `srz cache clean`:
+All state is isolated under `~/.cache/srz/` (or `$XDG_CACHE_HOME/srz/`), unified via `Cache::default_cache_dir()`, enforced with `0700`/`0600` owner-only Unix permissions, completely bypassable via `--no-cache`, and safely maintainable via `srz cache`:
 
 ```mermaid
 graph LR
     subgraph Root["~/.cache/srz/ (0700)"]
-        subgraph Namespaces["JSON Cache & View Directories"]
-            P["pages/"] --- P_desc["Scraped webpage DOM & normalized text"]
-            S["search/"] --- S_desc["Open Library metadata & scored search candidates"]
-            M["summaries/"] --- M_desc["Completed LLM summaries"]
-            V["views/"] --- V_desc["Rendered HTML5 reader, .md files & index.html dashboard"]
+        subgraph Namespaces["JSON Cache & View Directories (LRU & TTL Enforced)"]
+            P["pages/"] --- P_desc["Scraped webpage DOM & text (7d TTL, 30d YouTube/PDF)"]
+            S["search/"] --- S_desc["Open Library metadata & search candidates (14d TTL)"]
+            M["summaries/"] --- M_desc["Completed LLM summaries (90d TTL / persistent)"]
+            V["views/"] --- V_desc["Rendered HTML5 reader, .md files & index.html (14d TTL)"]
         end
-        subgraph DB["Analytics Database (Lazy-Opened)"]
+        subgraph DB["Analytics & Library Database (Preserved across cache clean)"]
             D["srz.duckdb"]
             D --> T1["Table: history (book 📚, web 🌐, youtube 📺, news 📰, file 📄, stdin ⌨️ telemetry)"]
             D --> T2["Table: library (Synchronized IDs & offline full-text search for srz find)"]
         end
     end
 ```
+
+### Retention Policies & Lifecycle Schedule
+
+| Namespace / Asset | Retention Policy (TTL) | Eviction Trigger | Notes |
+| :--- | :--- | :--- | :--- |
+| **`pages/` (Web & News)** | **7 days** | TTL expiration / LRU | Prevents stale article caching; YouTube & PDFs retain for 30 days. |
+| **`search/`** | **14 days** | TTL expiration / LRU | Periodically refreshes Open Library metadata and DDG candidates. |
+| **`summaries/`** | **90 days** | LRU past max budget | Deterministic for `(target, model, style)`. Longest TTL to save inference tokens. |
+| **`views/`** | **14 days** | TTL expiration / LRU | Ephemeral reader views; lazily regenerated via `srz browse` or `srz index`. |
+| **Total Cache Budget** | **500 MB** (configurable) | LRU eviction by `mtime` | Evicts oldest entries across namespaces down to 85% headroom. |
+| **Auto-Prune Schedule** | **Opportunistic (24h)** | Daily CLI invocation check | Throttled via `~/.cache/srz/.last_prune` (sub-millisecond overhead). |
+| **DuckDB Database** | **Permanent (Not a cache)** | Explicit `--reset-db` only | `srz cache clean` preserves reading history unless `--reset-db` is supplied. |
 
 
 ## 4. Component Directory & Subsystems
@@ -230,7 +242,7 @@ src/
 | | `srz index [--open]` | Generates and opens an interactive HTML library dashboard. |
 | **System & Config** | `--profile <NAME>` | Switches LLM backends defined in `~/.config/srz/config.toml`. |
 | | `srz config <init\|show\|path>` | Manages and inspects the local configuration file. |
-| | `srz cache <clean\|size\|dir>` | Manages the local disk cache directory and entry storage. |
+| | `srz cache <dir\|size\|clean\|prune>` | Cache inspection, TTL/LRU pruning (`--older-than`, `--max-size`), and safe clean (`--reset-db`). |
 | | `srz models` | Lists available models reported by the local LLM backend. |
 | | `srz doctor` | Tests backend reachability, latency, cache health, and database integrity. |
 | | `srz upgrade [--check\|--force]` | Safe, in-place binary self-updater with SHA-256 integrity verification. |
