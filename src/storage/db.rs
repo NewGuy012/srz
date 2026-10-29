@@ -179,64 +179,66 @@ impl Database {
         Ok(())
     }
 
-    /// Records a newly generated summary into both the `history` and `library` tables within a single transaction.
-    pub fn record_summary(&self, record: &NewSummaryRecord<'_>) -> Result<()> {
+    /// Executes a closure within a single DuckDB transaction, automatically rolling back on error.
+    pub fn with_transaction<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         self.conn
             .execute_batch("BEGIN TRANSACTION;")
             .context("Failed to start DuckDB transaction")?;
 
-        let insert_res = (|| -> Result<()> {
-            self.conn
-                .execute(
-                    "INSERT INTO history (
-                        target_type, title, author, url, style, model,
-                        word_count, prompt_tokens, completion_tokens,
-                        duration_ms, tokens_per_second
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    params![
-                        record.target_type,
-                        record.title,
-                        record.author,
-                        record.url,
-                        record.style,
-                        record.model,
-                        record.word_count as u32,
-                        record.prompt_tokens,
-                        record.completion_tokens,
-                        record.duration_ms as u32,
-                        record.tokens_per_second,
-                    ],
-                )
-                .context("Failed to record entry in DuckDB history table")?;
-
-            self.conn
-                .execute(
-                    "INSERT INTO library (id, target_type, title, author, url, summary)
-                     VALUES (currval('history_id_seq'), ?, ?, ?, ?, ?)",
-                    params![
-                        record.target_type,
-                        record.title,
-                        record.author,
-                        record.url,
-                        record.summary,
-                    ],
-                )
-                .context("Failed to record entry in DuckDB library table")?;
-            Ok(())
-        })();
-
-        match insert_res {
-            Ok(()) => {
+        match f(&self.conn) {
+            Ok(res) => {
                 self.conn
                     .execute_batch("COMMIT;")
                     .context("Failed to commit DuckDB transaction")?;
-                Ok(())
+                Ok(res)
             }
             Err(err) => {
                 let _ = self.conn.execute_batch("ROLLBACK;");
                 Err(err)
             }
         }
+    }
+
+    /// Records a newly generated summary into both the `history` and `library` tables within a single transaction.
+    pub fn record_summary(&self, record: &NewSummaryRecord<'_>) -> Result<()> {
+        self.with_transaction(|conn| {
+            conn.execute(
+                "INSERT INTO history (
+                    target_type, title, author, url, style, model,
+                    word_count, prompt_tokens, completion_tokens,
+                    duration_ms, tokens_per_second
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    record.target_type,
+                    record.title,
+                    record.author,
+                    record.url,
+                    record.style,
+                    record.model,
+                    record.word_count as u32,
+                    record.prompt_tokens,
+                    record.completion_tokens,
+                    record.duration_ms as u32,
+                    record.tokens_per_second,
+                ],
+            )
+            .context("Failed to record entry in DuckDB history table")?;
+
+            conn.execute(
+                "INSERT INTO library (id, target_type, title, author, url, summary)
+                 VALUES (currval('history_id_seq'), ?, ?, ?, ?, ?)",
+                params![
+                    record.target_type,
+                    record.title,
+                    record.author,
+                    record.url,
+                    record.summary,
+                ],
+            )
+            .context("Failed to record entry in DuckDB library table")?;
+
+            Ok(())
+        })
     }
 
     /// Fetches the most recent `limit` entries from the summarization history.
@@ -273,11 +275,13 @@ impl Database {
         }
     }
 
-    /// Deletes a summary from both library and history tables by its ID.
+    /// Deletes a summary from both library and history tables by its ID within a single transaction.
     pub fn delete_library_item(&self, id: i64) -> Result<()> {
-        self.conn.execute("DELETE FROM library WHERE id = ?", params![id])?;
-        self.conn.execute("DELETE FROM history WHERE id = ?", params![id])?;
-        Ok(())
+        self.with_transaction(|conn| {
+            conn.execute("DELETE FROM library WHERE id = ?", params![id])?;
+            conn.execute("DELETE FROM history WHERE id = ?", params![id])?;
+            Ok(())
+        })
     }
 
     /// Computes aggregated analytics across all past summarization runs.
