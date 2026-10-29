@@ -42,6 +42,7 @@ pub struct BookMetadata {
     pub first_publish_year: Option<u32>,
 }
 
+#[derive(Clone)]
 pub struct BookSearcher {
     client: reqwest::Client,
 }
@@ -63,6 +64,14 @@ impl BookSearcher {
             .context("Failed to initialize search HTTP client")?;
 
         Ok(Self { client })
+    }
+
+    pub fn with_client(client: reqwest::Client) -> Self {
+        Self { client }
+    }
+
+    pub fn client(&self) -> &reqwest::Client {
+        &self.client
     }
 
     async fn get_with_timeout(&self, url: &str, timeout_secs: u64) -> Option<reqwest::Response> {

@@ -1,5 +1,6 @@
 use std::env;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Reads a trimmed, non-empty path from the environment variable `var`.
@@ -40,9 +41,24 @@ pub fn create_private_dir_all(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Writes `contents` to `path` and restricts file permissions to `0600` on Unix.
-pub fn write_private_file(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
-    fs::write(path, contents)?;
+/// Atomically opens or creates a file with owner-only permissions (`0600` on Unix).
+pub fn open_private_file_for_write(path: &Path) -> std::io::Result<File> {
+    let mut opts = OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let file = opts.open(path)?;
     set_private_file_perms(path);
+    Ok(file)
+}
+
+/// Writes `contents` to `path` with atomic owner-only permissions (`0600` on Unix).
+pub fn write_private_file(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    let mut file = open_private_file_for_write(path)?;
+    file.write_all(contents.as_ref())?;
+    file.flush()?;
     Ok(())
 }

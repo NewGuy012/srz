@@ -55,6 +55,14 @@ impl GoogleNewsClient {
         Ok(Self { client })
     }
 
+    pub fn with_client(client: reqwest::Client) -> Self {
+        Self { client }
+    }
+
+    pub fn client(&self) -> &reqwest::Client {
+        &self.client
+    }
+
     /// Queries Google News RSS for the given topic and recency timeframe.
     pub async fn fetch_feed(
         &self,

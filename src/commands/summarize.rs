@@ -292,7 +292,7 @@ pub async fn handle_news(
     llm: &LlmClient,
     args: &Cli,
 ) -> Result<SummaryOutcome> {
-    let news_client = crate::news::GoogleNewsClient::new()?;
+    let news_client = crate::news::GoogleNewsClient::with_client(scraper.client().clone());
 
     Ui::info(&format!(
         "Searching Google News for '{}' ({}, max articles: {})...",
@@ -431,7 +431,7 @@ async fn resolve_book_identity(
     title: &str,
     author: Option<&str>,
     cache: &Cache,
-    searcher: &mut Option<BookSearcher>,
+    searcher: &mut BookSearcher,
 ) -> (String, Option<String>) {
     if let Some(auth) = author {
         return (title.to_string(), Some(auth.to_string()));
@@ -439,13 +439,10 @@ async fn resolve_book_identity(
 
     let meta_opt = if let Some(cached_meta) = cache.get_book_metadata(title, None) {
         cached_meta
-    } else if let Ok(s) = BookSearcher::new() {
-        let fetched = s.resolve_book_metadata(title, None).await;
-        cache.set_book_metadata(title, None, &fetched);
-        *searcher = Some(s);
-        fetched
     } else {
-        None
+        let fetched = searcher.resolve_book_metadata(title, None).await;
+        cache.set_book_metadata(title, None, &fetched);
+        fetched
     };
 
     if let Some(meta) = meta_opt {
@@ -469,7 +466,7 @@ async fn fetch_or_cache_candidates(
     effective_title: &str,
     effective_author: Option<&str>,
     cache: &Cache,
-    searcher: &mut Option<BookSearcher>,
+    searcher: &mut BookSearcher,
 ) -> Result<Vec<SearchResult>> {
     if let Some(cached_candidates) = cache.get_search_results(effective_title, effective_author) {
         Ui::info(&format!(
@@ -480,11 +477,7 @@ async fn fetch_or_cache_candidates(
     }
 
     let spinner = Ui::spinner("Searching web for book synopsis (Wikipedia / DuckDuckGo)...");
-    let active_searcher = match searcher {
-        Some(s) => s,
-        None => searcher.insert(BookSearcher::new()?),
-    };
-    let results = active_searcher
+    let results = searcher
         .search_candidates(effective_title, effective_author)
         .await;
     if !results.is_empty() {
@@ -553,7 +546,7 @@ async fn generate_book_summary(
     mode: StreamMode<'_>,
 ) -> Result<(LlmOutput, usize, Option<String>)> {
     if !query.no_search {
-        let mut searcher: Option<BookSearcher> = None;
+        let mut searcher = BookSearcher::with_client(scraper.client().clone());
         let (resolved_title, resolved_author) =
             resolve_book_identity(query.title, query.author, cache, &mut searcher).await;
 

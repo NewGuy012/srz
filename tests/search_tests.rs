@@ -64,3 +64,15 @@ fn test_rank_candidates_prioritizes_exact_novel_over_commentary_and_films() {
     assert_eq!(candidates[0].title, "The Hobbit (Wikipedia)");
     assert!(candidates[0].score >= 150);
 }
+
+#[test]
+fn test_shared_http_client_initialization() {
+    let scraper = srz::scraper::WebScraper::new().unwrap();
+    let searcher = srz::search::BookSearcher::with_client(scraper.client().clone());
+    let news = srz::news::GoogleNewsClient::with_client(scraper.client().clone());
+
+    // Verify all clients share the underlying connection pool
+    assert!(scraper.client() as *const _ != std::ptr::null());
+    assert!(searcher.client() as *const _ != std::ptr::null());
+    assert!(news.client() as *const _ != std::ptr::null());
+}

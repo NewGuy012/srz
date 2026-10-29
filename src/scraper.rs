@@ -133,6 +133,14 @@ impl WebScraper {
         Ok(Self { client })
     }
 
+    pub fn with_client(client: reqwest::Client) -> Self {
+        Self { client }
+    }
+
+    pub fn client(&self) -> &reqwest::Client {
+        &self.client
+    }
+
     /// Fetches and normalizes the text from the given URL with a strict maximum response limit (10 MB).
     pub async fn scrape(&self, url: &str) -> Result<ScrapedPage> {
         let mut response = self
