@@ -167,26 +167,31 @@ fn run_loop(
     state: &mut AppState,
     db: &Database,
 ) -> Result<()> {
+    let mut needs_redraw = true;
     loop {
         // Clear status after 3 seconds
         if let Some((_, created)) = &state.status_message
             && created.elapsed() > Duration::from_secs(3)
         {
             state.status_message = None;
+            needs_redraw = true;
         }
 
-        terminal
-            .draw(|f| ui_draw(f, state))
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        if needs_redraw {
+            terminal
+                .draw(|f| ui_draw(f, state))
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            needs_redraw = false;
+        }
 
-        if event::poll(Duration::from_millis(100))?
-            && let Event::Key(key) = event::read()?
-        {
-            if key.kind != KeyEventKind::Press {
-                continue;
-            }
-
-                if state.is_filtering {
+        if event::poll(Duration::from_millis(100))? {
+            match event::read()? {
+                Event::Resize(_, _) => {
+                    needs_redraw = true;
+                }
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    needs_redraw = true;
+                    if state.is_filtering {
                     match key.code {
                         KeyCode::Esc => {
                             state.is_filtering = false;
@@ -288,8 +293,11 @@ fn run_loop(
                     }
                     _ => {}
                 }
+                }
+                _ => {}
             }
         }
+    }
     Ok(())
 }
 
