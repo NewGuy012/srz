@@ -147,9 +147,8 @@ async fn main() -> Result<()> {
         ResolvedAction::Stdin => commands::handle_stdin(&scraper, &llm, &args).await,
         ResolvedAction::Book {
             title,
-            author,
             no_search,
-        } => commands::handle_book(title, author, no_search, &scraper, &llm, &cache, &args).await,
+        } => commands::handle_book(title, None, no_search, &scraper, &llm, &cache, &args).await,
         ResolvedAction::News {
             topic,
             timeframe,

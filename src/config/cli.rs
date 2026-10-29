@@ -138,10 +138,6 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub no_cache: bool,
 
-    /// Book author (helps search accuracy)
-    #[arg(long, global = true)]
-    pub author: Option<String>,
-
     /// Path to optional config file (defaults to ~/.config/srz/config.toml)
     #[arg(long, global = true)]
     pub config: Option<PathBuf>,
@@ -354,7 +350,6 @@ pub enum ResolvedAction<'a> {
     },
     Book {
         title: &'a str,
-        author: Option<&'a str>,
         no_search: bool,
     },
     File {
@@ -413,7 +408,6 @@ impl Cli {
                 Commands::Web { url } => Ok(ResolvedAction::Web { url: url.trim() }),
                 Commands::Book { title } => Ok(ResolvedAction::Book {
                     title: title.trim(),
-                    author: self.author.as_deref(),
                     no_search: self.no_search,
                 }),
                 Commands::File { path } => {
@@ -511,7 +505,6 @@ impl Cli {
                 } else {
                     Ok(ResolvedAction::Book {
                         title: trimmed,
-                        author: self.author.as_deref(),
                         no_search: self.no_search,
                     })
                 }

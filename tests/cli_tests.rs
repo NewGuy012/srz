@@ -157,8 +157,6 @@ fn test_auto_detect_book_with_global_flags() {
     let cli = Cli::parse_from([
         "srz",
         "The Great Gatsby",
-        "--author",
-        "F. Scott Fitzgerald",
         "--style",
         "concise",
         "--no-cache",
@@ -170,11 +168,9 @@ fn test_auto_detect_book_with_global_flags() {
     match cli.resolve_action().unwrap() {
         ResolvedAction::Book {
             title,
-            author,
             no_search,
         } => {
             assert_eq!(title, "The Great Gatsby");
-            assert_eq!(author, Some("F. Scott Fitzgerald"));
             assert!(!no_search);
         }
         _ => panic!("Expected Book action"),
@@ -187,8 +183,6 @@ fn test_book_subcommand_flags() {
         "srz",
         "book",
         "Dune",
-        "--author",
-        "Frank Herbert",
         "--no-search",
         "--max-tokens",
         "4096",
@@ -199,11 +193,9 @@ fn test_book_subcommand_flags() {
     match cli.resolve_action().unwrap() {
         ResolvedAction::Book {
             title,
-            author,
             no_search,
         } => {
             assert_eq!(title, "Dune");
-            assert_eq!(author, Some("Frank Herbert"));
             assert!(no_search);
         }
         _ => panic!("Expected Book action"),
@@ -641,7 +633,6 @@ fn test_readme_usage_examples_cli_resolution() {
         cmd4.resolve_action().unwrap(),
         ResolvedAction::Book {
             title: "The Rust Programming Language",
-            author: None,
             no_search: false,
         }
     );
@@ -806,7 +797,6 @@ fn test_readme_usage_examples_cli_resolution() {
         cmd_rust_book.resolve_action().unwrap(),
         ResolvedAction::Book {
             title: "The Rust Programming Language",
-            author: None,
             no_search: false,
         }
     );
