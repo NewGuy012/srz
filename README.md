@@ -37,6 +37,7 @@ flowchart LR
         H3["🖥️ TUI Dashboard View\nRatatui srz browse"]
         H4["🗄️ Searchable Library\nEmbedded DuckDB DB"]
         H5["📖 Clean Reader Views\nDark-Mode HTML & MD"]
+        H6["🛡️ 100% Safe Rust\nStrict Hardened Posture"]
     end
 
     S1 --> E1
@@ -48,10 +49,12 @@ flowchart LR
     E2 --> H3
     E2 --> H4
     E2 --> H5
+    E2 --> H6
 ```
 
 - 🔒 **100% Local & Private**: Runs on your machine with complete privacy, zero subscriptions, and no API keys.
-- 💬 **Interactive Grounded Q&A**: Ask questions grounded on any document via `srz ask`.
+- 🛡️ **100% Safe Rust & Verified Security**: Compiled under `#![forbid(unsafe_code)]`, strict POSIX `0700`/`0600` file isolation, prompt injection defense, and mandatory SHA-256 binary validation.
+- 💬 **Interactive Grounded Q&A**: Ask questions grounded on any document or past read via `srz ask`.
 - 🖥️ **Interactive TUI Dashboard**: Browse, search, filter, and copy past summaries with `srz browse`.
 - 🗄️ **Offline Searchable Library**: Automatically saves and indexes every summary in embedded DuckDB.
 - 📖 **Distraction-Free Reader Views**: Generates clean HTML and Markdown pages with dark mode support.
@@ -86,6 +89,12 @@ curl -LsSf https://raw.githubusercontent.com/NewGuy012/srz/master/install.sh | s
 powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/NewGuy012/srz/master/install.ps1 | iex"
 ```
 
+### Homebrew (macOS & Linux)
+
+```bash
+brew install NewGuy012/tap/srz
+```
+
 ### Build from Source (Cargo)
 
 If you prefer building with Rust from source:
@@ -99,22 +108,27 @@ cargo install --path .
 
 ### Summarize
 ```bash
-srz "https://example.com/article"     # Webpage, YouTube, PDF, book, or local file
-srz "The Hobbit" --style tldr --open  # Custom style preset & open in browser
+srz "https://example.com/article"     # Webpage, blog, or article
+srz "https://youtu.be/dQw4w9WgXcQ"    # YouTube video captions & timed transcript
+srz document.pdf                      # Local PDF document (pure-Rust extractor)
+srz "The Hobbit" --style tldr --open  # Book synopsis & open in browser
 srz news "AI updates" -t week         # Live news digest (day, week, month)
 git diff | srz -                      # Unix stdin stream
 ```
 
 ### Ask & Chat
 ```bash
-srz ask "What are the main findings?" # Q&A grounded on document or latest read
+srz ask "What are the main findings?" # Grounded Q&A based on latest read
+srz ask document.pdf "Key takeaways?" # Grounded Q&A on a specific document
 srz ask -i                            # Interactive multi-turn chat REPL
 ```
 
-### Library & Search
+### Library, Search & Telemetry
 ```bash
 srz browse                            # Interactive TUI dashboard (browse, search, copy)
 srz find "keyword"                    # Offline full-text search across past summaries
+srz history                           # Recent reads, word counts, and generation speeds
+srz stats                             # Aggregate telemetry: words read, tokens generated
 ```
 
 Run `srz --help` to see all available subcommands and flags.
@@ -123,12 +137,13 @@ Run `srz --help` to see all available subcommands and flags.
 ## Features
 
 - **Multi-Source Ingestion**: Webpages, YouTube captions, PDF documents, Markdown/text files, Unix pipes (`-`), book synopses, and Google News RSS.
-- **Interactive Q&A (`srz ask`)**: Single-turn and multi-turn REPL chat grounded on full source documents or past reads.
-- **TUI Dashboard (`srz browse`)**: Split-pane terminal explorer with live search, telemetry inspection, and clipboard copying.
+- **Interactive Q&A (`srz ask`)**: Single-turn and multi-turn REPL chat grounded on full source documents or past reads with delimiter injection defense.
+- **TUI Dashboard (`srz browse`)**: Split-pane terminal explorer with live search, telemetry inspection, clipboard copying, and deletion.
 - **8 Summary Presets**: `concise`, `detailed`, `bullets`, `executive`, `tldr`, `critique`, `eli5`, and `flashcards`.
 - **Offline Storage & Search**: Saves all reads to embedded DuckDB with full-text search (`srz find`) and HTML index dashboard (`srz index`).
 - **Reader Views & Paging**: Standalone HTML/Markdown exports with dark mode, plus automatic terminal paging (`less -RFX`) like `bat`.
 - **Parallel Map-Reduce**: Automatically splits and synthesizes large documents exceeding token limits in parallel.
+- **100% Safe Rust & Hardened Security**: Compiled under `#![forbid(unsafe_code)]`, strict POSIX `0700`/`0600` permissions, bounded streaming, and SHA-256 binary validation.
 - **Profiles & Diagnostics**: Named backend profiles in `config.toml`, server health checks (`srz doctor`), and self-updater (`srz upgrade`).
 
 
@@ -185,13 +200,18 @@ srz "The Hobbit" --profile openai     # Named cloud profile
 ```
 
 
-## Architecture & Modules
+## Architecture & Security
 
-See [`OVERVIEW.md`](OVERVIEW.md) for detailed Mermaid architecture diagrams and execution sequences.
+- 📐 **Architecture & Subsystems**: See [`OVERVIEW.md`](OVERVIEW.md) for detailed Mermaid lifecycle diagrams, module breakdown, and execution sequences.
+- 🛡️ **Security Audit Ledger**: See [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md) for the complete multi-phase vulnerability audit, CWE mappings, safe Rust restoration, and verification test logs.
 
 
-## Running Tests
+## Running Tests & Static Analysis
 
 ```bash
+# Run full automated test suite (78 tests)
 cargo test
+
+# Strict static analysis (warnings denied)
+cargo clippy --all-targets -- -D warnings
 ```

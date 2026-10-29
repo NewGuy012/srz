@@ -19,7 +19,7 @@ flowchart TD
         Router -->|"News Query or Subcommand"| NewsFlow["Google News RSS Client"]
         Router -->|"ask [TARGET] [Q]"| AskFlow["Grounded Q&A Handler"]
         Router -->|"browse / tui"| TuiFlow["Ratatui TUI Library Explorer"]
-        Router -->|"cache / config / history / stats / find / index / models / doctor / completions"| UtilFlow["Utility Handlers"]
+        Router -->|"cache / config / history / stats / find / index / models / doctor / completions / upgrade"| UtilFlow["Utility Handlers"]
     end
 
     subgraph Resolution["2. Resolution & Grounding"]
@@ -153,7 +153,7 @@ src/
 | **Entry Points** | [`src/main.rs`](src/main.rs) | `main` | Entry point, CLI lifecycle, profile loading, and subcommand dispatch. |
 | | [`src/lib.rs`](src/lib.rs) | `lib` | Root library interface and backward-compatible module re-exports. |
 | **Commands** | [`src/commands/summarize.rs`](src/commands/summarize.rs) | `commands::summarize` | Workflows for web articles, YouTube videos, books, local documents, stdin streams, and news digests. |
-| | [`src/commands/ask.rs`](src/commands/ask.rs) | `commands::ask` | Grounded question answering and interactive multi-turn chat REPL (`srz ask`). |
+| | [`src/commands/ask.rs`](src/commands/ask.rs) | `commands::ask` | Grounded question answering, interactive multi-turn chat REPL (`srz ask`), sliding conversational history, and prompt injection defense. |
 | | [`src/commands/library.rs`](src/commands/library.rs) | `commands::library` | Handlers for `history`, `stats`, `find`, `index`, and `cache` subcommands. |
 | | [`src/commands/diagnostics.rs`](src/commands/diagnostics.rs) | `commands::diagnostics` | Handlers for `doctor`, `models`, and `config` verification. |
 | **Configuration** | [`src/config/cli.rs`](src/config/cli.rs) | `config::cli` | `clap` CLI parser, `SummaryStyle` presets, `NewsTimeframe`, paging flags, and target auto-detection. |
@@ -162,13 +162,13 @@ src/
 | | [`src/engine/chunker.rs`](src/engine/chunker.rs) | `engine::chunker` | Zero-copy `Cow` text windowing and paragraph chunking for long documents (> 12k words). |
 | **Sources** | [`src/sources/document.rs`](src/sources/document.rs) | `sources::document` | Unified local document ingestion (`DocumentLoader`): file size safety checks (20 MB), PDF extraction, HTML/Markdown normalization, and title fallbacks. |
 | | [`src/sources/scraper.rs`](src/sources/scraper.rs) | `sources::scraper` | HTTP client (10 MB cap), streaming body readers (`read_response_bytes_limited`, `read_response_text_limited`), MediaWiki/article DOM extraction, and text cleaning. |
-| | [`src/sources/pdf.rs`](src/sources/pdf.rs) | `sources::pdf` | Native pure-Rust PDF text extraction, document info metadata, and scanned-PDF detection via `pdf-extract`. |
-| | [`src/sources/youtube.rs`](src/sources/youtube.rs) | `sources::youtube` | YouTube video ID extraction, public timed-text XML/JSON3 caption resolution, and chapter cue grouping via `TimedTranscriptBuilder`. |
+| | [`src/sources/pdf.rs`](src/sources/pdf.rs) | `sources::pdf` | Native pure-Rust PDF text extraction, document info metadata, scanned-PDF detection, and file size security bounds via `pdf-extract`. |
+| | [`src/sources/youtube.rs`](src/sources/youtube.rs) | `sources::youtube` | YouTube video ID extraction, public timed-text XML/JSON3 caption resolution, chapter cue grouping via `TimedTranscriptBuilder`, and bounded HTTP streaming. |
 | | [`src/sources/search.rs`](src/sources/search.rs) | `sources::search` | Open Library metadata, Wikipedia OpenSearch/fulltext, DDG search, and candidate scoring. |
 | | [`src/sources/news.rs`](src/sources/news.rs) | `sources::news` | Google News RSS client, `batchexecute` RPC redirect decoding, and concurrent article fetching. |
 | **Storage** | [`src/storage/cache.rs`](src/storage/cache.rs) | `storage::cache` | Local JSON disk caching in `~/.cache/srz/` with compact serialization and private file permissions. |
-| | [`src/storage/db.rs`](src/storage/db.rs) | `storage::db` | Lazy DuckDB database for history telemetry and offline library full-text search (`Database::default_path`). |
-| **UI & Render** | [`src/ui/terminal.rs`](src/ui/terminal.rs) | `ui::terminal` | CLI progress spinners (`indicatif`), colored text formatting, and quiet/verbose mode handling. |
+| | [`src/storage/db.rs`](src/storage/db.rs) | `storage::db` | Lazy DuckDB database for history telemetry and offline library full-text search (`Database::default_path`), using 100% safe UTF-8 snippet formatting. |
+| **UI & Render** | [`src/ui/terminal.rs`](src/ui/terminal.rs) | `ui::terminal` | CLI progress spinners (`indicatif`), colored text formatting, and terminal escape/control character sanitization (`sanitize_terminal_text`, `sanitize_title`). |
 | | [`src/ui/printer.rs`](src/ui/printer.rs) | `ui::printer` | Tailored `termimad` terminal Markdown styling and automatic `$PAGER` / `less -RFX` integration. |
 | | [`src/ui/tui.rs`](src/ui/tui.rs) | `ui::tui` | Interactive `ratatui` + `crossterm` terminal UI library explorer (`srz browse`) with pre-indexed live search. |
 | | [`src/ui/render.rs`](src/ui/render.rs) | `ui::render` | Single-pass streaming Markdown-to-HTML converter, CSS styling, index dashboard, and slugify. |
@@ -191,11 +191,16 @@ src/
 - **In-Place DB Snippet Formatting**: Search snippet extraction pre-allocates exact capacities and normalizes whitespace in place without redundant string allocations.
 
 ### Security & Privacy
-- **Strict Local Isolation**: Cache files, configuration, and database files are created with owner-only Unix permissions (`0700` directories, `0600` files).
-- **Prompt Injection Defense**: Untrusted source text is enclosed inside tagged XML blocks within the LLM prompt, separating content from system instructions.
-- **Bounded Resource Limits**: Enforces strict safety limits on network downloads (10 MB), local files (20 MB), and standard input streams (10 MB) to prevent memory exhaustion.
+- **100% Safe Rust Guarantee**: The entire crate strictly enforces `#![forbid(unsafe_code)]` at `src/lib.rs` and `src/main.rs`. Zero `unsafe` blocks are permitted.
+- **Strict Local Isolation**: Cache files, configuration, and database files are created with owner-only Unix permissions (`0700` directories, `0600` files atomically created via `O_CREAT | O_EXCL` and `mode(0o600)`).
+- **Prompt Injection Defense**: Untrusted source text is enclosed inside tagged XML blocks within the LLM prompt, separating content from system instructions, and neutralizing delimiter collisions (`&lt;/source_document&gt;`).
+- **Bounded Resource Limits**: Enforces strict safety limits on network downloads (10 MB), local files (20 MB), standard input streams (10 MB), upgrade archives (50 MB), and decompressed binaries (100 MB) to prevent memory exhaustion.
+- **Terminal Escape Sequence Sanitization**: Untrusted document titles, scraped page metadata, and CLI messages are stripped of ANSI CSI sequences, OSC strings (blocking clipboard hijacking and title spoofing), and non-printable control characters.
 - **Content Security Policy (CSP)**: Generated HTML reader views include strict CSP headers blocking external network requests and inline script execution.
-- **Verified Upgrades**: The `srz upgrade` command enforces SHA256 checksum verification and atomic file replacement before swapping binaries.
+- **Verified Upgrades & Installers**: `srz upgrade`, `install.sh`, and `install.ps1` enforce mandatory SHA-256 cryptographic checksum validation before executing or installing binaries.
+- **Continuous Security CI Auditing**: GitHub Actions workflow (`.github/workflows/ci.yml`) runs `cargo test`, `cargo clippy -- -D warnings`, and automated dependency vulnerability scanning via `rustsec/audit-check` on every commit and PR.
+
+For the complete chronological security audit ledger, CWE classifications, and regression test suites, see [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md).
 
 
 ## 6. Key CLI Features & Commands
@@ -205,21 +210,27 @@ src/
 | **Ingestion** | `srz <URL>` | Summarizes articles, blogs, documentation, or online PDFs. |
 | | `srz <YOUTUBE_URL>` | Extracts timed-text transcripts and chapters from YouTube videos. |
 | | `srz "Book Title"` | Resolves synopses from Wikipedia and Open Library by title alone. |
-| | `srz <FILE>` | Ingests local `.pdf`, `.html`, `.md`, or `.txt` documents. |
-| | `cat ... \| srz -` | Reads piped command outputs, logs, or `git diff` streams. |
+| | `srz <FILE>` | Ingests local `.pdf`, `.html`, `.md`, or `.txt` documents (20 MB ceiling). |
+| | `cat ... \| srz -` | Reads piped command outputs, logs, or `git diff` streams (10 MB ceiling). |
 | | `srz news "topic" [-t week]` | Aggregates and summarizes top stories from Google News RSS. |
 | **Styling & Output** | `--style <PRESET>` | 8 summary formats: `concise`, `detailed`, `bullets`, `executive`, `tldr`, `critique`, `eli5`, `flashcards`. |
-| | `--open` | Opens the summary in a distraction-free HTML reader with light/dark mode. |
+| | `--open` (`-b`) | Opens the summary in a distraction-free HTML reader with light/dark mode. |
 | | `--plain` | Outputs raw Markdown without terminal colors or automatic paging. |
+| | `--paging <auto\|always\|never>` | Controls terminal output pager (`--no-pager` disables paging). |
 | | `-o <FILE.html\|md>` | Saves the rendered output directly to an HTML or Markdown file. |
 | | `--json` | Emits machine-readable JSON on `stdout` for script integration. |
-| **Interactive Tools** | `srz ask [Q]` | Grounded Q&A against full documents or your latest read (`-i` for multi-turn chat). |
-| | `srz browse` | Interactive TUI dashboard (`[j/k]` navigate, `[/]` filter, `[y]` copy, `[Enter]` open). |
+| | `--stream` | Streams LLM output tokens live to `stdout` as they are generated. |
+| **Interactive Tools** | `srz ask [TARGET] [Q]` | Grounded Q&A against a document, URL, file, or latest read. |
+| | `srz ask -i` | Interactive multi-turn chat REPL grounded on source context. |
+| | `srz browse` (alias `tui`) | Interactive TUI dashboard (`[j/k]` navigate, `[/]` filter, `[y]` copy, `[d]` delete, `[Enter]` open). |
 | **Library & History** | `srz find "keyword"` | Offline full-text search across all past summaries in DuckDB. |
-| | `srz history` | Displays recent reads, word counts, model usage, and generation speeds. |
+| | `srz history [--limit N]` | Displays recent reads, word counts, model usage, and generation speeds. |
 | | `srz stats` | Telemetry overview: total words read, tokens generated, and throughput. |
 | | `srz index [--open]` | Generates and opens an interactive HTML library dashboard. |
 | **System & Config** | `--profile <NAME>` | Switches LLM backends defined in `~/.config/srz/config.toml`. |
+| | `srz config <init\|show\|path>` | Manages and inspects the local configuration file. |
+| | `srz cache <clean\|size\|dir>` | Manages the local disk cache directory and entry storage. |
+| | `srz models` | Lists available models reported by the local LLM backend. |
 | | `srz doctor` | Tests backend reachability, latency, cache health, and database integrity. |
-| | `srz upgrade` | Safe, in-place binary self-updater with SHA256 integrity verification. |
+| | `srz upgrade [--check\|--force]` | Safe, in-place binary self-updater with SHA-256 integrity verification. |
 | | `srz completions <SHELL>` | Generates autocomplete scripts for bash, zsh, fish, powershell, and elvish. |
