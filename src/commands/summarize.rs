@@ -373,15 +373,19 @@ pub async fn handle_news(
     let mut total_words = 0;
     for (i, src) in sources.iter().enumerate() {
         total_words += src.word_count;
+        let safe_title = crate::ui::sanitize_title(&src.title);
+        let safe_publisher = crate::ui::sanitize_title(&src.source_name);
+        let safe_url = crate::ui::sanitize_title(&src.url);
         digest.push_str(&format!(
             "### Article {}: {}\n- Publisher: {}\n- URL: {}\n",
             i + 1,
-            src.title,
-            src.source_name,
-            src.url
+            safe_title,
+            safe_publisher,
+            safe_url
         ));
         if let Some(date) = &src.pub_date {
-            digest.push_str(&format!("- Published: {}\n", date));
+            let safe_date = crate::ui::sanitize_title(date);
+            digest.push_str(&format!("- Published: {}\n", safe_date));
         }
         digest.push_str(&format!("\n{}\n\n---\n\n", src.content));
     }
