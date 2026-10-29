@@ -1,6 +1,6 @@
 use clap::Parser;
 use srz::cli::{
-    clean_news_query, is_news_query, CacheCommand, Cli, NewsTimeframe, ResolvedAction, SummaryStyle,
+    CacheCommand, Cli, NewsTimeframe, ResolvedAction, SummaryStyle, clean_news_query, is_news_query,
 };
 
 #[test]
@@ -129,7 +129,10 @@ fn test_auto_detect_stdin_and_file() {
     assert_eq!(stdin_cli.resolve_action().unwrap(), ResolvedAction::Stdin);
 
     let stdin_subcmd = Cli::parse_from(["srz", "file", "-"]);
-    assert_eq!(stdin_subcmd.resolve_action().unwrap(), ResolvedAction::Stdin);
+    assert_eq!(
+        stdin_subcmd.resolve_action().unwrap(),
+        ResolvedAction::Stdin
+    );
 
     // Existing local file (Cargo.toml)
     let file_cli = Cli::parse_from(["srz", "Cargo.toml"]);
@@ -253,13 +256,22 @@ fn test_ask_subcommand_resolution() {
     assert!(!is_probable_question("document.pdf"));
 
     // Case 1: Target and Question
-    let cli1 = Cli::parse_from(["srz", "ask", "https://example.com", "What is the key takeaway?"]);
+    let cli1 = Cli::parse_from([
+        "srz",
+        "ask",
+        "https://example.com",
+        "What is the key takeaway?",
+    ]);
     assert_eq!(
         cli1.resolve_action().unwrap(),
         ResolvedAction::Ask {
             target: Some("https://example.com".to_string()),
             question: Some("What is the key takeaway?".to_string()),
             interactive: false,
+            list_chats: false,
+            resume: None,
+            show_chat: None,
+            delete_chat: None,
         }
     );
 
@@ -271,6 +283,10 @@ fn test_ask_subcommand_resolution() {
             target: None,
             question: Some("What are the limitations?".to_string()),
             interactive: false,
+            list_chats: false,
+            resume: None,
+            show_chat: None,
+            delete_chat: None,
         }
     );
 
@@ -282,6 +298,10 @@ fn test_ask_subcommand_resolution() {
             target: Some("The Hobbit".to_string()),
             question: None,
             interactive: false,
+            list_chats: false,
+            resume: None,
+            show_chat: None,
+            delete_chat: None,
         }
     );
 
@@ -293,6 +313,39 @@ fn test_ask_subcommand_resolution() {
             target: None,
             question: None,
             interactive: true,
+            list_chats: false,
+            resume: None,
+            show_chat: None,
+            delete_chat: None,
+        }
+    );
+
+    // Case 5: Persistent session management flags
+    let cli5 = Cli::parse_from(["srz", "ask", "--chats"]);
+    assert_eq!(
+        cli5.resolve_action().unwrap(),
+        ResolvedAction::Ask {
+            target: None,
+            question: None,
+            interactive: false,
+            list_chats: true,
+            resume: None,
+            show_chat: None,
+            delete_chat: None,
+        }
+    );
+
+    let cli6 = Cli::parse_from(["srz", "ask", "--resume", "42"]);
+    assert_eq!(
+        cli6.resolve_action().unwrap(),
+        ResolvedAction::Ask {
+            target: None,
+            question: None,
+            interactive: true,
+            list_chats: false,
+            resume: Some(42),
+            show_chat: None,
+            delete_chat: None,
         }
     );
 }
@@ -306,7 +359,10 @@ fn test_browse_subcommand_resolution() {
     assert_eq!(tui_cli.resolve_action().unwrap(), ResolvedAction::Browse);
 
     let library_cli = Cli::parse_from(["srz", "library"]);
-    assert_eq!(library_cli.resolve_action().unwrap(), ResolvedAction::Browse);
+    assert_eq!(
+        library_cli.resolve_action().unwrap(),
+        ResolvedAction::Browse
+    );
 }
 
 #[test]
@@ -360,7 +416,13 @@ fn test_news_subcommand_resolution() {
     );
 
     let custom_news = Cli::parse_from([
-        "srz", "news", "artificial intelligence", "-t", "week", "-l", "8",
+        "srz",
+        "news",
+        "artificial intelligence",
+        "-t",
+        "week",
+        "-l",
+        "8",
     ]);
     assert_eq!(
         custom_news.resolve_action().unwrap(),
@@ -538,7 +600,10 @@ fn test_upgrade_subcommand_flags() {
 #[test]
 fn test_readme_usage_examples_cli_resolution() {
     // 1. Webpage
-    let cmd1 = Cli::parse_from(["srz", "https://en.wikipedia.org/wiki/Rust_(programming_language)"]);
+    let cmd1 = Cli::parse_from([
+        "srz",
+        "https://en.wikipedia.org/wiki/Rust_(programming_language)",
+    ]);
     assert_eq!(
         cmd1.resolve_action().unwrap(),
         ResolvedAction::Web {

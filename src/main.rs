@@ -75,7 +75,8 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         ResolvedAction::Doctor => {
-            commands::handle_doctor(&args, &config, config_path.as_deref(), &cache, args.json).await?;
+            commands::handle_doctor(&args, &config, config_path.as_deref(), &cache, args.json)
+                .await?;
             return Ok(());
         }
         ResolvedAction::Index => {
@@ -85,12 +86,7 @@ async fn main() -> Result<()> {
             return with_db(|db| srz::ui::run_tui(db, &cache));
         }
         ResolvedAction::Completions { shell } => {
-            clap_complete::generate(
-                shell,
-                &mut Cli::command(),
-                "srz",
-                &mut std::io::stdout(),
-            );
+            clap_complete::generate(shell, &mut Cli::command(), "srz", &mut std::io::stdout());
             return Ok(());
         }
         ResolvedAction::Upgrade {
@@ -99,14 +95,7 @@ async fn main() -> Result<()> {
             version,
             dry_run,
         } => {
-            srz::upgrade::run_upgrade(
-                check,
-                force,
-                version.as_deref(),
-                dry_run,
-                args.json,
-            )
-            .await?;
+            srz::upgrade::run_upgrade(check, force, version.as_deref(), dry_run, args.json).await?;
             return Ok(());
         }
         _ => {}
@@ -132,28 +121,20 @@ async fn main() -> Result<()> {
             question,
             interactive,
         } => {
-            commands::handle_ask(target, question, interactive, &scraper, &llm, &cache, &args).await?;
+            commands::handle_ask(target, question, interactive, &scraper, &llm, &cache, &args)
+                .await?;
             return Ok(());
         }
-        ResolvedAction::Web { url } => commands::handle_web(url, &scraper, &llm, &cache, &args).await,
+        ResolvedAction::Web { url } => {
+            commands::handle_web(url, &scraper, &llm, &cache, &args).await
+        }
         ResolvedAction::File { path } => commands::handle_file(&path, &scraper, &llm, &args).await,
         ResolvedAction::Stdin => commands::handle_stdin(&scraper, &llm, &args).await,
         ResolvedAction::Book {
             title,
             author,
             no_search,
-        } => {
-            commands::handle_book(
-                title,
-                author,
-                no_search,
-                &scraper,
-                &llm,
-                &cache,
-                &args,
-            )
-            .await
-        }
+        } => commands::handle_book(title, author, no_search, &scraper, &llm, &cache, &args).await,
         ResolvedAction::News {
             topic,
             timeframe,

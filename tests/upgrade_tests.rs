@@ -1,7 +1,7 @@
 use srz::upgrade::{
-    compute_sha256_hex, detect_install_origin, detect_target_from, extract_binary_from_tar_gz,
-    extract_binary_from_zip, format_asset_names, parse_clean_version, parse_sha256_checksum,
-    ArchiveFormat, InstallOrigin,
+    ArchiveFormat, InstallOrigin, compute_sha256_hex, detect_install_origin, detect_target_from,
+    extract_binary_from_tar_gz, extract_binary_from_zip, format_asset_names, parse_clean_version,
+    parse_sha256_checksum,
 };
 use std::io::Write;
 use std::path::Path;
@@ -59,7 +59,9 @@ fn test_detect_install_origin() {
         InstallOrigin::Homebrew
     );
     assert_eq!(
-        detect_install_origin(Path::new("/home/linuxbrew/.linuxbrew/Cellar/srz/0.1.0/bin/srz")),
+        detect_install_origin(Path::new(
+            "/home/linuxbrew/.linuxbrew/Cellar/srz/0.1.0/bin/srz"
+        )),
         InstallOrigin::Homebrew
     );
 
@@ -121,13 +123,11 @@ fn test_parse_sha256_checksum() {
 
 #[test]
 fn test_format_asset_names() {
-    let (v_tar, l_tar) =
-        format_asset_names("v0.2.0", "aarch64-apple-darwin", ArchiveFormat::TarGz);
+    let (v_tar, l_tar) = format_asset_names("v0.2.0", "aarch64-apple-darwin", ArchiveFormat::TarGz);
     assert_eq!(v_tar, "srz-v0.2.0-aarch64-apple-darwin.tar.gz");
     assert_eq!(l_tar, "srz-aarch64-apple-darwin.tar.gz");
 
-    let (v_zip, l_zip) =
-        format_asset_names("v0.2.0", "x86_64-pc-windows-msvc", ArchiveFormat::Zip);
+    let (v_zip, l_zip) = format_asset_names("v0.2.0", "x86_64-pc-windows-msvc", ArchiveFormat::Zip);
     assert_eq!(v_zip, "srz-v0.2.0-x86_64-pc-windows-msvc.zip");
     assert_eq!(l_zip, "srz-x86_64-pc-windows-msvc.zip");
 }
@@ -137,8 +137,7 @@ fn test_extract_binary_from_tar_gz() {
     let binary_content = b"echo 'srz v0.2.0'";
 
     // Create an in-memory tar.gz containing 'srz'
-    let mut gz_encoder =
-        flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut gz_encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     {
         let mut tar_builder = tar::Builder::new(&mut gz_encoder);
         let mut header = tar::Header::new_gnu();
@@ -153,8 +152,8 @@ fn test_extract_binary_from_tar_gz() {
     let archive_bytes = gz_encoder.finish().expect("Failed to finish gzip encoding");
 
     // Extract 'srz'
-    let extracted = extract_binary_from_tar_gz(&archive_bytes, "srz")
-        .expect("Extraction should succeed");
+    let extracted =
+        extract_binary_from_tar_gz(&archive_bytes, "srz").expect("Extraction should succeed");
     assert_eq!(extracted, binary_content);
 
     // Extraction fails if requesting non-existent binary name
@@ -182,8 +181,8 @@ fn test_extract_binary_from_zip() {
     let zip_bytes = zip_buf.into_inner();
 
     // Extract 'srz.exe'
-    let extracted = extract_binary_from_zip(&zip_bytes, "srz.exe")
-        .expect("Extraction should succeed");
+    let extracted =
+        extract_binary_from_zip(&zip_bytes, "srz.exe").expect("Extraction should succeed");
     assert_eq!(extracted, binary_content);
 
     // Extraction fails if requesting non-existent binary name

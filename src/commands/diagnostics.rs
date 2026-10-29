@@ -1,10 +1,10 @@
-use anyhow::Result;
 use crate::cache::Cache;
 use crate::cli::Cli;
 use crate::config::Config;
 use crate::db::Database;
 use crate::llm::LlmClient;
 use crate::ui::Ui;
+use anyhow::Result;
 use std::path::Path;
 
 /// Lists available models reported by the local LLM endpoint (`GET /models`).
@@ -153,7 +153,10 @@ pub async fn handle_doctor(
             latency_ms.unwrap_or(0)
         );
         if model_found {
-            println!("  ✓ Configured Model: \"{}\" is loaded and ready", args.model);
+            println!(
+                "  ✓ Configured Model: \"{}\" is loaded and ready",
+                args.model
+            );
         } else {
             println!(
                 "  ! Configured Model: \"{}\" was not reported by /models endpoint.",
@@ -164,7 +167,10 @@ pub async fn handle_doctor(
                     .iter()
                     .map(|m| crate::ui::sanitize_title(m))
                     .collect();
-                println!("    Available models on backend: {}", safe_models.join(", "));
+                println!(
+                    "    Available models on backend: {}",
+                    safe_models.join(", ")
+                );
             }
         }
     } else {

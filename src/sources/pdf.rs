@@ -16,8 +16,8 @@ impl PdfExtractor {
 
     /// Extracts text from in-memory PDF bytes, parsing the PDF document structure only once.
     pub fn extract_from_bytes(bytes: &[u8], path: Option<&Path>) -> Result<ScrapedPage> {
-        let mut doc = pdf_extract::Document::load_mem(bytes)
-            .context("Failed to parse PDF document")?;
+        let mut doc =
+            pdf_extract::Document::load_mem(bytes).context("Failed to parse PDF document")?;
         if doc.is_encrypted() {
             let _ = doc.decrypt("");
         }
@@ -59,7 +59,10 @@ impl PdfExtractor {
         let mut title = None;
         let mut author = None;
 
-        if let Ok(info) = doc.trailer.get(b"Info").and_then(|obj| doc.dereference(obj))
+        if let Ok(info) = doc
+            .trailer
+            .get(b"Info")
+            .and_then(|obj| doc.dereference(obj))
             && let Ok(dict) = info.1.as_dict()
         {
             if let Ok(t) = dict.get(b"Title").and_then(|o| o.as_str()) {
@@ -152,7 +155,8 @@ impl PdfExtractor {
         doc.trailer.set("Root", catalog_id);
 
         let mut buffer = Vec::new();
-        doc.save_to(&mut buffer).expect("Failed to serialize sample PDF");
+        doc.save_to(&mut buffer)
+            .expect("Failed to serialize sample PDF");
         buffer
     }
 

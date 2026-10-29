@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -123,11 +123,7 @@ pub fn compute_sha256_hex(bytes: &[u8]) -> String {
 }
 
 /// Formats primary versioned asset name and fallback alias.
-pub fn format_asset_names(
-    tag: &str,
-    target: &str,
-    format: ArchiveFormat,
-) -> (String, String) {
+pub fn format_asset_names(tag: &str, target: &str, format: ArchiveFormat) -> (String, String) {
     let ext = format.extension();
     let versioned = format!("srz-{}-{}.{}", tag, target, ext);
     let latest_alias = format!("srz-{}.{}", target, ext);
@@ -270,8 +266,8 @@ pub async fn resolve_latest_version(client: &reqwest::Client, repo: &str) -> Res
     let bytes = crate::scraper::read_response_bytes_limited(resp, 1024 * 1024)
         .await
         .context("Failed to read GitHub release response")?;
-    let release_json: serde_json::Value = serde_json::from_slice(&bytes)
-        .context("Failed to parse GitHub release JSON")?;
+    let release_json: serde_json::Value =
+        serde_json::from_slice(&bytes).context("Failed to parse GitHub release JSON")?;
 
     let tag = release_json["tag_name"]
         .as_str()
@@ -316,13 +312,14 @@ async fn download_and_verify_archive(
     }
 
     let archive_pb = Ui::spinner(format!("Downloading {}...", archive_url));
-    let archive_bytes = match crate::scraper::read_response_bytes_limited(archive_res, MAX_ARCHIVE_BYTES).await {
-        Ok(b) => b,
-        Err(err) => {
-            archive_pb.finish_and_clear();
-            return Err(err);
-        }
-    };
+    let archive_bytes =
+        match crate::scraper::read_response_bytes_limited(archive_res, MAX_ARCHIVE_BYTES).await {
+            Ok(b) => b,
+            Err(err) => {
+                archive_pb.finish_and_clear();
+                return Err(err);
+            }
+        };
     Ui::finish_spinner(&archive_pb, "Downloaded release archive.");
 
     let sha_pb = Ui::spinner("Verifying SHA256 checksum...");
@@ -343,9 +340,15 @@ async fn download_and_verify_archive(
                         computed_hash
                     );
                 }
-                Ui::finish_spinner(&sha_pb, &format!("Checksum verified ({:.8}...).", computed_hash));
+                Ui::finish_spinner(
+                    &sha_pb,
+                    &format!("Checksum verified ({:.8}...).", computed_hash),
+                );
             } else if force {
-                Ui::finish_spinner(&sha_pb, "Checksum file empty; bypassing check due to --force.");
+                Ui::finish_spinner(
+                    &sha_pb,
+                    "Checksum file empty; bypassing check due to --force.",
+                );
             } else {
                 sha_pb.finish_and_clear();
                 bail!(
@@ -355,7 +358,10 @@ async fn download_and_verify_archive(
         }
         _ => {
             if force {
-                Ui::finish_spinner(&sha_pb, "Checksum file unavailable; bypassing check due to --force.");
+                Ui::finish_spinner(
+                    &sha_pb,
+                    "Checksum file unavailable; bypassing check due to --force.",
+                );
             } else {
                 sha_pb.finish_and_clear();
                 bail!(
@@ -381,7 +387,8 @@ pub async fn run_upgrade(
     let current_version = parse_clean_version(current_version_str)
         .context("Failed to parse current CARGO_PKG_VERSION")?;
 
-    let current_exe = env::current_exe().context("Failed to determine path to current executable")?;
+    let current_exe =
+        env::current_exe().context("Failed to determine path to current executable")?;
 
     // 1. Check install origin
     let origin = detect_install_origin(&current_exe);
@@ -439,8 +446,12 @@ pub async fn run_upgrade(
     };
     spinner.finish_and_clear();
 
-    let target_version = parse_clean_version(&target_tag)
-        .with_context(|| format!("Failed to parse release tag '{}' as a semver version", target_tag))?;
+    let target_version = parse_clean_version(&target_tag).with_context(|| {
+        format!(
+            "Failed to parse release tag '{}' as a semver version",
+            target_tag
+        )
+    })?;
 
     let is_newer = target_version > current_version;
     let is_target_equal = target_version == current_version;
@@ -470,7 +481,13 @@ pub async fn run_upgrade(
             )
         };
 
-        UpgradeResult::emit(status, target_version.to_string(), target_info.target, msg, json)?;
+        UpgradeResult::emit(
+            status,
+            target_version.to_string(),
+            target_info.target,
+            msg,
+            json,
+        )?;
         return Ok(());
     }
 

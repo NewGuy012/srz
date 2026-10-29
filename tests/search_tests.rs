@@ -1,4 +1,4 @@
-use srz::search::{deduplicate_candidates, extract_ddg_url, rank_candidates, SearchResult};
+use srz::search::{SearchResult, deduplicate_candidates, extract_ddg_url, rank_candidates};
 
 #[test]
 fn test_extract_ddg_url() {

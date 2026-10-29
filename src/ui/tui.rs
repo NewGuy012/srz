@@ -2,17 +2,17 @@ use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
-    Frame, Terminal,
 };
-use std::io::{stdout, Stdout};
+use std::io::{Stdout, stdout};
 use std::time::{Duration, Instant};
 
 use crate::cache::Cache;
@@ -176,108 +176,109 @@ fn run_loop(
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     needs_redraw = true;
                     if state.is_filtering {
+                        match key.code {
+                            KeyCode::Esc => {
+                                state.is_filtering = false;
+                            }
+                            KeyCode::Enter => {
+                                state.is_filtering = false;
+                            }
+                            KeyCode::Backspace => {
+                                state.filter_query.pop();
+                                state.apply_filter();
+                            }
+                            KeyCode::Char(c) => {
+                                state.filter_query.push(c);
+                                state.apply_filter();
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+
+                    // Normal navigation mode
                     match key.code {
+                        KeyCode::Char('q') => break,
                         KeyCode::Esc => {
-                            state.is_filtering = false;
+                            if !state.filter_query.is_empty() {
+                                state.filter_query.clear();
+                                state.apply_filter();
+                                state.set_status("Filter cleared");
+                            } else {
+                                break;
+                            }
                         }
-                        KeyCode::Enter => {
-                            state.is_filtering = false;
+                        KeyCode::Char('/') => {
+                            state.is_filtering = true;
                         }
-                        KeyCode::Backspace => {
-                            state.filter_query.pop();
-                            state.apply_filter();
+                        KeyCode::Tab => {
+                            state.focus = match state.focus {
+                                FocusPane::List => FocusPane::Preview,
+                                FocusPane::Preview => FocusPane::List,
+                            };
                         }
-                        KeyCode::Char(c) => {
-                            state.filter_query.push(c);
-                            state.apply_filter();
+                        KeyCode::Up | KeyCode::Char('k') => match state.focus {
+                            FocusPane::List => state.select_prev(),
+                            FocusPane::Preview => state.scroll_up(2),
+                        },
+                        KeyCode::Down | KeyCode::Char('j') => match state.focus {
+                            FocusPane::List => state.select_next(),
+                            FocusPane::Preview => state.scroll_down(2),
+                        },
+                        KeyCode::PageUp | KeyCode::Char('K') => {
+                            state.scroll_up(10);
+                        }
+                        KeyCode::PageDown | KeyCode::Char('J') => {
+                            state.scroll_down(10);
+                        }
+                        KeyCode::Char('y') | KeyCode::Char('c') => {
+                            if let Some(item) = state.selected_item() {
+                                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                                    if clipboard.set_text(&item.summary).is_ok() {
+                                        state.set_status("✓ Summary copied to clipboard");
+                                    } else {
+                                        state.set_status("⚠ Failed to write to clipboard");
+                                    }
+                                } else {
+                                    state.set_status("⚠ Clipboard unavailable");
+                                }
+                            }
+                        }
+                        KeyCode::Enter | KeyCode::Char('b') => {
+                            if let Some(item) = state.selected_item() {
+                                let files = render::ensure_view_files(
+                                    &state.views_dir,
+                                    &item.title,
+                                    &item.summary,
+                                    false,
+                                );
+                                if let Ok(files) = files {
+                                    if render::open_in_browser(&files.html_path).is_ok() {
+                                        state.set_status(format!("✓ Opened {}", item.title));
+                                    } else {
+                                        state.set_status("⚠ Could not open default browser");
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::Char('d') => {
+                            if let Some(item) = state.selected_item() {
+                                let id = item.id;
+                                let title = item.title.clone();
+                                if db.delete_library_item(id).is_ok() {
+                                    if let Some(pos) = state.items.iter().position(|it| it.id == id)
+                                    {
+                                        state.items.remove(pos);
+                                    }
+                                    state.apply_filter();
+                                    state.set_status(format!("✓ Deleted '{}'", title));
+                                } else {
+                                    state.set_status("⚠ Failed to delete item from database");
+                                }
+                            }
                         }
                         _ => {}
                     }
-                    continue;
-                }
-
-                // Normal navigation mode
-                match key.code {
-                    KeyCode::Char('q') => break,
-                    KeyCode::Esc => {
-                        if !state.filter_query.is_empty() {
-                            state.filter_query.clear();
-                            state.apply_filter();
-                            state.set_status("Filter cleared");
-                        } else {
-                            break;
-                        }
-                    }
-                    KeyCode::Char('/') => {
-                        state.is_filtering = true;
-                    }
-                    KeyCode::Tab => {
-                        state.focus = match state.focus {
-                            FocusPane::List => FocusPane::Preview,
-                            FocusPane::Preview => FocusPane::List,
-                        };
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => match state.focus {
-                        FocusPane::List => state.select_prev(),
-                        FocusPane::Preview => state.scroll_up(2),
-                    },
-                    KeyCode::Down | KeyCode::Char('j') => match state.focus {
-                        FocusPane::List => state.select_next(),
-                        FocusPane::Preview => state.scroll_down(2),
-                    },
-                    KeyCode::PageUp | KeyCode::Char('K') => {
-                        state.scroll_up(10);
-                    }
-                    KeyCode::PageDown | KeyCode::Char('J') => {
-                        state.scroll_down(10);
-                    }
-                    KeyCode::Char('y') | KeyCode::Char('c') => {
-                        if let Some(item) = state.selected_item() {
-                            if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                                if clipboard.set_text(&item.summary).is_ok() {
-                                    state.set_status("✓ Summary copied to clipboard");
-                                } else {
-                                    state.set_status("⚠ Failed to write to clipboard");
-                                }
-                            } else {
-                                state.set_status("⚠ Clipboard unavailable");
-                            }
-                        }
-                    }
-                    KeyCode::Enter | KeyCode::Char('b') => {
-                        if let Some(item) = state.selected_item() {
-                            let files = render::ensure_view_files(
-                                &state.views_dir,
-                                &item.title,
-                                &item.summary,
-                                false,
-                            );
-                            if let Ok(files) = files {
-                                if render::open_in_browser(&files.html_path).is_ok() {
-                                    state.set_status(format!("✓ Opened {}", item.title));
-                                } else {
-                                    state.set_status("⚠ Could not open default browser");
-                                }
-                            }
-                        }
-                    }
-                    KeyCode::Char('d') => {
-                        if let Some(item) = state.selected_item() {
-                            let id = item.id;
-                            let title = item.title.clone();
-                            if db.delete_library_item(id).is_ok() {
-                                if let Some(pos) = state.items.iter().position(|it| it.id == id) {
-                                    state.items.remove(pos);
-                                }
-                                state.apply_filter();
-                                state.set_status(format!("✓ Deleted '{}'", title));
-                            } else {
-                                state.set_status("⚠ Failed to delete item from database");
-                            }
-                        }
-                    }
-                    _ => {}
-                }
                 }
                 _ => {}
             }

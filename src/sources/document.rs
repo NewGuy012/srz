@@ -43,7 +43,10 @@ impl DocumentLoader {
     pub fn load_file(path: &Path, scraper: &WebScraper) -> Result<LocalDocument> {
         Self::validate_file(path)?;
 
-        if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("epub")) {
+        if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("epub"))
+        {
             anyhow::bail!(
                 "Document format not supported: {:?}. Supported formats include PDF, HTML, Markdown, and plain text.",
                 path
@@ -60,8 +63,8 @@ impl DocumentLoader {
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
         {
-            let bytes = fs::read(path)
-                .with_context(|| format!("Failed to read PDF file at {:?}", path))?;
+            let bytes =
+                fs::read(path).with_context(|| format!("Failed to read PDF file at {:?}", path))?;
             let page = PdfExtractor::extract_from_bytes(&bytes, Some(path))?;
             let t = page.title.unwrap_or_else(fallback_title);
             (page.content, page.word_count, t)

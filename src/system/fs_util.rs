@@ -42,7 +42,10 @@ pub fn create_private_dir_all(path: &Path) -> std::io::Result<()> {
     {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            format!("Refusing to create directory at symlink path: {}", path.display()),
+            format!(
+                "Refusing to create directory at symlink path: {}",
+                path.display()
+            ),
         ));
     }
     fs::create_dir_all(path)?;

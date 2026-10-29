@@ -54,12 +54,10 @@ impl GoogleNewsClient {
             urlencoding::encode(&query)
         );
 
-        let resp = self
-            .client
-            .get(&endpoint)
-            .send()
-            .await
-            .with_context(|| format!("Failed to fetch Google News RSS feed from {}", endpoint))?;
+        let resp =
+            self.client.get(&endpoint).send().await.with_context(|| {
+                format!("Failed to fetch Google News RSS feed from {}", endpoint)
+            })?;
 
         if !resp.status().is_success() {
             anyhow::bail!(
@@ -69,7 +67,9 @@ impl GoogleNewsClient {
             );
         }
 
-        let xml = crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES).await?;
+        let xml =
+            crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES)
+                .await?;
         let items = parse_rss_items(&xml, limit);
 
         Ok(items)
@@ -381,7 +381,10 @@ mod tests {
             items[0].google_link,
             "https://news.google.com/rss/articles/CBMi12345?oc=5"
         );
-        assert_eq!(items[0].pub_date.as_deref(), Some("Fri, 23 Oct 2026 10:00:00 GMT"));
+        assert_eq!(
+            items[0].pub_date.as_deref(),
+            Some("Fri, 23 Oct 2026 10:00:00 GMT")
+        );
         assert_eq!(items[0].source_name.as_deref(), Some("PensBurgh"));
 
         assert_eq!(

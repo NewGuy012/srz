@@ -4,7 +4,7 @@ use crate::fs_util::{
 };
 use crate::scraper::ScrapedPage;
 use crate::search::{BookMetadata, SearchResult};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use std::env;
 use std::fs::{self, File};
@@ -134,7 +134,11 @@ pub struct PruneStats {
     pub bytes_reclaimed: u64,
 }
 
-fn parse_number_and_unit(s: &str, default_unit: &str, type_label: &str) -> Result<(f64, String), String> {
+fn parse_number_and_unit(
+    s: &str,
+    default_unit: &str,
+    type_label: &str,
+) -> Result<(f64, String), String> {
     let s = s.trim();
     if s.is_empty() {
         return Err(format!("Empty {} string", type_label));
@@ -162,7 +166,12 @@ pub fn parse_duration(s: &str) -> Result<Duration, String> {
         "h" | "hr" | "hrs" | "hour" | "hours" => val * 3600.0,
         "d" | "day" | "days" => val * 86400.0,
         "w" | "week" | "weeks" => val * 7.0 * 86400.0,
-        other => return Err(format!("Unknown duration unit: '{}' (use s, m, h, d, w)", other)),
+        other => {
+            return Err(format!(
+                "Unknown duration unit: '{}' (use s, m, h, d, w)",
+                other
+            ));
+        }
     };
 
     if !secs.is_finite() || secs < 0.0 {
@@ -185,7 +194,12 @@ pub fn parse_bytes(s: &str) -> Result<u64, String> {
         "k" | "kb" | "kib" => val * KB,
         "m" | "mb" | "mib" => val * MB,
         "g" | "gb" | "gib" => val * GB,
-        other => return Err(format!("Unknown byte unit: '{}' (use B, KB, MB, GB)", other)),
+        other => {
+            return Err(format!(
+                "Unknown byte unit: '{}' (use B, KB, MB, GB)",
+                other
+            ));
+        }
     };
 
     if !bytes.is_finite() || bytes < 0.0 || bytes > u64::MAX as f64 {
@@ -257,7 +271,8 @@ impl Cache {
 
     /// Returns the path to the HTML view file for a given title.
     pub fn html_view_path(&self, title: &str) -> PathBuf {
-        self.views_dir().join(format!("{}.html", crate::render::slugify(title)))
+        self.views_dir()
+            .join(format!("{}.html", crate::render::slugify(title)))
     }
 
     /// Returns the active retention and storage policy.
@@ -599,17 +614,16 @@ impl Cache {
         Self::hash_key(&normalized_key)
     }
 
-    pub fn get_search_results(&self, title: &str, author: Option<&str>) -> Option<Vec<SearchResult>> {
+    pub fn get_search_results(
+        &self,
+        title: &str,
+        author: Option<&str>,
+    ) -> Option<Vec<SearchResult>> {
         let key = Self::search_key(title, author);
         self.read_entry_with_ttl("search", &key, Some(self.policy.search_ttl))
     }
 
-    pub fn set_search_results(
-        &self,
-        title: &str,
-        author: Option<&str>,
-        results: &[SearchResult],
-    ) {
+    pub fn set_search_results(&self, title: &str, author: Option<&str>, results: &[SearchResult]) {
         let key = Self::search_key(title, author);
         self.write_entry("search", &key, &results);
     }
@@ -645,7 +659,14 @@ impl Cache {
         self.read_entry_with_ttl("summaries", &key, Some(self.policy.summaries_ttl))
     }
 
-    pub fn set_web_summary(&self, url: &str, style: SummaryStyle, model: &str, title: &str, summary: &str) {
+    pub fn set_web_summary(
+        &self,
+        url: &str,
+        style: SummaryStyle,
+        model: &str,
+        title: &str,
+        summary: &str,
+    ) {
         let key = Self::summary_key("web", url, None, style, model, false);
         self.write_entry("summaries", &key, &CachedSummaryRef { title, summary });
     }

@@ -57,7 +57,9 @@ pub fn open_in_browser(path: &Path) -> std::io::Result<()> {
     }
     #[cfg(target_os = "linux")]
     {
-        std::process::Command::new("xdg-open").arg(&abs_path).spawn()?;
+        std::process::Command::new("xdg-open")
+            .arg(&abs_path)
+            .spawn()?;
     }
     #[cfg(target_os = "windows")]
     {
@@ -459,7 +461,9 @@ pub fn render_inline_to(out: &mut String, text: &str) {
         }
 
         // Bold: **...**
-        if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'*'
+        if i + 1 < bytes.len()
+            && bytes[i] == b'*'
+            && bytes[i + 1] == b'*'
             && let Some(end) = text[i + 2..].find("**")
         {
             out.push_str("<strong>");

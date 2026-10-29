@@ -3,20 +3,22 @@ pub mod diagnostics;
 pub mod library;
 pub mod summarize;
 
-use anyhow::{Context, Result};
 use crate::cache::Cache;
 use crate::cli::{CacheCommand, Cli, ConfigSubcommand};
 use crate::config::Config;
 use crate::db::Database;
 use crate::ui::Ui;
+use anyhow::{Context, Result};
 use std::path::Path;
 
 pub use ask::handle_ask;
 pub use diagnostics::{handle_doctor, handle_models};
-pub use library::{handle_find, handle_history, handle_index, handle_stats, update_index_dashboard};
+pub use library::{
+    handle_find, handle_history, handle_index, handle_stats, update_index_dashboard,
+};
 pub use summarize::{
-    fetch_or_cache_page, fetch_or_cache_page_with, handle_book, handle_file, handle_news,
-    handle_stdin, handle_web, SummaryOutcome,
+    SummaryOutcome, fetch_or_cache_page, fetch_or_cache_page_with, handle_book, handle_file,
+    handle_news, handle_stdin, handle_web,
 };
 
 /// Initializes an `LlmClient` from CLI arguments, printing a UI error and exiting on failure.
@@ -72,10 +74,10 @@ pub fn handle_cache(cmd: CacheCommand, cache: &Cache) -> Result<()> {
         CacheCommand::Clean { reset_db } => {
             let stats = cache.clean().context("Failed to clean cache directory")?;
             let mut db_reset = false;
-            if reset_db
-                && let Some(database) = open_db_or_warn()
-            {
-                database.reset().context("Failed to reset DuckDB database")?;
+            if reset_db && let Some(database) = open_db_or_warn() {
+                database
+                    .reset()
+                    .context("Failed to reset DuckDB database")?;
                 db_reset = true;
             }
             if stats.total_files == 0 && !db_reset {

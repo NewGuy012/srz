@@ -2,8 +2,8 @@ use std::env;
 use std::io::{self, IsTerminal, Write};
 use std::process::{Command, Stdio};
 use std::sync::LazyLock;
-use termimad::crossterm::style::{Attribute, Color};
 use termimad::MadSkin;
+use termimad::crossterm::style::{Attribute, Color};
 
 use crate::config::cli::PagingMode;
 use crate::ui::Ui;
@@ -16,7 +16,9 @@ pub fn create_skin() -> MadSkin {
 
     // Headers
     skin.headers[0].set_fg(Color::Cyan);
-    skin.headers[0].compound_style.add_attr(Attribute::Underlined);
+    skin.headers[0]
+        .compound_style
+        .add_attr(Attribute::Underlined);
     skin.headers[1].set_fg(Color::Cyan);
     skin.headers[2].set_fg(Color::Yellow);
 
@@ -65,7 +67,10 @@ pub fn display_summary(
     }
 
     // Terminal mode: format markdown
-    let header = format!("\n\x1b[1;36m=== Summary: {} ===\x1b[0m\n\n", sanitized_title);
+    let header = format!(
+        "\n\x1b[1;36m=== Summary: {} ===\x1b[0m\n\n",
+        sanitized_title
+    );
     let formatted_body = render_markdown(&sanitized_content, None);
     let full_output = format!("{}{}\n", header, formatted_body);
 
@@ -128,7 +133,8 @@ mod tests {
 
     #[test]
     fn test_render_markdown_basic() {
-        let md = "# Title\n\nThis is **bold** and *italic* text with `code`.\n\n* Bullet 1\n* Bullet 2";
+        let md =
+            "# Title\n\nThis is **bold** and *italic* text with `code`.\n\n* Bullet 1\n* Bullet 2";
         let rendered = render_markdown(md, Some(80));
         assert!(rendered.contains("Title"));
         assert!(rendered.contains("bold"));

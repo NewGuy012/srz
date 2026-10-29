@@ -77,12 +77,16 @@ fn test_disabled_cache_bypasses_reads() {
         summary: "Great sci-fi novel.",
     });
 
-    assert!(cache_disabled
-        .get_book_summary("Dune", None, SummaryStyle::Detailed, "gemma-4", false)
-        .is_none());
-    assert!(cache_enabled
-        .get_book_summary("Dune", None, SummaryStyle::Detailed, "gemma-4", false)
-        .is_some());
+    assert!(
+        cache_disabled
+            .get_book_summary("Dune", None, SummaryStyle::Detailed, "gemma-4", false)
+            .is_none()
+    );
+    assert!(
+        cache_enabled
+            .get_book_summary("Dune", None, SummaryStyle::Detailed, "gemma-4", false)
+            .is_some()
+    );
 
     let _ = fs::remove_dir_all(dir);
 }
@@ -198,8 +202,14 @@ fn test_parse_duration_and_bytes() {
     assert_eq!(parse_duration("60s").unwrap(), Duration::from_secs(60));
     assert_eq!(parse_duration("30m").unwrap(), Duration::from_secs(1800));
     assert_eq!(parse_duration("24h").unwrap(), Duration::from_secs(86400));
-    assert_eq!(parse_duration("7d").unwrap(), Duration::from_secs(7 * 86400));
-    assert_eq!(parse_duration("2w").unwrap(), Duration::from_secs(14 * 86400));
+    assert_eq!(
+        parse_duration("7d").unwrap(),
+        Duration::from_secs(7 * 86400)
+    );
+    assert_eq!(
+        parse_duration("2w").unwrap(),
+        Duration::from_secs(14 * 86400)
+    );
     assert_eq!(parse_duration("5").unwrap(), Duration::from_secs(5 * 86400));
     assert!(parse_duration("invalid").is_err());
     assert!(parse_duration("-5d").is_err());
@@ -368,7 +378,12 @@ fn test_cache_sha256_hash_keys() {
     let pages_dir = dir.join("pages");
     let mut files = fs::read_dir(pages_dir).unwrap();
     let entry = files.next().unwrap().unwrap();
-    let stem = entry.path().file_stem().unwrap().to_string_lossy().to_string();
+    let stem = entry
+        .path()
+        .file_stem()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
     assert_eq!(stem.len(), 64);
     assert!(stem.chars().all(|c| c.is_ascii_hexdigit()));
 
@@ -392,14 +407,20 @@ fn test_fs_util_rejects_symlinks() {
     // Opening symlink for private write must be rejected with InvalidInput
     let write_res = srz::fs_util::open_private_file_for_write(&link);
     assert!(write_res.is_err());
-    assert_eq!(write_res.err().unwrap().kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(
+        write_res.err().unwrap().kind(),
+        std::io::ErrorKind::InvalidInput
+    );
 
     // Creating private dir at symlink must be rejected
     let link_dir = dir.join("symlink_dir");
     symlink(&target, &link_dir).unwrap();
     let dir_res = srz::fs_util::create_private_dir_all(&link_dir);
     assert!(dir_res.is_err());
-    assert_eq!(dir_res.err().unwrap().kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(
+        dir_res.err().unwrap().kind(),
+        std::io::ErrorKind::InvalidInput
+    );
 
     let _ = fs::remove_dir_all(dir);
 }

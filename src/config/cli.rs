@@ -24,9 +24,15 @@ impl SummaryStyle {
 
     pub fn prompt_guidance(&self) -> &'static str {
         match self {
-            Self::Concise => "Provide a concise, high-level summary capturing the core message in 2-3 brief paragraphs.",
-            Self::Detailed => "Provide a detailed, structured summary covering all major sections, themes, arguments, and conclusions.",
-            Self::Bullets => "Provide a structured summary formatted as clear, concise bullet points highlighting key insights.",
+            Self::Concise => {
+                "Provide a concise, high-level summary capturing the core message in 2-3 brief paragraphs."
+            }
+            Self::Detailed => {
+                "Provide a detailed, structured summary covering all major sections, themes, arguments, and conclusions."
+            }
+            Self::Bullets => {
+                "Provide a structured summary formatted as clear, concise bullet points highlighting key insights."
+            }
         }
     }
 }
@@ -261,6 +267,22 @@ pub enum Commands {
         /// Run in interactive multi-turn chat mode
         #[arg(short, long)]
         interactive: bool,
+
+        /// List saved Q&A chat sessions
+        #[arg(long)]
+        chats: bool,
+
+        /// Resume an existing chat session by its session ID
+        #[arg(long)]
+        resume: Option<i64>,
+
+        /// Print the complete transcript of a past chat session
+        #[arg(long)]
+        show_chat: Option<i64>,
+
+        /// Delete a saved chat session by its session ID
+        #[arg(long)]
+        delete_chat: Option<i64>,
     },
     /// Search and summarize latest news on a topic using Google News RSS
     News {
@@ -368,6 +390,10 @@ pub enum ResolvedAction<'a> {
         target: Option<String>,
         question: Option<String>,
         interactive: bool,
+        list_chats: bool,
+        resume: Option<i64>,
+        show_chat: Option<i64>,
+        delete_chat: Option<i64>,
     },
     News {
         topic: String,
@@ -407,9 +433,7 @@ impl Cli {
                     if path.as_os_str() == "-" {
                         Ok(ResolvedAction::Stdin)
                     } else {
-                        Ok(ResolvedAction::File {
-                            path: path.clone(),
-                        })
+                        Ok(ResolvedAction::File { path: path.clone() })
                     }
                 }
                 Commands::Cache { action } => Ok(ResolvedAction::Cache(action.clone())),
@@ -427,6 +451,10 @@ impl Cli {
                     first,
                     second,
                     interactive,
+                    chats,
+                    resume,
+                    show_chat,
+                    delete_chat,
                 } => {
                     let (target, question) = match (first.as_deref(), second.as_deref()) {
                         (Some(f), Some(s)) => {
@@ -445,7 +473,11 @@ impl Cli {
                     Ok(ResolvedAction::Ask {
                         target,
                         question,
-                        interactive: *interactive,
+                        interactive: *interactive || resume.is_some(),
+                        list_chats: *chats,
+                        resume: *resume,
+                        show_chat: *show_chat,
+                        delete_chat: *delete_chat,
                     })
                 }
                 Commands::News {
@@ -457,7 +489,9 @@ impl Cli {
                     timeframe: *timeframe,
                     limit: *limit,
                 }),
-                Commands::Completions { shell } => Ok(ResolvedAction::Completions { shell: *shell }),
+                Commands::Completions { shell } => {
+                    Ok(ResolvedAction::Completions { shell: *shell })
+                }
                 Commands::Upgrade {
                     check,
                     force,
@@ -498,7 +532,9 @@ impl Cli {
                 }
             }
         } else {
-            Err("Please provide a URL, local file, book title, or '-' for stdin. Run `srz --help` for details.")
+            Err(
+                "Please provide a URL, local file, book title, or '-' for stdin. Run `srz --help` for details.",
+            )
         }
     }
 
@@ -507,10 +543,7 @@ impl Cli {
         config: &crate::config::Config,
         matches: Option<&clap::ArgMatches>,
     ) {
-        let profile = self
-            .profile
-            .as_deref()
-            .and_then(|p| config.profiles.get(p));
+        let profile = self.profile.as_deref().and_then(|p| config.profiles.get(p));
 
         let was_provided = |id: &str| -> bool {
             if let Some(m) = matches {
@@ -591,8 +624,18 @@ pub fn is_news_query(s: &str) -> bool {
 
 pub fn clean_news_query(s: &str) -> String {
     const STOP_WORDS: &[&str] = &[
-        "current", "latest", "today's", "todays", "recent", "news", "headline", "headlines",
-        "about", "on", "regarding", "for",
+        "current",
+        "latest",
+        "today's",
+        "todays",
+        "recent",
+        "news",
+        "headline",
+        "headlines",
+        "about",
+        "on",
+        "regarding",
+        "for",
     ];
 
     let filtered: Vec<&str> = s
@@ -614,8 +657,24 @@ pub fn is_probable_question(s: &str) -> bool {
     }
     let lower = trimmed.to_ascii_lowercase();
     let question_prefixes = [
-        "what", "why", "how", "who", "when", "where", "which", "can", "could", "should", "would",
-        "is", "are", "explain", "summarize", "tell", "describe", "clarify",
+        "what",
+        "why",
+        "how",
+        "who",
+        "when",
+        "where",
+        "which",
+        "can",
+        "could",
+        "should",
+        "would",
+        "is",
+        "are",
+        "explain",
+        "summarize",
+        "tell",
+        "describe",
+        "clarify",
     ];
     for prefix in question_prefixes {
         if lower.starts_with(prefix)

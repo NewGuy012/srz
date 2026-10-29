@@ -85,9 +85,8 @@ pub fn extract_youtube_video_id(url: &str) -> Option<&str> {
 
     let parsed = Url::parse(trimmed).ok()?;
     let host = parsed.host_str()?;
-    let is_youtube_host = host == "youtube.com"
-        || host.ends_with(".youtube.com")
-        || host == "youtu.be";
+    let is_youtube_host =
+        host == "youtube.com" || host.ends_with(".youtube.com") || host == "youtu.be";
 
     if !is_youtube_host {
         return None;
@@ -138,7 +137,10 @@ pub fn extract_youtube_video_id(url: &str) -> Option<&str> {
 }
 
 fn is_valid_youtube_id(id: &str) -> bool {
-    id.len() == 11 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    id.len() == 11
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// Extracts caption tracks from the YouTube watch page HTML.
@@ -412,8 +414,7 @@ pub fn parse_xml_format3_timedtext(xml_str: &str) -> Option<String> {
 
 pub fn extract_attr_u64(tag_content: &str, attr_name: &str) -> Option<u64> {
     let prefix = format!("{}=", attr_name);
-    crate::sources::news::extract_attr_value(tag_content, &prefix)
-        .and_then(|v| v.parse().ok())
+    crate::sources::news::extract_attr_value(tag_content, &prefix).and_then(|v| v.parse().ok())
 }
 
 pub fn strip_xml_tags(input: &str) -> String {
@@ -492,7 +493,8 @@ pub async fn fetch_innertube_player(
         anyhow::bail!("Player API returned status {}", resp.status());
     }
 
-    let text = crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES).await?;
+    let text =
+        crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES).await?;
     let player: InnertubePlayerResponse =
         serde_json::from_str(&text).context("Failed to parse player JSON")?;
 
@@ -590,7 +592,8 @@ pub async fn fetch_youtube_transcript(client: &Client, video_id: &str) -> Result
 
     // 2. Fallback to Innertube WEB Player API if tracks were not found
     if tracks.is_none()
-        && let Ok(player_data) = fetch_innertube_player(client, video_id, "WEB", "2.20240101.00.00").await
+        && let Ok(player_data) =
+            fetch_innertube_player(client, video_id, "WEB", "2.20240101.00.00").await
     {
         if title.is_none() && player_data.title.is_some() {
             title = player_data.title;
@@ -606,16 +609,14 @@ pub async fn fetch_youtube_transcript(client: &Client, video_id: &str) -> Result
     if (tracks.is_none() || title.is_none())
         && let Ok(resp) = client
             .get(&watch_url)
-            .header(
-                "User-Agent",
-                crate::scraper::DEFAULT_USER_AGENT,
-            )
+            .header("User-Agent", crate::scraper::DEFAULT_USER_AGENT)
             .header("Accept-Language", "en-US,en;q=0.9")
             .timeout(Duration::from_secs(10))
             .send()
             .await
         && resp.status().is_success()
-        && let Ok(html) = crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES).await
+        && let Ok(html) =
+            crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES).await
     {
         if title.is_none() {
             title = extract_video_title(&html);
@@ -695,25 +696,55 @@ mod tests {
             extract_youtube_video_id("https://www.youtube.com/embed/dQw4w9WgXcQ"),
             Some("dQw4w9WgXcQ")
         );
-        assert_eq!(extract_youtube_video_id("https://example.com/article"), None);
+        assert_eq!(
+            extract_youtube_video_id("https://example.com/article"),
+            None
+        );
         assert_eq!(extract_youtube_video_id("Dune"), None);
 
         // Security regression: ensure non-YouTube hosts with YouTube paths/params are rejected
-        assert_eq!(extract_youtube_video_id("https://evil.com/watch?v=dQw4w9WgXcQ"), None);
-        assert_eq!(extract_youtube_video_id("https://evil.com/youtu.be/dQw4w9WgXcQ"), None);
-        assert_eq!(extract_youtube_video_id("https://attacker.com/shorts/dQw4w9WgXcQ"), None);
-        assert_eq!(extract_youtube_video_id("https://notyoutube.com/watch?v=dQw4w9WgXcQ"), None);
-        assert_eq!(extract_youtube_video_id("https://youtube.com.evil.com/watch?v=dQw4w9WgXcQ"), None);
+        assert_eq!(
+            extract_youtube_video_id("https://evil.com/watch?v=dQw4w9WgXcQ"),
+            None
+        );
+        assert_eq!(
+            extract_youtube_video_id("https://evil.com/youtu.be/dQw4w9WgXcQ"),
+            None
+        );
+        assert_eq!(
+            extract_youtube_video_id("https://attacker.com/shorts/dQw4w9WgXcQ"),
+            None
+        );
+        assert_eq!(
+            extract_youtube_video_id("https://notyoutube.com/watch?v=dQw4w9WgXcQ"),
+            None
+        );
+        assert_eq!(
+            extract_youtube_video_id("https://youtube.com.evil.com/watch?v=dQw4w9WgXcQ"),
+            None
+        );
     }
 
     #[test]
     fn test_is_safe_caption_url() {
-        assert!(is_safe_caption_url("https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en"));
-        assert!(is_safe_caption_url("https://youtube.com/api/timedtext?v=dQw4w9WgXcQ"));
-        assert!(!is_safe_caption_url("http://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ")); // insecure HTTP
-        assert!(!is_safe_caption_url("https://evil.com/api/timedtext?v=dQw4w9WgXcQ")); // evil domain
-        assert!(!is_safe_caption_url("http://169.254.169.254/latest/meta-data")); // cloud metadata SSRF
-        assert!(!is_safe_caption_url("https://www.youtube.com/account_settings")); // non-caption path
+        assert!(is_safe_caption_url(
+            "https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en"
+        ));
+        assert!(is_safe_caption_url(
+            "https://youtube.com/api/timedtext?v=dQw4w9WgXcQ"
+        ));
+        assert!(!is_safe_caption_url(
+            "http://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ"
+        )); // insecure HTTP
+        assert!(!is_safe_caption_url(
+            "https://evil.com/api/timedtext?v=dQw4w9WgXcQ"
+        )); // evil domain
+        assert!(!is_safe_caption_url(
+            "http://169.254.169.254/latest/meta-data"
+        )); // cloud metadata SSRF
+        assert!(!is_safe_caption_url(
+            "https://www.youtube.com/account_settings"
+        )); // non-caption path
     }
 
     #[test]
@@ -766,13 +797,26 @@ mod tests {
     #[test]
     fn test_parse_timedtext_dispatch() {
         let json = r#"{"events": [{"tStartMs": 2000, "segs": [{"utf8": "json format"}]}]}"#;
-        assert!(parse_timedtext(json).unwrap().contains("[00:02] json format"));
+        assert!(
+            parse_timedtext(json)
+                .unwrap()
+                .contains("[00:02] json format")
+        );
 
         let format1 = r#"<transcript><text start="3.0">format 1</text></transcript>"#;
-        assert!(parse_timedtext(format1).unwrap().contains("[00:03] format 1"));
+        assert!(
+            parse_timedtext(format1)
+                .unwrap()
+                .contains("[00:03] format 1")
+        );
 
-        let format3 = r#"<timedtext format="3"><body><p t="4000"><s>format 3</s></p></body></timedtext>"#;
-        assert!(parse_timedtext(format3).unwrap().contains("[00:04] format 3"));
+        let format3 =
+            r#"<timedtext format="3"><body><p t="4000"><s>format 3</s></p></body></timedtext>"#;
+        assert!(
+            parse_timedtext(format3)
+                .unwrap()
+                .contains("[00:04] format 3")
+        );
     }
 
     #[test]
@@ -784,14 +828,20 @@ mod tests {
     #[test]
     fn test_extract_attr_u64() {
         assert_eq!(extract_attr_u64(r#"<p t="160" d="4000">"#, "t"), Some(160));
-        assert_eq!(extract_attr_u64(r#"<p d="4000" t='65000'>"#, "t"), Some(65000));
+        assert_eq!(
+            extract_attr_u64(r#"<p d="4000" t='65000'>"#, "t"),
+            Some(65000)
+        );
         assert_eq!(extract_attr_u64(r#"<p>"#, "t"), None);
     }
 
     #[test]
     fn test_extract_video_title() {
         let html = "<html><head><title>Rust in 100 Seconds - YouTube</title></head></html>";
-        assert_eq!(extract_video_title(html), Some("Rust in 100 Seconds".to_string()));
+        assert_eq!(
+            extract_video_title(html),
+            Some("Rust in 100 Seconds".to_string())
+        );
     }
 
     #[test]
@@ -801,6 +851,9 @@ mod tests {
             decode_html_entities(plain),
             std::borrow::Cow::Borrowed(_)
         ));
-        assert_eq!(decode_html_entities("A &amp;lt; B &quot;ok&quot;"), "A &lt; B \"ok\"");
+        assert_eq!(
+            decode_html_entities("A &amp;lt; B &quot;ok&quot;"),
+            "A &lt; B \"ok\""
+        );
     }
 }

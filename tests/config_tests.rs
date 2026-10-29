@@ -45,7 +45,10 @@ style = "detailed"
 "#;
 
     let config: Config = toml::from_str(toml_str).unwrap();
-    assert_eq!(config.base_url.as_deref(), Some("http://localhost:11434/v1"));
+    assert_eq!(
+        config.base_url.as_deref(),
+        Some("http://localhost:11434/v1")
+    );
     assert_eq!(config.model.as_deref(), Some("llama3:8b"));
     assert_eq!(config.style, Some(SummaryStyle::Bullets));
     assert_eq!(config.max_tokens, Some(4096));

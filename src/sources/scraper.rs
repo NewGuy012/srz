@@ -41,8 +41,7 @@ const REFERENCE_HEADINGS: &[&str] = &[
     "## see also",
 ];
 
-pub const DEFAULT_USER_AGENT: &str =
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 pub const MAX_SCRAPE_BYTES: usize = 10 * 1024 * 1024; // 10 MB limit for web responses
 
@@ -76,7 +75,11 @@ pub async fn read_response_bytes_limited(
         Vec::new()
     };
 
-    while let Some(chunk) = response.chunk().await.context("Failed to read response body chunk")? {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .context("Failed to read response body chunk")?
+    {
         if bytes.len() + chunk.len() > max_bytes {
             anyhow::bail!(
                 "Response body exceeded limit of {} MB",
@@ -117,10 +120,7 @@ pub struct WebScraper {
 impl WebScraper {
     pub fn new() -> Result<Self> {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            USER_AGENT,
-            HeaderValue::from_static(DEFAULT_USER_AGENT),
-        );
+        headers.insert(USER_AGENT, HeaderValue::from_static(DEFAULT_USER_AGENT));
         headers.insert(
             reqwest::header::ACCEPT,
             HeaderValue::from_static(
@@ -254,7 +254,11 @@ impl WebScraper {
         None
     }
 
-    fn extract_main_html<'a>(&self, document: &Html, raw_html: &'a str) -> std::borrow::Cow<'a, str> {
+    fn extract_main_html<'a>(
+        &self,
+        document: &Html,
+        raw_html: &'a str,
+    ) -> std::borrow::Cow<'a, str> {
         for sel in MAIN_SELECTORS.iter() {
             if let Some(element) = document.select(sel).next() {
                 let html = element.html();

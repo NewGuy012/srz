@@ -80,7 +80,9 @@ impl BookSearcher {
         }
 
         let resp = self.get_with_timeout(&endpoint, 3).await?;
-        let bytes = crate::scraper::read_response_bytes_limited(resp, 5 * 1024 * 1024).await.ok()?;
+        let bytes = crate::scraper::read_response_bytes_limited(resp, 5 * 1024 * 1024)
+            .await
+            .ok()?;
         let json: Value = serde_json::from_slice(&bytes).ok()?;
         let docs = json.get("docs")?.as_array()?;
 
@@ -91,7 +93,8 @@ impl BookSearcher {
             let norm_doc = normalize_title_for_comparison(doc_title);
 
             // Require close title match
-            if norm_doc == norm_req || norm_doc.contains(&norm_req) || norm_req.contains(&norm_doc) {
+            if norm_doc == norm_req || norm_doc.contains(&norm_req) || norm_req.contains(&norm_doc)
+            {
                 let author_name = doc
                     .get("author_name")
                     .and_then(|a| a.as_array())
@@ -208,11 +211,14 @@ impl BookSearcher {
         if let Some(items) = json.pointer("/query/search").and_then(|v| v.as_array()) {
             for item in items.iter().take(3) {
                 if let Some(page_title) = item.get("title").and_then(|t| t.as_str()) {
-                    let snippet = item.get("snippet").and_then(|s| s.as_str()).map(|raw_snippet| {
-                        // Strip HTML tags from snippet
-                        let fragment = Html::parse_fragment(raw_snippet);
-                        fragment.root_element().text().collect::<String>()
-                    });
+                    let snippet = item
+                        .get("snippet")
+                        .and_then(|s| s.as_str())
+                        .map(|raw_snippet| {
+                            // Strip HTML tags from snippet
+                            let fragment = Html::parse_fragment(raw_snippet);
+                            fragment.root_element().text().collect::<String>()
+                        });
 
                     let url_title = page_title.replace(' ', "_");
                     let url = format!(
@@ -252,7 +258,12 @@ impl BookSearcher {
             return Ok(Vec::new());
         };
 
-        let html = match crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES).await {
+        let html = match crate::scraper::read_response_text_limited(
+            resp,
+            crate::scraper::MAX_SCRAPE_BYTES,
+        )
+        .await
+        {
             Ok(h) => h,
             Err(_) => return Ok(Vec::new()),
         };
@@ -266,20 +277,20 @@ impl BookSearcher {
             {
                 let actual_url = extract_ddg_url(raw_href);
                 if actual_url.starts_with("http") {
-                        let title_text: String = link_elem.text().collect();
-                        let snippet: Option<String> = element
-                            .select(&DDG_SNIPPET_SEL)
-                            .next()
-                            .map(|s| s.text().collect::<String>().trim().to_string());
+                    let title_text: String = link_elem.text().collect();
+                    let snippet: Option<String> = element
+                        .select(&DDG_SNIPPET_SEL)
+                        .next()
+                        .map(|s| s.text().collect::<String>().trim().to_string());
 
-                        results.push(SearchResult::new(
-                            title_text.trim(),
-                            actual_url.into_owned(),
-                            snippet,
-                        ));
-                    }
+                    results.push(SearchResult::new(
+                        title_text.trim(),
+                        actual_url.into_owned(),
+                        snippet,
+                    ));
                 }
             }
+        }
 
         Ok(results)
     }
@@ -420,7 +431,11 @@ impl PreparedQuery {
 
 /// Scores each candidate against the requested book title and optional author,
 /// sorting candidates descending by relevance score.
-pub fn rank_candidates(title_query: &str, author_query: Option<&str>, candidates: &mut [SearchResult]) {
+pub fn rank_candidates(
+    title_query: &str,
+    author_query: Option<&str>,
+    candidates: &mut [SearchResult],
+) {
     let prepared = PreparedQuery::new(title_query, author_query);
     for c in candidates.iter_mut() {
         c.score = prepared.score(c);

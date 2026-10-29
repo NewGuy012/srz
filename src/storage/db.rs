@@ -1,7 +1,7 @@
 use crate::cache::Cache;
 use crate::fs_util;
 use anyhow::{Context, Result};
-use duckdb::{params, Connection};
+use duckdb::{Connection, params};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -81,6 +81,28 @@ pub struct LibraryStats {
     pub models: Vec<ModelStats>,
     #[serde(default)]
     pub top_domains: Vec<DomainStats>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatSession {
+    pub id: i64,
+    pub title: String,
+    pub target_type: String,
+    pub target_url: Option<String>,
+    pub model: String,
+    pub message_count: i64,
+    pub last_question: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub id: i64,
+    pub session_id: i64,
+    pub role: String,
+    pub content: String,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,14 +194,18 @@ impl Database {
 
     /// Opens a DuckDB database at the specified file path.
     pub fn open_at(path: &Path) -> Result<Self> {
-        let exists =
-            path.exists() && std::fs::metadata(path).map(|m| m.len() > 0).unwrap_or(false);
+        let exists = path.exists()
+            && std::fs::metadata(path)
+                .map(|m| m.len() > 0)
+                .unwrap_or(false);
         let conn = Connection::open(path)
             .with_context(|| format!("Failed to open DuckDB database at {:?}", path))?;
         if path.exists() {
             fs_util::set_private_file_perms(path);
         }
-        let _ = conn.execute_batch("SET autoinstall_known_extensions = false; SET autoload_known_extensions = false;");
+        let _ = conn.execute_batch(
+            "SET autoinstall_known_extensions = false; SET autoload_known_extensions = false;",
+        );
         let db = Self { conn };
         if !exists || !db.is_schema_initialized() {
             db.init_schema()?;
@@ -190,7 +216,9 @@ impl Database {
     /// Opens an in-memory DuckDB database (useful for testing).
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory().context("Failed to open in-memory DuckDB")?;
-        let _ = conn.execute_batch("SET autoinstall_known_extensions = false; SET autoload_known_extensions = false;");
+        let _ = conn.execute_batch(
+            "SET autoinstall_known_extensions = false; SET autoload_known_extensions = false;",
+        );
         let db = Self { conn };
         db.init_schema()?;
         Ok(db)
@@ -203,8 +231,9 @@ impl Database {
     }
 
     fn init_schema(&self) -> Result<()> {
-        self.conn.execute_batch(
-            "CREATE SEQUENCE IF NOT EXISTS history_id_seq;
+        self.conn
+            .execute_batch(
+                "CREATE SEQUENCE IF NOT EXISTS history_id_seq;
              CREATE TABLE IF NOT EXISTS history (
                  id INTEGER DEFAULT nextval('history_id_seq') PRIMARY KEY,
                  target_type VARCHAR NOT NULL,
@@ -238,8 +267,29 @@ impl Database {
                  term_freq INTEGER NOT NULL,
                  in_title BOOLEAN NOT NULL DEFAULT FALSE,
                  PRIMARY KEY (doc_id, term)
+             );
+
+             CREATE SEQUENCE IF NOT EXISTS chat_sessions_id_seq;
+             CREATE TABLE IF NOT EXISTS chat_sessions (
+                 id INTEGER DEFAULT nextval('chat_sessions_id_seq') PRIMARY KEY,
+                 title VARCHAR NOT NULL,
+                 target_type VARCHAR NOT NULL,
+                 target_url VARCHAR,
+                 model VARCHAR NOT NULL,
+                 created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+                 updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+             );
+
+             CREATE SEQUENCE IF NOT EXISTS chat_messages_id_seq;
+             CREATE TABLE IF NOT EXISTS chat_messages (
+                 id INTEGER DEFAULT nextval('chat_messages_id_seq') PRIMARY KEY,
+                 session_id INTEGER NOT NULL REFERENCES chat_sessions(id),
+                 role VARCHAR NOT NULL,
+                 content TEXT NOT NULL,
+                 created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
              );",
-        ).context("Failed to initialize DuckDB schema")?;
+            )
+            .context("Failed to initialize DuckDB schema")?;
 
         self.backfill_terms_if_needed()?;
         Ok(())
@@ -272,13 +322,19 @@ impl Database {
 
     /// Resets all DuckDB tables and sequences, clearing reading history and the search library.
     pub fn reset(&self) -> Result<()> {
-        self.conn.execute_batch(
-            "DROP TABLE IF EXISTS library_terms;
+        self.conn
+            .execute_batch(
+                "DROP TABLE IF EXISTS chat_messages;
+             DROP TABLE IF EXISTS chat_sessions;
+             DROP TABLE IF EXISTS library_terms;
              DROP TABLE IF EXISTS library;
              DROP TABLE IF EXISTS history;
+             DROP SEQUENCE IF EXISTS chat_messages_id_seq;
+             DROP SEQUENCE IF EXISTS chat_sessions_id_seq;
              DROP SEQUENCE IF EXISTS history_id_seq;
              DROP SEQUENCE IF EXISTS library_id_seq;",
-        ).context("Failed to drop DuckDB tables")?;
+            )
+            .context("Failed to drop DuckDB tables")?;
 
         self.init_schema()?;
         Ok(())
@@ -342,7 +398,8 @@ impl Database {
             )
             .context("Failed to record entry in DuckDB library table")?;
 
-            let doc_id: i64 = conn.query_row("SELECT currval('history_id_seq')", [], |r| r.get(0))?;
+            let doc_id: i64 =
+                conn.query_row("SELECT currval('history_id_seq')", [], |r| r.get(0))?;
             insert_doc_terms(conn, doc_id, record.title, record.summary)?;
 
             Ok(())
@@ -393,6 +450,153 @@ impl Database {
         })
     }
 
+    /// Creates a new persistent multi-turn chat session in DuckDB and returns its generated ID.
+    pub fn create_chat_session(
+        &self,
+        title: &str,
+        target_type: &str,
+        target_url: Option<&str>,
+        model: &str,
+    ) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO chat_sessions (title, target_type, target_url, model)
+             VALUES (?, ?, ?, ?)",
+            params![title, target_type, target_url, model],
+        )?;
+        let id: i64 = self
+            .conn
+            .query_row("SELECT currval('chat_sessions_id_seq')", [], |r| r.get(0))?;
+        Ok(id)
+    }
+
+    /// Appends a question and assistant answer turn to an existing chat session.
+    pub fn add_chat_turn(&self, session_id: i64, question: &str, answer: &str) -> Result<()> {
+        self.with_transaction(|conn| {
+            conn.execute(
+                "INSERT INTO chat_messages (session_id, role, content)
+                 VALUES (?, 'user', ?)",
+                params![session_id, question],
+            )?;
+            conn.execute(
+                "INSERT INTO chat_messages (session_id, role, content)
+                 VALUES (?, 'assistant', ?)",
+                params![session_id, answer],
+            )?;
+            conn.execute(
+                "UPDATE chat_sessions
+                 SET updated_at = current_timestamp
+                 WHERE id = ?",
+                params![session_id],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Retrieves all saved chat sessions ordered by most recently active.
+    pub fn get_chat_sessions(&self, limit: usize) -> Result<Vec<ChatSession>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, s.title, s.target_type, s.target_url, s.model,
+                    count(m.id)::BIGINT AS msg_count,
+                    (SELECT m2.content FROM chat_messages m2 WHERE m2.session_id = s.id AND m2.role = 'user' ORDER BY m2.id DESC LIMIT 1) AS last_q,
+                    strftime(s.created_at, '%Y-%m-%d %H:%M'),
+                    strftime(s.updated_at, '%Y-%m-%d %H:%M')
+             FROM chat_sessions s
+             LEFT JOIN chat_messages m ON s.id = m.session_id
+             GROUP BY s.id, s.title, s.target_type, s.target_url, s.model, s.created_at, s.updated_at
+             ORDER BY s.updated_at DESC
+             LIMIT ?"
+        )?;
+
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(ChatSession {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                target_type: row.get(2)?,
+                target_url: row.get(3)?,
+                model: row.get(4)?,
+                message_count: row.get(5)?,
+                last_question: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+            })
+        })?;
+
+        rows.collect::<duckdb::Result<Vec<_>>>().map_err(Into::into)
+    }
+
+    /// Retrieves a chat session and all its associated messages.
+    pub fn get_chat_session(
+        &self,
+        session_id: i64,
+    ) -> Result<Option<(ChatSession, Vec<ChatMessage>)>> {
+        let mut session_stmt = self.conn.prepare(
+            "SELECT s.id, s.title, s.target_type, s.target_url, s.model,
+                    count(m.id)::BIGINT AS msg_count,
+                    (SELECT m2.content FROM chat_messages m2 WHERE m2.session_id = s.id AND m2.role = 'user' ORDER BY m2.id DESC LIMIT 1) AS last_q,
+                    strftime(s.created_at, '%Y-%m-%d %H:%M'),
+                    strftime(s.updated_at, '%Y-%m-%d %H:%M')
+             FROM chat_sessions s
+             LEFT JOIN chat_messages m ON s.id = m.session_id
+             WHERE s.id = ?
+             GROUP BY s.id, s.title, s.target_type, s.target_url, s.model, s.created_at, s.updated_at"
+        )?;
+
+        let mut session_rows = session_stmt.query_map(params![session_id], |row| {
+            Ok(ChatSession {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                target_type: row.get(2)?,
+                target_url: row.get(3)?,
+                model: row.get(4)?,
+                message_count: row.get(5)?,
+                last_question: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+            })
+        })?;
+
+        let session = match session_rows.next() {
+            Some(res) => res?,
+            None => return Ok(None),
+        };
+
+        let mut msg_stmt = self.conn.prepare(
+            "SELECT id, session_id, role, content, strftime(created_at, '%Y-%m-%d %H:%M')
+             FROM chat_messages
+             WHERE session_id = ?
+             ORDER BY id ASC",
+        )?;
+
+        let msgs = msg_stmt
+            .query_map(params![session_id], |row| {
+                Ok(ChatMessage {
+                    id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    role: row.get(2)?,
+                    content: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            })?
+            .collect::<duckdb::Result<Vec<_>>>()?;
+
+        Ok(Some((session, msgs)))
+    }
+
+    /// Deletes a chat session and all its messages.
+    pub fn delete_chat_session(&self, session_id: i64) -> Result<bool> {
+        self.with_transaction(|conn| {
+            conn.execute(
+                "DELETE FROM chat_messages WHERE session_id = ?",
+                params![session_id],
+            )?;
+            let affected = conn.execute(
+                "DELETE FROM chat_sessions WHERE id = ?",
+                params![session_id],
+            )?;
+            Ok(affected > 0)
+        })
+    }
+
     /// Computes aggregated analytics across all past summarization runs.
     pub fn get_stats(&self) -> Result<LibraryStats> {
         let now_secs = std::time::SystemTime::now()
@@ -423,32 +627,33 @@ impl Database {
              FROM history"
         )?;
 
-        let mut stats = total_stmt.query_row(params![&today_str, &week_str, &month_str], |row| {
-            Ok(LibraryStats {
-                total_summaries: row.get(0)?,
-                book_summaries: row.get(1)?,
-                web_summaries: row.get(2)?,
-                file_summaries: row.get(3)?,
-                stdin_summaries: row.get(4)?,
-                news_summaries: row.get(5)?,
-                video_summaries: row.get(6)?,
-                total_source_words: row.get(7)?,
-                total_summary_words: 0,
-                total_prompt_tokens: row.get(8)?,
-                total_completion_tokens: row.get(9)?,
-                avg_tokens_per_second: row.get(10)?,
-                max_tokens_per_second: row.get(11)?,
-                total_duration_ms: row.get(12)?,
-                estimated_minutes_saved: 0.0,
-                reads_today: row.get(13)?,
-                reads_this_week: row.get(14)?,
-                reads_this_month: row.get(15)?,
-                active_reading_days: 0,
-                current_streak_days: 0,
-                models: Vec::new(),
-                top_domains: Vec::new(),
-            })
-        })?;
+        let mut stats =
+            total_stmt.query_row(params![&today_str, &week_str, &month_str], |row| {
+                Ok(LibraryStats {
+                    total_summaries: row.get(0)?,
+                    book_summaries: row.get(1)?,
+                    web_summaries: row.get(2)?,
+                    file_summaries: row.get(3)?,
+                    stdin_summaries: row.get(4)?,
+                    news_summaries: row.get(5)?,
+                    video_summaries: row.get(6)?,
+                    total_source_words: row.get(7)?,
+                    total_summary_words: 0,
+                    total_prompt_tokens: row.get(8)?,
+                    total_completion_tokens: row.get(9)?,
+                    avg_tokens_per_second: row.get(10)?,
+                    max_tokens_per_second: row.get(11)?,
+                    total_duration_ms: row.get(12)?,
+                    estimated_minutes_saved: 0.0,
+                    reads_today: row.get(13)?,
+                    reads_this_week: row.get(14)?,
+                    reads_this_month: row.get(15)?,
+                    active_reading_days: 0,
+                    current_streak_days: 0,
+                    models: Vec::new(),
+                    top_domains: Vec::new(),
+                })
+            })?;
 
         // Summary words and time saved
         let total_summary_words: i64 = self
@@ -469,7 +674,7 @@ impl Database {
         let mut days_stmt = self.conn.prepare(
             "SELECT DISTINCT strftime(created_at, '%Y-%m-%d') AS day_str
              FROM history
-             ORDER BY day_str DESC"
+             ORDER BY day_str DESC",
         )?;
         let days: Vec<String> = days_stmt
             .query_map([], |row| row.get(0))?
@@ -506,7 +711,7 @@ impl Database {
                  coalesce(avg(duration_ms), 0.0)::DOUBLE AS avg_duration_ms
              FROM history
              GROUP BY model
-             ORDER BY runs DESC"
+             ORDER BY runs DESC",
         )?;
         let models: Vec<ModelStats> = model_stmt
             .query_map([], |row| {
@@ -534,7 +739,7 @@ impl Database {
              WHERE url IS NOT NULL AND length(regexp_extract(url, '^https?://([^/:]+)', 1)) > 0
              GROUP BY domain
              ORDER BY count DESC
-             LIMIT 5"
+             LIMIT 5",
         )?;
         let top_domains: Vec<DomainStats> = domain_stmt
             .query_map([], |row| {
@@ -564,7 +769,11 @@ impl Database {
         let mut seen_ids = std::collections::HashSet::new();
 
         if !query_terms.is_empty() {
-            let placeholders = query_terms.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            let placeholders = query_terms
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(", ");
             let bm25_sql = format!(
                 "WITH doc_stats AS (
                      SELECT COUNT(*)::DOUBLE AS total_docs,
@@ -655,7 +864,7 @@ impl Database {
                     OR title ILIKE '%' || ? || '%'
                     OR coalesce(author, '') ILIKE '%' || ? || '%'
                  ORDER BY id DESC
-                 LIMIT 15"
+                 LIMIT 15",
             )?;
 
             let rows = stmt.query_map(params![trimmed, trimmed, trimmed], |row| {
@@ -697,7 +906,10 @@ impl Database {
 /// Tokenizes text into normalized lowercased terms for BM25 indexing and querying.
 pub fn tokenize_terms(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
-        .map(|s| s.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+        .map(|s| {
+            s.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
         .filter(|s| !s.is_empty())
         .collect()
 }
@@ -718,11 +930,14 @@ fn insert_doc_terms(conn: &Connection, doc_id: i64, title: &str, summary: &str) 
         entry.0 += 1;
     }
 
-    conn.execute("DELETE FROM library_terms WHERE doc_id = ?", params![doc_id])?;
+    conn.execute(
+        "DELETE FROM library_terms WHERE doc_id = ?",
+        params![doc_id],
+    )?;
 
     let mut stmt = conn.prepare(
         "INSERT INTO library_terms (doc_id, term, term_freq, in_title)
-         VALUES (?, ?, ?, ?)"
+         VALUES (?, ?, ?, ?)",
     )?;
 
     for (term, (freq, in_title)) in term_counts {
@@ -732,8 +947,7 @@ fn insert_doc_terms(conn: &Connection, doc_id: i64, title: &str, summary: &str) 
     Ok(())
 }
 
-const SELECT_HISTORY_SQL: &str =
-    "SELECT id, target_type, title, author, url, style, model,
+const SELECT_HISTORY_SQL: &str = "SELECT id, target_type, title, author, url, style, model,
             word_count, prompt_tokens, completion_tokens,
             duration_ms, tokens_per_second,
             strftime(created_at, '%Y-%m-%d %H:%M')
