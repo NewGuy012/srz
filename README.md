@@ -20,10 +20,10 @@
 %%{init: {"flowchart": {"minNodeWidth": 210, "minNodeHeight": 54}}}%%
 flowchart LR
     subgraph Sources["     Input Sources"]
-        S1["🌐 Web & YouTube URLs\nArticles & Captions"]
-        S2["📄 PDFs & Documents\nFiles & Stdin Streams"]
-        S3["📚 Book Synopses\nOpen Library Overviews"]
-        S4["📰 Live News Feeds\nGoogle News RSS"]
+        S1["🌐 Web & YouTube URLs"]
+        S2["📄 PDFs & Documents"]
+        S3["📚 Book Synopses"]
+        S4["📰 Live News Feeds"]
     end
 
     subgraph Core["    srz Core (100% Private)"]
@@ -31,10 +31,10 @@ flowchart LR
     end
 
     subgraph Highlights["     Key Highlights"]
-        H1["⚡ Rich Terminal Paging\nSyntax-Colored Output"]
-        H2["💬 Grounded Q&A Chat\nInteractive srz ask"]
-        H3["🖥️ TUI Dashboard View\nRatatui srz browse"]
-        H4["📖 Clean Reader Views\nDark-Mode HTML & MD"]
+        H1["⚡ Rich Terminal Paging"]
+        H2["💬 Grounded Q&A Chat"]
+        H3["🖥️ TUI Dashboard View"]
+        H4["📖 Clean Reader Views"]
     end
 
     S1 --> C
