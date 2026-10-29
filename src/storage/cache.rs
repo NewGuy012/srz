@@ -696,23 +696,23 @@ impl Cache {
         }
 
         // Save into DuckDB cache
-        if let Some(guard) = self.get_or_init_db() {
-            if let Some(conn) = guard.as_ref() {
-                let table = match namespace {
-                    "search" => Some("cache_search"),
-                    "summaries" => Some("cache_summaries"),
-                    _ => None,
-                };
-                if let Some(tbl) = table {
-                    if let Ok(json_str) = serde_json::to_string(value) {
-                        let sql = format!(
-                            "INSERT OR REPLACE INTO {} (cache_key, data, cached_at)
-                             VALUES (?, ?, current_timestamp)",
-                            tbl
-                        );
-                        let _ = conn.execute(&sql, params![key_hash, json_str]);
-                    }
-                }
+        if let Some(guard) = self.get_or_init_db()
+            && let Some(conn) = guard.as_ref()
+        {
+            let table = match namespace {
+                "search" => Some("cache_search"),
+                "summaries" => Some("cache_summaries"),
+                _ => None,
+            };
+            if let Some(tbl) = table
+                && let Ok(json_str) = serde_json::to_string(value)
+            {
+                let sql = format!(
+                    "INSERT OR REPLACE INTO {} (cache_key, data, cached_at)
+                     VALUES (?, ?, current_timestamp)",
+                    tbl
+                );
+                let _ = conn.execute(&sql, params![key_hash, json_str]);
             }
         }
 
@@ -745,48 +745,41 @@ impl Cache {
         }
 
         // 1. Try DuckDB cache first
-        if let Some(guard) = self.get_or_init_db() {
-            if let Some(conn) = guard.as_ref() {
-                let now_secs = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0);
+        if let Some(guard) = self.get_or_init_db()
+            && let Some(conn) = guard.as_ref()
+        {
+            let now_secs = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
 
-                if let Ok(mut stmt) = conn.prepare(
-                    "SELECT url, title, content, word_count, strftime(cached_at, '%s')::BIGINT
-                     FROM cache_pages
-                     WHERE cache_key = ?",
-                ) {
-                    if let Ok(mut rows) = stmt.query(params![&key]) {
-                        if let Some(row) = rows.next().ok().flatten() {
-                            let page_url: String = row.get(0).unwrap_or_default();
-                            let title: Option<String> = row.get(1).ok();
-                            let content: String = row.get(2).unwrap_or_default();
-                            let word_count: usize = row.get::<_, u32>(3).unwrap_or(0) as usize;
-                            let cached_secs: i64 = row.get(4).unwrap_or(0);
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT url, title, content, word_count, strftime(cached_at, '%s')::BIGINT
+                 FROM cache_pages
+                 WHERE cache_key = ?",
+            ) && let Ok(mut rows) = stmt.query(params![&key])
+                && let Some(row) = rows.next().ok().flatten()
+            {
+                let page_url: String = row.get(0).unwrap_or_default();
+                let title: Option<String> = row.get(1).ok();
+                let content: String = row.get(2).unwrap_or_default();
+                let word_count: usize = row.get::<_, u32>(3).unwrap_or(0) as usize;
+                let cached_secs: i64 = row.get(4).unwrap_or(0);
 
-                            if ttl != Duration::MAX
-                                && (now_secs - cached_secs) > ttl.as_secs() as i64
-                            {
-                                let _ = conn.execute(
-                                    "DELETE FROM cache_pages WHERE cache_key = ?",
-                                    params![&key],
-                                );
-                                let path =
-                                    self.base_dir.join("pages").join(format!("{}.json", key));
-                                let _ = fs::remove_file(path);
-                                return None;
-                            }
-
-                            return Some(ScrapedPage {
-                                url: page_url,
-                                title,
-                                content,
-                                word_count,
-                            });
-                        }
-                    }
+                if ttl != Duration::MAX && (now_secs - cached_secs) > ttl.as_secs() as i64 {
+                    let _ =
+                        conn.execute("DELETE FROM cache_pages WHERE cache_key = ?", params![&key]);
+                    let path = self.base_dir.join("pages").join(format!("{}.json", key));
+                    let _ = fs::remove_file(path);
+                    return None;
                 }
+
+                return Some(ScrapedPage {
+                    url: page_url,
+                    title,
+                    content,
+                    word_count,
+                });
             }
         }
 
@@ -801,14 +794,14 @@ impl Cache {
         }
 
         // 1. Save into DuckDB cache
-        if let Some(guard) = self.get_or_init_db() {
-            if let Some(conn) = guard.as_ref() {
-                let _ = conn.execute(
-                    "INSERT OR REPLACE INTO cache_pages (cache_key, url, title, content, word_count, cached_at)
-                     VALUES (?, ?, ?, ?, ?, current_timestamp)",
-                    params![&key, &page.url, &page.title, &page.content, page.word_count as u32],
-                );
-            }
+        if let Some(guard) = self.get_or_init_db()
+            && let Some(conn) = guard.as_ref()
+        {
+            let _ = conn.execute(
+                "INSERT OR REPLACE INTO cache_pages (cache_key, url, title, content, word_count, cached_at)
+                 VALUES (?, ?, ?, ?, ?, current_timestamp)",
+                params![&key, &page.url, &page.title, &page.content, page.word_count as u32],
+            );
         }
 
         // 2. Write private file
