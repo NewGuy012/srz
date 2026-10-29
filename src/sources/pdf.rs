@@ -16,8 +16,18 @@ impl PdfExtractor {
 
     /// Extracts text from in-memory PDF bytes, parsing the PDF document structure only once.
     pub fn extract_from_bytes(bytes: &[u8], path: Option<&Path>) -> Result<ScrapedPage> {
-        let mut doc =
-            pdf_extract::Document::load_mem(bytes).context("Failed to parse PDF document")?;
+        let doc_res = pdf_extract::Document::load_mem(bytes);
+        let mut doc = match doc_res {
+            Ok(d) => d,
+            Err(_) if bytes.contains(&b'\r') => {
+                // Defensive recovery: if the PDF was corrupted by CRLF line-ending translation (e.g. Git on Windows),
+                // strip carriage returns to restore the original xref byte offsets.
+                let stripped: Vec<u8> = bytes.iter().copied().filter(|&b| b != b'\r').collect();
+                pdf_extract::Document::load_mem(&stripped)
+                    .context("Failed to parse PDF document")?
+            }
+            Err(e) => return Err(e).context("Failed to parse PDF document"),
+        };
         if doc.is_encrypted() {
             let _ = doc.decrypt("");
         }

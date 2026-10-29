@@ -312,6 +312,27 @@ fn test_assets_document_pdf_cli_access_and_extraction() {
 }
 
 #[test]
+fn test_pdf_crlf_line_ending_recovery() {
+    use srz::sources::pdf::PdfExtractor;
+
+    let original_bytes = std::fs::read("assets/document.pdf").unwrap();
+    // Simulate Windows Git CRLF conversion
+    let mut crlf_bytes = Vec::new();
+    for &b in &original_bytes {
+        if b == b'\n' {
+            crlf_bytes.push(b'\r');
+        }
+        crlf_bytes.push(b);
+    }
+
+    // Extraction should automatically recover and succeed despite CRLF corrupting xref offsets
+    let page = PdfExtractor::extract_from_bytes(&crlf_bytes, None)
+        .expect("PdfExtractor should recover from CRLF line ending corruption");
+    assert!(page.content.contains("THE HISTORY OF RUST"));
+    assert!(page.word_count >= 100);
+}
+
+#[test]
 fn test_escape_closing_tag_case_insensitive_and_whitespace_variations() {
     use srz::engine::llm::escape_closing_tag;
 
