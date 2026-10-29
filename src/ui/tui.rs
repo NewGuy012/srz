@@ -142,18 +142,6 @@ impl AppState {
     }
 }
 
-fn badge_for_type(target_type: &str) -> &'static str {
-    match target_type {
-        "book" => "📚 Book",
-        "web" => "🌐 Web",
-        "news" => "📰 News",
-        "file" => "📄 File",
-        "stdin" => "⌨️ Stdin",
-        "youtube" => "📺 Video",
-        _ => "📝 Doc",
-    }
-}
-
 /// Runs the interactive terminal UI library explorer.
 pub fn run_tui(db: &Database, cache: &Cache) -> Result<()> {
     enable_raw_mode()?;
@@ -394,7 +382,7 @@ fn ui_draw(f: &mut Frame, state: &mut AppState) {
         .iter()
         .filter_map(|&idx| state.items.get(idx))
         .map(|item| {
-            let badge = badge_for_type(&item.target_type);
+            let badge = render::target_badge(&item.target_type);
             let date = if item.created_at.len() >= 10 {
                 &item.created_at[0..10]
             } else {
@@ -565,11 +553,12 @@ mod tests {
 
     #[test]
     fn test_badge_for_type() {
-        assert_eq!(badge_for_type("book"), "📚 Book");
-        assert_eq!(badge_for_type("web"), "🌐 Web");
-        assert_eq!(badge_for_type("news"), "📰 News");
-        assert_eq!(badge_for_type("youtube"), "📺 Video");
-        assert_eq!(badge_for_type("other"), "📝 Doc");
+        assert_eq!(render::target_badge("book"), "📚 Book");
+        assert_eq!(render::target_badge("web"), "🌐 Web");
+        assert_eq!(render::target_badge("news"), "📰 News");
+        assert_eq!(render::target_badge("youtube"), "📺 Video");
+        assert_eq!(render::target_badge("other"), "📝 Doc");
+        assert_eq!(render::target_icon("youtube"), "📺");
     }
 
     #[test]

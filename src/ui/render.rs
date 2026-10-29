@@ -493,7 +493,21 @@ pub fn target_icon(target_type: &str) -> &'static str {
         "file" => "📄",
         "stdin" => "⌨️",
         "news" => "📰",
+        "youtube" => "📺",
         _ => "🌐",
+    }
+}
+
+/// Returns the formatted badge label (icon + category name) for a summary target type.
+pub fn target_badge(target_type: &str) -> &'static str {
+    match target_type {
+        "book" => "📚 Book",
+        "web" => "🌐 Web",
+        "news" => "📰 News",
+        "file" => "📄 File",
+        "stdin" => "⌨️ Stdin",
+        "youtube" => "📺 Video",
+        _ => "📝 Doc",
     }
 }
 
@@ -770,6 +784,7 @@ pub fn render_index_html(stats: &LibraryStats, entries: &[HistoryEntry]) -> Stri
       <button class="filter-btn active" data-filter="all">All</button>
       <button class="filter-btn" data-filter="book">📚 Books</button>
       <button class="filter-btn" data-filter="web">🌐 Web</button>
+      <button class="filter-btn" data-filter="youtube">📺 Videos</button>
       <button class="filter-btn" data-filter="news">📰 News</button>
       <button class="filter-btn" data-filter="file">📄 Files</button>
       <button class="filter-btn" data-filter="stdin">⌨️ Stdin</button>
