@@ -177,8 +177,12 @@ async fn main() -> Result<()> {
                     output_path.display()
                 ));
             } else if !outcome.streamed_to_stdout {
-                Ui::header(&format!("Summary: {}", outcome.title));
-                println!("{}\n", outcome.summary);
+                srz::ui::display_summary(
+                    &outcome.title,
+                    &outcome.summary,
+                    args.effective_paging(),
+                    args.plain,
+                )?;
             }
 
             // Always ensure clickable styled HTML and Markdown view files exist (skipping re-render on cache hit)

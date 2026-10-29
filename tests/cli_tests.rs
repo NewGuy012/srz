@@ -190,6 +190,32 @@ fn test_book_subcommand_flags() {
 }
 
 #[test]
+fn test_terminal_paging_and_plain_flags() {
+    use srz::cli::PagingMode;
+
+    let default_cli = Cli::parse_from(["srz", "Dune"]);
+    assert_eq!(default_cli.paging, PagingMode::Auto);
+    assert!(!default_cli.no_pager);
+    assert!(!default_cli.plain);
+    assert_eq!(default_cli.effective_paging(), PagingMode::Auto);
+
+    let always_cli = Cli::parse_from(["srz", "Dune", "--paging", "always"]);
+    assert_eq!(always_cli.paging, PagingMode::Always);
+    assert_eq!(always_cli.effective_paging(), PagingMode::Always);
+
+    let never_cli = Cli::parse_from(["srz", "Dune", "--paging", "never"]);
+    assert_eq!(never_cli.paging, PagingMode::Never);
+    assert_eq!(never_cli.effective_paging(), PagingMode::Never);
+
+    let no_pager_cli = Cli::parse_from(["srz", "Dune", "--no-pager"]);
+    assert!(no_pager_cli.no_pager);
+    assert_eq!(no_pager_cli.effective_paging(), PagingMode::Never);
+
+    let plain_cli = Cli::parse_from(["srz", "Dune", "--plain"]);
+    assert!(plain_cli.plain);
+}
+
+#[test]
 fn test_missing_target_returns_error() {
     let cli = Cli::parse_from(["srz"]);
     assert!(cli.resolve_action().is_err());

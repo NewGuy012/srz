@@ -85,6 +85,18 @@ impl NewsTimeframe {
     }
 }
 
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PagingMode {
+    /// Automatically page output when it exceeds terminal height
+    #[default]
+    Auto,
+    /// Always page output through a terminal pager
+    Always,
+    /// Never page output
+    Never,
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "srz",
@@ -183,6 +195,29 @@ pub struct Cli {
     /// Stream LLM output tokens live to stdout as they are generated (default: false)
     #[arg(long, global = true)]
     pub stream: bool,
+
+    /// Control terminal paging of summary output (auto, always, never)
+    #[arg(long, global = true, value_enum, default_value = "auto")]
+    pub paging: PagingMode,
+
+    /// Disable terminal paging (equivalent to --paging never)
+    #[arg(long, global = true)]
+    pub no_pager: bool,
+
+    /// Output raw, unstyled Markdown without terminal formatting or ANSI colors
+    #[arg(long, global = true)]
+    pub plain: bool,
+}
+
+impl Cli {
+    /// Returns the effective paging mode considering `--no-pager`.
+    pub fn effective_paging(&self) -> PagingMode {
+        if self.no_pager {
+            PagingMode::Never
+        } else {
+            self.paging
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
