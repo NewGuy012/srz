@@ -27,7 +27,7 @@ flowchart LR
     end
 
     subgraph Core["srz Core (100% Private)"]
-        C["⚡ Ingest & Chunking Pipeline\n🔒 100% Local LLM Inference\n📝 Summary Presets & Synthesis"]
+        C["<div style='text-align: left; margin: 0;'>⚡ Ingest & Chunking Pipeline<br/>🔒 100% Local LLM Inference<br/>📝 Summary Presets & Synthesis</div>"]
     end
 
     subgraph Highlights["Key Highlights"]
@@ -46,10 +46,6 @@ flowchart LR
     C --> H2
     C --> H3
     C --> H4
-
-    style Sources fill:transparent,stroke:transparent,stroke-width:0px
-    style Core fill:transparent,stroke:transparent,stroke-width:0px
-    style Highlights fill:transparent,stroke:transparent,stroke-width:0px
 ```
 
 - 🔒 **100% Local & Private**: Runs on your machine with complete privacy, zero subscriptions, and no API keys.
