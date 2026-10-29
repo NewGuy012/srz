@@ -120,7 +120,7 @@ pub fn extract_video_title(html: &str) -> Option<String> {
             let title = &after[..end];
             let clean = title.trim_end_matches("- YouTube").trim();
             if !clean.is_empty() {
-                return Some(decode_html_entities(clean));
+                return Some(decode_html_entities(clean).into_owned());
             }
         }
     }
@@ -139,14 +139,46 @@ pub fn format_timestamp(seconds: u64) -> String {
     }
 }
 
-pub fn decode_html_entities(s: &str) -> String {
-    s.replace("&quot;", "\"")
-        .replace("&apos;", "'")
-        .replace("&#39;", "'")
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&nbsp;", " ")
+/// Decodes common HTML entities in a single pass, returning a zero-copy `Cow::Borrowed`
+/// when `s` contains no `&` character and preventing double-unescaping (e.g. `&amp;lt;`).
+pub fn decode_html_entities(s: &str) -> std::borrow::Cow<'_, str> {
+    if !s.contains('&') {
+        return std::borrow::Cow::Borrowed(s);
+    }
+
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(amp_idx) = rest.find('&') {
+        out.push_str(&rest[..amp_idx]);
+        let after_amp = &rest[amp_idx..];
+        let matched = if after_amp.starts_with("&quot;") {
+            Some(('"', 6))
+        } else if after_amp.starts_with("&apos;") {
+            Some(('\'', 6))
+        } else if after_amp.starts_with("&#39;") {
+            Some(('\'', 5))
+        } else if after_amp.starts_with("&amp;") {
+            Some(('&', 5))
+        } else if after_amp.starts_with("&lt;") {
+            Some(('<', 4))
+        } else if after_amp.starts_with("&gt;") {
+            Some(('>', 4))
+        } else if after_amp.starts_with("&nbsp;") {
+            Some((' ', 6))
+        } else {
+            None
+        };
+
+        if let Some((ch, len)) = matched {
+            out.push(ch);
+            rest = &after_amp[len..];
+        } else {
+            out.push('&');
+            rest = &after_amp[1..];
+        }
+    }
+    out.push_str(rest);
+    std::borrow::Cow::Owned(out)
 }
 
 struct TimedTranscriptBuilder {
@@ -165,7 +197,11 @@ impl TimedTranscriptBuilder {
     }
 
     fn add_cue(&mut self, seconds: u64, text: &str) {
-        let clean = text.replace('\n', " ");
+        let clean: std::borrow::Cow<'_, str> = if text.contains('\n') {
+            std::borrow::Cow::Owned(text.replace('\n', " "))
+        } else {
+            std::borrow::Cow::Borrowed(text)
+        };
         let trimmed = clean.trim();
         if trimmed.is_empty() {
             return;
@@ -209,23 +245,21 @@ pub fn parse_json3_timedtext(json_str: &str) -> Option<String> {
     }
 
     let mut builder = TimedTranscriptBuilder::new(json_str.len() / 2);
+    let mut combined_buf = String::new();
 
     for ev in parsed.events {
-        let text_segs: Vec<&str> = ev
-            .segs
-            .as_deref()
-            .unwrap_or(&[])
-            .iter()
-            .map(|s| s.utf8.as_str())
-            .filter(|s| !s.trim().is_empty())
-            .collect();
-
-        if text_segs.is_empty() {
+        let Some(segs) = ev.segs.as_deref() else {
             continue;
+        };
+        combined_buf.clear();
+        for seg in segs {
+            if !seg.utf8.trim().is_empty() {
+                combined_buf.push_str(&seg.utf8);
+            }
         }
-
-        let combined = text_segs.join("");
-        builder.add_cue(ev.start_ms / 1000, &combined);
+        if !combined_buf.is_empty() {
+            builder.add_cue(ev.start_ms / 1000, &combined_buf);
+        }
     }
 
     builder.finish()
@@ -432,5 +466,15 @@ mod tests {
     fn test_extract_video_title() {
         let html = "<html><head><title>Rust in 100 Seconds - YouTube</title></head></html>";
         assert_eq!(extract_video_title(html), Some("Rust in 100 Seconds".to_string()));
+    }
+
+    #[test]
+    fn test_decode_html_entities_single_pass_and_zero_copy() {
+        let plain = "Plain subtitle cue without entities";
+        assert!(matches!(
+            decode_html_entities(plain),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert_eq!(decode_html_entities("A &amp;lt; B &quot;ok&quot;"), "A &lt; B \"ok\"");
     }
 }
