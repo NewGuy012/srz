@@ -1,11 +1,14 @@
 use std::env;
 use std::io::{self, IsTerminal, Write};
 use std::process::{Command, Stdio};
+use std::sync::LazyLock;
 use termimad::crossterm::style::{Attribute, Color};
 use termimad::MadSkin;
 
 use crate::config::cli::PagingMode;
 use crate::ui::Ui;
+
+static SKIN: LazyLock<MadSkin> = LazyLock::new(create_skin);
 
 /// Creates a tailored MadSkin for srz terminal markdown output.
 pub fn create_skin() -> MadSkin {
@@ -33,13 +36,12 @@ pub fn create_skin() -> MadSkin {
 
 /// Renders markdown string into ANSI formatted terminal text.
 pub fn render_markdown(markdown: &str, width: Option<usize>) -> String {
-    let skin = create_skin();
     let term_width = width.unwrap_or_else(|| {
         crossterm::terminal::size()
             .map(|(w, _)| w as usize)
             .unwrap_or(80)
     });
-    skin.text(markdown, Some(term_width)).to_string()
+    SKIN.text(markdown, Some(term_width)).to_string()
 }
 
 /// Prints formatted summary to terminal, launching a pager if the text exceeds terminal height.
