@@ -24,13 +24,13 @@ permissions:
 jobs:
   verify-version:
     name: Verify Tag & Cargo.toml Version Match
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
       clean_version: ${{ steps.version.outputs.clean_version }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -77,7 +77,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -85,7 +85,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Set up sccache
-        uses: mozilla/sccache-action@v0.0.8
+        uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Configure sccache
         shell: bash
@@ -96,7 +96,6 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          targets: ${{ matrix.target }}
           cache-targets: false
 
       - name: Install Linux build dependencies
@@ -177,7 +176,7 @@ jobs:
   publish-release:
     name: Publish GitHub Release & Attestations
     needs: [verify-version, build-release]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && inputs.dry_run != true
     permissions:
       contents: write
@@ -185,7 +184,7 @@ jobs:
       attestations: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Download all release assets
         uses: actions/download-artifact@v4
@@ -247,16 +246,16 @@ jobs:
     name: Publish to Crates.io
     needs: [verify-version, build-release]
     if: (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && inputs.dry_run != true
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Set up sccache
-        uses: mozilla/sccache-action@v0.0.8
+        uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Configure sccache
         shell: bash
@@ -287,7 +286,7 @@ jobs:
     name: Bump Homebrew Formula
     needs: [verify-version, build-release, publish-release]
     if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Check if HOMEBREW_TAP_TOKEN is configured
         id: check-token

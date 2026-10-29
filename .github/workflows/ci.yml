@@ -33,13 +33,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
           - os: macos-latest
           - os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -47,7 +47,7 @@ jobs:
           components: clippy, rustfmt
 
       - name: Set up sccache
-        uses: mozilla/sccache-action@v0.0.8
+        uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Configure sccache
         shell: bash
@@ -61,21 +61,21 @@ jobs:
           cache-targets: false
 
       - name: Install Linux build dependencies
-        if: matrix.os == 'ubuntu-latest'
+        if: startsWith(matrix.os, 'ubuntu')
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev build-essential cmake
 
       - name: Check code formatting (rustfmt)
-        if: matrix.os == 'ubuntu-latest'
+        if: startsWith(matrix.os, 'ubuntu')
         run: cargo fmt --all -- --check
 
       - name: Check documentation links & warnings
-        if: matrix.os == 'ubuntu-latest'
+        if: startsWith(matrix.os, 'ubuntu')
         run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 
       - name: Validate Crates.io packaging (dry-run)
-        if: matrix.os == 'ubuntu-latest'
+        if: startsWith(matrix.os, 'ubuntu')
         run: cargo publish --dry-run
 
       - name: Run cargo clippy (warnings denied)
@@ -93,10 +93,10 @@ jobs:
 
   security-audit:
     name: Dependency Security & License Audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Run cargo-deny checks
         uses: EmbarkStudios/cargo-deny-action@v2
@@ -112,7 +112,7 @@ jobs:
   ci-status:
     name: All CI Checks Passed
     needs: [test, security-audit]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: always()
     steps:
       - name: Verify all required checks succeeded
