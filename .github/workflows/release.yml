@@ -199,10 +199,26 @@ jobs:
           sha256sum srz-*.tar.gz srz-*.zip > SHA256SUMS
           cat SHA256SUMS
 
-      - name: Extract Release Notes from CHANGELOG.md
+      - name: Check Existing Release & Extract Release Notes
         id: changelog
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ needs.verify-version.outputs.version }}"
+
+          # Check if a release already exists on GitHub with non-empty notes
+          EXISTING_BODY=$(gh release view "${VERSION}" --json body -q .body 2>/dev/null || true)
+          TRIMMED_BODY=$(echo "${EXISTING_BODY}" | tr -d '[:space:]')
+
+          if [ -n "${TRIMMED_BODY}" ]; then
+            echo "preserve_body=true" >> $GITHUB_OUTPUT
+            echo "Existing release body detected on GitHub for ${VERSION}. Preserving user's release notes."
+            exit 0
+          fi
+
+          echo "preserve_body=false" >> $GITHUB_OUTPUT
+
+          # Extract release notes from docs/CHANGELOG.md if no release body exists
           echo "Extracting release notes for ${VERSION} from docs/CHANGELOG.md..."
           awk -v ver="${VERSION}" '
             $0 ~ "^## " ver { found=1; next }
@@ -227,13 +243,41 @@ jobs:
             dist/srz-*.tar.gz
             dist/srz-*.zip
 
-      - name: Create GitHub Release
+      - name: Attach Assets to Existing GitHub Release
+        if: steps.changelog.outputs.preserve_body == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.verify-version.outputs.version }}
+          files: |
+            dist/srz-*.tar.gz
+            dist/srz-*.zip
+            dist/srz-*.sha256
+            dist/SHA256SUMS
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub Release with Changelog Notes
+        if: steps.changelog.outputs.preserve_body != 'true' && steps.changelog.outputs.has_notes == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.verify-version.outputs.version }}
           name: Release ${{ needs.verify-version.outputs.version }}
-          body_path: ${{ steps.changelog.outputs.has_notes == 'true' && 'dist/release_notes.md' || '' }}
-          generate_release_notes: ${{ steps.changelog.outputs.has_notes != 'true' }}
+          body_path: dist/release_notes.md
+          files: |
+            dist/srz-*.tar.gz
+            dist/srz-*.zip
+            dist/srz-*.sha256
+            dist/SHA256SUMS
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub Release with Auto-generated Notes
+        if: steps.changelog.outputs.preserve_body != 'true' && steps.changelog.outputs.has_notes != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.verify-version.outputs.version }}
+          name: Release ${{ needs.verify-version.outputs.version }}
+          generate_release_notes: true
           files: |
             dist/srz-*.tar.gz
             dist/srz-*.zip
