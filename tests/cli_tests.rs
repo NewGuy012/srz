@@ -534,3 +534,248 @@ fn test_upgrade_subcommand_flags() {
         }
     );
 }
+
+#[test]
+fn test_readme_usage_examples_cli_resolution() {
+    // 1. Webpage
+    let cmd1 = Cli::parse_from(["srz", "https://en.wikipedia.org/wiki/Rust_(programming_language)"]);
+    assert_eq!(
+        cmd1.resolve_action().unwrap(),
+        ResolvedAction::Web {
+            url: "https://en.wikipedia.org/wiki/Rust_(programming_language)"
+        }
+    );
+
+    // 2. YouTube
+    let cmd2 = Cli::parse_from(["srz", "https://youtu.be/5C_HPTJg5ek"]);
+    assert_eq!(
+        cmd2.resolve_action().unwrap(),
+        ResolvedAction::Web {
+            url: "https://youtu.be/5C_HPTJg5ek"
+        }
+    );
+
+    // 3. Local PDF document (auto-detected as file via is_file_like even if missing)
+    let cmd3 = Cli::parse_from(["srz", "document.pdf"]);
+    assert_eq!(
+        cmd3.resolve_action().unwrap(),
+        ResolvedAction::File {
+            path: std::path::PathBuf::from("document.pdf")
+        }
+    );
+
+    // 4. Book synopsis with bullets and browser open
+    let cmd4 = Cli::parse_from([
+        "srz",
+        "The Rust Programming Language",
+        "--style",
+        "bullets",
+        "--open",
+    ]);
+    assert_eq!(cmd4.style, SummaryStyle::Bullets);
+    assert!(cmd4.open);
+    assert_eq!(
+        cmd4.resolve_action().unwrap(),
+        ResolvedAction::Book {
+            title: "The Rust Programming Language",
+            author: None,
+            no_search: false,
+        }
+    );
+
+    // 5. News digest
+    let cmd5 = Cli::parse_from(["srz", "news", "Rust language updates", "-t", "week"]);
+    assert_eq!(
+        cmd5.resolve_action().unwrap(),
+        ResolvedAction::News {
+            topic: "Rust language updates".to_string(),
+            timeframe: NewsTimeframe::Week,
+            limit: 5,
+        }
+    );
+
+    // 6. Unix stdin stream
+    let cmd6 = Cli::parse_from(["srz", "-"]);
+    assert_eq!(cmd6.resolve_action().unwrap(), ResolvedAction::Stdin);
+
+    // 7. Ask based on latest read
+    let cmd7 = Cli::parse_from(["srz", "ask", "What are the main findings?"]);
+    assert_eq!(
+        cmd7.resolve_action().unwrap(),
+        ResolvedAction::Ask {
+            target: None,
+            question: Some("What are the main findings?".to_string()),
+            interactive: false,
+        }
+    );
+
+    // 8. Ask based on specific document
+    let cmd8 = Cli::parse_from(["srz", "ask", "document.pdf", "Key takeaways?"]);
+    assert_eq!(
+        cmd8.resolve_action().unwrap(),
+        ResolvedAction::Ask {
+            target: Some("document.pdf".to_string()),
+            question: Some("Key takeaways?".to_string()),
+            interactive: false,
+        }
+    );
+
+    // 9. Interactive chat
+    let cmd9 = Cli::parse_from(["srz", "ask", "-i"]);
+    assert_eq!(
+        cmd9.resolve_action().unwrap(),
+        ResolvedAction::Ask {
+            target: None,
+            question: None,
+            interactive: true,
+        }
+    );
+
+    // 10. TUI browse
+    let cmd10 = Cli::parse_from(["srz", "browse"]);
+    assert_eq!(cmd10.resolve_action().unwrap(), ResolvedAction::Browse);
+
+    // 11. Find in library
+    let cmd11 = Cli::parse_from(["srz", "find", "keyword"]);
+    assert_eq!(
+        cmd11.resolve_action().unwrap(),
+        ResolvedAction::Find { query: "keyword" }
+    );
+
+    // 12. History (default limit)
+    let cmd12 = Cli::parse_from(["srz", "history"]);
+    assert_eq!(
+        cmd12.resolve_action().unwrap(),
+        ResolvedAction::History { limit: 10 }
+    );
+
+    // 13. Stats
+    let cmd13 = Cli::parse_from(["srz", "stats"]);
+    assert_eq!(cmd13.resolve_action().unwrap(), ResolvedAction::Stats);
+
+    // 14. Cache size
+    let cmd14 = Cli::parse_from(["srz", "cache", "size"]);
+    assert_eq!(
+        cmd14.resolve_action().unwrap(),
+        ResolvedAction::Cache(CacheCommand::Size)
+    );
+
+    // 15. Cache prune by age
+    let cmd15 = Cli::parse_from(["srz", "cache", "prune", "--older-than", "14d"]);
+    assert_eq!(
+        cmd15.resolve_action().unwrap(),
+        ResolvedAction::Cache(CacheCommand::Prune {
+            older_than: Some("14d".to_string()),
+            max_size: None,
+            namespace: None,
+        })
+    );
+
+    // 16. Cache prune by max size
+    let cmd16 = Cli::parse_from(["srz", "cache", "prune", "--max-size", "500MB"]);
+    assert_eq!(
+        cmd16.resolve_action().unwrap(),
+        ResolvedAction::Cache(CacheCommand::Prune {
+            older_than: None,
+            max_size: Some("500MB".to_string()),
+            namespace: None,
+        })
+    );
+
+    // 17. Cache clean
+    let cmd17 = Cli::parse_from(["srz", "cache", "clean"]);
+    assert_eq!(
+        cmd17.resolve_action().unwrap(),
+        ResolvedAction::Cache(CacheCommand::Clean { reset_db: false })
+    );
+
+    // 18. Cache clean reset db
+    let cmd18 = Cli::parse_from(["srz", "cache", "clean", "--reset-db"]);
+    assert_eq!(
+        cmd18.resolve_action().unwrap(),
+        ResolvedAction::Cache(CacheCommand::Clean { reset_db: true })
+    );
+
+    // 19. Doctor
+    let cmd19 = Cli::parse_from(["srz", "doctor"]);
+    assert_eq!(cmd19.resolve_action().unwrap(), ResolvedAction::Doctor);
+
+    // Additional README examples:
+    // srz models
+    let cmd_models = Cli::parse_from(["srz", "models"]);
+    assert_eq!(cmd_models.resolve_action().unwrap(), ResolvedAction::Models);
+
+    // srz config init
+    let cmd_cfg_init = Cli::parse_from(["srz", "config", "init"]);
+    assert_eq!(
+        cmd_cfg_init.resolve_action().unwrap(),
+        ResolvedAction::Config(srz::cli::ConfigSubcommand::Init)
+    );
+
+    // srz "The Rust Programming Language"
+    let cmd_rust_book = Cli::parse_from(["srz", "The Rust Programming Language"]);
+    assert_eq!(
+        cmd_rust_book.resolve_action().unwrap(),
+        ResolvedAction::Book {
+            title: "The Rust Programming Language",
+            author: None,
+            no_search: false,
+        }
+    );
+
+    // srz "The Rust Programming Language" --profile openai
+    let cmd_rust_prof = Cli::parse_from([
+        "srz",
+        "The Rust Programming Language",
+        "--profile",
+        "openai",
+    ]);
+    assert_eq!(cmd_rust_prof.profile.as_deref(), Some("openai"));
+
+    // srz "1984" --base-url "https://api.openai.com/v1" --model "gpt-4o-mini" --api-key "sk-..."
+    let cmd_cloud = Cli::parse_from([
+        "srz",
+        "1984",
+        "--base-url",
+        "https://api.openai.com/v1",
+        "--model",
+        "gpt-4o-mini",
+        "--api-key",
+        "sk-test",
+    ]);
+    assert_eq!(cmd_cloud.base_url, "https://api.openai.com/v1");
+    assert_eq!(cmd_cloud.model, "gpt-4o-mini");
+    assert_eq!(cmd_cloud.api_key, "sk-test");
+
+    // srz index
+    let cmd_index = Cli::parse_from(["srz", "index"]);
+    assert_eq!(cmd_index.resolve_action().unwrap(), ResolvedAction::Index);
+}
+
+#[test]
+fn test_file_like_detection_and_document_pdf() {
+    use srz::cli::is_file_like;
+
+    assert!(is_file_like("document.pdf"));
+    assert!(is_file_like("paper.PDF"));
+    assert!(is_file_like("notes.txt"));
+    assert!(is_file_like("README.md"));
+    assert!(is_file_like("article.html"));
+    assert!(is_file_like("./some_file"));
+    assert!(is_file_like("../parent_file"));
+    assert!(is_file_like("/absolute/path/file"));
+
+    assert!(!is_file_like("The Rust Programming Language"));
+    assert!(!is_file_like("The Hobbit"));
+    assert!(!is_file_like("news about rust"));
+    assert!(!is_file_like("https://example.com"));
+
+    // Test that document.pdf resolves to File even if deleted
+    let pdf_cli = Cli::parse_from(["srz", "document.pdf"]);
+    match pdf_cli.resolve_action().unwrap() {
+        ResolvedAction::File { path } => {
+            assert_eq!(path, std::path::PathBuf::from("document.pdf"));
+        }
+        _ => panic!("Expected File action for document.pdf"),
+    }
+}

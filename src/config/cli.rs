@@ -478,7 +478,7 @@ impl Cli {
                 Ok(ResolvedAction::Web { url: trimmed })
             } else {
                 let candidate_path = std::path::Path::new(trimmed);
-                if candidate_path.is_file() {
+                if candidate_path.is_file() || is_file_like(trimmed) {
                     Ok(ResolvedAction::File {
                         path: candidate_path.to_path_buf(),
                     })
@@ -545,6 +545,34 @@ impl Cli {
         apply_field!(open);
         apply_field!(concurrency);
         apply_field!(stream);
+    }
+}
+
+pub fn is_file_like(s: &str) -> bool {
+    if s.starts_with("http://") || s.starts_with("https://") {
+        return false;
+    }
+    let path = std::path::Path::new(s);
+    if path.is_file() {
+        return true;
+    }
+    if s.starts_with("./")
+        || s.starts_with("../")
+        || s.starts_with('/')
+        || s.starts_with('~')
+        || s.contains('/')
+        || s.contains('\\')
+    {
+        return true;
+    }
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        let lower = ext.to_ascii_lowercase();
+        matches!(
+            lower.as_str(),
+            "pdf" | "md" | "markdown" | "txt" | "text" | "html" | "htm" | "epub" | "json"
+        )
+    } else {
+        false
     }
 }
 

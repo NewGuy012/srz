@@ -432,20 +432,20 @@ pub fn parse_timedtext(body: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    if trimmed.starts_with('{') {
-        if let Some(res) = parse_json3_timedtext(trimmed) {
-            return Some(res);
-        }
+    if trimmed.starts_with('{')
+        && let Some(res) = parse_json3_timedtext(trimmed)
+    {
+        return Some(res);
     }
-    if trimmed.contains("<p") {
-        if let Some(res) = parse_xml_format3_timedtext(trimmed) {
-            return Some(res);
-        }
+    if trimmed.contains("<p")
+        && let Some(res) = parse_xml_format3_timedtext(trimmed)
+    {
+        return Some(res);
     }
-    if trimmed.contains("<text") {
-        if let Some(res) = parse_xml_timedtext(trimmed) {
-            return Some(res);
-        }
+    if trimmed.contains("<text")
+        && let Some(res) = parse_xml_timedtext(trimmed)
+    {
+        return Some(res);
     }
     None
 }
@@ -562,30 +562,30 @@ pub async fn fetch_youtube_transcript(client: &Client, video_id: &str) -> Result
         if let Some(t) = player_data.title {
             title = Some(t);
         }
-        if let Some(t_list) = player_data.caption_tracks {
-            if !t_list.is_empty() {
-                tracks = Some(t_list);
-            }
+        if let Some(t_list) = player_data.caption_tracks
+            && !t_list.is_empty()
+        {
+            tracks = Some(t_list);
         }
     }
 
     // 2. Fallback to Innertube WEB Player API if tracks were not found
-    if tracks.is_none() {
-        if let Ok(player_data) = fetch_innertube_player(client, video_id, "WEB", "2.20240101.00.00").await {
-            if title.is_none() && player_data.title.is_some() {
-                title = player_data.title;
-            }
-            if let Some(t_list) = player_data.caption_tracks {
-                if !t_list.is_empty() {
-                    tracks = Some(t_list);
-                }
-            }
+    if tracks.is_none()
+        && let Ok(player_data) = fetch_innertube_player(client, video_id, "WEB", "2.20240101.00.00").await
+    {
+        if title.is_none() && player_data.title.is_some() {
+            title = player_data.title;
+        }
+        if let Some(t_list) = player_data.caption_tracks
+            && !t_list.is_empty()
+        {
+            tracks = Some(t_list);
         }
     }
 
     // 3. Fallback to watch page HTML if tracks or title are still missing
-    if tracks.is_none() || title.is_none() {
-        if let Ok(resp) = client
+    if (tracks.is_none() || title.is_none())
+        && let Ok(resp) = client
             .get(&watch_url)
             .header(
                 "User-Agent",
@@ -595,17 +595,14 @@ pub async fn fetch_youtube_transcript(client: &Client, video_id: &str) -> Result
             .timeout(Duration::from_secs(10))
             .send()
             .await
-        {
-            if resp.status().is_success() {
-                if let Ok(html) = crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES).await {
-                    if title.is_none() {
-                        title = extract_video_title(&html);
-                    }
-                    if tracks.is_none() {
-                        tracks = extract_caption_tracks(&html);
-                    }
-                }
-            }
+        && resp.status().is_success()
+        && let Ok(html) = crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES).await
+    {
+        if title.is_none() {
+            title = extract_video_title(&html);
+        }
+        if tracks.is_none() {
+            tracks = extract_caption_tracks(&html);
         }
     }
 

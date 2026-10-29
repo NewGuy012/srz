@@ -49,6 +49,8 @@ async fn resolve_document_context(
         if path.exists() {
             let doc = crate::sources::DocumentLoader::load_file(path, scraper)?;
             return Ok((doc.title, doc.content));
+        } else if crate::cli::is_file_like(trimmed) {
+            anyhow::bail!("File not found: {:?}", path);
         }
 
         // 3. Search in DuckDB library for matching title

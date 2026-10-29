@@ -227,3 +227,20 @@ fn test_pdf_extractor_bounds_and_type_checks() {
     let tmp_dir = std::env::temp_dir();
     assert!(PdfExtractor::extract_file(&tmp_dir).is_err());
 }
+
+#[test]
+fn test_sample_pdf_generation_and_extraction() {
+    use srz::sources::pdf::PdfExtractor;
+
+    let bytes = PdfExtractor::build_sample_pdf_bytes();
+    let page = PdfExtractor::extract_from_bytes(&bytes, None).unwrap();
+    assert!(page.content.contains("srz - High-Performance Modular Rust CLI"));
+    assert!(page.content.contains("Universal Ingestion"));
+    assert!(page.word_count >= 50);
+
+    // Also persist document.pdf in workspace root so CLI examples in README work out-of-the-box
+    let doc_path = std::path::Path::new("document.pdf");
+    if !doc_path.exists() {
+        std::fs::write(doc_path, &bytes).expect("Failed to write document.pdf");
+    }
+}
