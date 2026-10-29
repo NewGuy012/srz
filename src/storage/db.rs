@@ -63,6 +63,8 @@ pub struct LibrarySearchResult {
     pub url: Option<String>,
     pub snippet: String,
     pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,16 +199,52 @@ impl Database {
                  url VARCHAR,
                  summary TEXT NOT NULL,
                  created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+             );
+
+             CREATE TABLE IF NOT EXISTS library_terms (
+                 doc_id INTEGER NOT NULL,
+                 term VARCHAR NOT NULL,
+                 term_freq INTEGER NOT NULL,
+                 in_title BOOLEAN NOT NULL DEFAULT FALSE,
+                 PRIMARY KEY (doc_id, term)
              );",
         ).context("Failed to initialize DuckDB schema")?;
+
+        self.backfill_terms_if_needed()?;
+        Ok(())
+    }
+
+    fn backfill_terms_if_needed(&self) -> Result<()> {
+        let unindexed_count: i64 = self.conn.query_row(
+            "SELECT count(*) FROM library l WHERE NOT EXISTS (SELECT 1 FROM library_terms lt WHERE lt.doc_id = l.id)",
+            [],
+            |row| row.get(0),
+        ).unwrap_or(0);
+
+        if unindexed_count > 0 {
+            let mut stmt = self.conn.prepare(
+                "SELECT l.id, l.title, l.summary FROM library l WHERE NOT EXISTS (SELECT 1 FROM library_terms lt WHERE lt.doc_id = l.id)"
+            )?;
+            let items: Vec<(i64, String, String)> = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                .collect::<duckdb::Result<Vec<_>>>()?;
+
+            self.with_transaction(|conn| {
+                for (id, title, summary) in items {
+                    insert_doc_terms(conn, id, &title, &summary)?;
+                }
+                Ok(())
+            })?;
+        }
         Ok(())
     }
 
     /// Resets all DuckDB tables and sequences, clearing reading history and the search library.
     pub fn reset(&self) -> Result<()> {
         self.conn.execute_batch(
-            "DROP TABLE IF EXISTS history;
+            "DROP TABLE IF EXISTS library_terms;
              DROP TABLE IF EXISTS library;
+             DROP TABLE IF EXISTS history;
              DROP SEQUENCE IF EXISTS history_id_seq;
              DROP SEQUENCE IF EXISTS library_id_seq;",
         ).context("Failed to drop DuckDB tables")?;
@@ -273,6 +311,9 @@ impl Database {
             )
             .context("Failed to record entry in DuckDB library table")?;
 
+            let doc_id: i64 = conn.query_row("SELECT currval('history_id_seq')", [], |r| r.get(0))?;
+            insert_doc_terms(conn, doc_id, record.title, record.summary)?;
+
             Ok(())
         })
     }
@@ -314,6 +355,7 @@ impl Database {
     /// Deletes a summary from both library and history tables by its ID within a single transaction.
     pub fn delete_library_item(&self, id: i64) -> Result<()> {
         self.with_transaction(|conn| {
+            conn.execute("DELETE FROM library_terms WHERE doc_id = ?", params![id])?;
             conn.execute("DELETE FROM library WHERE id = ?", params![id])?;
             conn.execute("DELETE FROM history WHERE id = ?", params![id])?;
             Ok(())
@@ -360,48 +402,185 @@ impl Database {
         Ok(stats)
     }
 
-    /// Performs a full-text search across all summarized books and webpages in the library.
+    /// Performs a full-text search across all summarized books and webpages in the library
+    /// using BM25 relevance ranking with fallback to substring matching.
     pub fn search(&self, query: &str) -> Result<Vec<LibrarySearchResult>> {
         let trimmed = query.trim();
         if trimmed.is_empty() {
             return Ok(Vec::new());
         }
 
-        let mut stmt = self.conn.prepare(
-            "SELECT id, target_type, title, author, url, summary,
-                    strftime(created_at, '%Y-%m-%d %H:%M')
-             FROM library
-             WHERE summary ILIKE '%' || ? || '%'
-                OR title ILIKE '%' || ? || '%'
-                OR coalesce(author, '') ILIKE '%' || ? || '%'
-             ORDER BY id DESC
-             LIMIT 15"
-        )?;
+        let query_terms = tokenize_terms(trimmed);
+        let mut results: Vec<LibrarySearchResult> = Vec::new();
+        let mut seen_ids = std::collections::HashSet::new();
 
-        let rows = stmt.query_map(params![trimmed, trimmed, trimmed], |row| {
-            let id: i64 = row.get(0)?;
-            let target_type: String = row.get(1)?;
-            let title: String = row.get(2)?;
-            let author: Option<String> = row.get(3)?;
-            let url: Option<String> = row.get(4)?;
-            let summary: String = row.get(5)?;
-            let created_at: String = row.get(6)?;
+        if !query_terms.is_empty() {
+            let placeholders = query_terms.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            let bm25_sql = format!(
+                "WITH doc_stats AS (
+                     SELECT COUNT(*)::DOUBLE AS total_docs,
+                            COALESCE(AVG(word_count), 1.0)::DOUBLE AS avg_doc_len
+                     FROM history
+                 ),
+                 matched_terms AS (
+                     SELECT
+                         lt.doc_id,
+                         lt.term,
+                         lt.term_freq,
+                         lt.in_title,
+                         h.word_count::DOUBLE AS doc_len
+                     FROM library_terms lt
+                     JOIN history h ON lt.doc_id = h.id
+                     WHERE lt.term IN ({placeholders})
+                 ),
+                 term_df AS (
+                     SELECT term, COUNT(DISTINCT doc_id)::DOUBLE AS df
+                     FROM matched_terms
+                     GROUP BY term
+                 ),
+                 scored_docs AS (
+                     SELECT
+                         mt.doc_id,
+                         SUM(
+                             ln(((ds.total_docs - td.df + 0.5) / (td.df + 0.5)) + 1.0) *
+                             (CASE WHEN mt.in_title THEN 2.5 ELSE 1.0 END) *
+                             ((mt.term_freq * 2.2) / (mt.term_freq + 1.2 * (0.25 + 0.75 * (mt.doc_len / ds.avg_doc_len))))
+                         ) AS bm25_score
+                     FROM matched_terms mt
+                     JOIN term_df td ON mt.term = td.term
+                     CROSS JOIN doc_stats ds
+                     GROUP BY mt.doc_id
+                 )
+                 SELECT
+                     l.id, l.target_type, l.title, l.author, l.url, l.summary,
+                     strftime(l.created_at, '%Y-%m-%d %H:%M'),
+                     sd.bm25_score
+                 FROM scored_docs sd
+                 JOIN library l ON sd.doc_id = l.id
+                 ORDER BY sd.bm25_score DESC, l.id DESC
+                 LIMIT 15"
+            );
 
-            let snippet = extract_snippet(&summary, trimmed);
+            if let Ok(mut stmt) = self.conn.prepare(&bm25_sql) {
+                let params: Vec<&dyn duckdb::ToSql> = query_terms
+                    .iter()
+                    .map(|t| t as &dyn duckdb::ToSql)
+                    .collect();
+                if let Ok(rows) = stmt.query_map(params.as_slice(), |row| {
+                    let id: i64 = row.get(0)?;
+                    let target_type: String = row.get(1)?;
+                    let title: String = row.get(2)?;
+                    let author: Option<String> = row.get(3)?;
+                    let url: Option<String> = row.get(4)?;
+                    let summary: String = row.get(5)?;
+                    let created_at: String = row.get(6)?;
+                    let score: f64 = row.get(7)?;
+                    let snippet = extract_snippet(&summary, trimmed);
 
-            Ok(LibrarySearchResult {
-                id,
-                target_type,
-                title,
-                author,
-                url,
-                snippet,
-                created_at,
-            })
-        })?;
+                    Ok(LibrarySearchResult {
+                        id,
+                        target_type,
+                        title,
+                        author,
+                        url,
+                        snippet,
+                        created_at,
+                        score: Some(score),
+                    })
+                }) {
+                    for r in rows.flatten() {
+                        seen_ids.insert(r.id);
+                        results.push(r);
+                    }
+                }
+            }
+        }
 
-        rows.collect::<duckdb::Result<Vec<_>>>().map_err(Into::into)
+        // Fallback / complement with substring ILIKE matching if fewer than 15 results
+        if results.len() < 15 {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, target_type, title, author, url, summary,
+                        strftime(created_at, '%Y-%m-%d %H:%M')
+                 FROM library
+                 WHERE summary ILIKE '%' || ? || '%'
+                    OR title ILIKE '%' || ? || '%'
+                    OR coalesce(author, '') ILIKE '%' || ? || '%'
+                 ORDER BY id DESC
+                 LIMIT 15"
+            )?;
+
+            let rows = stmt.query_map(params![trimmed, trimmed, trimmed], |row| {
+                let id: i64 = row.get(0)?;
+                let target_type: String = row.get(1)?;
+                let title: String = row.get(2)?;
+                let author: Option<String> = row.get(3)?;
+                let url: Option<String> = row.get(4)?;
+                let summary: String = row.get(5)?;
+                let created_at: String = row.get(6)?;
+                let snippet = extract_snippet(&summary, trimmed);
+
+                Ok(LibrarySearchResult {
+                    id,
+                    target_type,
+                    title,
+                    author,
+                    url,
+                    snippet,
+                    created_at,
+                    score: None,
+                })
+            })?;
+
+            for r in rows.flatten() {
+                if seen_ids.insert(r.id) {
+                    results.push(r);
+                    if results.len() >= 15 {
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok(results)
     }
+}
+
+/// Tokenizes text into normalized lowercased terms for BM25 indexing and querying.
+pub fn tokenize_terms(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+        .map(|s| s.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Indexes document title and summary terms into `library_terms`.
+fn insert_doc_terms(conn: &Connection, doc_id: i64, title: &str, summary: &str) -> Result<()> {
+    let mut term_counts: std::collections::HashMap<String, (usize, bool)> =
+        std::collections::HashMap::new();
+
+    for term in tokenize_terms(title) {
+        let entry = term_counts.entry(term).or_insert((0, true));
+        entry.0 += 1;
+        entry.1 = true;
+    }
+
+    for term in tokenize_terms(summary) {
+        let entry = term_counts.entry(term).or_insert((0, false));
+        entry.0 += 1;
+    }
+
+    conn.execute("DELETE FROM library_terms WHERE doc_id = ?", params![doc_id])?;
+
+    let mut stmt = conn.prepare(
+        "INSERT INTO library_terms (doc_id, term, term_freq, in_title)
+         VALUES (?, ?, ?, ?)"
+    )?;
+
+    for (term, (freq, in_title)) in term_counts {
+        stmt.execute(params![doc_id, term, freq as i64, in_title])?;
+    }
+
+    Ok(())
 }
 
 const SELECT_HISTORY_SQL: &str =
@@ -463,11 +642,18 @@ fn map_history_row(row: &duckdb::Row<'_>) -> duckdb::Result<HistoryEntry> {
 /// without allocating a lowercase copy of `text`.
 /// Uses UTF-8 character boundaries to prevent indexing panics on multi-byte characters.
 fn extract_snippet(text: &str, query: &str) -> String {
-    let match_pos = crate::search::find_ascii_case_insensitive(text, query);
+    let match_pos = crate::search::find_ascii_case_insensitive(text, query).or_else(|| {
+        for term in tokenize_terms(query) {
+            if let Some(pos) = crate::search::find_ascii_case_insensitive(text, &term) {
+                return Some(pos);
+            }
+        }
+        None
+    });
 
     let (start, end) = if let Some(pos) = match_pos {
         let raw_start = pos.saturating_sub(60);
-        let raw_end = (pos + query.len() + 100).min(text.len());
+        let raw_end = (pos + query.len().min(40) + 100).min(text.len());
         (
             text.floor_char_boundary(raw_start),
             text.ceil_char_boundary(raw_end),

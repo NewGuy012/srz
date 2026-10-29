@@ -95,7 +95,11 @@ pub fn handle_find(db: &Database, query: &str, cache: &Cache, as_json: bool) -> 
         let safe_snippet = crate::ui::sanitize_terminal_text(&res.snippet);
 
         println!("[#{}] {} \"{}\"{} ({})", i + 1, icon, safe_title, author_str, res.created_at);
-        println!("     \"{}\"", safe_snippet);
+        if let Some(score) = res.score {
+            println!("     Score: {:.2} (BM25) | \"{}\"", score, safe_snippet);
+        } else {
+            println!("     \"{}\"", safe_snippet);
+        }
         let view_path = cache.html_view_path(&res.title);
         if view_path.exists() {
             println!("     View: file://{}", view_path.display());

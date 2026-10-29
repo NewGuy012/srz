@@ -140,6 +140,52 @@ fn test_database_search_multibyte_utf8_snippet_safety() {
 }
 
 #[test]
+fn test_database_search_bm25_relevance_ranking() {
+    let db = Database::open_in_memory().unwrap();
+
+    let doc_a = NewSummaryRecord {
+        target_type: "web",
+        title: "Rust Compiler Deep Dive",
+        author: Some("Compiler Team"),
+        url: Some("https://example.com/rust-compiler"),
+        style: "detailed",
+        model: "gemma-4",
+        word_count: 3500,
+        prompt_tokens: Some(2000),
+        completion_tokens: Some(800),
+        duration_ms: 1200,
+        tokens_per_second: Some(40.0),
+        summary: "The rust compiler achieves zero-cost abstractions and memory safety through borrow checker analysis. Rust compiler optimizations are extensive.",
+    };
+    db.record_summary(&doc_a).unwrap();
+
+    let doc_b = NewSummaryRecord {
+        target_type: "web",
+        title: "General Software Patterns",
+        author: Some("John Doe"),
+        url: Some("https://example.com/patterns"),
+        style: "concise",
+        model: "gemma-4",
+        word_count: 5000,
+        prompt_tokens: Some(3000),
+        completion_tokens: Some(400),
+        duration_ms: 800,
+        tokens_per_second: Some(40.0),
+        summary: "Design patterns in systems programming. Briefly mentions rust compiler in passing.",
+    };
+    db.record_summary(&doc_b).unwrap();
+
+    let hits = db.search("Rust Compiler").unwrap();
+    assert_eq!(hits.len(), 2);
+    // doc_a has "Rust Compiler" in title and multiple times in summary -> higher BM25 score
+    assert_eq!(hits[0].title, "Rust Compiler Deep Dive");
+    assert!(hits[0].score.is_some());
+    assert!(hits[1].score.is_some());
+    assert!(hits[0].score.unwrap() > hits[1].score.unwrap());
+    assert!(hits[0].snippet.to_lowercase().contains("rust"));
+}
+
+#[test]
 fn test_database_library_items_and_deletion() {
     let db = Database::open_in_memory().unwrap();
 
