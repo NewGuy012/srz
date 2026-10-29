@@ -13,13 +13,6 @@ All notable changes to `srz` are documented in this file.
 - **Feature / Component**: Description.
 - **Improvement / Refactor**: Description.
 - **Fix / Security**: Description.
-
-### Installation
-```bash
-srz upgrade
-# or
-brew upgrade srz
-```
 ```
 
 ---
@@ -37,13 +30,6 @@ brew upgrade srz
 - **Security Hardening**: Restored 100% safe Rust, added prompt delimiter framing for untrusted text, sanitized ANSI/OSC terminal escapes, and enforced bounded HTTP stream readers.
 - **Architecture & Performance**: Modularized codebase into dedicated domain directories (`commands`, `sources`, `storage`, `ui`), introduced shared HTTP connection pooling, and optimized streaming markdown rendering.
 
-### Installation
-```bash
-srz upgrade
-# or
-brew upgrade srz
-```
-
 ---
 
 ## v0.2.0
@@ -56,11 +42,6 @@ brew upgrade srz
 - **Windows Support**: Added `x86_64-pc-windows-msvc` target builds and a one-line PowerShell installer (`install.ps1`).
 - **Automation & Pipelines**: Added automated formula bumping for `NewGuy012/homebrew-tap` and dynamic release version resolution.
 - **Network Resilience**: Added automatic HTTP redirect handling for release binary downloads.
-
-### Installation
-```bash
-srz upgrade
-```
 
 ---
 
@@ -77,12 +58,3 @@ srz upgrade
 - **Summary Styles**: Added presets for `concise`, `detailed`, `tldr`, `critique`, `eli5`, and `flashcards`.
 - **Export & Viewing**: Added automatic styled HTML/Markdown view generation and standalone library dashboard (`srz index`).
 - **Configuration & Tooling**: Added profile configuration (`~/.config/srz/config.toml`), shell completion generation (`srz completions`), and JSON output mode (`--json`).
-
-### Installation
-```bash
-# macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/NewGuy012/srz/master/install.sh | bash
-
-# Windows PowerShell
-irm https://raw.githubusercontent.com/NewGuy012/srz/master/install.ps1 | iex
-```
