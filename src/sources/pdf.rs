@@ -8,29 +8,24 @@ pub struct PdfExtractor;
 impl PdfExtractor {
     /// Extracts text from a PDF file path.
     pub fn extract_file(path: &Path) -> Result<ScrapedPage> {
-        let meta = std::fs::metadata(path)
-            .with_context(|| format!("Failed to read metadata for {:?}", path))?;
-        if !meta.is_file() {
-            anyhow::bail!("Path is not a regular file: {:?}", path);
-        }
-        if meta.len() > crate::sources::document::MAX_FILE_BYTES {
-            anyhow::bail!(
-                "PDF file size ({} bytes) exceeds security limit of {} MB",
-                meta.len(),
-                crate::sources::document::MAX_FILE_BYTES / (1024 * 1024)
-            );
-        }
+        crate::sources::document::DocumentLoader::validate_file(path)?;
         let bytes = std::fs::read(path)
             .with_context(|| format!("Failed to read PDF file at {:?}", path))?;
         Self::extract_from_bytes(&bytes, Some(path))
     }
 
-    /// Extracts text from in-memory PDF bytes.
+    /// Extracts text from in-memory PDF bytes, parsing the PDF document structure only once.
     pub fn extract_from_bytes(bytes: &[u8], path: Option<&Path>) -> Result<ScrapedPage> {
-        let raw_text = pdf_extract::extract_text_from_mem(bytes)
+        let mut doc = pdf_extract::Document::load_mem(bytes)
+            .context("Failed to parse PDF document")?;
+        if doc.is_encrypted() {
+            let _ = doc.decrypt("");
+        }
+        let mut raw_text = String::new();
+        pdf_extract::output_doc(&doc, &mut pdf_extract::PlainTextOutput::new(&mut raw_text))
             .context("Failed to extract text layer from PDF document")?;
 
-        let (title, _author) = Self::extract_metadata_from_bytes(bytes, path);
+        let (title, _author) = Self::extract_metadata_from_doc(&doc, path);
         let content = Self::post_process_text(&raw_text);
         let word_count = content.split_whitespace().count();
 
@@ -56,13 +51,15 @@ impl PdfExtractor {
         })
     }
 
-    /// Attempts to extract Title and Author from the PDF trailer Info dictionary.
-    fn extract_metadata_from_bytes(bytes: &[u8], path: Option<&Path>) -> (String, Option<String>) {
+    /// Attempts to extract Title and Author from the parsed PDF trailer Info dictionary.
+    fn extract_metadata_from_doc(
+        doc: &pdf_extract::Document,
+        path: Option<&Path>,
+    ) -> (String, Option<String>) {
         let mut title = None;
         let mut author = None;
 
-        if let Ok(doc) = pdf_extract::Document::load_mem(bytes)
-            && let Ok(info) = doc.trailer.get(b"Info").and_then(|obj| doc.dereference(obj))
+        if let Ok(info) = doc.trailer.get(b"Info").and_then(|obj| doc.dereference(obj))
             && let Ok(dict) = info.1.as_dict()
         {
             if let Ok(t) = dict.get(b"Title").and_then(|o| o.as_str()) {

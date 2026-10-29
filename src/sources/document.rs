@@ -18,8 +18,8 @@ pub struct LocalDocument {
 pub struct DocumentLoader;
 
 impl DocumentLoader {
-    /// Validates and loads a local document (PDF, HTML, Markdown, or plain text).
-    pub fn load_file(path: &Path, scraper: &WebScraper) -> Result<LocalDocument> {
+    /// Validates that `path` exists, is a regular file, and does not exceed `MAX_FILE_BYTES`.
+    pub fn validate_file(path: &Path) -> Result<()> {
         if !path.exists() {
             anyhow::bail!("File not found: {:?}", path);
         }
@@ -36,6 +36,12 @@ impl DocumentLoader {
                 MAX_FILE_BYTES / (1024 * 1024)
             );
         }
+        Ok(())
+    }
+
+    /// Validates and loads a local document (PDF, HTML, Markdown, or plain text).
+    pub fn load_file(path: &Path, scraper: &WebScraper) -> Result<LocalDocument> {
+        Self::validate_file(path)?;
 
         if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("epub")) {
             anyhow::bail!(
@@ -54,7 +60,9 @@ impl DocumentLoader {
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
         {
-            let page = PdfExtractor::extract_file(path)?;
+            let bytes = fs::read(path)
+                .with_context(|| format!("Failed to read PDF file at {:?}", path))?;
+            let page = PdfExtractor::extract_from_bytes(&bytes, Some(path))?;
             let t = page.title.unwrap_or_else(fallback_title);
             (page.content, page.word_count, t)
         } else {
