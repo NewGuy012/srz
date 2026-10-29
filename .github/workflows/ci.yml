@@ -9,16 +9,14 @@ on:
       - 'tests/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'deny.toml'
       - '.github/workflows/ci.yml'
   pull_request:
     branches:
       - master
-    paths:
-      - 'src/**'
-      - 'tests/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.github/workflows/ci.yml'
+  schedule:
+    # Weekly security scan on Monday at 08:00 UTC
+    - cron: '0 8 * * 1'
   workflow_dispatch:
 
 concurrency:
@@ -72,6 +70,14 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --all -- --check
 
+      - name: Check documentation links & warnings
+        if: matrix.os == 'ubuntu-latest'
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+
+      - name: Validate Crates.io packaging (dry-run)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo publish --dry-run
+
       - name: Run cargo clippy (warnings denied)
         run: cargo clippy --all-targets -- -D warnings
 
@@ -86,14 +92,33 @@ jobs:
         run: sccache --show-stats
 
   security-audit:
-    name: Dependency Security Audit
+    name: Dependency Security & License Audit
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Run cargo-deny checks
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources
 
       - name: Install cargo-audit
         uses: taiki-e/install-action@cargo-audit
 
       - name: Run cargo audit
         run: cargo audit
+
+  ci-status:
+    name: All CI Checks Passed
+    needs: [test, security-audit]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Verify all required checks succeeded
+        run: |
+          if [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.security-audit.result }}" != "success" ]; then
+            echo "::error::One or more upstream CI jobs failed."
+            exit 1
+          fi
+          echo "✔ All test, lint, doc, packaging, and security checks passed successfully!"
