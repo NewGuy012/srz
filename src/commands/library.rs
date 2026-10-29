@@ -55,10 +55,11 @@ pub fn handle_stats(db: &Database, as_json: bool) -> Result<()> {
 
     Ui::header("Library & LLM Performance Statistics (DuckDB)");
     println!(
-        "  Total Summaries:     {} ({} books, {} web articles, {} news digests, {} files, {} stdin)",
+        "  Total Summaries:     {} ({} books, {} web articles, {} videos, {} news digests, {} files, {} stdin)",
         stats.total_summaries,
         stats.book_summaries,
         stats.web_summaries,
+        stats.video_summaries,
         stats.news_summaries,
         stats.file_summaries,
         stats.stdin_summaries

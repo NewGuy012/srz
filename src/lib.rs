@@ -13,6 +13,7 @@ pub use engine::llm;
 pub use sources::news;
 pub use sources::scraper;
 pub use sources::search;
+pub use sources::youtube;
 pub use storage::cache;
 pub use storage::db;
 pub use system::fs_util;

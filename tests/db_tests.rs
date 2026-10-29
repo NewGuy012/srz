@@ -72,6 +72,7 @@ fn test_database_stats() {
     assert_eq!(stats.web_summaries, 1);
     assert_eq!(stats.file_summaries, 0);
     assert_eq!(stats.stdin_summaries, 0);
+    assert_eq!(stats.video_summaries, 0);
     assert_eq!(stats.total_source_words, 12000);
     assert_eq!(stats.total_prompt_tokens, 7500);
     assert_eq!(stats.total_completion_tokens, 2000);

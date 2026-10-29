@@ -242,27 +242,46 @@ pub async fn handle_web(
     cache: &Cache,
     args: &Cli,
 ) -> Result<SummaryOutcome> {
+    let is_youtube = crate::sources::youtube::extract_youtube_video_id(url);
+    let target_type = if is_youtube.is_some() { "youtube" } else { "web" };
+
     // 1. Check for a cached summary matching URL + style + model
     if let Some(cached) = cache.get_web_summary(url, args.style, &args.model) {
         Ui::info("Loaded summary from local cache (pass `--no-cache` to refresh).");
         return Ok(SummaryOutcome::from_cached(
-            "web",
+            target_type,
             cached,
             None,
             Some(url.to_string()),
         ));
     }
 
-    // 2. Check for a cached scraped page to avoid redundant network requests
-    let page = fetch_or_cache_page(
-        url,
-        scraper,
-        cache,
-        "Loaded webpage content from local cache.",
-        "Scraping and normalizing webpage content...",
-        "Webpage content scraped and normalized.",
-    )
-    .await?;
+    // 2. Fetch or load cached page / transcript
+    let page = if let Some(video_id) = is_youtube {
+        if let Some(cached_page) = cache.get_page(url) {
+            Ui::info("Loaded YouTube transcript from local cache.");
+            cached_page
+        } else {
+            let fetched = Ui::with_spinner(
+                "Fetching YouTube video metadata and captions...",
+                "YouTube transcript and metadata fetched.",
+                crate::sources::youtube::fetch_youtube_transcript(scraper.client(), video_id),
+            )
+            .await?;
+            cache.set_page(url, &fetched);
+            fetched
+        }
+    } else {
+        fetch_or_cache_page(
+            url,
+            scraper,
+            cache,
+            "Loaded webpage content from local cache.",
+            "Scraping and normalizing webpage content...",
+            "Webpage content scraped and normalized.",
+        )
+        .await?
+    };
 
     let title_display = page.title.clone().unwrap_or_else(|| url.to_string());
 
@@ -294,7 +313,7 @@ pub async fn handle_web(
     }
 
     Ok(SummaryOutcome::from_llm(
-        "web",
+        target_type,
         title_display,
         None,
         Some(url.to_string()),
