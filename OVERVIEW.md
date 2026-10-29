@@ -160,16 +160,17 @@ src/
 | | [`src/config/file.rs`](src/config/file.rs) | `config::file` | `config.toml` file loading, named profile switching, and starter template generation. |
 | **Engine** | [`src/engine/llm.rs`](src/engine/llm.rs) | `engine::llm` | Zero-copy SSE client (`complete_chat` / `SseStreamState`), localhost IPv4 fallback, and map-reduce synthesis. |
 | | [`src/engine/chunker.rs`](src/engine/chunker.rs) | `engine::chunker` | Zero-copy `Cow` text windowing and paragraph chunking for long documents (> 12k words). |
-| **Sources** | [`src/sources/scraper.rs`](src/sources/scraper.rs) | `sources::scraper` | HTTP client (10 MB cap), MediaWiki/article DOM extraction, and text cleaning. |
+| **Sources** | [`src/sources/document.rs`](src/sources/document.rs) | `sources::document` | Unified local document ingestion (`DocumentLoader`): file size safety checks (20 MB), PDF extraction, HTML/Markdown normalization, and title fallbacks. |
+| | [`src/sources/scraper.rs`](src/sources/scraper.rs) | `sources::scraper` | HTTP client (10 MB cap), streaming body readers (`read_response_bytes_limited`, `read_response_text_limited`), MediaWiki/article DOM extraction, and text cleaning. |
 | | [`src/sources/pdf.rs`](src/sources/pdf.rs) | `sources::pdf` | Native pure-Rust PDF text extraction, document info metadata, and scanned-PDF detection via `pdf-extract`. |
-| | [`src/sources/youtube.rs`](src/sources/youtube.rs) | `sources::youtube` | YouTube video ID extraction, public timed-text XML/JSON3 caption resolution, and chapter cues. |
+| | [`src/sources/youtube.rs`](src/sources/youtube.rs) | `sources::youtube` | YouTube video ID extraction, public timed-text XML/JSON3 caption resolution, and chapter cue grouping via `TimedTranscriptBuilder`. |
 | | [`src/sources/search.rs`](src/sources/search.rs) | `sources::search` | Open Library metadata, Wikipedia OpenSearch/fulltext, DDG search, and candidate scoring. |
 | | [`src/sources/news.rs`](src/sources/news.rs) | `sources::news` | Google News RSS client, `batchexecute` RPC redirect decoding, and concurrent article fetching. |
 | **Storage** | [`src/storage/cache.rs`](src/storage/cache.rs) | `storage::cache` | Local JSON disk caching in `~/.cache/srz/` with compact serialization and private file permissions. |
-| | [`src/storage/db.rs`](src/storage/db.rs) | `storage::db` | Lazy DuckDB database for history telemetry and offline library full-text snippet search. |
+| | [`src/storage/db.rs`](src/storage/db.rs) | `storage::db` | Lazy DuckDB database for history telemetry and offline library full-text search (`Database::default_path`). |
 | **UI & Render** | [`src/ui/terminal.rs`](src/ui/terminal.rs) | `ui::terminal` | CLI progress spinners (`indicatif`), colored text formatting, and quiet/verbose mode handling. |
 | | [`src/ui/printer.rs`](src/ui/printer.rs) | `ui::printer` | Tailored `termimad` terminal Markdown styling and automatic `$PAGER` / `less -RFX` integration. |
-| | [`src/ui/tui.rs`](src/ui/tui.rs) | `ui::tui` | Interactive `ratatui` + `crossterm` terminal UI library explorer (`srz browse`) with live search. |
+| | [`src/ui/tui.rs`](src/ui/tui.rs) | `ui::tui` | Interactive `ratatui` + `crossterm` terminal UI library explorer (`srz browse`) with pre-indexed live search. |
 | | [`src/ui/render.rs`](src/ui/render.rs) | `ui::render` | Single-pass streaming Markdown-to-HTML converter, CSS styling, index dashboard, and slugify. |
 | **System** | [`src/system/fs_util.rs`](src/system/fs_util.rs) | `system::fs_util` | Platform filesystem utilities and private directory/file permissions (`0700`/`0600`). |
 | | [`src/system/upgrade.rs`](src/system/upgrade.rs) | `system::upgrade` | In-place self-updater: target detection, GitHub release queries, SHA256 verification, and atomic swap. |
@@ -183,8 +184,11 @@ src/
 - **Lazy Database Initialization**: DuckDB (`srz.duckdb`) is initialized only when recording a new summary or running analytics. Cache hits and shell completions launch instantly with zero database overhead.
 - **Zero-Copy Streaming**: SSE chunks deserialize directly from network byte buffers into borrowed string slices (`Cow<str>`), batching terminal flushes per packet to minimize heap allocations.
 - **HTTP Connection Pool Sharing**: A single HTTP client connection pool is shared across Open Library metadata queries, DuckDuckGo candidate searches, and webpage scraping, reusing active TLS/HTTP2 keep-alive connections.
+- **Unified Bounded HTTP Streaming**: All network fetches (web scraping, news RSS feeds, search APIs, YouTube transcripts, self-updater binary downloads) share chunked streaming with strict byte limits to avoid unbuffered memory spikes.
+- **TUI Live Search Pre-Indexing**: Library items pre-compute lowercased search text blobs at startup on `AppState`, completely eliminating repeated string conversions and allocations on every interactive keystroke.
 - **Parallel Map-Reduce**: Large documents (> 12,000 words) are split along paragraph boundaries and processed concurrently (`--concurrency`), aggregating token metrics across chunks.
 - **Single-Pass Output Streaming**: Markdown-to-HTML conversion and HTML entity escaping stream directly into a pre-allocated output buffer without allocating intermediate strings.
+- **In-Place DB Snippet Formatting**: Search snippet extraction pre-allocates exact capacities and normalizes whitespace in place without redundant string allocations.
 
 ### Security & Privacy
 - **Strict Local Isolation**: Cache files, configuration, and database files are created with owner-only Unix permissions (`0700` directories, `0600` files).
