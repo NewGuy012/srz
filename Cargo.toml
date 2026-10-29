@@ -9,6 +9,12 @@ homepage = "https://github.com/NewGuy012/srz"
 readme = "README.md"
 keywords = ["llm", "summarizer", "cli", "news", "ai"]
 categories = ["command-line-utilities", "text-processing"]
+include = [
+    "src/**/*",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE",
+]
 
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }

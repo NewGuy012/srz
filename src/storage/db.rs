@@ -685,18 +685,18 @@ impl Database {
         let day_nums: Vec<i64> = days.iter().filter_map(|d| ymd_to_day_number(d)).collect();
         let today_num = ymd_to_day_number(&today_str).unwrap_or(0);
 
-        if let Some(&most_recent) = day_nums.first() {
-            if most_recent == today_num || most_recent == today_num - 1 {
-                let mut streak = 1;
-                for i in 1..day_nums.len() {
-                    if day_nums[i] == day_nums[i - 1] - 1 {
-                        streak += 1;
-                    } else {
-                        break;
-                    }
+        if let Some(&most_recent) = day_nums.first()
+            && (most_recent == today_num || most_recent == today_num - 1)
+        {
+            let mut streak = 1;
+            for i in 1..day_nums.len() {
+                if day_nums[i] == day_nums[i - 1] - 1 {
+                    streak += 1;
+                } else {
+                    break;
                 }
-                stats.current_streak_days = streak;
             }
+            stats.current_streak_days = streak;
         }
 
         // Model Performance Breakdown

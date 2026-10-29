@@ -116,6 +116,7 @@ pub fn format_grounded_context(title: &str, content: &str) -> String {
 }
 
 /// Handles the `srz ask` subcommand.
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_ask(
     target: Option<String>,
     question: Option<String>,
@@ -243,10 +244,10 @@ pub async fn handle_ask(
         for msg in msgs {
             if msg.role == "user" {
                 user_msg = Some(msg.content);
-            } else if msg.role == "assistant" {
-                if let Some(q) = user_msg.take() {
-                    history.push((q, msg.content));
-                }
+            } else if msg.role == "assistant"
+                && let Some(q) = user_msg.take()
+            {
+                history.push((q, msg.content));
             }
         }
 
@@ -268,7 +269,7 @@ pub async fn handle_ask(
     } else {
         let (t, c) =
             resolve_document_context(target.as_deref(), scraper, cache, db.as_ref()).await?;
-        let t_type = if target.as_deref().map_or(false, |s| s.starts_with("http")) {
+        let t_type = if target.as_deref().is_some_and(|s| s.starts_with("http")) {
             "web".to_string()
         } else {
             "doc".to_string()
@@ -285,14 +286,12 @@ pub async fn handle_ask(
     let is_interactive = interactive || question.is_none() || resume.is_some();
 
     // Create session if not already resuming and DB is available
-    if session_id.is_none() {
-        if let Some(ref db_ref) = db {
-            if let Ok(id) =
-                db_ref.create_chat_session(&title, &target_type, target_url.as_deref(), llm.model())
-            {
-                session_id = Some(id);
-            }
-        }
+    if session_id.is_none()
+        && let Some(ref db_ref) = db
+        && let Ok(id) =
+            db_ref.create_chat_session(&title, &target_type, target_url.as_deref(), llm.model())
+    {
+        session_id = Some(id);
     }
 
     if !is_interactive {
@@ -415,13 +414,14 @@ pub async fn handle_ask(
         println!();
     }
 
-    if let Some(sid) = session_id {
-        if !args.plain && !args.json {
-            println!(
-                "\x1b[2mSession #{} saved. Resume anytime with: srz ask --resume {}\x1b[0m\n",
-                sid, sid
-            );
-        }
+    if let Some(sid) = session_id
+        && !args.plain
+        && !args.json
+    {
+        println!(
+            "\x1b[2mSession #{} saved. Resume anytime with: srz ask --resume {}\x1b[0m\n",
+            sid, sid
+        );
     }
 
     Ok(())

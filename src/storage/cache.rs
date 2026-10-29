@@ -4,8 +4,8 @@ use crate::fs_util::{
 };
 use crate::scraper::ScrapedPage;
 use crate::search::{BookMetadata, SearchResult};
-use duckdb::{params, Connection};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use duckdb::{Connection, params};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use std::env;
 use std::fs::{self, File};
@@ -298,7 +298,7 @@ impl Cache {
                          title VARCHAR NOT NULL,
                          summary TEXT NOT NULL,
                          cached_at TIMESTAMP NOT NULL DEFAULT current_timestamp
-                     );"
+                     );",
                 );
                 *guard = Some(conn);
             }
@@ -357,14 +357,14 @@ impl Cache {
     /// Removes all cached files in pages, search, summaries, and views, returning stats of what was cleared.
     pub fn clean(&self) -> std::io::Result<CacheStats> {
         let current = self.stats();
-        if let Some(guard) = self.get_or_init_db() {
-            if let Some(conn) = guard.as_ref() {
-                let _ = conn.execute_batch(
-                    "DELETE FROM cache_pages;
-                     DELETE FROM cache_search;
-                     DELETE FROM cache_summaries;",
-                );
-            }
+        if let Some(guard) = self.get_or_init_db()
+            && let Some(conn) = guard.as_ref()
+        {
+            let _ = conn.execute_batch(
+                "DELETE FROM cache_pages;
+                 DELETE FROM cache_search;
+                 DELETE FROM cache_summaries;",
+            );
         }
         for ns in CacheNamespace::all() {
             let p = self.base_dir.join(ns.as_str());
@@ -390,41 +390,41 @@ impl Cache {
             None => CacheNamespace::all().to_vec(),
         };
 
-        if let Some(guard) = self.get_or_init_db() {
-            if let Some(conn) = guard.as_ref() {
-                let now_secs = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0);
+        if let Some(guard) = self.get_or_init_db()
+            && let Some(conn) = guard.as_ref()
+        {
+            let now_secs = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
 
-                for ns in &namespaces {
-                    let ttl = match options.older_than {
-                        Some(dur) => dur,
-                        None => ns.ttl(&self.policy),
-                    };
-                    if ttl != Duration::MAX {
-                        let cutoff = now_secs.saturating_sub(ttl.as_secs() as i64);
-                        match ns {
-                            CacheNamespace::Pages => {
-                                let _ = conn.execute(
-                                    "DELETE FROM cache_pages WHERE strftime(cached_at, '%s')::BIGINT < ?",
-                                    params![cutoff],
-                                );
-                            }
-                            CacheNamespace::Search => {
-                                let _ = conn.execute(
-                                    "DELETE FROM cache_search WHERE strftime(cached_at, '%s')::BIGINT < ?",
-                                    params![cutoff],
-                                );
-                            }
-                            CacheNamespace::Summaries => {
-                                let _ = conn.execute(
-                                    "DELETE FROM cache_summaries WHERE strftime(cached_at, '%s')::BIGINT < ?",
-                                    params![cutoff],
-                                );
-                            }
-                            CacheNamespace::Views => {}
+            for ns in &namespaces {
+                let ttl = match options.older_than {
+                    Some(dur) => dur,
+                    None => ns.ttl(&self.policy),
+                };
+                if ttl != Duration::MAX {
+                    let cutoff = now_secs.saturating_sub(ttl.as_secs() as i64);
+                    match ns {
+                        CacheNamespace::Pages => {
+                            let _ = conn.execute(
+                                "DELETE FROM cache_pages WHERE strftime(cached_at, '%s')::BIGINT < ?",
+                                params![cutoff],
+                            );
                         }
+                        CacheNamespace::Search => {
+                            let _ = conn.execute(
+                                "DELETE FROM cache_search WHERE strftime(cached_at, '%s')::BIGINT < ?",
+                                params![cutoff],
+                            );
+                        }
+                        CacheNamespace::Summaries => {
+                            let _ = conn.execute(
+                                "DELETE FROM cache_summaries WHERE strftime(cached_at, '%s')::BIGINT < ?",
+                                params![cutoff],
+                            );
+                        }
+                        CacheNamespace::Views => {}
                     }
                 }
             }
@@ -622,53 +622,48 @@ impl Cache {
         }
 
         // 1. Try DuckDB cache first
-        if let Some(guard) = self.get_or_init_db() {
-            if let Some(conn) = guard.as_ref() {
-                let now_secs = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0);
+        if let Some(guard) = self.get_or_init_db()
+            && let Some(conn) = guard.as_ref()
+        {
+            let now_secs = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
 
-                let table = match namespace {
-                    "search" => Some("cache_search"),
-                    "summaries" => Some("cache_summaries"),
-                    _ => None,
-                };
+            let table = match namespace {
+                "search" => Some("cache_search"),
+                "summaries" => Some("cache_summaries"),
+                _ => None,
+            };
 
-                if let Some(tbl) = table {
-                    let sql = format!(
-                        "SELECT data, strftime(cached_at, '%s')::BIGINT
-                         FROM {}
-                         WHERE cache_key = ?",
-                        tbl
-                    );
-                    if let Ok(mut stmt) = conn.prepare(&sql) {
-                        if let Ok(mut rows) = stmt.query(params![key_hash]) {
-                            if let Some(row) = rows.next().ok().flatten() {
-                                if let (Ok(json_data), Ok(cached_secs)) =
-                                    (row.get::<_, String>(0), row.get::<_, i64>(1))
-                                {
-                                    if let Some(ttl_dur) = ttl {
-                                        if ttl_dur != Duration::MAX
-                                            && (now_secs - cached_secs) > ttl_dur.as_secs() as i64
-                                        {
-                                            let del_sql =
-                                                format!("DELETE FROM {} WHERE cache_key = ?", tbl);
-                                            let _ = conn.execute(&del_sql, params![key_hash]);
-                                            let path = self
-                                                .base_dir
-                                                .join(namespace)
-                                                .join(format!("{}.json", key_hash));
-                                            let _ = fs::remove_file(path);
-                                            return None;
-                                        }
-                                    }
-                                    if let Ok(val) = serde_json::from_str(&json_data) {
-                                        return Some(val);
-                                    }
-                                }
-                            }
-                        }
+            if let Some(tbl) = table {
+                let sql = format!(
+                    "SELECT data, strftime(cached_at, '%s')::BIGINT
+                     FROM {}
+                     WHERE cache_key = ?",
+                    tbl
+                );
+                if let Ok(mut stmt) = conn.prepare(&sql)
+                    && let Ok(mut rows) = stmt.query(params![key_hash])
+                    && let Some(row) = rows.next().ok().flatten()
+                    && let (Ok(json_data), Ok(cached_secs)) =
+                        (row.get::<_, String>(0), row.get::<_, i64>(1))
+                {
+                    if let Some(ttl_dur) = ttl
+                        && ttl_dur != Duration::MAX
+                        && (now_secs - cached_secs) > ttl_dur.as_secs() as i64
+                    {
+                        let del_sql = format!("DELETE FROM {} WHERE cache_key = ?", tbl);
+                        let _ = conn.execute(&del_sql, params![key_hash]);
+                        let path = self
+                            .base_dir
+                            .join(namespace)
+                            .join(format!("{}.json", key_hash));
+                        let _ = fs::remove_file(path);
+                        return None;
+                    }
+                    if let Ok(val) = serde_json::from_str(&json_data) {
+                        return Some(val);
                     }
                 }
             }
@@ -760,7 +755,7 @@ impl Cache {
                 if let Ok(mut stmt) = conn.prepare(
                     "SELECT url, title, content, word_count, strftime(cached_at, '%s')::BIGINT
                      FROM cache_pages
-                     WHERE cache_key = ?"
+                     WHERE cache_key = ?",
                 ) {
                     if let Ok(mut rows) = stmt.query(params![&key]) {
                         if let Some(row) = rows.next().ok().flatten() {
@@ -770,9 +765,15 @@ impl Cache {
                             let word_count: usize = row.get::<_, u32>(3).unwrap_or(0) as usize;
                             let cached_secs: i64 = row.get(4).unwrap_or(0);
 
-                            if ttl != Duration::MAX && (now_secs - cached_secs) > ttl.as_secs() as i64 {
-                                let _ = conn.execute("DELETE FROM cache_pages WHERE cache_key = ?", params![&key]);
-                                let path = self.base_dir.join("pages").join(format!("{}.json", key));
+                            if ttl != Duration::MAX
+                                && (now_secs - cached_secs) > ttl.as_secs() as i64
+                            {
+                                let _ = conn.execute(
+                                    "DELETE FROM cache_pages WHERE cache_key = ?",
+                                    params![&key],
+                                );
+                                let path =
+                                    self.base_dir.join("pages").join(format!("{}.json", key));
                                 let _ = fs::remove_file(path);
                                 return None;
                             }
