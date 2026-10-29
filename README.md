@@ -63,63 +63,31 @@ cargo install --path .
 
 ## Usage
 
-Pass any target directly—`srz` auto-detects URLs, books, files, news, or stdin.
-
-### Summarizing Content
+Pass any target directly—`srz` auto-detects URLs, YouTube videos, books, files, news, or stdin:
 
 ```bash
-srz "https://example.com/article"                 # Web article
-srz "https://www.youtube.com/watch?v=dQw4w9WgXcQ" # YouTube video transcript & takeaways
-srz "The Hobbit"                                  # Book title (Wikipedia + Open Library)
-srz "document.md"                                 # Local document (Markdown, plain text, HTML)
-git diff | srz "-"                                # Standard input
-```
+# Summarize any target
+srz "https://example.com/article"                 # Webpage
+srz "https://youtube.com/watch?v=dQw4w9WgXcQ"     # YouTube video captions & takeaways
+srz "The Hobbit"                                  # Book synopsis (Wikipedia + Open Library)
+srz "notes.md"                                    # Local document (.md, .txt, .html)
+git diff | srz -                                  # Unix stdin stream
 
-### Interactive Grounded Q&A (`srz ask`)
+# Styles, browser reader & paging
+srz "The Hobbit" --style tldr                     # Presets: concise, detailed, bullets, tldr...
+srz "The Hobbit" --open                           # Open distraction-free HTML reader in browser
+srz "The Hobbit" --plain                          # Raw unstyled Markdown output (no paging/ANSI)
 
-```bash
-srz ask "What are the key limitations mentioned?" # Grounded on your latest read in history
-srz ask "https://example.com" "Explain point 3"   # Grounded on specific target URL or document
-srz ask --interactive                             # Start multi-turn interactive chat REPL
-```
+# Interactive Q&A and TUI browser
+srz ask "What are the main takeaways?"            # Q&A grounded on latest read or document
+srz ask --interactive                             # Multi-turn interactive chat REPL
+srz browse                                        # Terminal dashboard ([j/k] navigate, [y] copy, [/] filter)
 
-### Interactive TUI Library (`srz browse`)
-
-```bash
-srz browse                                        # Launch interactive ratatui library explorer
-srz browse                                        # Keybindings: [j/k] navigate, [/] filter, [Enter] open, [y] copy, [d] delete, [q] quit
-```
-
-### Live News Briefings
-
-```bash
-srz news "AI updates"                             # Today's news digest
-srz "current AI news" -t "week"                   # Auto-detected news query (day/week/month)
-```
-
-### Styles, Reader Views & Terminal Paging
-
-```bash
-srz "The Hobbit" --style "tldr"                   # Presets: concise, detailed, bullets, tldr...
-srz "The Hobbit" --open                           # Open distraction-free reader in browser
-srz "The Hobbit" --plain                          # Output raw unformatted Markdown without ANSI escapes
-srz "The Hobbit" --paging never                   # Disable automatic terminal paging
-```
-
-### Offline Library & Search
-
-```bash
-srz find "ecology"                                # Search past summaries offline
-srz index --open                                  # Interactive HTML library dashboard
-srz history                                       # View past summaries & token metrics
-```
-
-### Self-Update & Maintenance
-
-```bash
-srz upgrade                             # Upgrade srz in-place to latest release
-srz upgrade --check                     # Check if an update is available
-srz upgrade --force                     # Force reinstall or overwrite existing binary
+# News, library & maintenance
+srz news "AI updates" -t week                     # Live news briefing (day, week, month)
+srz find "keyword"                                # Offline full-text search across past summaries
+srz history                                       # Past reads, token metrics, and speeds
+srz upgrade                                       # In-place self-updater with SHA256 verification
 ```
 
 Run `srz --help` to see all available subcommands and flags.
@@ -127,36 +95,14 @@ Run `srz --help` to see all available subcommands and flags.
 
 ## Features
 
-### Content Sources & Ingestion
-
-- **Webpages**: Clean article content and documentation without ads, cookie banners, or navigation bloat.
-- **YouTube video transcripts**: Direct extraction of timed-text closed captions and transcripts with timestamped chapters—no media downloads.
-- **Local files**: Summarizes local text documents, Markdown files, and HTML files.
-- **Unix stdin streams**: Ingests piped terminal text, `git diff` outputs, log streams, and command outputs.
-- **Books**: Generates verified overviews and synopses from Wikipedia and Open Library by title alone.
-- **Live news digests**: Curates and summarizes top stories on any topic or timeframe from Google News.
-
-### LLM Engine, Synthesis & Q&A
-
-- **8 Summary Styles**: Tailor output with presets like concise, detailed, bullet points, executive, or quick takeaways.
-- **Interactive Grounded Q&A (`srz ask`)**: Ask follow-up questions grounded on full source documents or past reads in single-turn or multi-turn REPL chat.
-- **Parallel Processing for Long Texts**: Automatically splits and processes long documents in parallel.
-- **Visual Feedback & Live Streaming**: Clean progress indicators with optional real-time streaming.
-
-### Offline Library & Storage
-
-- **Interactive TUI Library (`srz browse`)**: Split-pane terminal reader to browse, live filter, inspect telemetry, copy summaries (`y`), and launch reader views.
-- **Offline Full-Text Search**: Search through your entire history of past summaries completely offline.
-- **Visual Library Dashboard**: Browse, filter, and review all your saved summaries in an interactive dashboard (`srz index`).
-- **Instant Reader Views**: Generates clean, distraction-free reading pages with automatic light and dark mode.
-
-### Terminal & CLI Experience
-
-- **Rich Terminal Markdown**: Auto-renders markdown headers, bolding, lists, and code styling on TTYs via `termimad`.
-- **Integrated Paging**: Automatically pipes lengthy summaries into `$PAGER` / `less -RFX` like `bat`, bypassable via `--plain` or `--no-pager`.
-- **Config File & Profiles**: Save default preferences and switch between different models with ease.
-- **One-Command Upgrades**: Safe in-place binary upgrades with SHA256 integrity verification (`srz upgrade`).
-- **Health Checks & Diagnostics**: Verify backend connectivity and inspect available models with built-in tools.
+- **Multi-Source Ingestion**: Webpages, YouTube captions, Markdown/text files, Unix pipes (`-`), book synopses, and Google News RSS.
+- **Interactive Q&A (`srz ask`)**: Single-turn and multi-turn REPL chat grounded on full source documents or past reads.
+- **TUI Dashboard (`srz browse`)**: Split-pane terminal explorer with live search, telemetry inspection, and clipboard copying.
+- **8 Summary Presets**: `concise`, `detailed`, `bullets`, `executive`, `tldr`, `critique`, `eli5`, and `flashcards`.
+- **Offline Storage & Search**: Saves all reads to embedded DuckDB with full-text search (`srz find`) and HTML index dashboard (`srz index`).
+- **Reader Views & Paging**: Standalone HTML/Markdown exports with dark mode, plus automatic terminal paging (`less -RFX`) like `bat`.
+- **Parallel Map-Reduce**: Automatically splits and synthesizes large documents exceeding token limits in parallel.
+- **Profiles & Diagnostics**: Named backend profiles in `config.toml`, server health checks (`srz doctor`), and self-updater (`srz upgrade`).
 
 
 ## Configuring Your LLM Backend
@@ -190,39 +136,25 @@ srz "1984" --base-url "https://api.openai.com/v1" --model "gpt-4o-mini" --api-ke
 
 ### Profile Switching (`~/.config/srz/config.toml`)
 
-Run `srz config init` to generate a starter config, then configure named profiles for your favorite local or cloud models:
+Run `srz config init` to generate a starter config, then configure named profiles:
 
 ```toml
-# Default local backend (runs out-of-the-box with Llama-macOS / Llama-Windows / llama-server)
+# Default local model
 base_url = "http://localhost:9931/v1"
 model = "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
 
-# Cloud profile: OpenAI
+# Cloud profile (e.g. OpenAI or Anthropic)
 [profiles.openai]
 base_url = "https://api.openai.com/v1"
 model = "gpt-4o-mini"
 api_key = "sk-..."
-
-# Cloud profile: Anthropic Claude
-[profiles.anthropic]
-base_url = "https://api.anthropic.com/v1"
-model = "claude-3-5-sonnet-20241022"
-api_key = "sk-ant-..."
-
-# Cloud profile: Google Gemini
-[profiles.google]
-base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
-model = "gemini-2.0-flash"
-api_key = "..."
 ```
 
-Run with your default local model, or switch to any cloud profile seamlessly:
+Switch profiles on the fly with `--profile`:
 
 ```bash
-srz "The Hobbit"                      # Runs 100% locally
-srz "The Hobbit" --profile "openai"    # Runs via OpenAI
-srz "The Hobbit" --profile "anthropic" # Runs via Anthropic Claude
-srz "The Hobbit" --profile "google"    # Runs via Google Gemini
+srz "The Hobbit"                      # Default local model
+srz "The Hobbit" --profile openai     # Named cloud profile
 ```
 
 
