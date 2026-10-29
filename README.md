@@ -8,7 +8,7 @@
 
 - **Webpages**
 - **YouTube video transcripts**
-- **Local files**
+- **PDF documents & local files**
 - **Unix stdin streams**
 - **Books**
 - **Live news digests**
@@ -67,8 +67,9 @@ Pass any target directly—`srz` auto-detects URLs, YouTube videos, books, files
 
 ```bash
 # Summarize any target
-srz "https://example.com/article"                 # Webpage
+srz "https://example.com/article"                 # Webpage (or PDF URL)
 srz "https://youtube.com/watch?v=dQw4w9WgXcQ"     # YouTube video captions & takeaways
+srz "paper.pdf"                                   # PDF document (pure-Rust extraction)
 srz "The Hobbit"                                  # Book synopsis (Wikipedia + Open Library)
 srz "notes.md"                                    # Local document (.md, .txt, .html)
 git diff | srz -                                  # Unix stdin stream
@@ -95,7 +96,7 @@ Run `srz --help` to see all available subcommands and flags.
 
 ## Features
 
-- **Multi-Source Ingestion**: Webpages, YouTube captions, Markdown/text files, Unix pipes (`-`), book synopses, and Google News RSS.
+- **Multi-Source Ingestion**: Webpages, YouTube captions, PDF documents, Markdown/text files, Unix pipes (`-`), book synopses, and Google News RSS.
 - **Interactive Q&A (`srz ask`)**: Single-turn and multi-turn REPL chat grounded on full source documents or past reads.
 - **TUI Dashboard (`srz browse`)**: Split-pane terminal explorer with live search, telemetry inspection, and clipboard copying.
 - **8 Summary Presets**: `concise`, `detailed`, `bullets`, `executive`, `tldr`, `critique`, `eli5`, and `flashcards`.
