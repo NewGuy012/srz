@@ -213,8 +213,8 @@ impl WebScraper {
         // 1. Extract Title
         let title = self.extract_title(&document);
 
-        // 2. Select main content container or fallback to body
-        let target_html = self.extract_main_html(&document);
+        // 2. Select main content container or fallback to raw HTML zero-copy
+        let target_html = self.extract_main_html(&document, raw_html);
 
         // 3. Convert HTML to clean plain text without link footnote bloat or 100-col artificial wraps
         let rendered_text = html_to_plain_text(target_html.as_bytes())?;
@@ -255,17 +255,17 @@ impl WebScraper {
         None
     }
 
-    fn extract_main_html(&self, document: &Html) -> String {
+    fn extract_main_html<'a>(&self, document: &Html, raw_html: &'a str) -> std::borrow::Cow<'a, str> {
         for sel in MAIN_SELECTORS.iter() {
             if let Some(element) = document.select(sel).next() {
                 let html = element.html();
                 if html.len() > 200 {
-                    return html;
+                    return std::borrow::Cow::Owned(html);
                 }
             }
         }
 
-        document.html()
+        std::borrow::Cow::Borrowed(raw_html)
     }
 }
 
