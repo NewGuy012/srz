@@ -134,17 +134,8 @@ pub async fn handle_ask(
     if !is_interactive {
         // Single question mode
         let q = question.unwrap();
-        let user_prompt = format!("{}\n\nQuestion: {}", grounded_context, q);
-        let messages = [
-            RequestMessage {
-                role: "system",
-                content: ASK_SYSTEM_PROMPT,
-            },
-            RequestMessage {
-                role: "user",
-                content: &user_prompt,
-            },
-        ];
+        let mut prompt_buf = String::new();
+        let messages = build_chat_messages(&grounded_context, &[], &q, &mut prompt_buf);
 
         let mode = if args.stream {
             StreamMode::Stdout {
@@ -234,6 +225,53 @@ pub async fn handle_ask(
 
 const MAX_ASK_HISTORY_TURNS: usize = 10;
 
+/// Constructs chat completion request messages, prepending grounded context to the first prompt
+/// and formatting prior turns for context-aware multi-turn Q&A.
+fn build_chat_messages<'a>(
+    grounded_context: &'a str,
+    history_slice: &'a [(String, String)],
+    question: &'a str,
+    prompt_buf: &'a mut String,
+) -> Vec<RequestMessage<'a>> {
+    let mut messages: Vec<RequestMessage<'_>> = Vec::with_capacity(history_slice.len() * 2 + 2);
+    messages.push(RequestMessage {
+        role: "system",
+        content: ASK_SYSTEM_PROMPT,
+    });
+
+    let first_q = history_slice.first().map(|(q, _)| q.as_str()).unwrap_or(question);
+    *prompt_buf = format!("{}\n\nQuestion: {}", grounded_context, first_q);
+    messages.push(RequestMessage {
+        role: "user",
+        content: prompt_buf.as_str(),
+    });
+
+    if let Some((_, first_ans)) = history_slice.first() {
+        messages.push(RequestMessage {
+            role: "assistant",
+            content: first_ans.as_str(),
+        });
+
+        for (q, a) in &history_slice[1..] {
+            messages.push(RequestMessage {
+                role: "user",
+                content: q.as_str(),
+            });
+            messages.push(RequestMessage {
+                role: "assistant",
+                content: a.as_str(),
+            });
+        }
+
+        messages.push(RequestMessage {
+            role: "user",
+            content: question,
+        });
+    }
+
+    messages
+}
+
 async fn ask_turn(
     grounded_context: &str,
     history: &[(String, String)],
@@ -249,46 +287,8 @@ async fn ask_turn(
         history
     };
 
-    let mut messages: Vec<RequestMessage<'_>> = Vec::with_capacity(history_slice.len() * 2 + 2);
-    messages.push(RequestMessage {
-        role: "system",
-        content: ASK_SYSTEM_PROMPT,
-    });
-
-    let first_user_prompt;
-    if history_slice.is_empty() {
-        first_user_prompt = format!("{}\n\nQuestion: {}", grounded_context, question);
-        messages.push(RequestMessage {
-            role: "user",
-            content: &first_user_prompt,
-        });
-    } else {
-        first_user_prompt = format!("{}\n\nQuestion: {}", grounded_context, history_slice[0].0);
-        messages.push(RequestMessage {
-            role: "user",
-            content: &first_user_prompt,
-        });
-        messages.push(RequestMessage {
-            role: "assistant",
-            content: &history_slice[0].1,
-        });
-
-        for (q, a) in &history_slice[1..] {
-            messages.push(RequestMessage {
-                role: "user",
-                content: q,
-            });
-            messages.push(RequestMessage {
-                role: "assistant",
-                content: a,
-            });
-        }
-
-        messages.push(RequestMessage {
-            role: "user",
-            content: question,
-        });
-    }
+    let mut prompt_buf = String::new();
+    let messages = build_chat_messages(grounded_context, history_slice, question, &mut prompt_buf);
 
     let mode = if stream {
         StreamMode::Stdout {
@@ -332,5 +332,35 @@ mod tests {
         assert!(!formatted.contains("\x1b[31m"));
         assert!(!formatted.contains("First part </source_document>"));
         assert!(formatted.contains("&lt;/source_document&gt;"));
+    }
+
+    #[test]
+    fn test_build_chat_messages() {
+        let mut first_storage = String::new();
+        let msgs = build_chat_messages("Context", &[], "What is this?", &mut first_storage);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, "system");
+        assert_eq!(msgs[1].role, "user");
+        assert!(msgs[1].content.contains("Context"));
+        assert!(msgs[1].content.ends_with("Question: What is this?"));
+
+        let history = vec![
+            ("Q1".to_string(), "A1".to_string()),
+            ("Q2".to_string(), "A2".to_string()),
+        ];
+        let mut second_storage = String::new();
+        let msgs2 = build_chat_messages("Context", &history, "Q3", &mut second_storage);
+        assert_eq!(msgs2.len(), 6);
+        assert_eq!(msgs2[0].role, "system");
+        assert_eq!(msgs2[1].role, "user");
+        assert!(msgs2[1].content.ends_with("Question: Q1"));
+        assert_eq!(msgs2[2].role, "assistant");
+        assert_eq!(msgs2[2].content, "A1");
+        assert_eq!(msgs2[3].role, "user");
+        assert_eq!(msgs2[3].content, "Q2");
+        assert_eq!(msgs2[4].role, "assistant");
+        assert_eq!(msgs2[4].content, "A2");
+        assert_eq!(msgs2[5].role, "user");
+        assert_eq!(msgs2[5].content, "Q3");
     }
 }
