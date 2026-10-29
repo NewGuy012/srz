@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -264,66 +263,6 @@ fn is_reference_heading(line: &str) -> bool {
     REFERENCE_HEADINGS
         .iter()
         .any(|heading| line.eq_ignore_ascii_case(heading))
-}
-
-/// Returns `true` if `path` has an `.epub` extension (case-insensitive).
-pub fn is_epub_path(path: &Path) -> bool {
-    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("epub"))
-}
-
-/// Extracted text content and metadata from a local file.
-#[derive(Debug, Clone)]
-pub struct ExtractedDocument {
-    pub title: String,
-    pub author: Option<String>,
-    pub content: String,
-    pub word_count: usize,
-}
-
-/// Extracts text, chapter contents, and metadata from an EPUB document.
-pub fn extract_epub(path: &Path) -> Result<ExtractedDocument> {
-    let mut doc = epub::doc::EpubDoc::new(path)
-        .map_err(|e| anyhow::anyhow!("Failed to open EPUB file: {:?}", e))?;
-
-    let title = doc
-        .mdata("title")
-        .map(|v| v.value.clone())
-        .or_else(|| {
-            path.file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-        })
-        .unwrap_or_else(|| "EPUB Book".to_string());
-
-    let author = doc.mdata("creator").map(|v| v.value.clone());
-
-    let mut full_text = String::new();
-    let num_chapters = doc.get_num_chapters();
-    for _ in 0..num_chapters {
-        if let Some((page_html, _mime)) = doc.get_current_str() {
-            let rendered = html_to_plain_text(page_html.as_bytes()).unwrap_or_default();
-            if !rendered.trim().is_empty() {
-                if !full_text.is_empty() {
-                    full_text.push_str("\n\n");
-                }
-                full_text.push_str(rendered.trim());
-            }
-        }
-        if !doc.go_next() {
-            break;
-        }
-    }
-
-    let (content, word_count) = clean_raw_text(&full_text);
-    if content.trim().is_empty() {
-        anyhow::bail!("EPUB file {:?} contained no extractable text.", path);
-    }
-
-    Ok(ExtractedDocument {
-        title,
-        author,
-        content,
-        word_count,
-    })
 }
 
 /// Cleans lines and counts words in a single pass.

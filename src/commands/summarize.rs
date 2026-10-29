@@ -120,33 +120,28 @@ pub async fn handle_file(
         );
     }
 
-    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf")) {
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf") || e.eq_ignore_ascii_case("epub")) {
         anyhow::bail!(
-            "PDF files are not supported: {:?}. Supported formats include EPUB, HTML, Markdown, and plain text.",
+            "Document format not supported: {:?}. Supported formats include HTML, Markdown, and plain text.",
             path
         );
     }
 
-    let (content, word_count, title, author, target_type) = if crate::scraper::is_epub_path(path) {
-        let doc = crate::scraper::extract_epub(path)?;
-        (doc.content, doc.word_count, doc.title, doc.author, "book")
-    } else {
-        let raw = fs::read_to_string(path)
-            .with_context(|| format!("Failed to read file: {:?}", path))?;
-        let fallback_title = || {
-            path.file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "Local File".to_string())
-        };
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("Failed to read file: {:?}", path))?;
+    let fallback_title = || {
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Local File".to_string())
+    };
 
-        if render::is_html_path(path) {
-            let norm = scraper.normalize(&path.display().to_string(), &raw)?;
-            let t = norm.title.unwrap_or_else(fallback_title);
-            (norm.content, norm.word_count, t, None, "file")
-        } else {
-            let words = raw.split_whitespace().count();
-            (raw, words, fallback_title(), None, "file")
-        }
+    let (content, word_count, title, author, target_type) = if render::is_html_path(path) {
+        let norm = scraper.normalize(&path.display().to_string(), &raw)?;
+        let t = norm.title.unwrap_or_else(fallback_title);
+        (norm.content, norm.word_count, t, None, "file")
+    } else {
+        let words = raw.split_whitespace().count();
+        (raw, words, fallback_title(), None, "file")
     };
 
     if content.trim().is_empty() {

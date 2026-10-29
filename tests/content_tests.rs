@@ -115,13 +115,8 @@ fn test_markdown_to_styled_html_rendering() {
 }
 
 #[test]
-fn test_epub_detection_and_clean() {
-    use srz::scraper::{clean_raw_text, is_epub_path};
-    use std::path::Path;
-
-    assert!(is_epub_path(Path::new("book.epub")));
-    assert!(is_epub_path(Path::new("/library/Dune.EPUB")));
-    assert!(!is_epub_path(Path::new("book.txt")));
+fn test_clean_raw_text() {
+    use srz::scraper::clean_raw_text;
 
     let dirty = "  Hello world!   \n\n\n\n  This is a clean test.  \n";
     let (cleaned, count) = clean_raw_text(dirty);

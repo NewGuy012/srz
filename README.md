@@ -63,7 +63,7 @@ Pass any target directly—`srz` auto-detects URLs, books, files, news, or stdin
 ```bash
 srz "https://example.com/article"       # Web article
 srz "The Hobbit"                        # Book title (Wikipedia + Open Library)
-srz "document.epub"                     # Local document (EPUB, MD, TXT, HTML)
+srz "document.md"                       # Local document (Markdown, plain text, HTML)
 git diff | srz "-"                      # Standard input
 ```
 
@@ -104,7 +104,7 @@ Run `srz --help` to see all available subcommands and flags.
 
 ### Content Sources & Ingestion
 
-- **Web Articles & Documents**: Summarizes webpages, ebooks (EPUB), text files, markdown, HTML, and piped terminal text.
+- **Web Articles & Documents**: Summarizes webpages, text files, markdown, HTML documents, and piped terminal text.
 - **Books by Title**: Generates verified overviews from Wikipedia and Open Library without needing an ebook file.
 - **Live News Briefings**: Curates and summarizes top stories on any topic or timeframe from Google News.
 
