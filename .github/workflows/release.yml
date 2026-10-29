@@ -222,7 +222,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.verify-version.outputs.version }}
-          name: Release ${{ needs.verify-version.outputs.version }}
+          name: ${{ needs.verify-version.outputs.version }}
           body_path: dist/release_notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -232,7 +232,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.verify-version.outputs.version }}
-          name: Release ${{ needs.verify-version.outputs.version }}
+          name: ${{ needs.verify-version.outputs.version }}
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
