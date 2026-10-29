@@ -51,7 +51,7 @@ pub fn with_db(f: impl FnOnce(&Database) -> Result<()>) -> Result<()> {
     Ok(())
 }
 
-/// Handles cache maintenance subcommands (`dir`, `size`, `clean`).
+/// Handles cache maintenance subcommands (`dir`, `size`, `clean`, `prune`).
 pub fn handle_cache(cmd: CacheCommand, cache: &Cache) -> Result<()> {
     match cmd {
         CacheCommand::Dir => {
@@ -69,10 +69,12 @@ pub fn handle_cache(cmd: CacheCommand, cache: &Cache) -> Result<()> {
                 stats.views
             );
         }
-        CacheCommand::Clean => {
+        CacheCommand::Clean { reset_db } => {
             let stats = cache.clean().context("Failed to clean cache directory")?;
             let mut db_reset = false;
-            if let Some(database) = open_db_or_warn() {
+            if reset_db
+                && let Some(database) = open_db_or_warn()
+            {
                 database.reset().context("Failed to reset DuckDB database")?;
                 db_reset = true;
             }
@@ -80,11 +82,59 @@ pub fn handle_cache(cmd: CacheCommand, cache: &Cache) -> Result<()> {
                 Ui::info("Cache is already empty.");
             } else if stats.total_files == 0 && db_reset {
                 Ui::success("Cache was already empty. DuckDB database tables reset.");
-            } else {
+            } else if db_reset {
                 Ui::success(&format!(
                     "Removed {} cached file(s) ({}) and reset DuckDB database tables.",
                     stats.total_files,
                     Cache::format_bytes(stats.total_bytes)
+                ));
+            } else {
+                Ui::success(&format!(
+                    "Removed {} cached file(s) ({}). DuckDB database preserved.",
+                    stats.total_files,
+                    Cache::format_bytes(stats.total_bytes)
+                ));
+            }
+        }
+        CacheCommand::Prune {
+            older_than,
+            max_size,
+            namespace,
+        } => {
+            let parsed_older_than = match older_than.as_deref() {
+                Some(s) => Some(crate::cache::parse_duration(s).map_err(|e| anyhow::anyhow!(e))?),
+                None => None,
+            };
+            let parsed_max_size = match max_size.as_deref() {
+                Some(s) => Some(crate::cache::parse_bytes(s).map_err(|e| anyhow::anyhow!(e))?),
+                None => None,
+            };
+            let parsed_namespace = match namespace.as_deref() {
+                Some(s) => Some(
+                    crate::cache::CacheNamespace::from_str_name(s).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Unknown cache namespace '{}'. Valid namespaces: pages, search, summaries, views",
+                            s
+                        )
+                    })?,
+                ),
+                None => None,
+            };
+
+            let options = crate::cache::PruneOptions {
+                older_than: parsed_older_than,
+                max_bytes: parsed_max_size,
+                namespace: parsed_namespace,
+            };
+
+            let prune_stats = cache.prune(options).context("Failed to prune cache")?;
+            if prune_stats.files_removed == 0 {
+                Ui::info("No expired or excess cache entries to prune.");
+            } else {
+                Ui::success(&format!(
+                    "Pruned {} cached file(s), reclaimed {}.",
+                    prune_stats.files_removed,
+                    Cache::format_bytes(prune_stats.bytes_reclaimed)
                 ));
             }
         }

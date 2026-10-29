@@ -45,6 +45,7 @@ async fn main() -> Result<()> {
     };
 
     let cache = Cache::new(!args.no_cache);
+    cache.maybe_auto_prune();
 
     // Handle immediate utility subcommands without initializing scraping, LLM HTTP clients,
     // or opening DuckDB unless the subcommand actually requires database access.

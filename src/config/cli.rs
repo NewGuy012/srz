@@ -299,14 +299,32 @@ pub enum Commands {
     },
 }
 
-#[derive(Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum CacheCommand {
     /// Print the cache directory path
     Dir,
     /// Show total disk usage and entry counts in the cache
     Size,
-    /// Remove all cached pages, search results, and summaries
-    Clean,
+    /// Remove cached files (pages, search, summaries, views)
+    Clean {
+        /// Also reset and wipe the DuckDB analytics/history database
+        #[arg(long)]
+        reset_db: bool,
+    },
+    /// Prune expired or old cached entries based on retention policy
+    Prune {
+        /// Remove entries older than duration (e.g. 7d, 24h, 30m, 60s, 2w)
+        #[arg(long)]
+        older_than: Option<String>,
+
+        /// Evict oldest entries until cache size is within limit (e.g. 500MB, 1GB, 50MB)
+        #[arg(long)]
+        max_size: Option<String>,
+
+        /// Only prune a specific cache namespace (pages, search, summaries, views)
+        #[arg(long)]
+        namespace: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
@@ -394,7 +412,7 @@ impl Cli {
                         })
                     }
                 }
-                Commands::Cache { action } => Ok(ResolvedAction::Cache(*action)),
+                Commands::Cache { action } => Ok(ResolvedAction::Cache(action.clone())),
                 Commands::Config { action } => Ok(ResolvedAction::Config(*action)),
                 Commands::History { limit } => Ok(ResolvedAction::History { limit: *limit }),
                 Commands::Stats => Ok(ResolvedAction::Stats),

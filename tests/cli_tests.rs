@@ -20,7 +20,33 @@ fn test_cache_subcommands() {
     let clean_cli = Cli::parse_from(["srz", "cache", "clean"]);
     assert_eq!(
         clean_cli.resolve_action().unwrap(),
-        ResolvedAction::Cache(CacheCommand::Clean)
+        ResolvedAction::Cache(CacheCommand::Clean { reset_db: false })
+    );
+
+    let clean_db_cli = Cli::parse_from(["srz", "cache", "clean", "--reset-db"]);
+    assert_eq!(
+        clean_db_cli.resolve_action().unwrap(),
+        ResolvedAction::Cache(CacheCommand::Clean { reset_db: true })
+    );
+
+    let prune_cli = Cli::parse_from([
+        "srz",
+        "cache",
+        "prune",
+        "--older-than",
+        "14d",
+        "--max-size",
+        "500MB",
+        "--namespace",
+        "pages",
+    ]);
+    assert_eq!(
+        prune_cli.resolve_action().unwrap(),
+        ResolvedAction::Cache(CacheCommand::Prune {
+            older_than: Some("14d".to_string()),
+            max_size: Some("500MB".to_string()),
+            namespace: Some("pages".to_string()),
+        })
     );
 }
 
