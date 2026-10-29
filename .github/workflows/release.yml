@@ -173,31 +173,16 @@ jobs:
             srz-*.sha256
           if-no-files-found: error
 
-  publish-release:
-    name: Publish GitHub Release & Attestations
-    needs: [verify-version, build-release]
+  publish-release-notes:
+    name: Publish GitHub Release Notes
+    needs: verify-version
     runs-on: ubuntu-24.04
     if: (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && inputs.dry_run != true
     permissions:
       contents: write
-      id-token: write
-      attestations: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
-
-      - name: Download all release assets
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-
-      - name: Generate Consolidated SHA256SUMS
-        run: |
-          cd dist
-          # Compute canonical checksum manifest
-          sha256sum srz-*.tar.gz srz-*.zip > SHA256SUMS
-          cat SHA256SUMS
 
       - name: Check Existing Release & Extract Release Notes
         id: changelog
@@ -211,14 +196,14 @@ jobs:
           TRIMMED_BODY=$(echo "${EXISTING_BODY}" | tr -d '[:space:]')
 
           if [ -n "${TRIMMED_BODY}" ]; then
-            echo "preserve_body=true" >> $GITHUB_OUTPUT
-            echo "Existing release body detected on GitHub for ${VERSION}. Preserving user's release notes."
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Existing release body detected on GitHub for ${VERSION}. Leaving release page untouched."
             exit 0
           fi
 
-          echo "preserve_body=false" >> $GITHUB_OUTPUT
+          echo "exists=false" >> $GITHUB_OUTPUT
 
-          # Extract release notes from docs/CHANGELOG.md if no release body exists
+          mkdir -p dist
           echo "Extracting release notes for ${VERSION} from docs/CHANGELOG.md..."
           awk -v ver="${VERSION}" '
             $0 ~ "^## " ver { found=1; next }
@@ -229,66 +214,33 @@ jobs:
 
           if [ -s dist/release_notes.md ]; then
             echo "has_notes=true" >> $GITHUB_OUTPUT
-            echo "Extracted release notes successfully:"
-            cat dist/release_notes.md
           else
             echo "has_notes=false" >> $GITHUB_OUTPUT
-            echo "No custom entry found in CHANGELOG.md for ${VERSION}. Falling back to GitHub auto-generated notes."
           fi
 
-      - name: Generate Artifact Attestations (SLSA Provenance)
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: |
-            dist/srz-*.tar.gz
-            dist/srz-*.zip
-
-      - name: Attach Assets to Existing GitHub Release
-        if: steps.changelog.outputs.preserve_body == 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.verify-version.outputs.version }}
-          files: |
-            dist/srz-*.tar.gz
-            dist/srz-*.zip
-            dist/srz-*.sha256
-            dist/SHA256SUMS
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Create GitHub Release with Changelog Notes
-        if: steps.changelog.outputs.preserve_body != 'true' && steps.changelog.outputs.has_notes == 'true'
+        if: steps.changelog.outputs.exists != 'true' && steps.changelog.outputs.has_notes == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.verify-version.outputs.version }}
           name: Release ${{ needs.verify-version.outputs.version }}
           body_path: dist/release_notes.md
-          files: |
-            dist/srz-*.tar.gz
-            dist/srz-*.zip
-            dist/srz-*.sha256
-            dist/SHA256SUMS
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create GitHub Release with Auto-generated Notes
-        if: steps.changelog.outputs.preserve_body != 'true' && steps.changelog.outputs.has_notes != 'true'
+        if: steps.changelog.outputs.exists != 'true' && steps.changelog.outputs.has_notes != 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.verify-version.outputs.version }}
           name: Release ${{ needs.verify-version.outputs.version }}
           generate_release_notes: true
-          files: |
-            dist/srz-*.tar.gz
-            dist/srz-*.zip
-            dist/srz-*.sha256
-            dist/SHA256SUMS
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   publish-crates-io:
     name: Publish to Crates.io
-    needs: [verify-version, build-release]
+    needs: verify-version
     if: (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && inputs.dry_run != true
     runs-on: ubuntu-24.04
     steps:
@@ -326,9 +278,53 @@ jobs:
         if: always()
         run: sccache --show-stats
 
+  attach-release-assets:
+    name: Attach Assets & Attestations to Release
+    needs: [verify-version, build-release, publish-release-notes]
+    runs-on: ubuntu-24.04
+    if: (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && inputs.dry_run != true
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Download all release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate Consolidated SHA256SUMS
+        run: |
+          cd dist
+          sha256sum srz-*.tar.gz srz-*.zip > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Generate Artifact Attestations (SLSA Provenance)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/srz-*.tar.gz
+            dist/srz-*.zip
+
+      - name: Attach Compiled Binaries & Checksums
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.verify-version.outputs.version }}
+          files: |
+            dist/srz-*.tar.gz
+            dist/srz-*.zip
+            dist/srz-*.sha256
+            dist/SHA256SUMS
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   bump-homebrew:
     name: Bump Homebrew Formula
-    needs: [verify-version, build-release, publish-release]
+    needs: [verify-version, build-release, attach-release-assets]
     if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
     runs-on: ubuntu-24.04
     steps:
