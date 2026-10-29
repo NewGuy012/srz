@@ -38,13 +38,8 @@ async fn resolve_document_context(
 
         // 1. Web URL
         if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-            let page = if let Some(cached) = cache.get_page(trimmed) {
-                cached
-            } else {
-                let fetched = scraper.scrape(trimmed).await?;
-                cache.set_page(trimmed, &fetched);
-                fetched
-            };
+            let page =
+                crate::commands::fetch_or_cache_page(trimmed, scraper, cache, "", "", "").await?;
             let title = page.title.unwrap_or_else(|| trimmed.to_string());
             return Ok((title, page.content));
         }
@@ -70,13 +65,8 @@ async fn resolve_document_context(
         let searcher = crate::search::BookSearcher::with_client(scraper.client().clone());
         let candidates = searcher.search_candidates(trimmed, None).await;
         if let Some(best) = candidates.first() {
-            let page = if let Some(cached) = cache.get_page(&best.url) {
-                cached
-            } else {
-                let fetched = scraper.scrape(&best.url).await?;
-                cache.set_page(&best.url, &fetched);
-                fetched
-            };
+            let page =
+                crate::commands::fetch_or_cache_page(&best.url, scraper, cache, "", "", "").await?;
             let title = page.title.unwrap_or_else(|| best.title.clone());
             return Ok((title, page.content));
         }

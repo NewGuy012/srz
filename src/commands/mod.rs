@@ -15,8 +15,8 @@ pub use ask::handle_ask;
 pub use diagnostics::{handle_doctor, handle_models};
 pub use library::{handle_find, handle_history, handle_index, handle_stats, update_index_dashboard};
 pub use summarize::{
-    fetch_or_cache_page, handle_book, handle_file, handle_news, handle_stdin, handle_web,
-    SummaryOutcome,
+    fetch_or_cache_page, fetch_or_cache_page_with, handle_book, handle_file, handle_news,
+    handle_stdin, handle_web, SummaryOutcome,
 };
 
 /// Safely opens the DuckDB database, issuing a UI warning on failure.

@@ -78,6 +78,32 @@ impl SummaryOutcome {
     }
 }
 
+pub async fn fetch_or_cache_page_with<F>(
+    url: &str,
+    cache: &Cache,
+    cache_hit_msg: &str,
+    spinner_msg: &'static str,
+    done_msg: &str,
+    fetch_fut: F,
+) -> Result<ScrapedPage>
+where
+    F: std::future::Future<Output = Result<ScrapedPage>>,
+{
+    if let Some(cached_page) = cache.get_page(url) {
+        if !cache_hit_msg.is_empty() {
+            Ui::info(cache_hit_msg);
+        }
+        return Ok(cached_page);
+    }
+    let page = if spinner_msg.is_empty() {
+        fetch_fut.await?
+    } else {
+        Ui::with_spinner(spinner_msg, done_msg, fetch_fut).await?
+    };
+    cache.set_page(url, &page);
+    Ok(page)
+}
+
 pub async fn fetch_or_cache_page(
     url: &str,
     scraper: &WebScraper,
@@ -86,13 +112,15 @@ pub async fn fetch_or_cache_page(
     spinner_msg: &'static str,
     done_msg: &str,
 ) -> Result<ScrapedPage> {
-    if let Some(cached_page) = cache.get_page(url) {
-        Ui::info(cache_hit_msg);
-        return Ok(cached_page);
-    }
-    let page = Ui::with_spinner(spinner_msg, done_msg, scraper.scrape(url)).await?;
-    cache.set_page(url, &page);
-    Ok(page)
+    fetch_or_cache_page_with(
+        url,
+        cache,
+        cache_hit_msg,
+        spinner_msg,
+        done_msg,
+        scraper.scrape(url),
+    )
+    .await
 }
 
 pub async fn handle_file(
@@ -220,49 +248,45 @@ pub async fn handle_web(
 
     // 2. Fetch or load cached page / transcript / PDF
     let page = if let Some(video_id) = is_youtube {
-        if let Some(cached_page) = cache.get_page(url) {
-            Ui::info("Loaded YouTube transcript from local cache.");
-            cached_page
-        } else {
-            let fetched = Ui::with_spinner(
-                "Fetching YouTube video metadata and captions...",
-                "YouTube transcript and metadata fetched.",
-                crate::sources::youtube::fetch_youtube_transcript(scraper.client(), video_id),
-            )
-            .await?;
-            cache.set_page(url, &fetched);
-            fetched
-        }
+        fetch_or_cache_page_with(
+            url,
+            cache,
+            "Loaded YouTube transcript from local cache.",
+            "Fetching YouTube video metadata and captions...",
+            "YouTube transcript and metadata fetched.",
+            crate::sources::youtube::fetch_youtube_transcript(scraper.client(), video_id),
+        )
+        .await?
     } else if is_pdf {
-        if let Some(cached_page) = cache.get_page(url) {
-            Ui::info("Loaded PDF content from local cache.");
-            cached_page
-        } else {
-            let fetched = Ui::with_spinner(
-                "Downloading and extracting PDF text...",
-                "PDF text layer extracted.",
-                async {
-                    let resp = scraper
-                        .client()
-                        .get(url)
-                        .send()
-                        .await
-                        .with_context(|| format!("Failed to download PDF from {}", url))?;
-                    if !resp.status().is_success() {
-                        anyhow::bail!("Failed to download PDF from {} (HTTP status: {})", url, resp.status());
-                    }
-                    let bytes = crate::scraper::read_response_bytes_limited(
-                        resp,
-                        crate::sources::document::MAX_FILE_BYTES as usize,
-                    )
-                    .await?;
-                    crate::sources::pdf::PdfExtractor::extract_from_bytes(&bytes, None)
-                },
-            )
-            .await?;
-            cache.set_page(url, &fetched);
-            fetched
-        }
+        fetch_or_cache_page_with(
+            url,
+            cache,
+            "Loaded PDF content from local cache.",
+            "Downloading and extracting PDF text...",
+            "PDF text layer extracted.",
+            async {
+                let resp = scraper
+                    .client()
+                    .get(url)
+                    .send()
+                    .await
+                    .with_context(|| format!("Failed to download PDF from {}", url))?;
+                if !resp.status().is_success() {
+                    anyhow::bail!(
+                        "Failed to download PDF from {} (HTTP status: {})",
+                        url,
+                        resp.status()
+                    );
+                }
+                let bytes = crate::scraper::read_response_bytes_limited(
+                    resp,
+                    crate::sources::document::MAX_FILE_BYTES as usize,
+                )
+                .await?;
+                crate::sources::pdf::PdfExtractor::extract_from_bytes(&bytes, None)
+            },
+        )
+        .await?
     } else {
         fetch_or_cache_page(
             url,
