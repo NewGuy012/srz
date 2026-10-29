@@ -295,10 +295,10 @@ impl Cache {
                      );
                      CREATE TABLE IF NOT EXISTS cache_summaries (
                          cache_key VARCHAR PRIMARY KEY,
-                         title VARCHAR NOT NULL,
-                         summary TEXT NOT NULL,
+                         data TEXT NOT NULL,
                          cached_at TIMESTAMP NOT NULL DEFAULT current_timestamp
-                     );",
+                     );
+                     ALTER TABLE cache_summaries ADD COLUMN IF NOT EXISTS data TEXT;",
                 );
                 *guard = Some(conn);
             }
@@ -393,39 +393,29 @@ impl Cache {
         if let Some(guard) = self.get_or_init_db()
             && let Some(conn) = guard.as_ref()
         {
-            let now_secs = SystemTime::now()
+            let now_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
+                .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);
 
             for ns in &namespaces {
+                let table = match ns {
+                    CacheNamespace::Pages => "cache_pages",
+                    CacheNamespace::Search => "cache_search",
+                    CacheNamespace::Summaries => "cache_summaries",
+                    CacheNamespace::Views => continue,
+                };
                 let ttl = match options.older_than {
                     Some(dur) => dur,
                     None => ns.ttl(&self.policy),
                 };
                 if ttl != Duration::MAX {
-                    let cutoff = now_secs.saturating_sub(ttl.as_secs() as i64);
-                    match ns {
-                        CacheNamespace::Pages => {
-                            let _ = conn.execute(
-                                "DELETE FROM cache_pages WHERE strftime(cached_at, '%s')::BIGINT < ?",
-                                params![cutoff],
-                            );
-                        }
-                        CacheNamespace::Search => {
-                            let _ = conn.execute(
-                                "DELETE FROM cache_search WHERE strftime(cached_at, '%s')::BIGINT < ?",
-                                params![cutoff],
-                            );
-                        }
-                        CacheNamespace::Summaries => {
-                            let _ = conn.execute(
-                                "DELETE FROM cache_summaries WHERE strftime(cached_at, '%s')::BIGINT < ?",
-                                params![cutoff],
-                            );
-                        }
-                        CacheNamespace::Views => {}
-                    }
+                    let cutoff_ms = now_ms.saturating_sub(ttl.as_millis() as i64);
+                    let sql = format!(
+                        "DELETE FROM {} WHERE epoch_ms(cached_at)::BIGINT < ?",
+                        table
+                    );
+                    let _ = conn.execute(&sql, params![cutoff_ms]);
                 }
             }
         }
@@ -625,9 +615,9 @@ impl Cache {
         if let Some(guard) = self.get_or_init_db()
             && let Some(conn) = guard.as_ref()
         {
-            let now_secs = SystemTime::now()
+            let now_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
+                .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);
 
             let table = match namespace {
@@ -638,7 +628,7 @@ impl Cache {
 
             if let Some(tbl) = table {
                 let sql = format!(
-                    "SELECT data, strftime(cached_at, '%s')::BIGINT
+                    "SELECT data, epoch_ms(cached_at)::BIGINT
                      FROM {}
                      WHERE cache_key = ?",
                     tbl
@@ -646,12 +636,12 @@ impl Cache {
                 if let Ok(mut stmt) = conn.prepare(&sql)
                     && let Ok(mut rows) = stmt.query(params![key_hash])
                     && let Some(row) = rows.next().ok().flatten()
-                    && let (Ok(json_data), Ok(cached_secs)) =
+                    && let (Ok(json_data), Ok(cached_ms)) =
                         (row.get::<_, String>(0), row.get::<_, i64>(1))
                 {
                     if let Some(ttl_dur) = ttl
                         && ttl_dur != Duration::MAX
-                        && (now_secs - cached_secs) > ttl_dur.as_secs() as i64
+                        && (now_ms - cached_ms) > ttl_dur.as_millis() as i64
                     {
                         let del_sql = format!("DELETE FROM {} WHERE cache_key = ?", tbl);
                         let _ = conn.execute(&del_sql, params![key_hash]);
@@ -748,13 +738,13 @@ impl Cache {
         if let Some(guard) = self.get_or_init_db()
             && let Some(conn) = guard.as_ref()
         {
-            let now_secs = SystemTime::now()
+            let now_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
+                .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);
 
             if let Ok(mut stmt) = conn.prepare(
-                "SELECT url, title, content, word_count, strftime(cached_at, '%s')::BIGINT
+                "SELECT url, title, content, word_count, epoch_ms(cached_at)::BIGINT
                  FROM cache_pages
                  WHERE cache_key = ?",
             ) && let Ok(mut rows) = stmt.query(params![&key])
@@ -764,9 +754,9 @@ impl Cache {
                 let title: Option<String> = row.get(1).ok();
                 let content: String = row.get(2).unwrap_or_default();
                 let word_count: usize = row.get::<_, u32>(3).unwrap_or(0) as usize;
-                let cached_secs: i64 = row.get(4).unwrap_or(0);
+                let cached_ms: i64 = row.get(4).unwrap_or(0);
 
-                if ttl != Duration::MAX && (now_secs - cached_secs) > ttl.as_secs() as i64 {
+                if ttl != Duration::MAX && (now_ms - cached_ms) > ttl.as_millis() as i64 {
                     let _ =
                         conn.execute("DELETE FROM cache_pages WHERE cache_key = ?", params![&key]);
                     let path = self.base_dir.join("pages").join(format!("{}.json", key));

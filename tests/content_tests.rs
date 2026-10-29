@@ -101,7 +101,14 @@ fn test_markdown_to_styled_html_rendering() {
     assert!(escaped_quote.contains("It&#39;s a test"));
 
     // Verify ensure_view_files skips rewrite when force_write is false and files exist
-    let tmp_dir = std::env::temp_dir().join("srz_test_views_reuse");
+    let tmp_dir = std::env::temp_dir().join(format!(
+        "srz_test_views_reuse_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
     let _ = fs::remove_dir_all(&tmp_dir);
     let rendered = ensure_view_files(&tmp_dir, "Dune", "Initial summary", true).unwrap();
     assert_eq!(
