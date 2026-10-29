@@ -126,8 +126,8 @@ pub struct Cli {
     #[arg(long, global = true, value_enum, default_value = "concise")]
     pub style: SummaryStyle,
 
-    /// Maximum tokens to generate (includes thinking + summary tokens; tuned for 32k context)
-    #[arg(long, global = true, default_value_t = 8192)]
+    /// Maximum tokens to generate (configured via config.toml; default: 8192)
+    #[arg(skip = 8192_u32)]
     pub max_tokens: u32,
 
     /// Bypass local cache and force fresh web scraping and LLM summarization

@@ -179,11 +179,9 @@ fn test_book_subcommand_flags() {
         "srz",
         "book",
         "Dune",
-        "--max-tokens",
-        "4096",
     ]);
 
-    assert_eq!(cli.max_tokens, 4096);
+    assert_eq!(cli.max_tokens, 8192);
 
     match cli.resolve_action().unwrap() {
         ResolvedAction::Book { title } => {
