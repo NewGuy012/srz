@@ -44,7 +44,10 @@ async fn main() -> Result<()> {
         }
     };
 
-    let cache = Cache::new(!args.no_cache);
+    let mut cache = Cache::new(!args.no_cache);
+    if let Some(ref cache_cfg) = config.cache {
+        cache.set_policy(cache_cfg.to_policy());
+    }
     cache.maybe_auto_prune();
 
     // Handle immediate utility subcommands without initializing scraping, LLM HTTP clients,

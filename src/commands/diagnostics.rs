@@ -122,6 +122,13 @@ pub async fn handle_doctor(
                 "healthy": cache_ok,
                 "files_count": cache_stats.total_files,
                 "size_bytes": cache_stats.total_bytes,
+                "policy": {
+                    "pages_ttl_days": cache.policy().pages_ttl.as_secs() / 86400,
+                    "search_ttl_days": cache.policy().search_ttl.as_secs() / 86400,
+                    "summaries_ttl_days": cache.policy().summaries_ttl.as_secs() / 86400,
+                    "views_ttl_days": cache.policy().views_ttl.as_secs() / 86400,
+                    "max_budget_bytes": cache.policy().max_bytes,
+                },
             },
             "config": {
                 "path": config_path,
@@ -184,6 +191,13 @@ pub async fn handle_doctor(
             cache_dir.display(),
             Cache::format_bytes(cache_stats.total_bytes),
             cache_stats.total_files
+        );
+        println!(
+            "  ✓ Retention policy: {}d pages, {}d search, {}d summaries, {} max budget",
+            cache.policy().pages_ttl.as_secs() / 86400,
+            cache.policy().search_ttl.as_secs() / 86400,
+            cache.policy().summaries_ttl.as_secs() / 86400,
+            Cache::format_bytes(cache.policy().max_bytes)
         );
     } else {
         println!(

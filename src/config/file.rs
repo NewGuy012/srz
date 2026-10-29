@@ -23,11 +23,48 @@ pub struct ProfileConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CacheConfig {
+    pub max_size_mb: Option<u64>,
+    pub pages_ttl_days: Option<u64>,
+    pub search_ttl_days: Option<u64>,
+    pub summaries_ttl_days: Option<u64>,
+    pub views_ttl_days: Option<u64>,
+    pub auto_prune: Option<bool>,
+}
+
+impl CacheConfig {
+    pub fn to_policy(&self) -> crate::cache::CachePolicy {
+        let mut policy = crate::cache::CachePolicy::default();
+        if let Some(mb) = self.max_size_mb {
+            policy.max_bytes = mb * 1024 * 1024;
+        }
+        if let Some(days) = self.pages_ttl_days {
+            policy.pages_ttl = std::time::Duration::from_secs(days * 86400);
+        }
+        if let Some(days) = self.search_ttl_days {
+            policy.search_ttl = std::time::Duration::from_secs(days * 86400);
+        }
+        if let Some(days) = self.summaries_ttl_days {
+            policy.summaries_ttl = std::time::Duration::from_secs(days * 86400);
+        }
+        if let Some(days) = self.views_ttl_days {
+            policy.views_ttl = std::time::Duration::from_secs(days * 86400);
+        }
+        if let Some(false) = self.auto_prune {
+            policy.auto_prune_interval = std::time::Duration::MAX;
+        }
+        policy
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Config {
     #[serde(flatten)]
     pub settings: ProfileConfig,
     #[serde(default)]
     pub profiles: HashMap<String, ProfileConfig>,
+    #[serde(default)]
+    pub cache: Option<CacheConfig>,
 }
 
 impl std::ops::Deref for Config {
@@ -105,6 +142,15 @@ impl Config {
 
 # Stream tokens live to stdout (default: false)
 # stream = false
+
+# Cache retention policy and storage budget
+# [cache]
+# max_size_mb = 500
+# pages_ttl_days = 7
+# search_ttl_days = 14
+# summaries_ttl_days = 90
+# views_ttl_days = 14
+# auto_prune = true
 
 # Named profiles (switch with `srz --profile <name> ...`)
 # [profiles.fast]

@@ -1,17 +1,9 @@
 use crate::cli::NewsTimeframe;
 use crate::scraper::{ScrapedPage, WebScraper};
-use ::scraper::{Html, Selector};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::sync::LazyLock;
 
-static ITEM_SEL: LazyLock<Selector> = LazyLock::new(|| Selector::parse("item").unwrap());
-static TITLE_SEL: LazyLock<Selector> = LazyLock::new(|| Selector::parse("title").unwrap());
-static LINK_SEL: LazyLock<Selector> = LazyLock::new(|| Selector::parse("link").unwrap());
-static PUBDATE_SEL: LazyLock<Selector> = LazyLock::new(|| Selector::parse("pubDate").unwrap());
-static SOURCE_SEL: LazyLock<Selector> = LazyLock::new(|| Selector::parse("source").unwrap());
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NewsArticleItem {
     pub title: String,
     pub google_link: String,
@@ -78,44 +70,7 @@ impl GoogleNewsClient {
         }
 
         let xml = crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES).await?;
-        let doc = Html::parse_document(&xml);
-
-        let mut items: Vec<NewsArticleItem> = Vec::new();
-        for item_elem in doc.select(&ITEM_SEL).take(limit) {
-            let title = item_elem
-                .select(&TITLE_SEL)
-                .next()
-                .map(|t| t.text().collect::<String>().trim().to_string())
-                .unwrap_or_default();
-
-            // NextSibling or inner text for <link> in RSS
-            let link = item_elem
-                .select(&LINK_SEL)
-                .next()
-                .map(|l| l.text().collect::<String>().trim().to_string())
-                .unwrap_or_default();
-
-            let pub_date = item_elem
-                .select(&PUBDATE_SEL)
-                .next()
-                .map(|p| p.text().collect::<String>().trim().to_string())
-                .filter(|s| !s.is_empty());
-
-            let source_name = item_elem
-                .select(&SOURCE_SEL)
-                .next()
-                .map(|s| s.text().collect::<String>().trim().to_string())
-                .filter(|s| !s.is_empty());
-
-            if !title.is_empty() && !link.is_empty() {
-                items.push(NewsArticleItem {
-                    title,
-                    google_link: link,
-                    source_name,
-                    pub_date,
-                });
-            }
-        }
+        let items = parse_rss_items(&xml, limit);
 
         Ok(items)
     }
@@ -171,7 +126,9 @@ impl GoogleNewsClient {
         limit: usize,
         scraper: &WebScraper,
     ) -> Result<Vec<NewsDigestSource>> {
-        let feed_items = self.fetch_feed(topic, timeframe, limit).await?;
+        // Fetch up to 2x limit (or at least limit + 2) candidates to buffer against paywalls/dead links
+        let fetch_limit = (limit * 2).max(limit + 2);
+        let feed_items = self.fetch_feed(topic, timeframe, fetch_limit).await?;
         if feed_items.is_empty() {
             anyhow::bail!(
                 "No recent news found on Google News for topic '{}' ({}).",
@@ -214,6 +171,9 @@ impl GoogleNewsClient {
         for handle in handles {
             if let Ok(Some(source)) = handle.await {
                 sources.push(source);
+                if sources.len() >= limit {
+                    break;
+                }
             }
         }
 
@@ -226,6 +186,133 @@ impl GoogleNewsClient {
 
         Ok(sources)
     }
+}
+
+/// Case-insensitive search for an ASCII substring within a UTF-8 string slice.
+pub fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    let needle_bytes = needle.as_bytes();
+    let haystack_bytes = haystack.as_bytes();
+    if needle_bytes.len() > haystack_bytes.len() {
+        return None;
+    }
+
+    haystack_bytes
+        .windows(needle_bytes.len())
+        .position(|window| {
+            window
+                .iter()
+                .zip(needle_bytes)
+                .all(|(h, n)| h.eq_ignore_ascii_case(n))
+        })
+}
+
+/// Cleans CDATA wrappers and decodes HTML entities from an XML element's inner text.
+fn clean_xml_text(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if let Some(cdata_start) = trimmed.find("<![CDATA[") {
+        let after_start = &trimmed[cdata_start + "<![CDATA[".len()..];
+        if let Some(cdata_end) = after_start.find("]]>") {
+            return after_start[..cdata_end].trim().to_string();
+        }
+    }
+    crate::sources::youtube::decode_html_entities(trimmed).into_owned()
+}
+
+/// Extracts the inner content of a named XML tag (e.g. `<title>`, `<link>`, `<source ...>`).
+pub fn extract_tag_value(xml: &str, tag_name: &str) -> Option<String> {
+    let open_prefix = format!("<{}", tag_name);
+    let mut search_pos = 0;
+
+    while let Some(rel_start) = find_ascii_case_insensitive(&xml[search_pos..], &open_prefix) {
+        let tag_start = search_pos + rel_start;
+        let after_prefix = tag_start + open_prefix.len();
+        if after_prefix >= xml.len() {
+            return None;
+        }
+
+        // Verify that tag name boundary is respected: next char must be '>', whitespace, or '/'
+        let next_char = xml[after_prefix..].chars().next()?;
+        if next_char != '>' && !next_char.is_ascii_whitespace() && next_char != '/' {
+            search_pos = after_prefix;
+            continue;
+        }
+
+        let p = xml[after_prefix..].find('>')?;
+        let tag_open_end = after_prefix + p;
+
+        // If self-closing (e.g. `<link ... />`), it has no inner text
+        if xml[tag_start..tag_open_end].trim_end().ends_with('/') {
+            return None;
+        }
+
+        let close_tag = format!("</{}>", tag_name);
+        let p = find_ascii_case_insensitive(&xml[tag_open_end + 1..], &close_tag)?;
+        let tag_close_start = tag_open_end + 1 + p;
+
+        let inner = &xml[tag_open_end + 1..tag_close_start];
+        let cleaned = clean_xml_text(inner);
+        if !cleaned.is_empty() {
+            return Some(cleaned);
+        }
+
+        search_pos = tag_close_start + close_tag.len();
+    }
+
+    None
+}
+
+/// Parses `<item>` elements from an RSS XML string into a list of [`NewsArticleItem`].
+pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
+    if limit == 0 {
+        return Vec::new();
+    }
+
+    let mut items = Vec::new();
+    let mut cursor = 0;
+
+    while let Some(rel_start) = find_ascii_case_insensitive(&xml[cursor..], "<item") {
+        let item_start = cursor + rel_start;
+        let after_item_tag = match xml[item_start..].find('>') {
+            Some(p) => item_start + p + 1,
+            None => break,
+        };
+
+        let item_end = match find_ascii_case_insensitive(&xml[after_item_tag..], "</item>") {
+            Some(p) => after_item_tag + p,
+            None => break,
+        };
+
+        let item_xml = &xml[after_item_tag..item_end];
+        cursor = item_end + "</item>".len();
+
+        let title = extract_tag_value(item_xml, "title").unwrap_or_default();
+        let link = extract_tag_value(item_xml, "link")
+            .or_else(|| {
+                extract_tag_value(item_xml, "guid")
+                    .filter(|g| g.starts_with("http://") || g.starts_with("https://"))
+            })
+            .unwrap_or_default();
+
+        let pub_date = extract_tag_value(item_xml, "pubDate");
+        let source_name = extract_tag_value(item_xml, "source");
+
+        if !title.is_empty() && !link.is_empty() {
+            items.push(NewsArticleItem {
+                title,
+                google_link: link,
+                source_name,
+                pub_date,
+            });
+            if items.len() >= limit {
+                break;
+            }
+        }
+    }
+
+    items
 }
 
 pub fn extract_article_id(url: &str) -> Option<&str> {
@@ -265,7 +352,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_google_news_rss_xml() {
+    fn test_parse_rss_items_standard() {
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
   <channel>
@@ -276,44 +363,94 @@ mod tests {
       <pubDate>Fri, 23 Oct 2026 10:00:00 GMT</pubDate>
       <source url="https://www.pensburgh.com">PensBurgh</source>
     </item>
+    <item>
+      <title>Rust 1.85 Released with Async Closures &amp; Editions</title>
+      <link>https://news.google.com/rss/articles/CBMi67890?oc=5</link>
+      <pubDate>Thu, 22 Oct 2026 08:30:00 GMT</pubDate>
+      <source url="https://blog.rust-lang.org">Rust Blog</source>
+    </item>
   </channel>
 </rss>"#;
-        let doc = Html::parse_document(xml);
-        let _items: Vec<NewsArticleItem> = Vec::new();
-        for item_elem in doc.select(&ITEM_SEL).take(5) {
-            for child in item_elem.children() {
-                if let Some(elem) = child.value().as_element() {
-                    println!("CHILD ELEMENT: <{}>", elem.name());
-                } else if let Some(txt) = child.value().as_text() {
-                    println!("CHILD TEXT: '{}'", txt.trim());
-                }
-            }
 
-            let title = item_elem
-                .select(&TITLE_SEL)
-                .next()
-                .map(|t| t.text().collect::<String>().trim().to_string())
-                .unwrap_or_default();
+        let items = parse_rss_items(xml, 10);
+        assert_eq!(items.len(), 2);
 
-            let link = item_elem
-                .select(&LINK_SEL)
-                .next()
-                .map(|l| l.text().collect::<String>().trim().to_string())
-                .unwrap_or_default();
+        assert_eq!(
+            items[0].title,
+            "Pens Points: Penguins give updates on Kindel, Rust - PensBurgh"
+        );
+        assert_eq!(
+            items[0].google_link,
+            "https://news.google.com/rss/articles/CBMi12345?oc=5"
+        );
+        assert_eq!(items[0].pub_date.as_deref(), Some("Fri, 23 Oct 2026 10:00:00 GMT"));
+        assert_eq!(items[0].source_name.as_deref(), Some("PensBurgh"));
 
-            let pub_date = item_elem
-                .select(&PUBDATE_SEL)
-                .next()
-                .map(|p| p.text().collect::<String>().trim().to_string())
-                .filter(|s| !s.is_empty());
+        assert_eq!(
+            items[1].title,
+            "Rust 1.85 Released with Async Closures & Editions"
+        );
+        assert_eq!(
+            items[1].google_link,
+            "https://news.google.com/rss/articles/CBMi67890?oc=5"
+        );
+        assert_eq!(items[1].source_name.as_deref(), Some("Rust Blog"));
+    }
 
-            let source_name = item_elem
-                .select(&SOURCE_SEL)
-                .next()
-                .map(|s| s.text().collect::<String>().trim().to_string())
-                .filter(|s| !s.is_empty());
+    #[test]
+    fn test_parse_rss_items_limit() {
+        let xml = r#"<rss version="2.0"><channel>
+            <item><title>Item 1</title><link>https://example.com/1</link></item>
+            <item><title>Item 2</title><link>https://example.com/2</link></item>
+            <item><title>Item 3</title><link>https://example.com/3</link></item>
+        </channel></rss>"#;
 
-            println!("FOUND title='{}', link='{}', pub_date={:?}, source_name={:?}", title, link, pub_date, source_name);
-        }
+        let items = parse_rss_items(xml, 2);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].title, "Item 1");
+        assert_eq!(items[1].title, "Item 2");
+    }
+
+    #[test]
+    fn test_parse_rss_items_cdata_and_entities() {
+        let xml = r#"<rss><channel>
+            <item>
+                <title><![CDATA[Rust &amp; WebAssembly in 2026]]></title>
+                <link>https://example.com/cdata-link</link>
+                <source url="https://example.com"><![CDATA[Tech Daily]]></source>
+            </item>
+            <item>
+                <title>Special &quot;Quotes&quot; &amp; &apos;Apostrophes&apos;</title>
+                <link>https://example.com/quotes</link>
+            </item>
+        </channel></rss>"#;
+
+        let items = parse_rss_items(xml, 5);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].title, "Rust &amp; WebAssembly in 2026");
+        assert_eq!(items[0].source_name.as_deref(), Some("Tech Daily"));
+        assert_eq!(items[1].title, "Special \"Quotes\" & 'Apostrophes'");
+    }
+
+    #[test]
+    fn test_parse_rss_items_guid_fallback() {
+        let xml = r#"<rss><channel>
+            <item>
+                <title>No Link Tag</title>
+                <guid>https://example.com/guid-link</guid>
+            </item>
+        </channel></rss>"#;
+
+        let items = parse_rss_items(xml, 5);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].google_link, "https://example.com/guid-link");
+    }
+
+    #[test]
+    fn test_find_ascii_case_insensitive() {
+        assert_eq!(find_ascii_case_insensitive("Hello World", "world"), Some(6));
+        assert_eq!(find_ascii_case_insensitive("<ITEM>", "<item>"), Some(0));
+        assert_eq!(find_ascii_case_insensitive("Short", "LongerPattern"), None);
+        assert_eq!(find_ascii_case_insensitive("abc", ""), Some(0));
     }
 }

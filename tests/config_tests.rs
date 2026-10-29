@@ -142,3 +142,37 @@ fn test_profile_flag_overrides_root_config() {
     assert_eq!(args.model, "profile-model");
     assert_eq!(args.style, SummaryStyle::Detailed);
 }
+
+#[test]
+fn test_cache_config_deserialization_and_policy() {
+    use std::time::Duration;
+
+    let toml_str = r#"
+base_url = "http://localhost:11434/v1"
+
+[cache]
+max_size_mb = 750
+pages_ttl_days = 3
+search_ttl_days = 10
+summaries_ttl_days = 120
+views_ttl_days = 5
+auto_prune = false
+"#;
+
+    let config: Config = toml::from_str(toml_str).unwrap();
+    let cache_cfg = config.cache.expect("Cache config should be present");
+    assert_eq!(cache_cfg.max_size_mb, Some(750));
+    assert_eq!(cache_cfg.pages_ttl_days, Some(3));
+    assert_eq!(cache_cfg.search_ttl_days, Some(10));
+    assert_eq!(cache_cfg.summaries_ttl_days, Some(120));
+    assert_eq!(cache_cfg.views_ttl_days, Some(5));
+    assert_eq!(cache_cfg.auto_prune, Some(false));
+
+    let policy = cache_cfg.to_policy();
+    assert_eq!(policy.max_bytes, 750 * 1024 * 1024);
+    assert_eq!(policy.pages_ttl, Duration::from_secs(3 * 86400));
+    assert_eq!(policy.search_ttl, Duration::from_secs(10 * 86400));
+    assert_eq!(policy.summaries_ttl, Duration::from_secs(120 * 86400));
+    assert_eq!(policy.views_ttl, Duration::from_secs(5 * 86400));
+    assert_eq!(policy.auto_prune_interval, Duration::MAX);
+}
