@@ -4,15 +4,14 @@
 
 # `srz` (Summarize)
 
-`srz` (Summarize) is a high-performance, modular Rust CLI tool for extracting and synthesizing structured summaries using local OpenAI-compliant LLMs (such as **llama.cpp**, **Ollama**, **LM Studio**, or **vLLM**).
+`srz` (Summarize) is a high-performance, modular Rust CLI tool for extracting and synthesizing structured summaries using local OpenAI-compliant LLMs (such as **llama.cpp**, **Ollama**, **LM Studio**, or **vLLM**) from:
 
-Extracts and synthesizes structured summaries from:
-- **Webpages**: Clean article content and documentation without cookie banners, ads, or navigation bloat.
-- **YouTube video transcripts**: Direct extraction of timed-text closed captions and transcripts with timestamped chapters—no media downloads or external binaries needed.
-- **Local files**: Plain text, Markdown (`.md`), and HTML documents.
-- **Unix stdin streams**: Piped terminal text, `git diff` outputs, log streams, or command results (`command | srz -`).
-- **Books**: Verified synopses and metadata synthesized from Wikipedia and Open Library by title alone.
-- **Live news digests**: Multi-article briefings curated from Google News RSS by topic and recency.
+- **Webpages**
+- **YouTube video transcripts**
+- **Local files**
+- **Unix stdin streams**
+- **Books**
+- **Live news digests**
 
 
 ## Highlights
