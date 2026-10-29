@@ -163,12 +163,27 @@ impl Ui {
     }
 }
 
-/// Sanitizes a string for safe terminal display by stripping ANSI escape sequences
-/// and unprintable ASCII control characters (CWE-150 / Terminal Escape Injection).
+#[inline]
+fn is_bidi_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}' | '\u{061C}'
+    )
+}
+
+/// Sanitizes a string for safe terminal display by stripping ANSI escape sequences,
+/// string-type controls (OSC, DCS, SOS, PM, APC), 8-bit C1 controls, BiDi overrides,
+/// and unprintable ASCII control characters (CWE-150 / CWE-451).
 pub fn sanitize_terminal_text(input: &str) -> String {
-    let has_suspicious = input
-        .bytes()
-        .any(|b| b == 0x1b || (b.is_ascii_control() && b != b'\n' && b != b'\t'));
+    let has_suspicious = input.chars().any(|c| {
+        c == '\x1b'
+            || (c.is_control() && c != '\n' && c != '\t')
+            || is_bidi_control(c)
+            || matches!(
+                c,
+                '\u{0090}' | '\u{0098}' | '\u{009B}' | '\u{009D}' | '\u{009E}' | '\u{009F}'
+            )
+    });
     if !has_suspicious {
         return input.to_string();
     }
@@ -188,12 +203,12 @@ pub fn sanitize_terminal_text(input: &str) -> String {
                         }
                     }
                 }
-                Some(']') => {
-                    chars.next(); // consume ']'
-                    // OSC sequence ends at BEL (\x07) or ST (\x1b\)
+                Some(']' | 'P' | 'X' | '^' | '_') => {
+                    chars.next(); // consume string sequence initiator
+                    // OSC/DCS/SOS/PM/APC sequence ends at BEL (\x07) or ST (\x1b\ or \u{009C})
                     let mut prev = '\0';
                     for c in chars.by_ref() {
-                        if c == '\x07' || (prev == '\x1b' && c == '\\') {
+                        if c == '\x07' || c == '\u{009C}' || (prev == '\x1b' && c == '\\') {
                             break;
                         }
                         prev = c;
@@ -207,8 +222,33 @@ pub fn sanitize_terminal_text(input: &str) -> String {
             continue;
         }
 
-        // Filter out control characters except newline and tab
-        if ch.is_ascii_control() && ch != '\n' && ch != '\t' {
+        // 8-bit C1 CSI sequence (\u{009B})
+        if ch == '\u{009B}' {
+            for c in chars.by_ref() {
+                if ('@'..='~').contains(&c) {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        // 8-bit C1 string-type sequences (OSC \u{009D}, DCS \u{0090}, SOS \u{0098}, PM \u{009E}, APC \u{009F})
+        if matches!(
+            ch,
+            '\u{0090}' | '\u{0098}' | '\u{009D}' | '\u{009E}' | '\u{009F}'
+        ) {
+            let mut prev = '\0';
+            for c in chars.by_ref() {
+                if c == '\x07' || c == '\u{009C}' || (prev == '\x1b' && c == '\\') {
+                    break;
+                }
+                prev = c;
+            }
+            continue;
+        }
+
+        // Filter out control characters (except \n and \t) and Unicode BiDi overrides
+        if (ch.is_control() && ch != '\n' && ch != '\t') || is_bidi_control(ch) {
             continue;
         }
 
@@ -258,8 +298,32 @@ mod tests {
     }
 
     #[test]
+    fn test_sanitize_terminal_text_strips_c1_bidi_and_string_controls() {
+        // C1 8-bit CSI
+        let c1_csi = "Hello \u{009B}31mC1 CSI\u{009B}0m World";
+        assert_eq!(sanitize_terminal_text(c1_csi), "Hello C1 CSI World");
+
+        // C1 8-bit OSC with ST terminator (\u{009C})
+        let c1_osc = "Start \u{009D}0;Evil Title\u{009C} End";
+        assert_eq!(sanitize_terminal_text(c1_osc), "Start  End");
+
+        // 7-bit DCS, PM, APC
+        let dcs_seq = "DCS \x1bP123;cmd\x1b\\Payload";
+        assert_eq!(sanitize_terminal_text(dcs_seq), "DCS Payload");
+        let apc_seq = "APC \x1b_secret\x07Data";
+        assert_eq!(sanitize_terminal_text(apc_seq), "APC Data");
+
+        // Unicode BiDi override injection (Trojan Source / CWE-451)
+        let bidi_text = "Benign \u{202E}gnineB\u{202C} Text \u{2067}RLI\u{2069}";
+        assert_eq!(sanitize_terminal_text(bidi_text), "Benign gnineB Text RLI");
+    }
+
+    #[test]
     fn test_sanitize_title_collapses_newlines() {
         let raw_title = "\x1b[1mImportant\x1b[0m\nDocument\r\nTitle";
         assert_eq!(sanitize_title(raw_title), "Important Document Title");
+
+        let bidi_title = "Title \u{202E}with \n \t BiDi\u{202C}";
+        assert_eq!(sanitize_title(bidi_title), "Title with BiDi");
     }
 }

@@ -222,8 +222,9 @@ impl SseStreamState {
             match mode {
                 StreamMode::Stdout { header_title } => {
                     pb.finish_and_clear();
-                    Ui::header(&format!("Summary: {}", header_title));
-                    print!("{}", clean_start);
+                    let safe_title = crate::ui::sanitize_title(header_title);
+                    Ui::header(&format!("Summary: {}", safe_title));
+                    print!("{}", crate::ui::sanitize_terminal_text(clean_start));
                     self.needs_stdout_flush = true;
                 }
                 StreamMode::Buffered => {
@@ -236,7 +237,7 @@ impl SseStreamState {
 
             match mode {
                 StreamMode::Stdout { .. } => {
-                    print!("{}", delta_text);
+                    print!("{}", crate::ui::sanitize_terminal_text(delta_text));
                     self.needs_stdout_flush = true;
                 }
                 StreamMode::Buffered => {}

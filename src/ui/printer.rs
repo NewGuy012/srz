@@ -52,19 +52,21 @@ pub fn display_summary(
     plain: bool,
 ) -> io::Result<()> {
     let stdout_is_tty = io::stdout().is_terminal();
+    let sanitized_title = crate::ui::sanitize_title(title);
+    let sanitized_content = crate::ui::sanitize_terminal_text(content);
 
     // If output is redirected/piped, or plain mode is requested, or colors are disabled:
     if !stdout_is_tty || plain || !Ui::use_color() {
         if stdout_is_tty && !plain {
-            Ui::header(&format!("Summary: {}", title));
+            Ui::header(&format!("Summary: {}", sanitized_title));
         }
-        println!("{}\n", content);
+        println!("{}\n", sanitized_content);
         return Ok(());
     }
 
     // Terminal mode: format markdown
-    let header = format!("\n\x1b[1;36m=== Summary: {} ===\x1b[0m\n\n", title);
-    let formatted_body = render_markdown(content, None);
+    let header = format!("\n\x1b[1;36m=== Summary: {} ===\x1b[0m\n\n", sanitized_title);
+    let formatted_body = render_markdown(&sanitized_content, None);
     let full_output = format!("{}{}\n", header, formatted_body);
 
     let (_, term_height) = crossterm::terminal::size().unwrap_or((80, 24));

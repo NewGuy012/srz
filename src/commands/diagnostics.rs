@@ -37,18 +37,20 @@ pub async fn handle_models(args: &Cli, as_json: bool) -> Result<()> {
             for m in &models {
                 let is_active = m.id == args.model;
                 let active_badge = if is_active { " [ACTIVE]" } else { "" };
+                let safe_id = crate::ui::sanitize_title(&m.id);
                 let owner = m
                     .owned_by
                     .as_deref()
-                    .map(|o| format!(" ({})", o))
+                    .map(|o| format!(" ({})", crate::ui::sanitize_title(o)))
                     .unwrap_or_default();
-                println!("  • {}{}{}", m.id, owner, active_badge);
+                println!("  • {}{}{}", safe_id, owner, active_badge);
             }
             println!();
             Ok(())
         }
         Err(err) => {
-            Ui::error(&format!("Could not fetch models: {:#}", err));
+            let safe_err = crate::ui::sanitize_terminal_text(&format!("{:#}", err));
+            Ui::error(&format!("Could not fetch models: {}", safe_err));
             Ui::info("Tip: Run `srz doctor` to diagnose server connectivity and ports.");
             std::process::exit(1);
         }
@@ -158,13 +160,18 @@ pub async fn handle_doctor(
                 args.model
             );
             if !available_models.is_empty() {
-                println!("    Available models on backend: {}", available_models.join(", "));
+                let safe_models: Vec<String> = available_models
+                    .iter()
+                    .map(|m| crate::ui::sanitize_title(m))
+                    .collect();
+                println!("    Available models on backend: {}", safe_models.join(", "));
             }
         }
     } else {
         println!("  ✗ Endpoint Unreachable: {}", args.base_url);
         if let Some(err) = endpoint_err {
-            println!("    Reason: {}", err);
+            let safe_err = crate::ui::sanitize_terminal_text(&err);
+            println!("    Reason: {}", safe_err);
         }
         println!("    Check that llama.cpp / Ollama / LM Studio is running and listening.");
     }

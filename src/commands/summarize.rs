@@ -571,14 +571,16 @@ fn disambiguate_candidates_if_needed(
         return;
     }
 
-    Ui::header(&format!("Reference Disambiguation for \"{}\"", effective_title));
+    Ui::header(&format!("Reference Disambiguation for \"{}\"", crate::ui::sanitize_title(effective_title)));
     eprintln!("Multiple references found online:");
     let display_limit = ordered_candidates.len().min(4);
     for (i, cand) in ordered_candidates[..display_limit].iter().enumerate() {
         let tag = if i == 0 { " [Recommended]" } else { "" };
-        eprintln!("  [{}] {}{}", i + 1, cand.title, tag);
+        let safe_title = crate::ui::sanitize_title(&cand.title);
+        eprintln!("  [{}] {}{}", i + 1, safe_title, tag);
         if let Some(snippet) = &cand.snippet {
-            eprintln!("      \"{}\"", snippet);
+            let safe_snippet = crate::ui::sanitize_terminal_text(snippet);
+            eprintln!("      \"{}\"", safe_snippet);
         }
     }
     eprint!("\nSelect reference [1-{}, Enter for 1]: ", display_limit);

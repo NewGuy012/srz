@@ -21,8 +21,10 @@ pub fn handle_history(db: &Database, limit: usize, as_json: bool) -> Result<()> 
     for entry in &entries {
         let icon = render::target_icon(&entry.target_type);
         let author_str = render::format_author_by(entry.author.as_deref());
+        let safe_title = crate::ui::sanitize_title(&entry.title);
+        let safe_model = crate::ui::sanitize_terminal_text(&entry.model);
 
-        println!("[#{}] {} \"{}\"{}", entry.id, icon, entry.title, author_str);
+        println!("[#{}] {} \"{}\"{}", entry.id, icon, safe_title, author_str);
         println!(
             "     Words: {} | Tokens: {} prompt / {} output | Speed: {:.1} tok/s | Time: {:.2}s",
             entry.word_count,
@@ -31,7 +33,7 @@ pub fn handle_history(db: &Database, limit: usize, as_json: bool) -> Result<()> 
             entry.tokens_per_second.unwrap_or(0.0),
             entry.duration_ms as f64 / 1000.0
         );
-        println!("     Date: {} | Style: {} | Model: {}\n", entry.created_at, entry.style, entry.model);
+        println!("     Date: {} | Style: {} | Model: {}\n", entry.created_at, entry.style, safe_model);
     }
 
     Ok(())
@@ -84,13 +86,16 @@ pub fn handle_find(db: &Database, query: &str, cache: &Cache, as_json: bool) -> 
         return Ok(());
     }
 
-    Ui::header(&format!("Search Results for \"{}\" ({} match(es))", query, results.len()));
+    let safe_query = crate::ui::sanitize_title(query);
+    Ui::header(&format!("Search Results for \"{}\" ({} match(es))", safe_query, results.len()));
     for (i, res) in results.iter().enumerate() {
         let icon = render::target_icon(&res.target_type);
         let author_str = render::format_author_by(res.author.as_deref());
+        let safe_title = crate::ui::sanitize_title(&res.title);
+        let safe_snippet = crate::ui::sanitize_terminal_text(&res.snippet);
 
-        println!("[#{}] {} \"{}\"{} ({})", i + 1, icon, res.title, author_str, res.created_at);
-        println!("     \"{}\"", res.snippet);
+        println!("[#{}] {} \"{}\"{} ({})", i + 1, icon, safe_title, author_str, res.created_at);
+        println!("     \"{}\"", safe_snippet);
         let view_path = cache.html_view_path(&res.title);
         if view_path.exists() {
             println!("     View: file://{}", view_path.display());

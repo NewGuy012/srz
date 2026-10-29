@@ -487,7 +487,7 @@ pub fn render_inline(text: &str) -> String {
 /// Formats an author name with a leading " by " if present.
 pub fn format_author_by(author: Option<&str>) -> String {
     match author {
-        Some(a) if !a.trim().is_empty() => format!(" by {}", a.trim()),
+        Some(a) if !a.trim().is_empty() => format!(" by {}", crate::ui::sanitize_title(a)),
         _ => String::new(),
     }
 }
