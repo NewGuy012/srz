@@ -155,9 +155,8 @@ jobs:
           "./${STAGE_DIR}/srz.exe" completions zsh > "${STAGE_DIR}/completions/_srz"
           "./${STAGE_DIR}/srz.exe" completions fish > "${STAGE_DIR}/completions/srz.fish"
 
-          cd "${STAGE_DIR}"
-          7z a "../../${ARCHIVE_VERSION}" srz.exe README.md LICENSE completions
-          cd ../..
+          ROOT_DIR="$(pwd)"
+          (cd "${STAGE_DIR}" && 7z a "${ROOT_DIR}/${ARCHIVE_VERSION}" srz.exe README.md LICENSE completions)
           cp "${ARCHIVE_VERSION}" "${ARCHIVE_LATEST}"
 
           shasum -a 256 "${ARCHIVE_VERSION}" > "${ARCHIVE_VERSION}.sha256" 2>/dev/null || sha256sum "${ARCHIVE_VERSION}" > "${ARCHIVE_VERSION}.sha256"
