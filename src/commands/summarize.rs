@@ -120,28 +120,43 @@ pub async fn handle_file(
         );
     }
 
-    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf") || e.eq_ignore_ascii_case("epub")) {
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("epub")) {
         anyhow::bail!(
-            "Document format not supported: {:?}. Supported formats include HTML, Markdown, and plain text.",
+            "Document format not supported: {:?}. Supported formats include PDF, HTML, Markdown, and plain text.",
             path
         );
     }
 
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("Failed to read file: {:?}", path))?;
     let fallback_title = || {
         path.file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Local File".to_string())
     };
 
-    let (content, word_count, title, author, target_type) = if render::is_html_path(path) {
-        let norm = scraper.normalize(&path.display().to_string(), &raw)?;
-        let t = norm.title.unwrap_or_else(fallback_title);
-        (norm.content, norm.word_count, t, None, "file")
+    let (content, word_count, title, author, target_type) = if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+    {
+        let page = Ui::with_spinner(
+            "Extracting text from PDF...",
+            "PDF text layer extracted.",
+            async { crate::sources::pdf::PdfExtractor::extract_file(path) },
+        )
+        .await?;
+        let t = page.title.unwrap_or_else(fallback_title);
+        (page.content, page.word_count, t, None, "file")
     } else {
-        let words = raw.split_whitespace().count();
-        (raw, words, fallback_title(), None, "file")
+        let raw = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read file: {:?}", path))?;
+
+        if render::is_html_path(path) {
+            let norm = scraper.normalize(&path.display().to_string(), &raw)?;
+            let t = norm.title.unwrap_or_else(fallback_title);
+            (norm.content, norm.word_count, t, None, "file")
+        } else {
+            let words = raw.split_whitespace().count();
+            (raw, words, fallback_title(), None, "file")
+        }
     };
 
     if content.trim().is_empty() {
@@ -243,7 +258,14 @@ pub async fn handle_web(
     args: &Cli,
 ) -> Result<SummaryOutcome> {
     let is_youtube = crate::sources::youtube::extract_youtube_video_id(url);
-    let target_type = if is_youtube.is_some() { "youtube" } else { "web" };
+    let is_pdf = url.split('?').next().unwrap_or(url).ends_with(".pdf");
+    let target_type = if is_youtube.is_some() {
+        "youtube"
+    } else if is_pdf {
+        "file"
+    } else {
+        "web"
+    };
 
     // 1. Check for a cached summary matching URL + style + model
     if let Some(cached) = cache.get_web_summary(url, args.style, &args.model) {
@@ -256,7 +278,7 @@ pub async fn handle_web(
         ));
     }
 
-    // 2. Fetch or load cached page / transcript
+    // 2. Fetch or load cached page / transcript / PDF
     let page = if let Some(video_id) = is_youtube {
         if let Some(cached_page) = cache.get_page(url) {
             Ui::info("Loaded YouTube transcript from local cache.");
@@ -266,6 +288,29 @@ pub async fn handle_web(
                 "Fetching YouTube video metadata and captions...",
                 "YouTube transcript and metadata fetched.",
                 crate::sources::youtube::fetch_youtube_transcript(scraper.client(), video_id),
+            )
+            .await?;
+            cache.set_page(url, &fetched);
+            fetched
+        }
+    } else if is_pdf {
+        if let Some(cached_page) = cache.get_page(url) {
+            Ui::info("Loaded PDF content from local cache.");
+            cached_page
+        } else {
+            let fetched = Ui::with_spinner(
+                "Downloading and extracting PDF text...",
+                "PDF text layer extracted.",
+                async {
+                    let resp = scraper
+                        .client()
+                        .get(url)
+                        .send()
+                        .await
+                        .with_context(|| format!("Failed to download PDF from {}", url))?;
+                    let bytes = resp.bytes().await?;
+                    crate::sources::pdf::PdfExtractor::extract_from_bytes(&bytes, None)
+                },
             )
             .await?;
             cache.set_page(url, &fetched);

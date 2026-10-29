@@ -36,13 +36,27 @@ async fn resolve_document_context(
         // 2. Local File
         let path = Path::new(trimmed);
         if path.exists() {
-            let content = std::fs::read_to_string(path)
-                .with_context(|| format!("Failed to read file {:?}", path))?;
-            let title = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("Local Document")
-                .to_string();
+            let (title, content) = if path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+            {
+                let page = crate::sources::pdf::PdfExtractor::extract_file(path)?;
+                let t = page.title.unwrap_or_else(|| {
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "Local PDF".to_string())
+                });
+                (t, page.content)
+            } else {
+                let content = std::fs::read_to_string(path)
+                    .with_context(|| format!("Failed to read file {:?}", path))?;
+                let title = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("Local Document")
+                    .to_string();
+                (title, content)
+            };
             return Ok((title, content));
         }
 

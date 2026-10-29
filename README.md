@@ -16,16 +16,12 @@
 
 ## Highlights
 
-- **Summarize anything**: works with web links, YouTube videos, book titles, local files, piped text, and news topics.
-- **YouTube caption ingestion**: parses public timed-text transcripts directly with timestamped chapter cues—no audio download or external binaries needed.
-- **Interactive grounded Q&A**: ask follow-up questions (`srz ask`) grounded on any document or your latest read, in single-turn or multi-turn chat.
-- **Interactive TUI library**: browse, search, copy (`y`), and open your reading library in an interactive terminal dashboard (`srz browse`).
-- **Rich terminal markdown & paging**: formats output with styled terminal colors and syntax highlighting, automatically paging long summaries like `bat`.
-- **Multi-source news briefings**: aggregates top articles from Google News RSS for any topic, decodes destination publisher URLs, and synthesizes executive briefings.
-- **Fact-checked book summaries**: pulls synopses from Wikipedia and Open Library—no ebook files or API keys needed.
-- **100% local & private**: runs on your own machine using `llama.cpp`, `Ollama`, `LM Studio`, or `vLLM`.
-- **Searchable personal library**: saves every summary locally in embedded DuckDB so you can search past reads offline.
-- **Clean reader views**: generates one-click HTML and Markdown pages with automatic light and dark mode.
+- **100% Local & Private**: Runs on your machine with complete privacy, zero subscriptions, and no API keys.
+- **Interactive Grounded Q&A**: Ask follow-up questions grounded on documents or past reads via `srz ask`.
+- **Interactive TUI Dashboard**: Browse, search, filter, and copy past summaries with `srz browse`.
+- **Offline Searchable Library**: Automatically saves and indexes every summary in embedded DuckDB.
+- **Distraction-Free Reader Views**: Generates clean HTML and Markdown pages with dark mode support.
+- **Rich Terminal Paging**: Syntax-highlighted CLI output with automatic paging for long summaries.
 
 
 ## Prerequisites: LLM Backend Server

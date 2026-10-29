@@ -11,6 +11,7 @@ pub use config::cli;
 pub use engine::chunker;
 pub use engine::llm;
 pub use sources::news;
+pub use sources::pdf;
 pub use sources::scraper;
 pub use sources::search;
 pub use sources::youtube;
