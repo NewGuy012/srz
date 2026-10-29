@@ -162,8 +162,8 @@ pub struct Cli {
     #[arg(short = 'b', long, global = true)]
     pub open: bool,
 
-    /// Concurrency limit for parallel map-reduce document chunking
-    #[arg(long, global = true, default_value_t = 1)]
+    /// Concurrency limit for parallel map-reduce document chunking (configured via config.toml)
+    #[arg(skip = 1_usize)]
     pub concurrency: usize,
 
     /// Stream LLM output tokens live to stdout as they are generated (default: false)
@@ -514,6 +514,9 @@ impl Cli {
 
         let was_provided = |id: &str| -> bool {
             if let Some(m) = matches {
+                if !m.ids().any(|arg_id| arg_id.as_str() == id) {
+                    return false;
+                }
                 m.value_source(id) == Some(clap::parser::ValueSource::CommandLine)
                     || m.value_source(id) == Some(clap::parser::ValueSource::EnvVariable)
             } else {

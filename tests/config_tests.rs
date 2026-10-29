@@ -72,6 +72,7 @@ fn test_config_applied_to_cli_when_not_specified_on_command_line() {
             style: Some(SummaryStyle::Detailed),
             max_tokens: Some(2048),
             stream: Some(true),
+            concurrency: Some(3),
             ..Default::default()
         },
         ..Default::default()
@@ -87,6 +88,7 @@ fn test_config_applied_to_cli_when_not_specified_on_command_line() {
     assert_eq!(args.style, SummaryStyle::Detailed);
     assert_eq!(args.max_tokens, 2048);
     assert!(args.stream);
+    assert_eq!(args.concurrency, 3);
 }
 
 #[test]

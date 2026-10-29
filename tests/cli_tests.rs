@@ -367,12 +367,10 @@ fn test_json_flag() {
 fn test_open_flag() {
     let open_cli = Cli::parse_from(["srz", "The Hobbit", "-b"]);
     assert!(open_cli.open);
+    assert_eq!(open_cli.concurrency, 1);
 
     let long_open_cli = Cli::parse_from(["srz", "The Hobbit", "--open"]);
     assert!(long_open_cli.open);
-
-    let concurrency_cli = Cli::parse_from(["srz", "The Hobbit", "--concurrency", "4"]);
-    assert_eq!(concurrency_cli.concurrency, 4);
 }
 
 #[test]

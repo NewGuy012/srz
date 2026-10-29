@@ -43,7 +43,7 @@ flowchart TD
         FileFlow --> Chunker
         RefScrape --> Chunker
         Grounding --> MultiTurn["Multi-Turn Chat / Q&A Prompt Framing"]
-        Chunker -->|"Yes"| MapReduce["Parallel Map-Reduce Chunk Summaries (--concurrency)"]
+        Chunker -->|"Yes"| MapReduce["Parallel Map-Reduce Chunk Summaries (Configured Concurrency)"]
         Chunker -->|"No"| SinglePass["Direct Single Pass"]
         NewsScrape --> NewsBriefing["News Digest Briefing Synthesis"]
         MapReduce --> SSE["Zero-Copy OpenAI SSE Streaming Client (complete_chat / SseStreamState)"]
@@ -208,7 +208,7 @@ src/
 - **Single-Allocation Checksum Computation**: Upgrade verification and testing format SHA-256 digests in a single pre-allocated string pass (`compute_sha256_hex`), eliminating intermediate heap allocations.
 - **Direct File Handle Permissions**: Files created with private owner-only permissions (`0600`) enforce security directly on open file descriptors (`fchmod`), eliminating redundant filesystem path traversals.
 - **Cached Terminal Markdown Skin**: Terminal Markdown rendering caches `MadSkin` in a global `LazyLock` rather than reconstructing style rules on each render or interactive chat turn.
-- **Parallel Map-Reduce**: Large documents (> 12,000 words) are split along paragraph boundaries and processed concurrently (`--concurrency`), sharing `Arc<str>` metadata and aggregating token metrics across chunks.
+- **Parallel Map-Reduce**: Large documents (> 12,000 words) are split along paragraph boundaries and processed concurrently (configurable via `config.toml`), sharing `Arc<str>` metadata and aggregating token metrics across chunks.
 - **Single-Pass Output Streaming**: Markdown-to-HTML conversion and HTML entity escaping stream directly into a pre-allocated output buffer without allocating intermediate strings.
 - **Transactional Database Safety**: DuckDB operations (`record_summary`, `delete_library_item`, chat session mutations) use `Database::with_transaction` to guarantee ACID atomicity and rollback on failure.
 - **Offline BM25 Full-Text Relevance**: Pure SQL Robertson-Sparck Jones BM25 ranking algorithm implemented in DuckDB without network-downloaded extensions (`fts`), utilizing an inverted index table (`library_terms`), $2.5\times$ title weight boosting, and document length normalization ($k_1=1.2, b=0.75$).
