@@ -123,25 +123,29 @@ pub fn format_asset_names(
     (versioned, latest_alias)
 }
 
+fn read_bounded_binary(mut reader: impl Read, source_label: &str) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    let mut limited = (&mut reader).take(MAX_BINARY_BYTES + 1);
+    let bytes_copied = std::io::copy(&mut limited, &mut buf)
+        .with_context(|| format!("Failed to extract binary from {}", source_label))?;
+    if bytes_copied > MAX_BINARY_BYTES {
+        bail!(
+            "Decompressed binary exceeds security limit of {} MB",
+            MAX_BINARY_BYTES / (1024 * 1024)
+        );
+    }
+    Ok(buf)
+}
+
 /// Extracts the named binary from a gzipped tarball with bounded decompression.
 pub fn extract_binary_from_tar_gz(bytes: &[u8], binary_name: &str) -> Result<Vec<u8>> {
     let gz = GzDecoder::new(Cursor::new(bytes));
     let mut archive = Archive::new(gz);
     for entry in archive.entries().context("Failed to read tar entries")? {
-        let mut entry = entry.context("Corrupt tar entry")?;
+        let entry = entry.context("Corrupt tar entry")?;
         let path = entry.path().context("Invalid tar entry path")?;
         if path.file_name().and_then(|n| n.to_str()) == Some(binary_name) {
-            let mut buf = Vec::new();
-            let mut limited = (&mut entry).take(MAX_BINARY_BYTES + 1);
-            let bytes_copied = std::io::copy(&mut limited, &mut buf)
-                .context("Failed to extract binary from tar entry")?;
-            if bytes_copied > MAX_BINARY_BYTES {
-                bail!(
-                    "Decompressed binary exceeds security limit of {} MB",
-                    MAX_BINARY_BYTES / (1024 * 1024)
-                );
-            }
-            return Ok(buf);
+            return read_bounded_binary(entry, "tar entry");
         }
     }
     bail!("Binary '{}' not found in release archive", binary_name)
@@ -151,23 +155,16 @@ pub fn extract_binary_from_tar_gz(bytes: &[u8], binary_name: &str) -> Result<Vec
 pub fn extract_binary_from_zip(bytes: &[u8], binary_name: &str) -> Result<Vec<u8>> {
     let mut zip = ZipArchive::new(Cursor::new(bytes)).context("Failed to read zip archive")?;
     for i in 0..zip.len() {
-        let mut file = zip.by_index(i).context("Corrupt zip entry")?;
+        let file = zip.by_index(i).context("Corrupt zip entry")?;
         let name = file
             .name()
             .context("Failed to read zip entry name")?
             .to_string();
-        if name == binary_name || name.ends_with(&format!("/{}", binary_name)) || name.ends_with(&format!("\\{}", binary_name)) {
-            let mut buf = Vec::new();
-            let mut limited = (&mut file).take(MAX_BINARY_BYTES + 1);
-            let bytes_copied = std::io::copy(&mut limited, &mut buf)
-                .context("Failed to extract binary from zip entry")?;
-            if bytes_copied > MAX_BINARY_BYTES {
-                bail!(
-                    "Decompressed binary exceeds security limit of {} MB",
-                    MAX_BINARY_BYTES / (1024 * 1024)
-                );
-            }
-            return Ok(buf);
+        if name == binary_name
+            || name.ends_with(&format!("/{}", binary_name))
+            || name.ends_with(&format!("\\{}", binary_name))
+        {
+            return read_bounded_binary(file, "zip entry");
         }
     }
     bail!("Binary '{}' not found in release zip archive", binary_name)
@@ -316,7 +313,9 @@ async fn download_and_verify_archive(
     let sha_res = client.get(&sha_url).send().await;
     match sha_res {
         Ok(resp) if resp.status().is_success() => {
-            let sha_text = resp.text().await.unwrap_or_default();
+            let sha_text = crate::scraper::read_response_text_limited(resp, 64 * 1024)
+                .await
+                .unwrap_or_default();
             if let Some(expected_hash) = parse_sha256_checksum(&sha_text) {
                 let mut hasher = Sha256::new();
                 hasher.update(&archive_bytes);

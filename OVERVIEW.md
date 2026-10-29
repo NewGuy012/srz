@@ -211,7 +211,7 @@ src/
 | | `srz <FILE>` | Ingests local `.pdf`, `.html`, `.md`, or `.txt` documents (20 MB ceiling). |
 | | `cat ... \| srz -` | Reads piped command outputs, logs, or `git diff` streams (10 MB ceiling). |
 | | `srz news "topic" [-t week]` | Aggregates and summarizes top stories from Google News RSS. |
-| **Styling & Output** | `--style <PRESET>` | 8 summary formats: `concise`, `detailed`, `bullets`, `executive`, `tldr`, `critique`, `eli5`, `flashcards`. |
+| **Styling & Output** | `--style <PRESET>` | 3 summary formats: `concise` (default), `bullets`, `detailed`. |
 | | `--open` (`-b`) | Opens the summary in a distraction-free HTML reader with light/dark mode. |
 | | `--plain` | Outputs raw Markdown without terminal colors or automatic paging. |
 | | `--paging <auto\|always\|never>` | Controls terminal output pager (`--no-pager` disables paging). |

@@ -77,22 +77,14 @@ fn test_default_style_is_concise() {
 }
 
 #[test]
-fn test_new_summary_styles() {
-    let tldr_cli = Cli::parse_from(["srz", "Dune", "--style", "tldr"]);
-    assert_eq!(tldr_cli.style, SummaryStyle::Tldr);
-    assert_eq!(tldr_cli.style.as_str(), "tldr");
+fn test_summary_styles() {
+    let bullets_cli = Cli::parse_from(["srz", "Dune", "--style", "bullets"]);
+    assert_eq!(bullets_cli.style, SummaryStyle::Bullets);
+    assert_eq!(bullets_cli.style.as_str(), "bullets");
 
-    let critique_cli = Cli::parse_from(["srz", "Dune", "--style", "critique"]);
-    assert_eq!(critique_cli.style, SummaryStyle::Critique);
-    assert_eq!(critique_cli.style.as_str(), "critique");
-
-    let eli5_cli = Cli::parse_from(["srz", "Dune", "--style", "eli5"]);
-    assert_eq!(eli5_cli.style, SummaryStyle::Eli5);
-    assert_eq!(eli5_cli.style.as_str(), "eli5");
-
-    let flashcards_cli = Cli::parse_from(["srz", "Dune", "--style", "flashcards"]);
-    assert_eq!(flashcards_cli.style, SummaryStyle::Flashcards);
-    assert_eq!(flashcards_cli.style.as_str(), "flashcards");
+    let detailed_cli = Cli::parse_from(["srz", "Dune", "--style", "detailed"]);
+    assert_eq!(detailed_cli.style, SummaryStyle::Detailed);
+    assert_eq!(detailed_cli.style.as_str(), "detailed");
 }
 
 #[test]

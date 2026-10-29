@@ -11,16 +11,6 @@ pub enum SummaryStyle {
     Detailed,
     /// Bulleted key points
     Bullets,
-    /// Executive summary format (overview, context, impact)
-    Executive,
-    /// Ultra-compact 1-sentence thesis plus 3 quick bullets
-    Tldr,
-    /// Critical analysis evaluating claims, assumptions, and counterarguments
-    Critique,
-    /// Plain-English intuitive explanation with metaphors, free of jargon
-    Eli5,
-    /// Q&A study cards formatted for rapid learning and spaced repetition
-    Flashcards,
 }
 
 impl SummaryStyle {
@@ -29,11 +19,6 @@ impl SummaryStyle {
             Self::Concise => "concise",
             Self::Detailed => "detailed",
             Self::Bullets => "bullets",
-            Self::Executive => "executive",
-            Self::Tldr => "tldr",
-            Self::Critique => "critique",
-            Self::Eli5 => "eli5",
-            Self::Flashcards => "flashcards",
         }
     }
 
@@ -42,11 +27,6 @@ impl SummaryStyle {
             Self::Concise => "Provide a concise, high-level summary capturing the core message in 2-3 brief paragraphs.",
             Self::Detailed => "Provide a detailed, structured summary covering all major sections, themes, arguments, and conclusions.",
             Self::Bullets => "Provide a structured summary formatted as clear, concise bullet points highlighting key insights.",
-            Self::Executive => "Provide an executive summary format: Executive Overview, Core Findings/Themes, Strategic Insights, and Takeaways.",
-            Self::Tldr => "Provide an ultra-compact TL;DR: exactly one bold sentence summarizing the core thesis, followed by exactly 3 short bullet points of essential takeaways.",
-            Self::Critique => "Provide a rigorous critical evaluation: 1. Core Thesis & Claims, 2. Supporting Evidence & Methodology, 3. Hidden Assumptions or Blindspots, 4. Counterarguments & Alternative Perspectives.",
-            Self::Eli5 => "Explain this in plain, simple English suitable for a beginner or non-expert (ELI5). Use intuitive real-world metaphors, define or avoid technical jargon, and keep the tone accessible and clear.",
-            Self::Flashcards => "Extract the key concepts as high-yield Q&A study flashcards. Format each card as: **Q: [Clear, focused question]** followed by **A: [Concise, definitive answer]**.",
         }
     }
 }

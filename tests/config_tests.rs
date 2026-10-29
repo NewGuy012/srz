@@ -92,7 +92,7 @@ fn test_cli_flags_take_precedence_over_config() {
         settings: ProfileConfig {
             base_url: Some("http://config-url/v1".to_string()),
             model: Some("config-model".to_string()),
-            style: Some(SummaryStyle::Executive),
+            style: Some(SummaryStyle::Detailed),
             ..Default::default()
         },
         ..Default::default()
@@ -129,7 +129,7 @@ fn test_profile_flag_overrides_root_config() {
 
     let profile = ProfileConfig {
         model: Some("profile-model".to_string()),
-        style: Some(SummaryStyle::Executive),
+        style: Some(SummaryStyle::Detailed),
         ..Default::default()
     };
     config.profiles.insert("deep".to_string(), profile);
@@ -140,5 +140,5 @@ fn test_profile_flag_overrides_root_config() {
     args.apply_config(&config, Some(&matches));
 
     assert_eq!(args.model, "profile-model");
-    assert_eq!(args.style, SummaryStyle::Executive);
+    assert_eq!(args.style, SummaryStyle::Detailed);
 }

@@ -22,38 +22,38 @@ flowchart LR
     subgraph Sources["Input Sources"]
         S1["🌐 Web & YouTube URLs\nArticles & Captions"]
         S2["📄 PDFs & Documents\nFiles & Stdin Streams"]
-        S3["📚 Books & News Feeds\nSynopses & Live RSS"]
+        S3["📚 Book Synopses\nOpen Library Overviews"]
+        S4["📰 Live News Feeds\nGoogle News RSS"]
     end
 
     subgraph Core["srz Core (100% Private)"]
         E1["⚡ Ingest Pipeline\nMap-Reduce Chunking"]
         E2["🔒 100% Local Inference\nOffline LLM Engine"]
+        E3["📝 Summary Generation\nPresets & Synthesis"]
         E1 --> E2
+        E2 --> E3
     end
 
     subgraph Highlights["Key Highlights"]
         H1["⚡ Rich Terminal Paging\nSyntax-Colored Output"]
         H2["💬 Grounded Q&A Chat\nInteractive srz ask"]
         H3["🖥️ TUI Dashboard View\nRatatui srz browse"]
-        H4["🗄️ Searchable Library\nEmbedded DuckDB DB"]
-        H5["📖 Clean Reader Views\nDark-Mode HTML & MD"]
-        H6["🛡️ 100% Safe Rust\nStrict Hardened Posture"]
+        H4["📖 Clean Reader Views\nDark-Mode HTML & MD"]
     end
 
     S1 --> E1
     S2 --> E1
     S3 --> E1
+    S4 --> E1
 
-    E2 --> H1
-    E2 --> H2
-    E2 --> H3
-    E2 --> H4
-    E2 --> H5
-    E2 --> H6
+    E3 --> H1
+    E3 --> H2
+    E3 --> H3
+    E3 --> H4
 ```
 
 - 🔒 **100% Local & Private**: Runs on your machine with complete privacy, zero subscriptions, and no API keys.
-- 🛡️ **100% Safe Rust & Verified Security**: Compiled under `#![forbid(unsafe_code)]`, strict POSIX `0700`/`0600` file isolation, prompt injection defense, and mandatory SHA-256 binary validation.
+- 🎯 **3 Summary Presets**: Tailor output with `concise` (default), `bullets`, and `detailed`.
 - 💬 **Interactive Grounded Q&A**: Ask questions grounded on any document or past read via `srz ask`.
 - 🖥️ **Interactive TUI Dashboard**: Browse, search, filter, and copy past summaries with `srz browse`.
 - 🗄️ **Offline Searchable Library**: Automatically saves and indexes every summary in embedded DuckDB.
@@ -111,7 +111,7 @@ cargo install --path .
 srz "https://example.com/article"     # Webpage, blog, or article
 srz "https://youtu.be/dQw4w9WgXcQ"    # YouTube video captions & timed transcript
 srz document.pdf                      # Local PDF document (pure-Rust extractor)
-srz "The Hobbit" --style tldr --open  # Book synopsis & open in browser
+srz "The Hobbit" --style bullets --open  # Book synopsis & open in browser
 srz news "AI updates" -t week         # Live news digest (day, week, month)
 git diff | srz -                      # Unix stdin stream
 ```
@@ -139,7 +139,7 @@ Run `srz --help` to see all available subcommands and flags.
 - **Multi-Source Ingestion**: Webpages, YouTube captions, PDF documents, Markdown/text files, Unix pipes (`-`), book synopses, and Google News RSS.
 - **Interactive Q&A (`srz ask`)**: Single-turn and multi-turn REPL chat grounded on full source documents or past reads with delimiter injection defense.
 - **TUI Dashboard (`srz browse`)**: Split-pane terminal explorer with live search, telemetry inspection, clipboard copying, and deletion.
-- **8 Summary Presets**: `concise`, `detailed`, `bullets`, `executive`, `tldr`, `critique`, `eli5`, and `flashcards`.
+- **3 Summary Presets**: `concise` (default), `bullets`, and `detailed`.
 - **Offline Storage & Search**: Saves all reads to embedded DuckDB with full-text search (`srz find`) and HTML index dashboard (`srz index`).
 - **Reader Views & Paging**: Standalone HTML/Markdown exports with dark mode, plus automatic terminal paging (`less -RFX`) like `bat`.
 - **Parallel Map-Reduce**: Automatically splits and synthesizes large documents exceeding token limits in parallel.
