@@ -189,7 +189,7 @@ impl GoogleNewsClient {
     }
 }
 
-pub use crate::sources::search::find_ascii_case_insensitive;
+pub use crate::system::text_util::{decode_html_entities, find_ascii_case_insensitive};
 
 /// Cleans CDATA wrappers and decodes HTML entities from an XML element's inner text.
 fn clean_xml_text(raw: &str) -> String {
@@ -200,7 +200,7 @@ fn clean_xml_text(raw: &str) -> String {
             return after_start[..cdata_end].trim().to_string();
         }
     }
-    crate::sources::youtube::decode_html_entities(trimmed).into_owned()
+    decode_html_entities(trimmed).into_owned()
 }
 
 /// Extracts the inner content of a named XML tag (e.g. `<title>`, `<link>`, `<source ...>`).

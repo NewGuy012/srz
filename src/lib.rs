@@ -21,6 +21,7 @@ pub use sources::youtube;
 pub use storage::cache;
 pub use storage::db;
 pub use system::fs_util;
+pub use system::text_util;
 pub use system::upgrade;
 pub use ui::printer;
 pub use ui::render;

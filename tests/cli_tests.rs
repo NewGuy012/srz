@@ -37,15 +37,12 @@ fn test_cache_subcommands() {
         "14d",
         "--max-size",
         "500MB",
-        "--namespace",
-        "pages",
     ]);
     assert_eq!(
         prune_cli.resolve_action().unwrap(),
         ResolvedAction::Cache(CacheCommand::Prune {
             older_than: Some("14d".to_string()),
             max_size: Some("500MB".to_string()),
-            namespace: Some("pages".to_string()),
         })
     );
 }
@@ -726,7 +723,6 @@ fn test_readme_usage_examples_cli_resolution() {
         ResolvedAction::Cache(CacheCommand::Prune {
             older_than: Some("14d".to_string()),
             max_size: None,
-            namespace: None,
         })
     );
 
@@ -737,7 +733,6 @@ fn test_readme_usage_examples_cli_resolution() {
         ResolvedAction::Cache(CacheCommand::Prune {
             older_than: None,
             max_size: Some("500MB".to_string()),
-            namespace: None,
         })
     );
 

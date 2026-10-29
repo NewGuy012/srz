@@ -318,10 +318,6 @@ pub enum CacheCommand {
         /// Evict oldest entries until cache size is within limit (e.g. 500MB, 1GB, 50MB)
         #[arg(long)]
         max_size: Option<String>,
-
-        /// Only prune a specific cache namespace (pages, search, summaries, views)
-        #[arg(long)]
-        namespace: Option<String>,
     },
 }
 

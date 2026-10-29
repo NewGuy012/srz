@@ -101,7 +101,6 @@ pub fn handle_cache(cmd: CacheCommand, cache: &Cache) -> Result<()> {
         CacheCommand::Prune {
             older_than,
             max_size,
-            namespace,
         } => {
             let parsed_older_than = match older_than.as_deref() {
                 Some(s) => Some(crate::cache::parse_duration(s).map_err(|e| anyhow::anyhow!(e))?),
@@ -111,22 +110,11 @@ pub fn handle_cache(cmd: CacheCommand, cache: &Cache) -> Result<()> {
                 Some(s) => Some(crate::cache::parse_bytes(s).map_err(|e| anyhow::anyhow!(e))?),
                 None => None,
             };
-            let parsed_namespace = match namespace.as_deref() {
-                Some(s) => Some(
-                    crate::cache::CacheNamespace::from_str_name(s).ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "Unknown cache namespace '{}'. Valid namespaces: pages, search, summaries, views",
-                            s
-                        )
-                    })?,
-                ),
-                None => None,
-            };
 
             let options = crate::cache::PruneOptions {
                 older_than: parsed_older_than,
                 max_bytes: parsed_max_size,
-                namespace: parsed_namespace,
+                namespace: None,
             };
 
             let prune_stats = cache.prune(options).context("Failed to prune cache")?;
