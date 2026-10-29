@@ -51,7 +51,11 @@ pub fn open_private_file_for_write(path: &Path) -> std::io::Result<File> {
         opts.mode(0o600);
     }
     let file = opts.open(path)?;
-    set_private_file_perms(path);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = file.set_permissions(fs::Permissions::from_mode(0o600));
+    }
     Ok(file)
 }
 

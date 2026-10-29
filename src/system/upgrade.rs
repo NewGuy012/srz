@@ -111,6 +111,19 @@ pub fn parse_sha256_checksum(content: &str) -> Option<&str> {
         .and_then(|line| line.split_whitespace().next())
 }
 
+/// Computes the lowercase hex-encoded SHA-256 checksum of `bytes` in a single allocation.
+pub fn compute_sha256_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(64);
+    for b in digest {
+        let _ = write!(hex, "{:02x}", b);
+    }
+    hex
+}
+
 /// Formats primary versioned asset name and fallback alias.
 pub fn format_asset_names(
     tag: &str,
@@ -317,13 +330,7 @@ async fn download_and_verify_archive(
                 .await
                 .unwrap_or_default();
             if let Some(expected_hash) = parse_sha256_checksum(&sha_text) {
-                let mut hasher = Sha256::new();
-                hasher.update(&archive_bytes);
-                let computed_hash: String = hasher
-                    .finalize()
-                    .iter()
-                    .map(|b| format!("{:02x}", b))
-                    .collect();
+                let computed_hash = compute_sha256_hex(&archive_bytes);
 
                 if !expected_hash.eq_ignore_ascii_case(&computed_hash) {
                     sha_pb.finish_and_clear();

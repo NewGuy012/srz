@@ -1,6 +1,5 @@
-use sha2::{Digest, Sha256};
 use srz::upgrade::{
-    detect_install_origin, detect_target_from, extract_binary_from_tar_gz,
+    compute_sha256_hex, detect_install_origin, detect_target_from, extract_binary_from_tar_gz,
     extract_binary_from_zip, format_asset_names, parse_clean_version, parse_sha256_checksum,
     ArchiveFormat, InstallOrigin,
 };
@@ -196,13 +195,7 @@ fn test_extract_binary_from_zip() {
 #[test]
 fn test_sha256_verification_computation() {
     let test_data = b"Arbitrary release archive test data for SHA256 hashing.";
-    let mut hasher = Sha256::new();
-    hasher.update(test_data);
-    let computed_hash: String = hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{:02x}", b))
-        .collect();
+    let computed_hash = compute_sha256_hex(test_data);
 
     let sha256_file = format!("{}  srz.tar.gz", computed_hash);
     let parsed_hash = parse_sha256_checksum(&sha256_file).expect("Parsed hash");
