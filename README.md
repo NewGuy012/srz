@@ -4,7 +4,15 @@
 
 # `srz` (Summarize)
 
-A fast, modular Rust CLI for distilling **webpages**, **YouTube videos**, **local files**, **stdin streams**, **books**, and **live news digests** into structured summaries using any local OpenAI-compliant LLM (such as **llama.cpp**, **Ollama**, **LM Studio**, or **vLLM**).
+`srz` (Summarize) is a high-performance, modular Rust CLI tool for extracting and synthesizing structured summaries using local OpenAI-compliant LLMs (such as **llama.cpp**, **Ollama**, **LM Studio**, or **vLLM**).
+
+Extracts and synthesizes structured summaries from:
+- **Webpages**: Clean article content and documentation without cookie banners, ads, or navigation bloat.
+- **YouTube video transcripts**: Direct extraction of timed-text closed captions and transcripts with timestamped chapters—no media downloads or external binaries needed.
+- **Local files**: Plain text, Markdown (`.md`), and HTML documents.
+- **Unix stdin streams**: Piped terminal text, `git diff` outputs, log streams, or command results (`command | srz -`).
+- **Books**: Verified synopses and metadata synthesized from Wikipedia and Open Library by title alone.
+- **Live news digests**: Multi-article briefings curated from Google News RSS by topic and recency.
 
 
 ## Highlights
@@ -126,10 +134,12 @@ Run `srz --help` to see all available subcommands and flags.
 
 ### Content Sources & Ingestion
 
-- **Web Articles & Documents**: Summarizes webpages, text files, markdown, HTML documents, and piped terminal text.
-- **YouTube Video Captions**: Direct extraction of timed-text closed captions and transcripts with timestamped chapters—no media downloads.
-- **Books by Title**: Generates verified overviews from Wikipedia and Open Library without needing an ebook file.
-- **Live News Briefings**: Curates and summarizes top stories on any topic or timeframe from Google News.
+- **Webpages**: Clean article content and documentation without ads, cookie banners, or navigation bloat.
+- **YouTube video transcripts**: Direct extraction of timed-text closed captions and transcripts with timestamped chapters—no media downloads.
+- **Local files**: Summarizes local text documents, Markdown files, and HTML files.
+- **Unix stdin streams**: Ingests piped terminal text, `git diff` outputs, log streams, and command outputs.
+- **Books**: Generates verified overviews and synopses from Wikipedia and Open Library by title alone.
+- **Live news digests**: Curates and summarizes top stories on any topic or timeframe from Google News.
 
 ### LLM Engine, Synthesis & Q&A
 
