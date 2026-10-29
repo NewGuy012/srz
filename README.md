@@ -4,16 +4,20 @@
 
 # `srz` (Summarize)
 
-A fast, modular Rust CLI for distilling **webpages**, **local files**, **stdin streams**, **books**, and **live news digests** into structured summaries using any local OpenAI-compliant LLM (such as **llama.cpp**, **Ollama**, **LM Studio**, or **vLLM**).
+A fast, modular Rust CLI for distilling **webpages**, **YouTube videos**, **local files**, **stdin streams**, **books**, and **live news digests** into structured summaries using any local OpenAI-compliant LLM (such as **llama.cpp**, **Ollama**, **LM Studio**, or **vLLM**).
 
 
 ## Highlights
 
-- **Summarize anything**: works with web links, book titles, local files, piped text, and news topics.
+- **Summarize anything**: works with web links, YouTube videos, book titles, local files, piped text, and news topics.
+- **YouTube caption ingestion**: parses public timed-text transcripts directly with timestamped chapter cues—no audio download or external binaries needed.
+- **Interactive grounded Q&A**: ask follow-up questions (`srz ask`) grounded on any document or your latest read, in single-turn or multi-turn chat.
+- **Interactive TUI library**: browse, search, copy (`y`), and open your reading library in an interactive terminal dashboard (`srz browse`).
+- **Rich terminal markdown & paging**: formats output with styled terminal colors and syntax highlighting, automatically paging long summaries like `bat`.
 - **Multi-source news briefings**: aggregates top articles from Google News RSS for any topic, decodes destination publisher URLs, and synthesizes executive briefings.
 - **Fact-checked book summaries**: pulls synopses from Wikipedia and Open Library—no ebook files or API keys needed.
 - **100% local & private**: runs on your own machine using `llama.cpp`, `Ollama`, `LM Studio`, or `vLLM`.
-- **Searchable personal library**: saves every summary locally so you can search past reads offline.
+- **Searchable personal library**: saves every summary locally in embedded DuckDB so you can search past reads offline.
 - **Clean reader views**: generates one-click HTML and Markdown pages with automatic light and dark mode.
 
 
@@ -61,32 +65,50 @@ Pass any target directly—`srz` auto-detects URLs, books, files, news, or stdin
 ### Summarizing Content
 
 ```bash
-srz "https://example.com/article"       # Web article
-srz "The Hobbit"                        # Book title (Wikipedia + Open Library)
-srz "document.md"                       # Local document (Markdown, plain text, HTML)
-git diff | srz "-"                      # Standard input
+srz "https://example.com/article"                 # Web article
+srz "https://www.youtube.com/watch?v=dQw4w9WgXcQ" # YouTube video transcript & takeaways
+srz "The Hobbit"                                  # Book title (Wikipedia + Open Library)
+srz "document.md"                                 # Local document (Markdown, plain text, HTML)
+git diff | srz "-"                                # Standard input
+```
+
+### Interactive Grounded Q&A (`srz ask`)
+
+```bash
+srz ask "What are the key limitations mentioned?" # Grounded on your latest read in history
+srz ask "https://example.com" "Explain point 3"   # Grounded on specific target URL or document
+srz ask --interactive                             # Start multi-turn interactive chat REPL
+```
+
+### Interactive TUI Library (`srz browse`)
+
+```bash
+srz browse                                        # Launch interactive ratatui library explorer
+srz browse                                        # Keybindings: [j/k] navigate, [/] filter, [Enter] open, [y] copy, [d] delete, [q] quit
 ```
 
 ### Live News Briefings
 
 ```bash
-srz news "AI updates"                   # Today's news digest
-srz "current AI news" -t "week"         # Auto-detected news query (day/week/month)
+srz news "AI updates"                             # Today's news digest
+srz "current AI news" -t "week"                   # Auto-detected news query (day/week/month)
 ```
 
-### Styles & Reader Views
+### Styles, Reader Views & Terminal Paging
 
 ```bash
-srz "The Hobbit" --style "tldr"         # Presets: concise, detailed, bullets, tldr...
-srz "The Hobbit" --open                 # Open distraction-free reader in browser
+srz "The Hobbit" --style "tldr"                   # Presets: concise, detailed, bullets, tldr...
+srz "The Hobbit" --open                           # Open distraction-free reader in browser
+srz "The Hobbit" --plain                          # Output raw unformatted Markdown without ANSI escapes
+srz "The Hobbit" --paging never                   # Disable automatic terminal paging
 ```
 
 ### Offline Library & Search
 
 ```bash
-srz find "ecology"                      # Search past summaries offline
-srz index --open                        # Interactive HTML library dashboard
-srz history                             # View past summaries & token metrics
+srz find "ecology"                                # Search past summaries offline
+srz index --open                                  # Interactive HTML library dashboard
+srz history                                       # View past summaries & token metrics
 ```
 
 ### Self-Update & Maintenance
@@ -105,23 +127,28 @@ Run `srz --help` to see all available subcommands and flags.
 ### Content Sources & Ingestion
 
 - **Web Articles & Documents**: Summarizes webpages, text files, markdown, HTML documents, and piped terminal text.
+- **YouTube Video Captions**: Direct extraction of timed-text closed captions and transcripts with timestamped chapters—no media downloads.
 - **Books by Title**: Generates verified overviews from Wikipedia and Open Library without needing an ebook file.
 - **Live News Briefings**: Curates and summarizes top stories on any topic or timeframe from Google News.
 
-### LLM Engine & Synthesis
+### LLM Engine, Synthesis & Q&A
 
 - **8 Summary Styles**: Tailor output with presets like concise, detailed, bullet points, executive, or quick takeaways.
+- **Interactive Grounded Q&A (`srz ask`)**: Ask follow-up questions grounded on full source documents or past reads in single-turn or multi-turn REPL chat.
 - **Parallel Processing for Long Texts**: Automatically splits and processes long documents in parallel.
 - **Visual Feedback & Live Streaming**: Clean progress indicators with optional real-time streaming.
 
 ### Offline Library & Storage
 
+- **Interactive TUI Library (`srz browse`)**: Split-pane terminal reader to browse, live filter, inspect telemetry, copy summaries (`y`), and launch reader views.
 - **Offline Full-Text Search**: Search through your entire history of past summaries completely offline.
-- **Visual Library Dashboard**: Browse, filter, and review all your saved summaries in an interactive dashboard.
+- **Visual Library Dashboard**: Browse, filter, and review all your saved summaries in an interactive dashboard (`srz index`).
 - **Instant Reader Views**: Generates clean, distraction-free reading pages with automatic light and dark mode.
 
-### Configuration & CLI Experience
+### Terminal & CLI Experience
 
+- **Rich Terminal Markdown**: Auto-renders markdown headers, bolding, lists, and code styling on TTYs via `termimad`.
+- **Integrated Paging**: Automatically pipes lengthy summaries into `$PAGER` / `less -RFX` like `bat`, bypassable via `--plain` or `--no-pager`.
 - **Config File & Profiles**: Save default preferences and switch between different models with ease.
 - **One-Command Upgrades**: Safe in-place binary upgrades with SHA256 integrity verification (`srz upgrade`).
 - **Health Checks & Diagnostics**: Verify backend connectivity and inspect available models with built-in tools.
