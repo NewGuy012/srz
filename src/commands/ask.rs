@@ -99,20 +99,13 @@ pub const ASK_SYSTEM_PROMPT: &str = "You are an expert reading assistant. Answer
 
 /// Formats untrusted document text safely bounded by `MAX_CONTEXT_WORDS` with delimiter escaping.
 pub fn format_grounded_context(title: &str, content: &str) -> String {
-    let bounded = crate::engine::llm::truncate_words_preserving_lines(
+    let untrusted_block = crate::engine::llm::format_untrusted_section(
+        "source_document",
         content,
-        crate::engine::llm::MAX_CONTEXT_WORDS,
-    );
-    let sanitized_content = crate::engine::llm::escape_closing_tag(
-        &bounded,
-        "</source_document>",
-        "&lt;/source_document&gt;",
+        Some(crate::engine::llm::MAX_CONTEXT_WORDS),
     );
     let safe_title = crate::ui::sanitize_title(title);
-    format!(
-        "Document: {}\n\n<source_document>\n{}\n</source_document>",
-        safe_title, sanitized_content
-    )
+    format!("Document: {safe_title}\n\n{untrusted_block}")
 }
 
 /// Handles the `srz ask` subcommand.
