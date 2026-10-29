@@ -54,11 +54,11 @@ flowchart LR
 
 - 🔒 **100% Local & Private**: Runs on your machine with complete privacy, zero subscriptions, and no API keys.
 - 🎯 **3 Summary Presets**: Tailor output with `concise` (default), `bullets`, and `detailed`.
+- ⚡ **Rich Terminal Paging**: Syntax-highlighted CLI output with automatic paging for long summaries.
 - 💬 **Interactive Grounded Q&A**: Ask questions grounded on any document or past read via `srz ask`.
 - 🖥️ **Interactive TUI Dashboard**: Browse, search, filter, and copy past summaries with `srz browse`.
 - 🗄️ **Offline Searchable Library**: Automatically saves and indexes every summary in embedded DuckDB.
 - 📖 **Distraction-Free Reader Views**: Generates clean HTML and Markdown pages with dark mode support.
-- ⚡ **Rich Terminal Paging**: Syntax-highlighted CLI output with automatic paging for long summaries.
 
 
 ## Prerequisites: LLM Backend Server
@@ -108,10 +108,10 @@ cargo install --path .
 
 ### Summarize
 ```bash
-srz "https://example.com/article"     # Webpage, blog, or article
-srz "https://youtu.be/dQw4w9WgXcQ"    # YouTube video captions & timed transcript
+srz "https://en.wikipedia.org/wiki/Rust_(programming_language)" # Webpage, blog, or article
+srz "https://youtu.be/5C_HPTJg5ek"    # YouTube video captions & timed transcript
 srz document.pdf                      # Local PDF document (pure-Rust extractor)
-srz "The Hobbit" --style bullets --open  # Book synopsis & open in browser
+srz "The Rust Programming Language" --style bullets --open  # Book synopsis & open in browser
 srz news "AI updates" -t week         # Live news digest (day, week, month)
 git diff | srz -                      # Unix stdin stream
 ```
@@ -136,15 +136,17 @@ Run `srz --help` to see all available subcommands and flags.
 
 ## Features
 
-- **Multi-Source Ingestion**: Webpages, YouTube captions, PDF documents, Markdown/text files, Unix pipes (`-`), book synopses, and Google News RSS.
-- **Interactive Q&A (`srz ask`)**: Single-turn and multi-turn REPL chat grounded on full source documents or past reads with delimiter injection defense.
-- **TUI Dashboard (`srz browse`)**: Split-pane terminal explorer with live search, telemetry inspection, clipboard copying, and deletion.
-- **3 Summary Presets**: `concise` (default), `bullets`, and `detailed`.
-- **Offline Storage & Search**: Saves all reads to embedded DuckDB with full-text search (`srz find`) and HTML index dashboard (`srz index`).
-- **Reader Views & Paging**: Standalone HTML/Markdown exports with dark mode, plus automatic terminal paging (`less -RFX`) like `bat`.
-- **Parallel Map-Reduce**: Automatically splits and synthesizes large documents exceeding token limits in parallel.
-- **100% Safe Rust & Hardened Security**: Compiled under `#![forbid(unsafe_code)]`, strict POSIX `0700`/`0600` permissions, bounded streaming, and SHA-256 binary validation.
-- **Profiles & Diagnostics**: Named backend profiles in `config.toml`, server health checks (`srz doctor`), and self-updater (`srz upgrade`).
+- [**Universal Ingestion**](OVERVIEW.md#6-key-cli-features--commands): Webpages, YouTube captions, PDFs, local text files, Unix pipes (`-`), book synopses, and live news.
+- [**Interactive Q&A (`srz ask`)**](OVERVIEW.md#module-responsibilities): Ask questions or launch a multi-turn chat REPL grounded on any document or past read.
+- [**TUI Dashboard (`srz browse`)**](OVERVIEW.md#performance--memory-efficiency): Browse, search, filter, and copy past summaries in a split-pane terminal UI.
+- [**3 Summary Presets**](OVERVIEW.md#6-key-cli-features--commands): Tailor summaries with `concise` (default), `bullets`, or `detailed`.
+- [**Offline Library & Search**](OVERVIEW.md#3-storage--cache-architecture): Embedded DuckDB indexes every read for instant full-text search (`srz find`) and HTML dashboards (`srz index`).
+- [**Reader Views & Paging**](OVERVIEW.md#module-responsibilities): Standalone dark-mode HTML/Markdown exports, plus automatic terminal paging (`less -RFX`).
+- [**Map-Reduce Chunking**](OVERVIEW.md#performance--memory-efficiency): Splits and synthesizes long documents exceeding LLM context windows in parallel.
+- [**Private & Secure**](OVERVIEW.md#security--privacy): 100% local inference, zero tracking, safe Rust, private file permissions (`0700`/`0600`), and SHA-256 verified binary updates.
+- [**Profiles & Diagnostics**](OVERVIEW.md#6-key-cli-features--commands): Switch backends in `config.toml`, test server health (`srz doctor`), and self-update (`srz upgrade`).
+
+> For architectural diagrams, lifecycle execution sequences, and in-depth subsystem specs, see [**`OVERVIEW.md`**](OVERVIEW.md).
 
 
 ## Configuring Your LLM Backend
@@ -195,8 +197,8 @@ api_key = "sk-..."
 Switch profiles on the fly with `--profile`:
 
 ```bash
-srz "The Hobbit"                      # Default local model
-srz "The Hobbit" --profile openai     # Named cloud profile
+srz "The Rust Programming Language"                      # Default local model
+srz "The Rust Programming Language" --profile openai     # Named cloud profile
 ```
 
 
