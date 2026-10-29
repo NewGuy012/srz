@@ -17,6 +17,19 @@ All notable changes to `srz` are documented in this file.
 
 ---
 
+## v0.4.0
+
+> Adds automated cache retention policies and size-based LRU pruning, fixes Google News RSS and YouTube transcript extraction, and expands default news aggregation to 5 articles.
+
+### Changes
+- **Cache Retention & Pruning**: Added configurable TTL expiration (`pages_ttl_days`, `search_ttl_days`, `max_size_mb`), opportunistic auto-pruning, and the `srz cache prune` subcommand with `--older-than` and `--max-size` flags.
+- **Safe Cache Clean**: Decoupled database history reset from cache cleaning; `srz cache clean` safely removes cache files while preserving DuckDB library records unless `--reset-db` is explicitly passed.
+- **Google News RSS Fix**: Implemented a dedicated XML RSS parser to resolve HTML5 void-element link stripping, adding CDATA/entity decoding, `<guid>` fallbacks, and buffering candidates.
+- **News Summary Expansion**: Updated default news limit to 5 top articles across `srz news` and auto-detected queries.
+- **YouTube Transcripts**: Integrated YouTube's Innertube Player API to bypass web-only PoToken bot challenges and added support for format 3 (`srv3`) timed text XML.
+
+---
+
 ## v0.3.0
 
 > Introduces an interactive terminal library explorer (`srz browse`), grounded document Q&A (`srz ask`), YouTube caption ingestion, native PDF extraction, and completes Phase 3 security hardening.
