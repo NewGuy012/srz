@@ -211,13 +211,15 @@ src/
 
 ### Security & Privacy
 - **100% Safe Rust Guarantee**: The entire crate strictly enforces `#![forbid(unsafe_code)]` at `src/lib.rs` and `src/main.rs`. Zero `unsafe` blocks are permitted.
-- **Strict Local Isolation**: Cache files, configuration, and database files are created with owner-only Unix permissions (`0700` directories, `0600` files atomically created via `O_CREAT | O_EXCL` and `mode(0o600)`).
-- **Prompt Injection Defense**: Untrusted source text is enclosed inside tagged XML blocks (`<source_document>`, `<source_section>`, `<reference_context>`, `<news_articles>`) within the LLM prompt, separating content from system instructions and neutralizing delimiter collisions via zero-copy `escape_closing_tag`.
-- **Bounded Resource Limits**: Enforces strict safety limits on network downloads (10 MB), local files (20 MB), standard input streams (10 MB), upgrade archives (50 MB), and decompressed binaries (100 MB) to prevent memory exhaustion.
-- **Terminal Escape Sequence Sanitization**: Untrusted document titles, scraped page metadata, and CLI messages are stripped of ANSI CSI sequences, OSC strings (blocking clipboard hijacking and title spoofing), and non-printable control characters.
+- **Strict Local Isolation & Symlink Hardening**: Cache files, configuration, and database files are created with owner-only Unix permissions (`0700` directories, `0600` files atomically created via `O_CREAT | O_EXCL` and `mode(0o600)`). Filesystem operations reject pre-planted symlink paths to prevent unauthorized file manipulation across directory boundaries.
+- **Cryptographic SHA-256 Cache Hashing**: Cache keys across all namespaces (`pages`, `search`, `summaries`) are hashed via 256-bit SHA-256 (`Sha256Hasher`), providing collision-free, persistent, and toolchain-independent cache indexing.
+- **Prompt Injection Defense**: Untrusted source text is enclosed inside tagged XML blocks (`<source_document>`, `<source_section>`, `<reference_context>`, `<news_articles>`, `<section_summaries>`) within the LLM prompt. Neutralizes delimiter collision bypasses via case-insensitive, whitespace-tolerant tag escaping (`escape_closing_tag`) and defensive prompt metadata sanitization.
+- **Bounded Resource Limits & Client Timeouts**: Enforces strict safety limits on network downloads (10 MB), local files (20 MB), standard input streams (10 MB), SSE streaming line buffers (1 MB), total LLM content buffers (10 MB), upgrade archives (50 MB), and decompressed binaries (100 MB), accompanied by 5-second connect and 60-second request timeouts.
+- **Terminal Escape Sequence & BiDi Sanitization**: Untrusted document titles, scraped page metadata, LLM streaming output, and CLI messages are stripped of 7-bit ANSI CSI/OSC sequences, 8-bit C1 controls (`U+0080`..=`U+009F`), string-type sequences (DCS, SOS, PM, APC), and Unicode Bidirectional (BiDi) override codepoints (preventing Trojan Source spoofing and clipboard hijacking).
+- **Media Scraper & SSRF Defense**: YouTube video ingestion strictly validates host authority against official domains (`youtube.com`, `*.youtube.com`, `youtu.be`). Caption downloads are pinned to HTTPS `api/timedtext` endpoints, preventing SSRF against internal services or cloud metadata.
 - **Content Security Policy (CSP)**: Generated HTML reader views include strict CSP headers blocking external network requests and inline script execution.
-- **Verified Upgrades & Installers**: `srz upgrade`, `install.sh`, and `install.ps1` enforce mandatory SHA-256 cryptographic checksum validation before executing or installing binaries.
-- **Continuous Security CI Auditing**: GitHub Actions workflow (`.github/workflows/ci.yml`) runs `cargo test`, `cargo clippy -- -D warnings`, and automated dependency vulnerability scanning via `cargo-audit` on every commit and PR.
+- **Verified Upgrades & Installers**: `srz upgrade`, `install.sh`, and `install.ps1` enforce mandatory SHA-256 cryptographic checksum validation and semver regex checks before executing or installing binaries.
+- **Continuous Security CI Auditing**: GitHub Actions workflow (`.github/workflows/ci.yml`) runs `cargo test`, `cargo clippy -- -D warnings`, and automated dependency vulnerability scanning via `cargo-audit` on every commit and PR across Ubuntu and macOS.
 
 
 ## 6. Key CLI Features & Commands
