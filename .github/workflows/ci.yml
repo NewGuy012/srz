@@ -27,7 +27,6 @@ concurrency:
 
 permissions:
   contents: read
-  actions: write
 
 jobs:
   test:
@@ -38,6 +37,7 @@ jobs:
         include:
           - os: ubuntu-latest
           - os: macos-latest
+          - os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
@@ -46,7 +46,7 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
 
       - name: Set up sccache
         uses: mozilla/sccache-action@v0.0.8
@@ -59,6 +59,8 @@ jobs:
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
 
       - name: Install Linux build dependencies
         if: matrix.os == 'ubuntu-latest'
@@ -66,11 +68,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev build-essential cmake
 
-      - name: Run cargo test
-        run: cargo test --all-targets
+      - name: Check code formatting (rustfmt)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --all -- --check
 
       - name: Run cargo clippy (warnings denied)
         run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run cargo test
+        run: cargo test --all-targets
+
+      - name: Run cargo doc tests
+        run: cargo test --doc
 
       - name: Show sccache stats
         if: always()
