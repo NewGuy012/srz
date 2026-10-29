@@ -80,7 +80,8 @@ impl BookSearcher {
         }
 
         let resp = self.get_with_timeout(&endpoint, 3).await?;
-        let json: Value = resp.json().await.ok()?;
+        let bytes = crate::scraper::read_response_bytes_limited(resp, 5 * 1024 * 1024).await.ok()?;
+        let json: Value = serde_json::from_slice(&bytes).ok()?;
         let docs = json.get("docs")?.as_array()?;
 
         let norm_req = normalize_title_for_comparison(title);
@@ -150,7 +151,8 @@ impl BookSearcher {
             return Ok(Vec::new());
         };
 
-        let json: Value = resp.json().await?;
+        let bytes = crate::scraper::read_response_bytes_limited(resp, 5 * 1024 * 1024).await?;
+        let json: Value = serde_json::from_slice(&bytes)?;
         let mut results = Vec::new();
 
         // OpenSearch returns: [ search_term, [titles], [descriptions], [urls] ]
@@ -199,7 +201,8 @@ impl BookSearcher {
             return Ok(Vec::new());
         };
 
-        let json: Value = resp.json().await?;
+        let bytes = crate::scraper::read_response_bytes_limited(resp, 5 * 1024 * 1024).await?;
+        let json: Value = serde_json::from_slice(&bytes)?;
         let mut results = Vec::new();
 
         if let Some(items) = json.pointer("/query/search").and_then(|v| v.as_array()) {

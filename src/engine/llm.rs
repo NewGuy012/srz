@@ -142,6 +142,10 @@ struct SseStreamState {
     needs_stdout_flush: bool,
 }
 
+pub const MAX_SSE_LINE_BYTES: usize = 1024 * 1024; // 1 MB per line
+pub const MAX_CONTENT_BUFFER_BYTES: usize = 10 * 1024 * 1024; // 10 MB total content
+pub const MAX_HTTP_RESPONSE_BYTES: usize = 10 * 1024 * 1024; // 10 MB for JSON responses
+
 impl SseStreamState {
     fn new() -> Self {
         Self {
@@ -150,7 +154,7 @@ impl SseStreamState {
         }
     }
 
-    /// Processes a single SSE line. Returns `true` if the `[DONE]` sentinel was reached.
+    /// Processes a single SSE line. Returns `true` if the `[DONE]` sentinel was reached or limit hit.
     fn process_line(
         &mut self,
         line_bytes: &[u8],
@@ -197,6 +201,10 @@ impl SseStreamState {
         if let Some(delta_text) = &choice.delta.content
             && !delta_text.is_empty()
         {
+            if self.content_buf.len().saturating_add(delta_text.len()) > MAX_CONTENT_BUFFER_BYTES {
+                self.truncated = true;
+                return true;
+            }
             self.append_content_delta(delta_text, pb, spinner_label, mode);
         }
 
@@ -345,13 +353,16 @@ impl LlmClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let err_text = resp.text().await.unwrap_or_default();
+            let err_text = crate::scraper::read_response_text_limited(resp, 64 * 1024)
+                .await
+                .unwrap_or_default();
             anyhow::bail!("Server returned HTTP {} for /models: {}", status, err_text);
         }
 
-        let body: ModelsListResponse = resp
-            .json()
+        let bytes = crate::scraper::read_response_bytes_limited(resp, MAX_HTTP_RESPONSE_BYTES)
             .await
+            .context("Failed to read models response from server")?;
+        let body: ModelsListResponse = serde_json::from_slice(&bytes)
             .context("Failed to parse models JSON response from server")?;
 
         Ok(body.data)
@@ -382,7 +393,9 @@ impl LlmClient {
         if !response.status().is_success() {
             pb.finish_and_clear();
             let status = response.status();
-            let err_text = response.text().await.unwrap_or_default();
+            let err_text = crate::scraper::read_response_text_limited(response, 64 * 1024)
+                .await
+                .unwrap_or_default();
             anyhow::bail!("LLM server returned HTTP error {}: {}", status, err_text);
         }
 
@@ -395,7 +408,14 @@ impl LlmClient {
         done_label: &str,
         start_time: std::time::Instant,
     ) -> Result<LlmOutput> {
-        let completion: ChatCompletionResponse = match response.json().await {
+        let bytes = match crate::scraper::read_response_bytes_limited(response, MAX_HTTP_RESPONSE_BYTES).await {
+            Ok(b) => b,
+            Err(e) => {
+                pb.finish_and_clear();
+                return Err(e).context("Failed to read LLM response");
+            }
+        };
+        let completion: ChatCompletionResponse = match serde_json::from_slice(&bytes) {
             Ok(c) => c,
             Err(e) => {
                 pb.finish_and_clear();
@@ -472,6 +492,10 @@ impl LlmClient {
             .await
             .context("Error reading LLM stream")?
         {
+            if line_buf.len().saturating_add(chunk.len()) > MAX_SSE_LINE_BYTES {
+                pb.finish_and_clear();
+                anyhow::bail!("LLM SSE stream exceeded maximum line buffer limit (1 MB)");
+            }
             line_buf.extend_from_slice(&chunk);
 
             let mut cursor = 0;

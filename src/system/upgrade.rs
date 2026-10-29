@@ -241,6 +241,8 @@ pub async fn resolve_latest_version(client: &reqwest::Client, repo: &str) -> Res
     let redirect_url = format!("https://github.com/{}/releases/latest", repo);
     let no_redirect = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(15))
         .build();
 
     if let Ok(no_redirect_client) = no_redirect
@@ -258,16 +260,19 @@ pub async fn resolve_latest_version(client: &reqwest::Client, repo: &str) -> Res
 
     // Fallback: GitHub REST API
     let api_url = format!("https://api.github.com/repos/{}/releases/latest", repo);
-    let release_json: serde_json::Value = client
+    let resp = client
         .get(&api_url)
         .header(reqwest::header::ACCEPT, "application/vnd.github.v3+json")
         .send()
         .await
         .context("Failed to query GitHub releases API")?
         .error_for_status()
-        .context("GitHub API error")?
-        .json()
+        .context("GitHub API error")?;
+
+    let bytes = crate::scraper::read_response_bytes_limited(resp, 1024 * 1024)
         .await
+        .context("Failed to read GitHub release response")?;
+    let release_json: serde_json::Value = serde_json::from_slice(&bytes)
         .context("Failed to parse GitHub release JSON")?;
 
     let tag = release_json["tag_name"]
@@ -415,6 +420,8 @@ pub async fn run_upgrade(
     // 3. Setup HTTP client
     let client = reqwest::Client::builder()
         .user_agent(format!("srz/{}", current_version_str))
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(60))
         .build()
         .context("Failed to build HTTP client")?;
 
