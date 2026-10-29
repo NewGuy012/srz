@@ -307,17 +307,33 @@ impl LlmClient {
         &self.base_url
     }
 
-    /// Fetches the list of available models from the server's `GET /models` endpoint.
-    pub async fn list_models(&self) -> Result<Vec<ModelInfo>> {
-        let models_url = format!("{}/models", self.base_url);
-        let mut response = self.client.get(&models_url).send().await;
+    /// Sends a request to `{base_url}{path}`, automatically retrying against `127.0.0.1`
+    /// (`fallback_base_url`) if `localhost` connection fails (e.g., IPv6 `::1` refusal on macOS).
+    async fn send_with_fallback(
+        &self,
+        path: &str,
+        build_req: impl Fn(&reqwest::Client, String) -> reqwest::RequestBuilder,
+    ) -> (String, Result<reqwest::Response, reqwest::Error>) {
+        let primary_url = format!("{}{}", self.base_url, path);
+        let mut response = build_req(&self.client, primary_url.clone()).send().await;
 
         if response.is_err()
             && let Some(alt_base) = &self.fallback_base_url
-            && let Ok(alt_resp) = self.client.get(format!("{alt_base}/models")).send().await
+            && let Ok(alt_resp) = build_req(&self.client, format!("{alt_base}{path}"))
+                .send()
+                .await
         {
             response = Ok(alt_resp);
         }
+
+        (primary_url, response)
+    }
+
+    /// Fetches the list of available models from the server's `GET /models` endpoint.
+    pub async fn list_models(&self) -> Result<Vec<ModelInfo>> {
+        let (models_url, response) = self
+            .send_with_fallback("/models", |c, url| c.get(url))
+            .await;
 
         let resp = response.with_context(|| {
             format!(
@@ -345,21 +361,9 @@ impl LlmClient {
         body: &ChatCompletionRequest<'_>,
         pb: &indicatif::ProgressBar,
     ) -> Result<reqwest::Response> {
-        let endpoint = format!("{}/chat/completions", self.base_url);
-        let mut response = self.client.post(&endpoint).json(body).send().await;
-
-        // On macOS, localhost can resolve to IPv6 (::1). Fallback to 127.0.0.1 if needed.
-        if response.is_err()
-            && let Some(alt_base) = &self.fallback_base_url
-            && let Ok(alt_resp) = self
-                .client
-                .post(format!("{alt_base}/chat/completions"))
-                .json(body)
-                .send()
-                .await
-        {
-            response = Ok(alt_resp);
-        }
+        let (endpoint, response) = self
+            .send_with_fallback("/chat/completions", |c, url| c.post(url).json(body))
+            .await;
 
         let response = match response {
             Ok(resp) => resp,
