@@ -112,7 +112,7 @@ srz "https://en.wikipedia.org/wiki/Rust_(programming_language)" # Webpage, blog,
 srz "https://youtu.be/5C_HPTJg5ek"    # YouTube video captions & timed transcript
 srz document.pdf                      # Local PDF document (pure-Rust extractor)
 srz "The Rust Programming Language" --style bullets --open  # Book synopsis & open in browser
-srz news "AI updates" -t week         # Live news digest (day, week, month)
+srz news "Rust language updates" -t week  # Live news digest (day, week, month)
 git diff | srz -                      # Unix stdin stream
 ```
 
