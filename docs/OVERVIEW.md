@@ -243,7 +243,7 @@ src/
 | **Styling & Output** | `--style <PRESET>` | 3 summary formats: `concise` (default), `bullets`, `detailed`. |
 | | `--open` (`-b`) | Opens the summary in a distraction-free HTML reader with light/dark mode. |
 | | `--plain` | Outputs raw Markdown without terminal colors or automatic paging. |
-| | `--paging <auto\|always\|never>` | Controls terminal output pager (`--no-pager` disables paging). |
+| | `--paging <auto\|always\|never>` | Controls terminal output pager (`never` disables paging). |
 | | `-o <FILE.html\|md>` | Saves the rendered output directly to an HTML or Markdown file. |
 | | `--json` | Emits machine-readable JSON on `stdout` for script integration. |
 | | `--stream` | Streams LLM output tokens live to `stdout` as they are generated. |

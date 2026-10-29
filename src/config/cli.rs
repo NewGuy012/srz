@@ -186,23 +186,15 @@ pub struct Cli {
     #[arg(long, global = true, value_enum, default_value = "auto")]
     pub paging: PagingMode,
 
-    /// Disable terminal paging (equivalent to --paging never)
-    #[arg(long, global = true)]
-    pub no_pager: bool,
-
     /// Output raw, unstyled Markdown without terminal formatting or ANSI colors
     #[arg(long, global = true)]
     pub plain: bool,
 }
 
 impl Cli {
-    /// Returns the effective paging mode considering `--no-pager`.
+    /// Returns the effective paging mode.
     pub fn effective_paging(&self) -> PagingMode {
-        if self.no_pager {
-            PagingMode::Never
-        } else {
-            self.paging
-        }
+        self.paging
     }
 }
 
