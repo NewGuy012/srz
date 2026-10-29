@@ -268,3 +268,39 @@ fn test_database_file_open_and_reopen() {
         assert_eq!(history[0].title, "Reopen Test");
     }
 }
+
+#[test]
+fn test_library_item_matches_query() {
+    let db = Database::open_in_memory().unwrap();
+    let record = NewSummaryRecord {
+        target_type: "book",
+        title: "Foundation and Empire",
+        author: Some("Isaac Asimov"),
+        url: Some("https://example.com/foundation"),
+        style: "concise",
+        model: "gemma-4",
+        word_count: 500,
+        prompt_tokens: None,
+        completion_tokens: None,
+        duration_ms: 100,
+        tokens_per_second: None,
+        summary: "The Mule attacks the Galactic Empire.",
+    };
+    db.record_summary(&record).unwrap();
+    let items = db.get_all_library_items().unwrap();
+    assert_eq!(items.len(), 1);
+    let item = &items[0];
+
+    // Case-insensitive ASCII matches across various fields
+    assert!(item.matches_query("foundation"));
+    assert!(item.matches_query("ASIMOV"));
+    assert!(item.matches_query("empire"));
+    assert!(item.matches_query("mule"));
+    assert!(item.matches_query("example.com"));
+    assert!(item.matches_query("book"));
+    assert!(item.matches_query("")); // Empty matches everything
+
+    // Non-matches
+    assert!(!item.matches_query("sandworms"));
+    assert!(!item.matches_query("cyberpunk"));
+}
