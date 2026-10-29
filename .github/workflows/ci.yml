@@ -4,21 +4,22 @@ on:
   push:
     branches:
       - master
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'assets/**'
-      - '.gitignore'
-      - 'LICENSE*'
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/ci.yml'
   pull_request:
     branches:
       - master
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'assets/**'
-      - '.gitignore'
-      - 'LICENSE*'
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/ci.yml'
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
