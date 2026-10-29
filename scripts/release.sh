@@ -9,6 +9,7 @@ cd "${REPO_ROOT}"
 DRY_RUN=false
 SKIP_TESTS=false
 AUTO_YES=false
+FORCE=false
 REQUESTED_VER=""
 
 # Parse flags & arguments
@@ -20,6 +21,10 @@ while [ $# -gt 0 ]; do
       ;;
     -y|--yes)
       AUTO_YES=true
+      shift
+      ;;
+    -f|--force)
+      FORCE=true
       shift
       ;;
     --skip-tests)
@@ -39,6 +44,7 @@ while [ $# -gt 0 ]; do
       echo ""
       echo "Options:"
       echo "  -n, --dry-run     Show what would be done without modifying git or pushing"
+      echo "  -f, --force       Overwrite existing local/remote tag if re-triggering a release"
       echo "  -y, --yes         Skip interactive confirmation prompt"
       echo "      --skip-tests  Skip running cargo test before releasing"
       echo "  -h, --help        Show this help message"
@@ -106,13 +112,41 @@ fi
 
 # Check if tag already exists locally or remotely
 if git rev-parse "${TAG}" >/dev/null 2>&1; then
-  echo "Error: Local git tag '${TAG}' already exists." >&2
-  exit 1
+  if [ "${FORCE}" = "true" ]; then
+    echo "Notice: Deleting existing local tag '${TAG}' (--force)..."
+    git tag -d "${TAG}" >/dev/null
+  elif [ "${AUTO_YES}" != "true" ]; then
+    echo "Warning: Local git tag '${TAG}' already exists."
+    read -r -p "Delete and re-create local tag '${TAG}'? [y/N]: " CONFIRM_LOCAL_RETAG
+    if [ "${CONFIRM_LOCAL_RETAG}" = "y" ] || [ "${CONFIRM_LOCAL_RETAG}" = "Y" ]; then
+      git tag -d "${TAG}" >/dev/null
+    else
+      echo "Release aborted." >&2
+      exit 1
+    fi
+  else
+    echo "Error: Local git tag '${TAG}' already exists. Use -f / --force to overwrite." >&2
+    exit 1
+  fi
 fi
 
 if git ls-remote --tags origin "${TAG}" 2>/dev/null | grep -q "${TAG}"; then
-  echo "Error: Remote tag '${TAG}' already exists on origin." >&2
-  exit 1
+  if [ "${FORCE}" = "true" ]; then
+    echo "Notice: Deleting existing remote tag '${TAG}' on origin (--force)..."
+    git push --delete origin "${TAG}"
+  elif [ "${AUTO_YES}" != "true" ]; then
+    echo "Warning: Remote tag '${TAG}' already exists on origin (likely from a previous failed release)."
+    read -r -p "Delete and re-tag '${TAG}' on origin to retrigger release? [y/N]: " CONFIRM_REMOTE_RETAG
+    if [ "${CONFIRM_REMOTE_RETAG}" = "y" ] || [ "${CONFIRM_REMOTE_RETAG}" = "Y" ]; then
+      git push --delete origin "${TAG}"
+    else
+      echo "Release aborted." >&2
+      exit 1
+    fi
+  else
+    echo "Error: Remote tag '${TAG}' already exists on origin. Use -f / --force to overwrite." >&2
+    exit 1
+  fi
 fi
 
 echo "=================================================="
