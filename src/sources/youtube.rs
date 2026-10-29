@@ -5,6 +5,8 @@ use std::time::Duration;
 
 use crate::scraper::ScrapedPage;
 
+const ANDROID_USER_AGENT: &str = "com.google.android.youtube/20.10.38";
+
 #[derive(Deserialize, Debug, Clone)]
 pub struct CaptionTrack {
     #[serde(rename = "baseUrl")]
@@ -81,34 +83,11 @@ pub fn extract_youtube_video_id(url: &str) -> Option<&str> {
         return None;
     }
 
-    // Shortened youtu.be/ID
-    if let Some(pos) = trimmed.find("youtu.be/") {
-        let after = &trimmed[pos + "youtu.be/".len()..];
-        let id = after.split(['?', '&', '/', '#']).next()?;
-        if is_valid_youtube_id(id) {
-            return Some(id);
-        }
-    }
-
-    // Standard youtube.com URLs
-    if trimmed.contains("youtube.com/") {
-        if let Some(pos) = trimmed.find("/shorts/") {
-            let after = &trimmed[pos + "/shorts/".len()..];
-            let id = after.split(['?', '&', '/', '#']).next()?;
-            if is_valid_youtube_id(id) {
-                return Some(id);
-            }
-        }
-        if let Some(pos) = trimmed.find("/embed/") {
-            let after = &trimmed[pos + "/embed/".len()..];
-            let id = after.split(['?', '&', '/', '#']).next()?;
-            if is_valid_youtube_id(id) {
-                return Some(id);
-            }
-        }
-        if let Some(pos) = trimmed.find("v=") {
-            let after = &trimmed[pos + 2..];
-            let id = after.split(['&', '#', '/']).next()?;
+    const PATTERNS: &[&str] = &["youtu.be/", "/shorts/", "/embed/", "v="];
+    for &pat in PATTERNS {
+        if let Some(pos) = trimmed.find(pat) {
+            let after = &trimmed[pos + pat.len()..];
+            let id = after.split(['?', '&', '/', '#']).next().unwrap_or("");
             if is_valid_youtube_id(id) {
                 return Some(id);
             }
@@ -324,16 +303,9 @@ pub fn parse_xml_timedtext(xml_str: &str) -> Option<String> {
 
         let clean_text = decode_html_entities(inner_text);
 
-        let seconds = if let Some(start_pos) = tag_content.find("start=\"") {
-            let after = &tag_content[start_pos + "start=\"".len()..];
-            if let Some(quote_end) = after.find('"') {
-                after[..quote_end].parse::<f64>().unwrap_or(0.0) as u64
-            } else {
-                0
-            }
-        } else {
-            0
-        };
+        let seconds = crate::sources::news::extract_attr_value(tag_content, "start=")
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.0) as u64;
 
         builder.add_cue(seconds, &clean_text);
     }
@@ -400,15 +372,8 @@ pub fn parse_xml_format3_timedtext(xml_str: &str) -> Option<String> {
 
 pub fn extract_attr_u64(tag_content: &str, attr_name: &str) -> Option<u64> {
     let prefix = format!("{}=", attr_name);
-    let pos = tag_content.find(&prefix)?;
-    let after = &tag_content[pos + prefix.len()..];
-    let quote = after.chars().next()?;
-    if quote != '"' && quote != '\'' {
-        return None;
-    }
-    let rest = &after[1..];
-    let end_quote = rest.find(quote)?;
-    rest[..end_quote].parse().ok()
+    crate::sources::news::extract_attr_value(tag_content, &prefix)
+        .and_then(|v| v.parse().ok())
 }
 
 pub fn strip_xml_tags(input: &str) -> String {
@@ -503,22 +468,17 @@ pub async fn fetch_innertube_player(
 }
 
 async fn download_and_parse_captions(client: &Client, url: &str) -> Option<String> {
-    // 1. Try fetching baseUrl directly with mobile and desktop user agents
-    if let Some(parsed) = fetch_single_caption_url(client, url, "com.google.android.youtube/20.10.38").await {
-        return Some(parsed);
-    }
-    if let Some(parsed) = fetch_single_caption_url(client, url, "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36").await {
-        return Some(parsed);
+    let mut candidate_urls = vec![url.to_string()];
+    if !url.contains("fmt=") {
+        candidate_urls.push(format!("{}&fmt=json3", url));
     }
 
-    // 2. If url didn't have fmt=json3, try appending fmt=json3
-    if !url.contains("fmt=") {
-        let json_url = format!("{}&fmt=json3", url);
-        if let Some(parsed) = fetch_single_caption_url(client, &json_url, "com.google.android.youtube/20.10.38").await {
-            return Some(parsed);
-        }
-        if let Some(parsed) = fetch_single_caption_url(client, &json_url, "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36").await {
-            return Some(parsed);
+    let uas = [ANDROID_USER_AGENT, crate::scraper::DEFAULT_USER_AGENT];
+    for u in &candidate_urls {
+        for ua in uas {
+            if let Some(parsed) = fetch_single_caption_url(client, u, ua).await {
+                return Some(parsed);
+            }
         }
     }
 
@@ -589,7 +549,7 @@ pub async fn fetch_youtube_transcript(client: &Client, video_id: &str) -> Result
             .get(&watch_url)
             .header(
                 "User-Agent",
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                crate::scraper::DEFAULT_USER_AGENT,
             )
             .header("Accept-Language", "en-US,en;q=0.9")
             .timeout(Duration::from_secs(10))

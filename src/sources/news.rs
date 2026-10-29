@@ -188,26 +188,7 @@ impl GoogleNewsClient {
     }
 }
 
-/// Case-insensitive search for an ASCII substring within a UTF-8 string slice.
-pub fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
-    if needle.is_empty() {
-        return Some(0);
-    }
-    let needle_bytes = needle.as_bytes();
-    let haystack_bytes = haystack.as_bytes();
-    if needle_bytes.len() > haystack_bytes.len() {
-        return None;
-    }
-
-    haystack_bytes
-        .windows(needle_bytes.len())
-        .position(|window| {
-            window
-                .iter()
-                .zip(needle_bytes)
-                .all(|(h, n)| h.eq_ignore_ascii_case(n))
-        })
-}
+pub use crate::sources::search::find_ascii_case_insensitive;
 
 /// Cleans CDATA wrappers and decodes HTML entities from an XML element's inner text.
 fn clean_xml_text(raw: &str) -> String {
@@ -223,42 +204,58 @@ fn clean_xml_text(raw: &str) -> String {
 
 /// Extracts the inner content of a named XML tag (e.g. `<title>`, `<link>`, `<source ...>`).
 pub fn extract_tag_value(xml: &str, tag_name: &str) -> Option<String> {
-    let open_prefix = format!("<{}", tag_name);
+    let tag_bytes = tag_name.as_bytes();
     let mut search_pos = 0;
 
-    while let Some(rel_start) = find_ascii_case_insensitive(&xml[search_pos..], &open_prefix) {
-        let tag_start = search_pos + rel_start;
-        let after_prefix = tag_start + open_prefix.len();
-        if after_prefix >= xml.len() {
-            return None;
+    'outer: while search_pos < xml.len() {
+        let rel_open = xml[search_pos..].find('<')?;
+        let open_idx = search_pos + rel_open;
+        let after_open = open_idx + 1;
+        let candidate_bytes = &xml.as_bytes()[after_open..];
+
+        if candidate_bytes.len() >= tag_bytes.len()
+            && candidate_bytes[..tag_bytes.len()].eq_ignore_ascii_case(tag_bytes)
+        {
+            let boundary_idx = after_open + tag_bytes.len();
+            if boundary_idx < xml.len() {
+                let next_byte = xml.as_bytes()[boundary_idx];
+                if next_byte == b'>' || next_byte.is_ascii_whitespace() || next_byte == b'/' {
+                    let rel_close_bracket = xml[boundary_idx..].find('>')?;
+                    let tag_open_end = boundary_idx + rel_close_bracket;
+
+                    // If self-closing (e.g. `<link ... />`), it has no inner text
+                    if xml[open_idx..tag_open_end].trim_end().ends_with('/') {
+                        return None;
+                    }
+
+                    // Look for </tag_name>
+                    let inner_start = tag_open_end + 1;
+                    let mut close_search = inner_start;
+                    while let Some(rel_close) = xml[close_search..].find("</") {
+                        let c_idx = close_search + rel_close;
+                        let after_slash = c_idx + 2;
+                        let c_bytes = &xml.as_bytes()[after_slash..];
+                        if c_bytes.len() >= tag_bytes.len()
+                            && c_bytes[..tag_bytes.len()].eq_ignore_ascii_case(tag_bytes)
+                        {
+                            let post_tag = after_slash + tag_bytes.len();
+                            let trimmed_post = xml[post_tag..].trim_start();
+                            if let Some(stripped) = trimmed_post.strip_prefix('>') {
+                                let inner = &xml[inner_start..c_idx];
+                                let cleaned = clean_xml_text(inner);
+                                if !cleaned.is_empty() {
+                                    return Some(cleaned);
+                                }
+                                search_pos = post_tag + (trimmed_post.len() - stripped.len());
+                                continue 'outer;
+                            }
+                        }
+                        close_search = c_idx + 2;
+                    }
+                }
+            }
         }
-
-        // Verify that tag name boundary is respected: next char must be '>', whitespace, or '/'
-        let next_char = xml[after_prefix..].chars().next()?;
-        if next_char != '>' && !next_char.is_ascii_whitespace() && next_char != '/' {
-            search_pos = after_prefix;
-            continue;
-        }
-
-        let p = xml[after_prefix..].find('>')?;
-        let tag_open_end = after_prefix + p;
-
-        // If self-closing (e.g. `<link ... />`), it has no inner text
-        if xml[tag_start..tag_open_end].trim_end().ends_with('/') {
-            return None;
-        }
-
-        let close_tag = format!("</{}>", tag_name);
-        let p = find_ascii_case_insensitive(&xml[tag_open_end + 1..], &close_tag)?;
-        let tag_close_start = tag_open_end + 1 + p;
-
-        let inner = &xml[tag_open_end + 1..tag_close_start];
-        let cleaned = clean_xml_text(inner);
-        if !cleaned.is_empty() {
-            return Some(cleaned);
-        }
-
-        search_pos = tag_close_start + close_tag.len();
+        search_pos = open_idx + 1;
     }
 
     None

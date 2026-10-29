@@ -426,9 +426,12 @@ pub fn rank_candidates(title_query: &str, author_query: Option<&str>, candidates
 }
 
 /// Zero-allocation case-insensitive ASCII substring search returning the first byte index of `needle`.
-pub(crate) fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+pub fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
     let n_bytes = needle.as_bytes();
-    if n_bytes.is_empty() || haystack.len() < n_bytes.len() {
+    if n_bytes.is_empty() {
+        return Some(0);
+    }
+    if haystack.len() < n_bytes.len() {
         return None;
     }
     haystack
@@ -438,7 +441,7 @@ pub(crate) fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Optio
 }
 
 /// Zero-allocation case-insensitive ASCII substring check (`needle` must already be lowercase ASCII).
-pub(crate) fn contains_ascii_case_insensitive(haystack: &str, lowercase_needle: &str) -> bool {
+pub fn contains_ascii_case_insensitive(haystack: &str, lowercase_needle: &str) -> bool {
     lowercase_needle.is_empty() || find_ascii_case_insensitive(haystack, lowercase_needle).is_some()
 }
 
