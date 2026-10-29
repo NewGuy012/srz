@@ -188,17 +188,20 @@ impl Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Scrape and summarize a webpage from a URL
+    /// Scrape and summarize a webpage from a URL (hidden; prefer `srz <URL>`)
+    #[command(hide = true)]
     Web {
         /// Webpage URL (http:// or https://)
         url: String,
     },
-    /// Summarize a book by title
+    /// Summarize a book by title (hidden; prefer `srz <TITLE>`)
+    #[command(hide = true)]
     Book {
         /// Title of the book
         title: String,
     },
-    /// Summarize a local file or piped input from standard input (-)
+    /// Summarize a local file or piped input from standard input (-) (hidden; prefer `srz <FILE>`)
+    #[command(hide = true)]
     File {
         /// Path to the local file, or '-' for stdin
         path: PathBuf,

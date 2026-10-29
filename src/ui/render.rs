@@ -432,7 +432,7 @@ pub fn escape_html_char(out: &mut String, ch: char) {
 /// Appends HTML-escaped text directly into the provided output buffer using fast chunk scanning.
 pub fn escape_html_to(out: &mut String, text: &str) {
     let mut rest = text;
-    while let Some(idx) = rest.find(|c: char| matches!(c, '&' | '<' | '>' | '"' | '\'')) {
+    while let Some(idx) = rest.find(['&', '<', '>', '"', '\'']) {
         out.push_str(&rest[..idx]);
         let ch = rest[idx..].chars().next().unwrap();
         escape_html_char(out, ch);
@@ -443,7 +443,7 @@ pub fn escape_html_to(out: &mut String, text: &str) {
 
 /// Returns a zero-allocation `Cow::Borrowed` when `text` requires no escaping.
 pub fn escape_html_cow(text: &str) -> std::borrow::Cow<'_, str> {
-    if !text.contains(|c: char| matches!(c, '&' | '<' | '>' | '"' | '\'')) {
+    if !text.contains(['&', '<', '>', '"', '\'']) {
         std::borrow::Cow::Borrowed(text)
     } else {
         let mut out = String::with_capacity(text.len() + 16);
