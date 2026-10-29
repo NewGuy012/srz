@@ -1,5 +1,4 @@
-use anyhow::{Context, Result};
-use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
+use anyhow::Result;
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -48,24 +47,6 @@ pub struct BookSearcher {
 }
 
 impl BookSearcher {
-    pub fn new() -> Result<Self> {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            USER_AGENT,
-            HeaderValue::from_static(crate::scraper::DEFAULT_USER_AGENT),
-        );
-
-        let client = reqwest::Client::builder()
-            .default_headers(headers)
-            .connect_timeout(Duration::from_secs(4))
-            .timeout(Duration::from_secs(10))
-            .redirect(reqwest::redirect::Policy::limited(5))
-            .build()
-            .context("Failed to initialize search HTTP client")?;
-
-        Ok(Self { client })
-    }
-
     pub fn with_client(client: reqwest::Client) -> Self {
         Self { client }
     }

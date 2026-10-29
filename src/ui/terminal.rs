@@ -213,10 +213,15 @@ pub fn sanitize_terminal_text(input: &str) -> String {
 
 /// Sanitizes a title string for terminal presentation by removing escape sequences and collapsing whitespace.
 pub fn sanitize_title(title: &str) -> String {
-    sanitize_terminal_text(title)
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    let sanitized = sanitize_terminal_text(title);
+    let mut out = String::with_capacity(sanitized.len());
+    for word in sanitized.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+    }
+    out
 }
 
 #[cfg(test)]

@@ -2,10 +2,8 @@ use crate::cli::NewsTimeframe;
 use crate::scraper::{ScrapedPage, WebScraper};
 use ::scraper::{Html, Selector};
 use anyhow::{Context, Result};
-use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
-use std::time::Duration;
 
 static ITEM_SEL: LazyLock<Selector> = LazyLock::new(|| Selector::parse("item").unwrap());
 static TITLE_SEL: LazyLock<Selector> = LazyLock::new(|| Selector::parse("title").unwrap());
@@ -37,24 +35,6 @@ pub struct GoogleNewsClient {
 }
 
 impl GoogleNewsClient {
-    pub fn new() -> Result<Self> {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            USER_AGENT,
-            HeaderValue::from_static(crate::scraper::DEFAULT_USER_AGENT),
-        );
-
-        let client = reqwest::Client::builder()
-            .default_headers(headers)
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(15))
-            .redirect(reqwest::redirect::Policy::limited(5))
-            .build()
-            .context("Failed to build Google News HTTP client")?;
-
-        Ok(Self { client })
-    }
-
     pub fn with_client(client: reqwest::Client) -> Self {
         Self { client }
     }
@@ -147,7 +127,10 @@ impl GoogleNewsClient {
         // 1. Fetch intermediate Google News article page to extract ephemeral signature & timestamp
         let page_url = format!("https://news.google.com/articles/{}", base64_id);
         let resp = self.client.get(&page_url).send().await.ok()?;
-        let html = resp.text().await.ok()?;
+        let html =
+            crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES)
+                .await
+                .ok()?;
 
         let sig = extract_attr_value(&html, "data-n-a-sg=")?;
         let ts_str = extract_attr_value(&html, "data-n-a-ts=")?;
@@ -173,7 +156,10 @@ impl GoogleNewsClient {
             .await
             .ok()?;
 
-        let rpc_text = rpc_resp.text().await.ok()?;
+        let rpc_text =
+            crate::scraper::read_response_text_limited(rpc_resp, crate::scraper::MAX_SCRAPE_BYTES)
+                .await
+                .ok()?;
         parse_batchexecute_destination_url(&rpc_text)
     }
 
