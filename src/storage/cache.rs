@@ -1,9 +1,11 @@
 use crate::cli::SummaryStyle;
-use crate::fs_util::{create_private_dir_all, non_empty_env_path, open_private_file_for_write};
+use crate::fs_util::{
+    create_private_dir_all, non_empty_env_path, open_private_file_for_write, write_private_file,
+};
 use crate::scraper::ScrapedPage;
 use crate::search::{BookMetadata, SearchResult};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::collections::hash_map::DefaultHasher;
+use sha2::{Digest, Sha256};
 use std::env;
 use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
@@ -145,8 +147,8 @@ fn parse_number_and_unit(s: &str, default_unit: &str, type_label: &str) -> Resul
     let val: f64 = num_str
         .parse()
         .map_err(|_| format!("Invalid number in {}: '{}'", type_label, num_str))?;
-    if val < 0.0 {
-        return Err(format!("{} cannot be negative", type_label));
+    if val < 0.0 || !val.is_finite() {
+        return Err(format!("{} cannot be negative or infinite", type_label));
     }
     Ok((val, unit))
 }
@@ -163,7 +165,12 @@ pub fn parse_duration(s: &str) -> Result<Duration, String> {
         other => return Err(format!("Unknown duration unit: '{}' (use s, m, h, d, w)", other)),
     };
 
-    Ok(Duration::from_secs_f64(secs))
+    if !secs.is_finite() || secs < 0.0 {
+        return Err(format!("Duration value out of range: '{}'", s));
+    }
+
+    Duration::try_from_secs_f64(secs)
+        .map_err(|_| format!("Duration value exceeds maximum representable time: '{}'", s))
 }
 
 /// Parses user-friendly byte strings like `500MB`, `1GB`, `100KB`, `1048576`.
@@ -181,6 +188,10 @@ pub fn parse_bytes(s: &str) -> Result<u64, String> {
         other => return Err(format!("Unknown byte unit: '{}' (use B, KB, MB, GB)", other)),
     };
 
+    if !bytes.is_finite() || bytes < 0.0 || bytes > u64::MAX as f64 {
+        return Err(format!("Byte size out of range: '{}'", s));
+    }
+
     Ok(bytes as u64)
 }
 
@@ -193,6 +204,17 @@ impl Hash for AsciiLower<'_> {
             state.write_u8(b.to_ascii_lowercase());
         }
         state.write_u8(0xff);
+    }
+}
+
+struct Sha256Hasher(Sha256);
+
+impl Hasher for Sha256Hasher {
+    fn finish(&self) -> u64 {
+        0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        self.0.update(bytes);
     }
 }
 
@@ -416,7 +438,7 @@ impl Cache {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let _ = fs::write(&marker, format!("{}", now_secs));
+        let _ = write_private_file(&marker, format!("{}", now_secs).as_bytes());
         Some(stats)
     }
 
@@ -467,9 +489,15 @@ impl Cache {
     }
 
     fn hash_key<H: Hash>(key: &H) -> String {
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = Sha256Hasher(Sha256::new());
         key.hash(&mut hasher);
-        format!("{:016x}", hasher.finish())
+        let result = hasher.0.finalize();
+        let mut hex = String::with_capacity(64);
+        for b in result {
+            use std::fmt::Write;
+            let _ = write!(hex, "{:02x}", b);
+        }
+        hex
     }
 
     fn read_entry_with_ttl<T: DeserializeOwned>(

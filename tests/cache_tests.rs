@@ -202,6 +202,10 @@ fn test_parse_duration_and_bytes() {
     assert_eq!(parse_duration("2w").unwrap(), Duration::from_secs(14 * 86400));
     assert_eq!(parse_duration("5").unwrap(), Duration::from_secs(5 * 86400));
     assert!(parse_duration("invalid").is_err());
+    assert!(parse_duration("-5d").is_err());
+    assert!(parse_duration("NaN").is_err());
+    assert!(parse_duration("inf").is_err());
+    assert!(parse_duration("1000000000000000000000d").is_err());
 
     assert_eq!(parse_bytes("500b").unwrap(), 500);
     assert_eq!(parse_bytes("10kb").unwrap(), 10 * 1024);
@@ -209,6 +213,10 @@ fn test_parse_duration_and_bytes() {
     assert_eq!(parse_bytes("1GB").unwrap(), 1024 * 1024 * 1024);
     assert_eq!(parse_bytes("1048576").unwrap(), 1048576);
     assert!(parse_bytes("notabytes").is_err());
+    assert!(parse_bytes("-500mb").is_err());
+    assert!(parse_bytes("NaN").is_err());
+    assert!(parse_bytes("inf").is_err());
+    assert!(parse_bytes("9999999999999999999999999GB").is_err());
 }
 
 #[test]
@@ -339,6 +347,59 @@ fn test_cache_opportunistic_auto_prune() {
     // Immediate second call should skip because interval hasn't elapsed
     let skipped = cache.maybe_auto_prune();
     assert!(skipped.is_none());
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn test_cache_sha256_hash_keys() {
+    let dir = temp_test_dir("sha256");
+    let cache = Cache::with_dir(dir.clone(), true);
+
+    let page = ScrapedPage {
+        url: "https://secure-hash.example.com".to_string(),
+        title: Some("Secure".to_string()),
+        content: "Testing SHA-256 hash length".to_string(),
+        word_count: 4,
+    };
+    cache.set_page("https://secure-hash.example.com", &page);
+
+    // Read pages directory and verify the key filename is 64 hex characters (SHA-256)
+    let pages_dir = dir.join("pages");
+    let mut files = fs::read_dir(pages_dir).unwrap();
+    let entry = files.next().unwrap().unwrap();
+    let stem = entry.path().file_stem().unwrap().to_string_lossy().to_string();
+    assert_eq!(stem.len(), 64);
+    assert!(stem.chars().all(|c| c.is_ascii_hexdigit()));
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_fs_util_rejects_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let dir = temp_test_dir("symlink_test");
+    fs::create_dir_all(&dir).unwrap();
+
+    let target = dir.join("real_target.txt");
+    fs::write(&target, b"important data").unwrap();
+
+    let link = dir.join("symlink_file.txt");
+    symlink(&target, &link).unwrap();
+
+    // Opening symlink for private write must be rejected with InvalidInput
+    let write_res = srz::fs_util::open_private_file_for_write(&link);
+    assert!(write_res.is_err());
+    assert_eq!(write_res.err().unwrap().kind(), std::io::ErrorKind::InvalidInput);
+
+    // Creating private dir at symlink must be rejected
+    let link_dir = dir.join("symlink_dir");
+    symlink(&target, &link_dir).unwrap();
+    let dir_res = srz::fs_util::create_private_dir_all(&link_dir);
+    assert!(dir_res.is_err());
+    assert_eq!(dir_res.err().unwrap().kind(), std::io::ErrorKind::InvalidInput);
 
     let _ = fs::remove_dir_all(dir);
 }

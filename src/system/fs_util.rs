@@ -35,14 +35,32 @@ pub fn set_private_file_perms(path: &Path) {
 }
 
 /// Creates a directory (and parents) and restricts permissions to `0700` on Unix.
+/// Rejects symlink paths to prevent symlink traversal/privilege elevation (CWE-59).
 pub fn create_private_dir_all(path: &Path) -> std::io::Result<()> {
+    if let Ok(meta) = fs::symlink_metadata(path) {
+        if meta.file_type().is_symlink() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Refusing to create directory at symlink path: {}", path.display()),
+            ));
+        }
+    }
     fs::create_dir_all(path)?;
     set_private_dir_perms(path);
     Ok(())
 }
 
 /// Atomically opens or creates a file with owner-only permissions (`0600` on Unix).
+/// Rejects symlink targets to prevent arbitrary file truncation/privilege escalation (CWE-59).
 pub fn open_private_file_for_write(path: &Path) -> std::io::Result<File> {
+    if let Ok(meta) = fs::symlink_metadata(path) {
+        if meta.file_type().is_symlink() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Refusing to open symlink for writing: {}", path.display()),
+            ));
+        }
+    }
     let mut opts = OpenOptions::new();
     opts.write(true).create(true).truncate(true);
     #[cfg(unix)]

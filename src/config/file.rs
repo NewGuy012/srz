@@ -36,19 +36,19 @@ impl CacheConfig {
     pub fn to_policy(&self) -> crate::cache::CachePolicy {
         let mut policy = crate::cache::CachePolicy::default();
         if let Some(mb) = self.max_size_mb {
-            policy.max_bytes = mb * 1024 * 1024;
+            policy.max_bytes = mb.saturating_mul(1024).saturating_mul(1024);
         }
         if let Some(days) = self.pages_ttl_days {
-            policy.pages_ttl = std::time::Duration::from_secs(days * 86400);
+            policy.pages_ttl = std::time::Duration::from_secs(days.saturating_mul(86400));
         }
         if let Some(days) = self.search_ttl_days {
-            policy.search_ttl = std::time::Duration::from_secs(days * 86400);
+            policy.search_ttl = std::time::Duration::from_secs(days.saturating_mul(86400));
         }
         if let Some(days) = self.summaries_ttl_days {
-            policy.summaries_ttl = std::time::Duration::from_secs(days * 86400);
+            policy.summaries_ttl = std::time::Duration::from_secs(days.saturating_mul(86400));
         }
         if let Some(days) = self.views_ttl_days {
-            policy.views_ttl = std::time::Duration::from_secs(days * 86400);
+            policy.views_ttl = std::time::Duration::from_secs(days.saturating_mul(86400));
         }
         if let Some(false) = self.auto_prune {
             policy.auto_prune_interval = std::time::Duration::MAX;
