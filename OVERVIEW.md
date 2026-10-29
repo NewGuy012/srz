@@ -200,8 +200,6 @@ src/
 - **Verified Upgrades & Installers**: `srz upgrade`, `install.sh`, and `install.ps1` enforce mandatory SHA-256 cryptographic checksum validation before executing or installing binaries.
 - **Continuous Security CI Auditing**: GitHub Actions workflow (`.github/workflows/ci.yml`) runs `cargo test`, `cargo clippy -- -D warnings`, and automated dependency vulnerability scanning via `rustsec/audit-check` on every commit and PR.
 
-For the complete chronological security audit ledger, CWE classifications, and regression test suites, see [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md).
-
 
 ## 6. Key CLI Features & Commands
 

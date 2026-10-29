@@ -200,10 +200,9 @@ srz "The Hobbit" --profile openai     # Named cloud profile
 ```
 
 
-## Architecture & Security
+## Architecture & Modules
 
-- 📐 **Architecture & Subsystems**: See [`OVERVIEW.md`](OVERVIEW.md) for detailed Mermaid lifecycle diagrams, module breakdown, and execution sequences.
-- 🛡️ **Security Audit Ledger**: See [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md) for the complete multi-phase vulnerability audit, CWE mappings, safe Rust restoration, and verification test logs.
+See [`OVERVIEW.md`](OVERVIEW.md) for detailed Mermaid architecture diagrams and execution sequences.
 
 
 ## Running Tests & Static Analysis
