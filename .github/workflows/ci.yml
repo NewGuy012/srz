@@ -7,18 +7,12 @@ on:
     paths:
       - 'src/**'
       - 'tests/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.github/workflows/ci.yml'
   pull_request:
     branches:
       - master
     paths:
       - 'src/**'
       - 'tests/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.github/workflows/ci.yml'
   workflow_dispatch:
 
 concurrency:
