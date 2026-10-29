@@ -175,6 +175,38 @@ pub struct UpgradeResult {
     pub message: String,
 }
 
+impl UpgradeResult {
+    /// Emits a structured result as formatted JSON to stdout or as a user-friendly UI message to stderr.
+    pub fn emit(
+        status: UpgradeStatus,
+        target_version: impl Into<String>,
+        target_platform: impl Into<String>,
+        message: impl Into<String>,
+        json: bool,
+    ) -> Result<()> {
+        let message = message.into();
+        if json {
+            let res = Self {
+                current_version: env!("CARGO_PKG_VERSION").to_string(),
+                target_version: target_version.into(),
+                target_platform: target_platform.into(),
+                status,
+                message,
+            };
+            println!("{}", serde_json::to_string_pretty(&res)?);
+        } else {
+            match status {
+                UpgradeStatus::Upgraded | UpgradeStatus::AlreadyUpToDate => Ui::success(&message),
+                UpgradeStatus::UpdateAvailable
+                | UpgradeStatus::HomebrewManaged
+                | UpgradeStatus::DryRun => Ui::info(&message),
+                UpgradeStatus::CargoManaged => Ui::warn(&message),
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Resolves the latest version tag from GitHub.
 /// Uses a HEAD request to inspect the redirect URL to avoid GitHub's REST API rate limit (60 req/hr).
 pub async fn resolve_latest_version(client: &reqwest::Client, repo: &str) -> Result<String> {
@@ -183,22 +215,16 @@ pub async fn resolve_latest_version(client: &reqwest::Client, repo: &str) -> Res
         .redirect(reqwest::redirect::Policy::none())
         .build();
 
-    if let Ok(no_redirect_client) = no_redirect {
-        if let Ok(resp) = no_redirect_client.head(&redirect_url).send().await {
-            let status = resp.status();
-            if status.is_redirection() {
-                if let Some(loc) = resp.headers().get(reqwest::header::LOCATION) {
-                    if let Ok(loc_str) = loc.to_str() {
-                        if let Some(pos) = loc_str.rfind("/tag/") {
-                            let tag = &loc_str[pos + 5..];
-                            let clean_tag = tag.trim_matches('/').to_string();
-                            if !clean_tag.is_empty() {
-                                return Ok(clean_tag);
-                            }
-                        }
-                    }
-                }
-            }
+    if let Ok(no_redirect_client) = no_redirect
+        && let Ok(resp) = no_redirect_client.head(&redirect_url).send().await
+        && resp.status().is_redirection()
+        && let Some(loc) = resp.headers().get(reqwest::header::LOCATION)
+        && let Ok(loc_str) = loc.to_str()
+        && let Some(pos) = loc_str.rfind("/tag/")
+    {
+        let clean_tag = loc_str[pos + 5..].trim_matches('/');
+        if !clean_tag.is_empty() {
+            return Ok(clean_tag.to_string());
         }
     }
 
@@ -313,18 +339,13 @@ pub async fn run_upgrade(
     let origin = detect_install_origin(&current_exe);
     if origin == InstallOrigin::Homebrew {
         let msg = "srz was installed via Homebrew. Please run `brew upgrade srz` instead.";
-        if json {
-            let res = UpgradeResult {
-                current_version: current_version_str.to_string(),
-                target_version: current_version_str.to_string(),
-                target_platform: env::consts::OS.to_string(),
-                status: UpgradeStatus::HomebrewManaged,
-                message: msg.to_string(),
-            };
-            println!("{}", serde_json::to_string_pretty(&res)?);
-            return Ok(());
-        }
-        Ui::info(msg);
+        UpgradeResult::emit(
+            UpgradeStatus::HomebrewManaged,
+            current_version_str,
+            env::consts::OS,
+            msg,
+            json,
+        )?;
         return Ok(());
     }
 
@@ -333,14 +354,13 @@ pub async fn run_upgrade(
         Ok(info) => info,
         Err(err) => {
             if json {
-                let res = UpgradeResult {
-                    current_version: current_version_str.to_string(),
-                    target_version: current_version_str.to_string(),
-                    target_platform: format!("{}-{}", env::consts::OS, env::consts::ARCH),
-                    status: UpgradeStatus::AlreadyUpToDate,
-                    message: err.clone(),
-                };
-                println!("{}", serde_json::to_string_pretty(&res)?);
+                UpgradeResult::emit(
+                    UpgradeStatus::AlreadyUpToDate,
+                    current_version_str,
+                    format!("{}-{}", env::consts::OS, env::consts::ARCH),
+                    &err,
+                    true,
+                )?;
                 return Ok(());
             }
             bail!("{}", err);
@@ -400,60 +420,32 @@ pub async fn run_upgrade(
             )
         };
 
-        if json {
-            let res = UpgradeResult {
-                current_version: current_version_str.to_string(),
-                target_version: target_version.to_string(),
-                target_platform: target_info.target.to_string(),
-                status,
-                message: msg,
-            };
-            println!("{}", serde_json::to_string_pretty(&res)?);
-            return Ok(());
-        }
-
-        if is_newer {
-            Ui::info(&msg);
-        } else {
-            Ui::success(&msg);
-        }
+        UpgradeResult::emit(status, target_version.to_string(), target_info.target, msg, json)?;
         return Ok(());
     }
 
     // Up to date check
     if !is_newer && !force && custom_version.is_none() {
         let msg = format!("srz is already up to date (v{}).", current_version);
-        if json {
-            let res = UpgradeResult {
-                current_version: current_version_str.to_string(),
-                target_version: target_version.to_string(),
-                target_platform: target_info.target.to_string(),
-                status: UpgradeStatus::AlreadyUpToDate,
-                message: msg,
-            };
-            println!("{}", serde_json::to_string_pretty(&res)?);
-            return Ok(());
-        }
-        Ui::success(&msg);
+        UpgradeResult::emit(
+            UpgradeStatus::AlreadyUpToDate,
+            target_version.to_string(),
+            target_info.target,
+            msg,
+            json,
+        )?;
         return Ok(());
     }
 
     if origin == InstallOrigin::Cargo && !force {
-        let msg = format!(
-            "srz was installed via Cargo (~/.cargo/bin). You can update with `cargo install srz`, or use `srz upgrade --force` to overwrite directly."
-        );
-        if json {
-            let res = UpgradeResult {
-                current_version: current_version_str.to_string(),
-                target_version: target_version.to_string(),
-                target_platform: target_info.target.to_string(),
-                status: UpgradeStatus::CargoManaged,
-                message: msg,
-            };
-            println!("{}", serde_json::to_string_pretty(&res)?);
-            return Ok(());
-        }
-        Ui::warn(&msg);
+        let msg = "srz was installed via Cargo (~/.cargo/bin). You can update with `cargo install srz`, or use `srz upgrade --force` to overwrite directly.";
+        UpgradeResult::emit(
+            UpgradeStatus::CargoManaged,
+            target_version.to_string(),
+            target_info.target,
+            msg,
+            json,
+        )?;
         return Ok(());
     }
 
@@ -514,18 +506,13 @@ pub async fn run_upgrade(
             target_version,
             target_info.target
         );
-        if json {
-            let res = UpgradeResult {
-                current_version: current_version_str.to_string(),
-                target_version: target_version.to_string(),
-                target_platform: target_info.target.to_string(),
-                status: UpgradeStatus::DryRun,
-                message: msg,
-            };
-            println!("{}", serde_json::to_string_pretty(&res)?);
-            return Ok(());
-        }
-        Ui::info(&msg);
+        UpgradeResult::emit(
+            UpgradeStatus::DryRun,
+            target_version.to_string(),
+            target_info.target,
+            msg,
+            json,
+        )?;
         return Ok(());
     }
 
@@ -540,28 +527,21 @@ pub async fn run_upgrade(
 
     // 9. Post-upgrade verification
     let mut verified_version = target_tag.clone();
-    if let Ok(out) = Command::new(&current_exe).arg("--version").output() {
-        if out.status.success() {
-            let v_str = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if !v_str.is_empty() {
-                verified_version = v_str;
-            }
+    if let Ok(out) = Command::new(&current_exe).arg("--version").output()
+        && out.status.success()
+    {
+        let v_str = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !v_str.is_empty() {
+            verified_version = v_str;
         }
     }
 
     let success_msg = format!("Successfully upgraded srz to {}!", verified_version);
-    if json {
-        let res = UpgradeResult {
-            current_version: current_version_str.to_string(),
-            target_version: target_version.to_string(),
-            target_platform: target_info.target.to_string(),
-            status: UpgradeStatus::Upgraded,
-            message: success_msg,
-        };
-        println!("{}", serde_json::to_string_pretty(&res)?);
-        return Ok(());
-    }
-
-    Ui::success(&success_msg);
-    Ok(())
+    UpgradeResult::emit(
+        UpgradeStatus::Upgraded,
+        target_version.to_string(),
+        target_info.target,
+        success_msg,
+        json,
+    )
 }

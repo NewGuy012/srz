@@ -264,10 +264,7 @@ pub fn extract_attr_value<'a>(html: &'a str, attr_prefix: &str) -> Option<&'a st
 pub fn parse_batchexecute_destination_url(text: &str) -> Option<String> {
     let split_chunk = text.split("\n\n").nth(1)?;
     let parsed: serde_json::Value = serde_json::from_str(split_chunk).ok()?;
-    let inner_array = parsed.as_array()?;
-    let sub = inner_array.first()?.as_array()?;
-    let json_str = sub.get(2)?.as_str()?;
+    let json_str = parsed.pointer("/0/2")?.as_str()?;
     let inner_json: serde_json::Value = serde_json::from_str(json_str).ok()?;
-    let dest_url = inner_json.get(1)?.as_str()?;
-    Some(dest_url.to_string())
+    inner_json.pointer("/1")?.as_str().map(String::from)
 }

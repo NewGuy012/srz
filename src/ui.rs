@@ -121,58 +121,42 @@ impl Ui {
 
     /// Prints an informational message to stderr.
     pub fn info(message: &str) {
-        if Self::is_quiet() {
-            return;
-        }
-        if Self::use_color() {
-            eprintln!("\x1b[1;34mℹ\x1b[0m {}", message);
-        } else {
-            eprintln!("ℹ {}", message);
+        if !Self::is_quiet() {
+            Self::print_styled("ℹ", "1;34", message);
         }
     }
 
     /// Prints a success message to stderr.
     pub fn success(message: &str) {
-        if Self::is_quiet() {
-            return;
-        }
-        if Self::use_color() {
-            eprintln!("\x1b[1;32m✔\x1b[0m {}", message);
-        } else {
-            eprintln!("✔ {}", message);
+        if !Self::is_quiet() {
+            Self::print_styled("✔", "1;32", message);
         }
     }
 
     /// Prints a warning message to stderr.
     pub fn warn(message: &str) {
-        if Self::is_quiet() {
-            return;
-        }
-        if Self::use_color() {
-            eprintln!("\x1b[1;33m⚠\x1b[0m {}", message);
-        } else {
-            eprintln!("⚠ {}", message);
+        if !Self::is_quiet() {
+            Self::print_styled("⚠", "1;33", message);
         }
     }
 
     /// Prints an error message to stderr.
     pub fn error(message: &str) {
-        if Self::use_color() {
-            eprintln!("\x1b[1;31m✖\x1b[0m {}", message);
-        } else {
-            eprintln!("✖ {}", message);
-        }
+        Self::print_styled("✖", "1;31", message);
     }
 
     /// Prints verbose diagnostic message if verbose mode is enabled.
     pub fn verbose(message: &str) {
-        if !Self::is_verbose() {
-            return;
+        if Self::is_verbose() {
+            Self::print_styled("[debug]", "1;35", message);
         }
+    }
+
+    fn print_styled(symbol: &str, color_code: &str, message: &str) {
         if Self::use_color() {
-            eprintln!("\x1b[1;35m[debug]\x1b[0m {}", message);
+            eprintln!("\x1b[{color_code}m{symbol}\x1b[0m {message}");
         } else {
-            eprintln!("[debug] {}", message);
+            eprintln!("{symbol} {message}");
         }
     }
 }
