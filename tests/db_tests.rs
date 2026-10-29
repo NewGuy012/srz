@@ -359,3 +359,63 @@ fn test_library_item_matches_query() {
     assert!(!item.matches_query("sandworms"));
     assert!(!item.matches_query("cyberpunk"));
 }
+
+#[test]
+fn test_database_chat_sessions_lifecycle() {
+    let db = Database::open_in_memory().unwrap();
+
+    let session_id = db
+        .create_chat_session(
+            "Rust Concurrency Guide",
+            "web",
+            Some("https://example.com/rust-concurrency"),
+            "gemma-4",
+        )
+        .unwrap();
+    assert!(session_id > 0);
+
+    db.add_chat_turn(
+        session_id,
+        "What is the difference between Arc and Rc?",
+        "Arc is thread-safe (atomic reference counting), whereas Rc is for single-threaded use.",
+    )
+    .unwrap();
+
+    db.add_chat_turn(
+        session_id,
+        "When should I use Mutex with Arc?",
+        "Wrap the inner value in Mutex or RwLock when multiple threads need mutable access.",
+    )
+    .unwrap();
+
+    let sessions = db.get_chat_sessions(10).unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].id, session_id);
+    assert_eq!(sessions[0].title, "Rust Concurrency Guide");
+    assert_eq!(sessions[0].message_count, 4);
+    assert_eq!(
+        sessions[0].last_question.as_deref(),
+        Some("When should I use Mutex with Arc?")
+    );
+
+    let (session, messages) = db.get_chat_session(session_id).unwrap().unwrap();
+    assert_eq!(session.id, session_id);
+    assert_eq!(messages.len(), 4);
+    assert_eq!(messages[0].role, "user");
+    assert_eq!(
+        messages[0].content,
+        "What is the difference between Arc and Rc?"
+    );
+    assert_eq!(messages[1].role, "assistant");
+    assert_eq!(messages[2].role, "user");
+    assert_eq!(messages[3].role, "assistant");
+
+    let deleted = db.delete_chat_session(session_id).unwrap();
+    assert!(deleted);
+
+    let empty = db.get_chat_session(session_id).unwrap();
+    assert!(empty.is_none());
+
+    let empty_list = db.get_chat_sessions(10).unwrap();
+    assert!(empty_list.is_empty());
+}

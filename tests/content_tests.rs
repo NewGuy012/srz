@@ -149,11 +149,20 @@ fn test_render_index_html() {
         news_summaries: 0,
         video_summaries: 0,
         total_source_words: 5000,
+        total_summary_words: 600,
         total_prompt_tokens: 3500,
         total_completion_tokens: 800,
         avg_tokens_per_second: 42.0,
         max_tokens_per_second: 55.0,
         total_duration_ms: 12000,
+        estimated_minutes_saved: 18.0,
+        reads_today: 1,
+        reads_this_week: 2,
+        reads_this_month: 2,
+        active_reading_days: 2,
+        current_streak_days: 1,
+        models: Vec::new(),
+        top_domains: Vec::new(),
     };
 
     let entries = vec![

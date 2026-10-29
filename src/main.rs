@@ -120,9 +120,25 @@ async fn main() -> Result<()> {
             target,
             question,
             interactive,
+            list_chats,
+            resume,
+            show_chat,
+            delete_chat,
         } => {
-            commands::handle_ask(target, question, interactive, &scraper, &llm, &cache, &args)
-                .await?;
+            commands::handle_ask(
+                target,
+                question,
+                interactive,
+                list_chats,
+                resume,
+                show_chat,
+                delete_chat,
+                &scraper,
+                &llm,
+                &cache,
+                &args,
+            )
+            .await?;
             return Ok(());
         }
         ResolvedAction::Web { url } => {

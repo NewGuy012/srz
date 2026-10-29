@@ -120,24 +120,186 @@ pub async fn handle_ask(
     target: Option<String>,
     question: Option<String>,
     interactive: bool,
+    list_chats: bool,
+    resume: Option<i64>,
+    show_chat: Option<i64>,
+    delete_chat: Option<i64>,
     scraper: &WebScraper,
     llm: &LlmClient,
     cache: &Cache,
     args: &Cli,
 ) -> Result<()> {
     let db = open_db_or_warn();
-    let (title, content) =
-        resolve_document_context(target.as_deref(), scraper, cache, db.as_ref()).await?;
+
+    // 1. List saved chat sessions
+    if list_chats {
+        let db_ref = db
+            .as_ref()
+            .context("DuckDB database unavailable to view chat sessions")?;
+        let sessions = db_ref.get_chat_sessions(30)?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&sessions)?);
+            return Ok(());
+        }
+        if sessions.is_empty() {
+            Ui::info(
+                "No saved chat sessions found. Start an interactive session with `srz ask -i`!",
+            );
+            return Ok(());
+        }
+        Ui::header(&format!("Saved Q&A Chat Sessions ({})", sessions.len()));
+        for s in &sessions {
+            let icon = crate::render::target_icon(&s.target_type);
+            let safe_title = crate::ui::sanitize_title(&s.title);
+            let safe_model = crate::ui::sanitize_terminal_text(&s.model);
+            println!(
+                "[#{}] {} \"{}\" ({} msg(s) | model: {})",
+                s.id, icon, safe_title, s.message_count, safe_model
+            );
+            if let Some(last_q) = &s.last_question {
+                let safe_q = crate::ui::sanitize_terminal_text(last_q);
+                println!("     Last Q: \"{}\"", safe_q);
+            }
+            println!(
+                "     Updated: {} | Resume: srz ask --resume {}\n",
+                s.updated_at, s.id
+            );
+        }
+        return Ok(());
+    }
+
+    // 2. Delete a chat session
+    if let Some(del_id) = delete_chat {
+        let db_ref = db
+            .as_ref()
+            .context("DuckDB database unavailable to delete chat session")?;
+        let deleted = db_ref.delete_chat_session(del_id)?;
+        if deleted {
+            Ui::info(&format!("Chat session #{} deleted.", del_id));
+        } else {
+            Ui::warn(&format!("Chat session #{} not found.", del_id));
+        }
+        return Ok(());
+    }
+
+    // 3. Show past chat transcript
+    if let Some(show_id) = show_chat {
+        let db_ref = db
+            .as_ref()
+            .context("DuckDB database unavailable to view chat session")?;
+        let (session, msgs) = db_ref
+            .get_chat_session(show_id)?
+            .context(format!("Chat session #{} not found", show_id))?;
+        if args.json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "session": session,
+                    "messages": msgs,
+                }))?
+            );
+            return Ok(());
+        }
+        let safe_title = crate::ui::sanitize_title(&session.title);
+        Ui::header(&format!(
+            "Chat Transcript #{}: \"{}\" ({})",
+            session.id, safe_title, session.model
+        ));
+        for msg in &msgs {
+            let safe_content = crate::ui::sanitize_terminal_text(&msg.content);
+            if msg.role == "user" {
+                println!(
+                    "\x1b[1;32mUser ({})\x1b[0m:\n{}\n",
+                    msg.created_at, safe_content
+                );
+            } else {
+                println!(
+                    "\x1b[1;36mAssistant ({})\x1b[0m:\n{}\n",
+                    msg.created_at, safe_content
+                );
+            }
+        }
+        println!(
+            "\x1b[2mResume this session with: srz ask --resume {}\x1b[0m\n",
+            session.id
+        );
+        return Ok(());
+    }
+
+    // 4. Resolve document context & active session
+    let mut session_id: Option<i64> = resume;
+    let mut history: Vec<(String, String)> = Vec::new();
+
+    let (title, content, target_type, target_url) = if let Some(res_id) = resume {
+        let db_ref = db
+            .as_ref()
+            .context("DuckDB database unavailable to resume chat session")?;
+        let (session, msgs) = db_ref
+            .get_chat_session(res_id)?
+            .context(format!("Chat session #{} not found", res_id))?;
+
+        // Reconstruct history pairs from loaded messages
+        let mut user_msg: Option<String> = None;
+        for msg in msgs {
+            if msg.role == "user" {
+                user_msg = Some(msg.content);
+            } else if msg.role == "assistant" {
+                if let Some(q) = user_msg.take() {
+                    history.push((q, msg.content));
+                }
+            }
+        }
+
+        let (resolved_title, resolved_content) = resolve_document_context(
+            session.target_url.as_deref().or(Some(&session.title)),
+            scraper,
+            cache,
+            db.as_ref(),
+        )
+        .await
+        .unwrap_or_else(|_| (session.title.clone(), session.title.clone()));
+
+        (
+            resolved_title,
+            resolved_content,
+            session.target_type,
+            session.target_url,
+        )
+    } else {
+        let (t, c) =
+            resolve_document_context(target.as_deref(), scraper, cache, db.as_ref()).await?;
+        let t_type = if target.as_deref().map_or(false, |s| s.starts_with("http")) {
+            "web".to_string()
+        } else {
+            "doc".to_string()
+        };
+        let t_url = target
+            .as_deref()
+            .filter(|s| s.starts_with("http"))
+            .map(|s| s.to_string());
+        (t, c, t_type, t_url)
+    };
 
     let safe_title = crate::ui::sanitize_title(&title);
     let grounded_context = format_grounded_context(&title, &content);
-    let is_interactive = interactive || question.is_none();
+    let is_interactive = interactive || question.is_none() || resume.is_some();
+
+    // Create session if not already resuming and DB is available
+    if session_id.is_none() {
+        if let Some(ref db_ref) = db {
+            if let Ok(id) =
+                db_ref.create_chat_session(&title, &target_type, target_url.as_deref(), llm.model())
+            {
+                session_id = Some(id);
+            }
+        }
+    }
 
     if !is_interactive {
         // Single question mode
         let q = question.unwrap();
         let mut prompt_buf = String::new();
-        let messages = build_chat_messages(&grounded_context, &[], &q, &mut prompt_buf);
+        let messages = build_chat_messages(&grounded_context, &history, &q, &mut prompt_buf);
 
         let mode = if args.stream {
             StreamMode::Stdout {
@@ -159,14 +321,39 @@ pub async fn handle_ask(
                 args.plain,
             )?;
         }
+
+        if let (Some(sid), Some(db_ref)) = (session_id, &db) {
+            let _ = db_ref.add_chat_turn(sid, &q, &output.content);
+            if !args.plain && !args.json {
+                println!(
+                    "\n\x1b[2mSaved to session #{}. Continue conversation: srz ask --resume {}\x1b[0m",
+                    sid, sid
+                );
+            }
+        }
+
         return Ok(());
     }
 
     // Interactive REPL chat session
-    println!("\n\x1b[1;36m=== Interactive Q&A: {} ===\x1b[0m", safe_title);
+    if let Some(sid) = session_id {
+        if resume.is_some() {
+            println!(
+                "\n\x1b[1;36m=== Resumed Q&A Session #{} ({} past turns): {} ===\x1b[0m",
+                sid,
+                history.len(),
+                safe_title
+            );
+        } else {
+            println!(
+                "\n\x1b[1;36m=== Interactive Q&A (Session #{}): {} ===\x1b[0m",
+                sid, safe_title
+            );
+        }
+    } else {
+        println!("\n\x1b[1;36m=== Interactive Q&A: {} ===\x1b[0m", safe_title);
+    }
     println!("\x1b[2mType your question, or 'exit' / 'quit' to end the session.\x1b[0m\n");
-
-    let mut history: Vec<(String, String)> = Vec::new();
 
     // If an initial question was passed alongside --interactive, answer it first
     if let Some(initial_q) = question {
@@ -181,6 +368,9 @@ pub async fn handle_ask(
             args.plain,
         )
         .await?;
+        if let (Some(sid), Some(db_ref)) = (session_id, &db) {
+            let _ = db_ref.add_chat_turn(sid, &initial_q, &ans);
+        }
         history.push((initial_q, ans));
         println!();
     }
@@ -218,8 +408,20 @@ pub async fn handle_ask(
             args.plain,
         )
         .await?;
+        if let (Some(sid), Some(db_ref)) = (session_id, &db) {
+            let _ = db_ref.add_chat_turn(sid, trimmed, &ans);
+        }
         history.push((trimmed.to_string(), ans));
         println!();
+    }
+
+    if let Some(sid) = session_id {
+        if !args.plain && !args.json {
+            println!(
+                "\x1b[2mSession #{} saved. Resume anytime with: srz ask --resume {}\x1b[0m\n",
+                sid, sid
+            );
+        }
     }
 
     Ok(())

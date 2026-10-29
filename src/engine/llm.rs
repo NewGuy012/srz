@@ -383,6 +383,10 @@ impl LlmClient {
         &self.base_url
     }
 
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
     /// Sends a request to `{base_url}{path}`, automatically retrying against `127.0.0.1`
     /// (`fallback_base_url`) if `localhost` connection fails (e.g., IPv6 `::1` refusal on macOS).
     async fn send_with_fallback(

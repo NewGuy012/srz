@@ -283,7 +283,7 @@ impl Database {
              CREATE SEQUENCE IF NOT EXISTS chat_messages_id_seq;
              CREATE TABLE IF NOT EXISTS chat_messages (
                  id INTEGER DEFAULT nextval('chat_messages_id_seq') PRIMARY KEY,
-                 session_id INTEGER NOT NULL REFERENCES chat_sessions(id),
+                 session_id INTEGER NOT NULL,
                  role VARCHAR NOT NULL,
                  content TEXT NOT NULL,
                  created_at TIMESTAMP NOT NULL DEFAULT current_timestamp

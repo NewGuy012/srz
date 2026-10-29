@@ -678,6 +678,10 @@ fn test_readme_usage_examples_cli_resolution() {
             target: None,
             question: Some("What are the main findings?".to_string()),
             interactive: false,
+            list_chats: false,
+            resume: None,
+            show_chat: None,
+            delete_chat: None,
         }
     );
 
@@ -689,6 +693,10 @@ fn test_readme_usage_examples_cli_resolution() {
             target: Some("assets/document.pdf".to_string()),
             question: Some("Key takeaways?".to_string()),
             interactive: false,
+            list_chats: false,
+            resume: None,
+            show_chat: None,
+            delete_chat: None,
         }
     );
     let cmd8_raw = Cli::parse_from(["srz", "ask", "document.pdf", "Key takeaways?"]);
@@ -698,6 +706,10 @@ fn test_readme_usage_examples_cli_resolution() {
             target: Some("document.pdf".to_string()),
             question: Some("Key takeaways?".to_string()),
             interactive: false,
+            list_chats: false,
+            resume: None,
+            show_chat: None,
+            delete_chat: None,
         }
     );
 
@@ -709,6 +721,10 @@ fn test_readme_usage_examples_cli_resolution() {
             target: None,
             question: None,
             interactive: true,
+            list_chats: false,
+            resume: None,
+            show_chat: None,
+            delete_chat: None,
         }
     );
 
