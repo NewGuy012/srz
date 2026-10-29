@@ -63,32 +63,24 @@ cargo install --path .
 
 ## Usage
 
-Pass any target directly—`srz` auto-detects URLs, YouTube videos, books, files, news, or stdin:
-
+### Summarize
 ```bash
-# Summarize any target
-srz "https://example.com/article"                 # Webpage (or PDF URL)
-srz "https://youtube.com/watch?v=dQw4w9WgXcQ"     # YouTube video captions & takeaways
-srz "paper.pdf"                                   # PDF document (pure-Rust extraction)
-srz "The Hobbit"                                  # Book synopsis (Wikipedia + Open Library)
-srz "notes.md"                                    # Local document (.md, .txt, .html)
-git diff | srz -                                  # Unix stdin stream
+srz "https://example.com/article"     # Webpage, YouTube, PDF, book, or local file
+srz "The Hobbit" --style tldr --open  # Custom style preset & open in browser
+srz news "AI updates" -t week         # Live news digest (day, week, month)
+git diff | srz -                      # Unix stdin stream
+```
 
-# Styles, browser reader & paging
-srz "The Hobbit" --style tldr                     # Presets: concise, detailed, bullets, tldr...
-srz "The Hobbit" --open                           # Open distraction-free HTML reader in browser
-srz "The Hobbit" --plain                          # Raw unstyled Markdown output (no paging/ANSI)
+### Ask & Chat
+```bash
+srz ask "What are the main findings?" # Q&A grounded on document or latest read
+srz ask -i                            # Interactive multi-turn chat REPL
+```
 
-# Interactive Q&A and TUI browser
-srz ask "What are the main takeaways?"            # Q&A grounded on latest read or document
-srz ask --interactive                             # Multi-turn interactive chat REPL
-srz browse                                        # Terminal dashboard ([j/k] navigate, [y] copy, [/] filter)
-
-# News, library & maintenance
-srz news "AI updates" -t week                     # Live news briefing (day, week, month)
-srz find "keyword"                                # Offline full-text search across past summaries
-srz history                                       # Past reads, token metrics, and speeds
-srz upgrade                                       # In-place self-updater with SHA256 verification
+### Library & Search
+```bash
+srz browse                            # Interactive TUI dashboard (browse, search, copy)
+srz find "keyword"                    # Offline full-text search across past summaries
 ```
 
 Run `srz --help` to see all available subcommands and flags.
