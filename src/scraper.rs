@@ -158,7 +158,11 @@ impl WebScraper {
             );
         }
 
-        let mut bytes = Vec::new();
+        let mut bytes = if let Some(content_len) = response.content_length() {
+            Vec::with_capacity((content_len as usize).min(MAX_SCRAPE_BYTES))
+        } else {
+            Vec::new()
+        };
         while let Some(chunk) = response.chunk().await.context("Failed to read response body")? {
             if bytes.len() + chunk.len() > MAX_SCRAPE_BYTES {
                 anyhow::bail!(
@@ -168,7 +172,10 @@ impl WebScraper {
             bytes.extend_from_slice(&chunk);
         }
 
-        let html = String::from_utf8_lossy(&bytes);
+        let html = match String::from_utf8(bytes) {
+            Ok(s) => s,
+            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        };
 
         self.normalize(url, &html)
     }
@@ -211,10 +218,18 @@ impl WebScraper {
         // Try <title> tag, then <h1> tag
         for sel in [&*TITLE_SEL, &*H1_SEL] {
             if let Some(elem) = document.select(sel).next() {
-                let text: String = elem.text().collect();
-                let trimmed = text.trim();
-                if !trimmed.is_empty() {
-                    return Some(trimmed.to_string());
+                let mut title = String::new();
+                for chunk in elem.text() {
+                    title.push_str(chunk);
+                }
+                let trimmed_end = title.trim_end().len();
+                title.truncate(trimmed_end);
+                let trimmed_start = title.len() - title.trim_start().len();
+                if trimmed_start > 0 {
+                    title.replace_range(..trimmed_start, "");
+                }
+                if !title.is_empty() {
+                    return Some(title);
                 }
             }
         }

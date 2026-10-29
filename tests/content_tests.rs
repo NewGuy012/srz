@@ -54,6 +54,8 @@ fn test_chunking_splits_on_word_limit() {
 
     let chunks = TextChunker::chunk(&text, 60, 10);
     assert_eq!(chunks.len(), 2);
+    assert!(matches!(chunks[0], Cow::Borrowed(_)));
+    assert!(matches!(chunks[1], Cow::Borrowed(_)));
 }
 
 #[test]

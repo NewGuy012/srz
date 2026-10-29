@@ -79,13 +79,17 @@ impl Database {
 
     /// Opens a DuckDB database at the specified file path.
     pub fn open_at(path: &Path) -> Result<Self> {
+        let exists =
+            path.exists() && std::fs::metadata(path).map(|m| m.len() > 0).unwrap_or(false);
         let conn = Connection::open(path)
             .with_context(|| format!("Failed to open DuckDB database at {:?}", path))?;
         if path.exists() {
             cache::set_private_file_perms(path);
         }
         let db = Self { conn };
-        db.init_schema()?;
+        if !exists || !db.is_schema_initialized() {
+            db.init_schema()?;
+        }
         Ok(db)
     }
 
@@ -95,6 +99,12 @@ impl Database {
         let db = Self { conn };
         db.init_schema()?;
         Ok(db)
+    }
+
+    fn is_schema_initialized(&self) -> bool {
+        self.conn
+            .execute("SELECT 1 FROM history LIMIT 0", [])
+            .is_ok()
     }
 
     fn init_schema(&self) -> Result<()> {

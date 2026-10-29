@@ -29,7 +29,7 @@ impl TextChunker {
 
         for &(para, p_words) in &paragraphs {
             if current_word_count + p_words > max_words && !current_chunk_paragraphs.is_empty() {
-                chunks.push(Self::build_chunk(&current_chunk_paragraphs));
+                chunks.push(Self::build_chunk(text, &current_chunk_paragraphs));
 
                 // Calculate overlap paragraphs to retain using pre-computed word counts
                 let mut retained = Vec::new();
@@ -53,25 +53,37 @@ impl TextChunker {
         }
 
         if !current_chunk_paragraphs.is_empty() {
-            chunks.push(Self::build_chunk(&current_chunk_paragraphs));
+            chunks.push(Self::build_chunk(text, &current_chunk_paragraphs));
         }
 
         chunks
     }
 
-    fn build_chunk<'a>(paras: &[(&'a str, usize)]) -> Cow<'a, str> {
-        if let [(single, _)] = paras {
-            return Cow::Borrowed(*single);
-        }
-        let total_len: usize =
-            paras.iter().map(|(p, _)| p.len()).sum::<usize>() + paras.len().saturating_sub(1) * 2;
-        let mut out = String::with_capacity(total_len);
-        for (i, (p, _)) in paras.iter().enumerate() {
-            if i > 0 {
-                out.push_str("\n\n");
+    fn build_chunk<'a>(text: &'a str, paras: &[(&'a str, usize)]) -> Cow<'a, str> {
+        let (first, _) = match paras.first() {
+            Some(p) => p,
+            None => return Cow::Borrowed(""),
+        };
+        let (last, _) = paras.last().unwrap();
+        let text_start = text.as_ptr() as usize;
+        let first_start = first.as_ptr() as usize;
+        let last_start = last.as_ptr() as usize;
+        let start = first_start.saturating_sub(text_start);
+        let end = last_start.saturating_sub(text_start) + last.len();
+
+        if start <= end && end <= text.len() {
+            Cow::Borrowed(&text[start..end])
+        } else {
+            let total_len: usize = paras.iter().map(|(p, _)| p.len()).sum::<usize>()
+                + paras.len().saturating_sub(1) * 2;
+            let mut out = String::with_capacity(total_len);
+            for (i, (p, _)) in paras.iter().enumerate() {
+                if i > 0 {
+                    out.push_str("\n\n");
+                }
+                out.push_str(p);
             }
-            out.push_str(p);
+            Cow::Owned(out)
         }
-        Cow::Owned(out)
     }
 }

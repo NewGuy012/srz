@@ -167,3 +167,50 @@ fn test_database_reset() {
     assert_eq!(db.get_stats().unwrap().total_summaries, 0);
     assert_eq!(db.search("Dune").unwrap().len(), 0);
 }
+
+#[test]
+fn test_database_file_open_and_reopen() {
+    let db_path = std::env::temp_dir().join(format!(
+        "srz_test_db_reopen_{}.duckdb",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _cleanup = CleanFile(&db_path);
+
+    struct CleanFile<'a>(&'a std::path::Path);
+    impl<'a> Drop for CleanFile<'a> {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(self.0);
+        }
+    }
+
+    // First open initializes schema
+    {
+        let db = Database::open_at(&db_path).unwrap();
+        let record = NewSummaryRecord {
+            target_type: "book",
+            title: "Reopen Test",
+            author: None,
+            url: None,
+            style: "concise",
+            model: "gemma-4",
+            word_count: 500,
+            prompt_tokens: None,
+            completion_tokens: None,
+            duration_ms: 100,
+            tokens_per_second: None,
+            summary: "Reopen content",
+        };
+        db.record_summary(&record).unwrap();
+    }
+
+    // Second open skips redundant init_schema and loads existing records
+    {
+        let db = Database::open_at(&db_path).unwrap();
+        let history = db.get_history(10).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].title, "Reopen Test");
+    }
+}
