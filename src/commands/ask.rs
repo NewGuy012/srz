@@ -10,6 +10,22 @@ use crate::scraper::WebScraper;
 use crate::storage::db::Database;
 use crate::ui::{display_summary, render_markdown, Ui};
 
+fn resolve_cached_page_or(
+    cache: &Cache,
+    url: Option<&str>,
+    fallback_title: String,
+    fallback_content: String,
+) -> (String, String) {
+    if let Some(u) = url
+        && let Some(page) = cache.get_page(u)
+    {
+        let title = page.title.unwrap_or(fallback_title);
+        (title, page.content)
+    } else {
+        (fallback_title, fallback_content)
+    }
+}
+
 /// Resolves the grounding document context (title and full text content).
 async fn resolve_document_context(
     target: Option<&str>,
@@ -36,41 +52,17 @@ async fn resolve_document_context(
         // 2. Local File
         let path = Path::new(trimmed);
         if path.exists() {
-            let (title, content) = if path
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
-            {
-                let page = crate::sources::pdf::PdfExtractor::extract_file(path)?;
-                let t = page.title.unwrap_or_else(|| {
-                    path.file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| "Local PDF".to_string())
-                });
-                (t, page.content)
-            } else {
-                let content = std::fs::read_to_string(path)
-                    .with_context(|| format!("Failed to read file {:?}", path))?;
-                let title = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("Local Document")
-                    .to_string();
-                (title, content)
-            };
-            return Ok((title, content));
+            let doc = crate::sources::DocumentLoader::load_file(path, scraper)?;
+            return Ok((doc.title, doc.content));
         }
 
         // 3. Search in DuckDB library for matching title
         if let Some(db) = db_opt {
             let results = db.search(trimmed)?;
             if let Some(hit) = results.into_iter().next() {
-                if let Some(url) = &hit.url {
-                    if let Some(page) = cache.get_page(url) {
-                        let title = page.title.unwrap_or(hit.title);
-                        return Ok((title, page.content));
-                    }
-                }
-                return Ok((hit.title, hit.snippet));
+                let (title, content) =
+                    resolve_cached_page_or(cache, hit.url.as_deref(), hit.title, hit.snippet);
+                return Ok((title, content));
             }
         }
 
@@ -99,14 +91,9 @@ async fn resolve_document_context(
 
         Ui::info(&format!("Answering based on latest read: '{}'", latest.title));
 
-        if let Some(url) = &latest.url {
-            if let Some(page) = cache.get_page(url) {
-                let title = page.title.unwrap_or(latest.title);
-                return Ok((title, page.content));
-            }
-        }
-
-        Ok((latest.title, latest.summary))
+        let (title, content) =
+            resolve_cached_page_or(cache, latest.url.as_deref(), latest.title, latest.summary);
+        Ok((title, content))
     }
 }
 

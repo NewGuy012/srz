@@ -10,7 +10,7 @@ use serde::Serialize;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
 
-pub const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024; // 20 MB limit for local files
+pub use crate::sources::document::MAX_FILE_BYTES;
 pub const MAX_STDIN_BYTES: usize = 10 * 1024 * 1024; // 10 MB limit for standard input
 
 #[derive(Serialize)]
@@ -103,91 +103,33 @@ pub async fn handle_file(
     llm: &LlmClient,
     args: &Cli,
 ) -> Result<SummaryOutcome> {
-    if !path.exists() {
-        anyhow::bail!("File not found: {:?}", path);
-    }
-
-    let meta = fs::metadata(path)
-        .with_context(|| format!("Failed to access file metadata: {:?}", path))?;
-    if !meta.is_file() {
-        anyhow::bail!("Path is not a regular file: {:?}", path);
-    }
-    if meta.len() > MAX_FILE_BYTES {
-        anyhow::bail!(
-            "File size ({} bytes) exceeds security limit of {} MB",
-            meta.len(),
-            MAX_FILE_BYTES / (1024 * 1024)
-        );
-    }
-
-    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("epub")) {
-        anyhow::bail!(
-            "Document format not supported: {:?}. Supported formats include PDF, HTML, Markdown, and plain text.",
-            path
-        );
-    }
-
-    let fallback_title = || {
-        path.file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "Local File".to_string())
-    };
-
-    let (content, word_count, title, author, target_type) = if path
-        .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
-    {
-        let page = Ui::with_spinner(
-            "Extracting text from PDF...",
-            "PDF text layer extracted.",
-            async { crate::sources::pdf::PdfExtractor::extract_file(path) },
-        )
-        .await?;
-        let t = page.title.unwrap_or_else(fallback_title);
-        (page.content, page.word_count, t, None, "file")
-    } else {
-        let raw = fs::read_to_string(path)
-            .with_context(|| format!("Failed to read file: {:?}", path))?;
-
-        if render::is_html_path(path) {
-            let norm = scraper.normalize(&path.display().to_string(), &raw)?;
-            let t = norm.title.unwrap_or_else(fallback_title);
-            (norm.content, norm.word_count, t, None, "file")
-        } else {
-            let words = raw.split_whitespace().count();
-            (raw, words, fallback_title(), None, "file")
-        }
-    };
-
-    if content.trim().is_empty() {
-        anyhow::bail!("File {:?} is empty.", path);
-    }
+    let doc = crate::sources::DocumentLoader::load_file(path, scraper)?;
 
     Ui::info(&format!(
         "Loaded {} words from file '{}'",
-        word_count,
+        doc.word_count,
         path.display()
     ));
 
-    let mode = args.stream_mode(&title);
+    let mode = args.stream_mode(&doc.title);
     let path_str = path.display().to_string();
     let output = llm
         .summarize_document_counted(
-            &title,
+            &doc.title,
             Some(&path_str),
-            &content,
-            Some(word_count),
+            &doc.content,
+            Some(doc.word_count),
             args.style,
             mode,
         )
         .await?;
 
     Ok(SummaryOutcome::from_llm(
-        target_type,
-        title,
-        author,
+        "file",
+        doc.title,
+        None,
         Some(path_str),
-        word_count,
+        doc.word_count,
         output,
     ))
 }
