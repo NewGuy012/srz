@@ -49,21 +49,20 @@ impl PdfExtractor {
         let mut title = None;
         let mut author = None;
 
-        if let Ok(doc) = pdf_extract::Document::load_mem(bytes) {
-            if let Ok(info) = doc.trailer.get(b"Info").and_then(|obj| doc.dereference(obj)) {
-                if let Ok(dict) = info.1.as_dict() {
-                    if let Ok(t) = dict.get(b"Title").and_then(|o| o.as_str()) {
-                        let decoded = String::from_utf8_lossy(t).trim().to_string();
-                        if !decoded.is_empty() {
-                            title = Some(decoded);
-                        }
-                    }
-                    if let Ok(a) = dict.get(b"Author").and_then(|o| o.as_str()) {
-                        let decoded = String::from_utf8_lossy(a).trim().to_string();
-                        if !decoded.is_empty() {
-                            author = Some(decoded);
-                        }
-                    }
+        if let Ok(doc) = pdf_extract::Document::load_mem(bytes)
+            && let Ok(info) = doc.trailer.get(b"Info").and_then(|obj| doc.dereference(obj))
+            && let Ok(dict) = info.1.as_dict()
+        {
+            if let Ok(t) = dict.get(b"Title").and_then(|o| o.as_str()) {
+                let decoded = String::from_utf8_lossy(t).trim().to_string();
+                if !decoded.is_empty() {
+                    title = Some(decoded);
+                }
+            }
+            if let Ok(a) = dict.get(b"Author").and_then(|o| o.as_str()) {
+                let decoded = String::from_utf8_lossy(a).trim().to_string();
+                if !decoded.is_empty() {
+                    author = Some(decoded);
                 }
             }
         }

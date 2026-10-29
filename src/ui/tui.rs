@@ -180,21 +180,22 @@ fn run_loop(
 ) -> Result<()> {
     loop {
         // Clear status after 3 seconds
-        if let Some((_, created)) = &state.status_message {
-            if created.elapsed() > Duration::from_secs(3) {
-                state.status_message = None;
-            }
+        if let Some((_, created)) = &state.status_message
+            && created.elapsed() > Duration::from_secs(3)
+        {
+            state.status_message = None;
         }
 
         terminal
             .draw(|f| ui_draw(f, state))
             .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
+        if event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+        {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
 
                 if state.is_filtering {
                     match key.code {
@@ -297,7 +298,6 @@ fn run_loop(
                 }
             }
         }
-    }
     Ok(())
 }
 

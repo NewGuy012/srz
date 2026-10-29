@@ -564,23 +564,14 @@ pub fn is_news_query(s: &str) -> bool {
 }
 
 pub fn clean_news_query(s: &str) -> String {
-    let words: Vec<&str> = s.split_whitespace().collect();
-    if words.is_empty() {
-        return "top stories".to_string();
-    }
-
-    let stop_words = [
+    const STOP_WORDS: &[&str] = &[
         "current", "latest", "today's", "todays", "recent", "news", "headline", "headlines",
         "about", "on", "regarding", "for",
     ];
 
-    let filtered: Vec<&str> = words
-        .iter()
-        .copied()
-        .filter(|w| {
-            let lower = w.to_ascii_lowercase();
-            !stop_words.contains(&lower.as_str())
-        })
+    let filtered: Vec<&str> = s
+        .split_whitespace()
+        .filter(|w| !STOP_WORDS.contains(&w.to_ascii_lowercase().as_str()))
         .collect();
 
     if filtered.is_empty() {

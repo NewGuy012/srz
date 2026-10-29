@@ -107,10 +107,10 @@ fn run_pager(content: &str) -> io::Result<()> {
 
     if let Some(mut stdin) = child.stdin.take() {
         // Ignore BrokenPipe error when user exits pager early (e.g. presses 'q')
-        if let Err(err) = stdin.write_all(content.as_bytes()) {
-            if err.kind() != io::ErrorKind::BrokenPipe {
-                return Err(err);
-            }
+        if let Err(err) = stdin.write_all(content.as_bytes())
+            && err.kind() != io::ErrorKind::BrokenPipe
+        {
+            return Err(err);
         }
     }
 
