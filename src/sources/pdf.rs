@@ -8,6 +8,18 @@ pub struct PdfExtractor;
 impl PdfExtractor {
     /// Extracts text from a PDF file path.
     pub fn extract_file(path: &Path) -> Result<ScrapedPage> {
+        let meta = std::fs::metadata(path)
+            .with_context(|| format!("Failed to read metadata for {:?}", path))?;
+        if !meta.is_file() {
+            anyhow::bail!("Path is not a regular file: {:?}", path);
+        }
+        if meta.len() > crate::sources::document::MAX_FILE_BYTES {
+            anyhow::bail!(
+                "PDF file size ({} bytes) exceeds security limit of {} MB",
+                meta.len(),
+                crate::sources::document::MAX_FILE_BYTES / (1024 * 1024)
+            );
+        }
         let bytes = std::fs::read(path)
             .with_context(|| format!("Failed to read PDF file at {:?}", path))?;
         Self::extract_from_bytes(&bytes, Some(path))

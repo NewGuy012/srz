@@ -282,7 +282,12 @@ async fn download_and_parse_captions(client: &Client, url: &str) -> Option<Strin
         .send()
         .await
         .ok()?;
-    let body = resp.text().await.unwrap_or_default();
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body = crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES)
+        .await
+        .ok()?;
     parse_json3_timedtext(&body).or_else(|| parse_xml_timedtext(&body))
 }
 
@@ -303,7 +308,13 @@ pub async fn fetch_youtube_transcript(client: &Client, video_id: &str) -> Result
         .await
         .with_context(|| format!("Failed to reach YouTube for video ID: {}", video_id))?;
 
-    let html = resp.text().await.unwrap_or_default();
+    if !resp.status().is_success() {
+        anyhow::bail!("YouTube watch page returned HTTP status: {}", resp.status());
+    }
+
+    let html = crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES)
+        .await
+        .unwrap_or_default();
     let title = extract_video_title(&html).unwrap_or_else(|| format!("YouTube Video ({})", video_id));
 
     // 2. Extract caption tracks from watch page

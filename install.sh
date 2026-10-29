@@ -52,25 +52,46 @@ fi
 
 # Download and verify SHA256 checksum
 SHA_URL="${DOWNLOAD_URL}.sha256"
-if curl -fsSL "${SHA_URL}" -o "${TMP_DIR}/srz.tar.gz.sha256"; then
-  echo "Verifying SHA256 checksum..."
-  EXPECTED_SHA="$(awk '{print $1}' "${TMP_DIR}/srz.tar.gz.sha256" | head -n 1)"
-  if command -v sha256sum >/dev/null 2>&1; then
-    COMPUTED_SHA="$(sha256sum "${TMP_DIR}/srz.tar.gz" | awk '{print $1}')"
-  elif command -v shasum >/dev/null 2>&1; then
-    COMPUTED_SHA="$(shasum -a 256 "${TMP_DIR}/srz.tar.gz" | awk '{print $1}')"
+if ! curl -fsSL "${SHA_URL}" -o "${TMP_DIR}/srz.tar.gz.sha256"; then
+  if [ -n "${FORCE}" ]; then
+    echo "Warning: Could not download SHA256 checksum from ${SHA_URL}; bypassing due to FORCE=1."
   else
-    echo "Warning: Neither sha256sum nor shasum found; skipping checksum verification."
-    COMPUTED_SHA="${EXPECTED_SHA}"
-  fi
-
-  if [ -n "${EXPECTED_SHA}" ] && [ "${EXPECTED_SHA}" != "${COMPUTED_SHA}" ]; then
-    echo "Error: SHA256 checksum verification failed!"
-    echo "Expected: ${EXPECTED_SHA}"
-    echo "Computed: ${COMPUTED_SHA}"
+    echo "Error: Failed to download SHA256 checksum file from ${SHA_URL}."
+    echo "Aborting installation for security. Run with 'FORCE=1 ./install.sh' to bypass."
     exit 1
   fi
-  echo "✔ Checksum verified successfully."
+else
+  echo "Verifying SHA256 checksum..."
+  EXPECTED_SHA="$(awk '{print $1}' "${TMP_DIR}/srz.tar.gz.sha256" | head -n 1)"
+  if [ -z "${EXPECTED_SHA}" ]; then
+    if [ -n "${FORCE}" ]; then
+      echo "Warning: SHA256 checksum file was empty; bypassing due to FORCE=1."
+    else
+      echo "Error: SHA256 checksum file was empty. Aborting installation for security."
+      exit 1
+    fi
+  else
+    if command -v sha256sum >/dev/null 2>&1; then
+      COMPUTED_SHA="$(sha256sum "${TMP_DIR}/srz.tar.gz" | awk '{print $1}')"
+    elif command -v shasum >/dev/null 2>&1; then
+      COMPUTED_SHA="$(shasum -a 256 "${TMP_DIR}/srz.tar.gz" | awk '{print $1}')"
+    else
+      echo "Warning: Neither sha256sum nor shasum found; cannot compute local hash."
+      if [ -z "${FORCE}" ]; then
+        echo "Error: Aborting because SHA256 tools are missing. Run with 'FORCE=1' to bypass."
+        exit 1
+      fi
+      COMPUTED_SHA="${EXPECTED_SHA}"
+    fi
+
+    if [ "${EXPECTED_SHA}" != "${COMPUTED_SHA}" ]; then
+      echo "Error: SHA256 checksum verification failed!"
+      echo "Expected: ${EXPECTED_SHA}"
+      echo "Computed: ${COMPUTED_SHA}"
+      exit 1
+    fi
+    echo "✔ Checksum verified successfully."
+  fi
 fi
 
 tar -xzf "${TMP_DIR}/srz.tar.gz" -C "${TMP_DIR}"

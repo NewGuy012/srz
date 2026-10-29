@@ -5,5 +5,5 @@ pub mod tui;
 
 pub use printer::*;
 pub use render::*;
-pub use terminal::Ui;
+pub use terminal::{sanitize_terminal_text, sanitize_title, Ui};
 pub use tui::run_tui;

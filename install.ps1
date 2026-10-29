@@ -36,16 +36,22 @@ try {
         Invoke-WebRequest -Uri $ShaUrl -OutFile $ShaPath -UseBasicParsing
         $ShaContent = (Get-Content -Path $ShaPath -Raw).Trim()
         $ExpectedHash = ($ShaContent -split '\s+')[0]
-        if ($ExpectedHash) {
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedHash)) {
             Write-Host "Verifying SHA256 checksum..." -ForegroundColor Cyan
             $ComputedHash = (Get-FileHash -Path $ZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
             if ($ComputedHash -ne $ExpectedHash.ToLowerInvariant()) {
                 throw "SHA256 checksum mismatch! Expected: $ExpectedHash, Computed: $ComputedHash"
             }
             Write-Host "✔ Checksum verified successfully." -ForegroundColor Green
+        } else {
+            throw "SHA256 checksum file was empty."
         }
     } catch {
-        Write-Warning "Could not verify release checksum: $_"
+        if ($env:FORCE -eq "1") {
+            Write-Warning "Could not verify release checksum ($_); bypassing due to FORCE=1."
+        } else {
+            throw "Failed to verify SHA256 checksum: $_. Run with `$env:FORCE='1' to bypass."
+        }
     }
 
     Expand-Archive -Path $ZipPath -DestinationPath $TempDir -Force

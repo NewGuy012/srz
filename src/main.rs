@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use anyhow::{Context, Result};
 use clap::{CommandFactory, FromArgMatches};
 use srz::cache::Cache;

@@ -248,7 +248,14 @@ pub async fn handle_web(
                         .send()
                         .await
                         .with_context(|| format!("Failed to download PDF from {}", url))?;
-                    let bytes = resp.bytes().await?;
+                    if !resp.status().is_success() {
+                        anyhow::bail!("Failed to download PDF from {} (HTTP status: {})", url, resp.status());
+                    }
+                    let bytes = crate::scraper::read_response_bytes_limited(
+                        resp,
+                        crate::sources::document::MAX_FILE_BYTES as usize,
+                    )
+                    .await?;
                     crate::sources::pdf::PdfExtractor::extract_from_bytes(&bytes, None)
                 },
             )

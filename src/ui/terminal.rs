@@ -112,10 +112,11 @@ impl Ui {
         if Self::is_quiet() {
             return;
         }
+        let safe_title = sanitize_title(title);
         if Self::use_color() {
-            eprintln!("\n\x1b[1;36m=== {} ===\x1b[0m\n", title);
+            eprintln!("\n\x1b[1;36m=== {} ===\x1b[0m\n", safe_title);
         } else {
-            eprintln!("\n=== {} ===\n", title);
+            eprintln!("\n=== {} ===\n", safe_title);
         }
     }
 
@@ -153,10 +154,90 @@ impl Ui {
     }
 
     fn print_styled(symbol: &str, color_code: &str, message: &str) {
+        let safe_msg = sanitize_terminal_text(message);
         if Self::use_color() {
-            eprintln!("\x1b[{color_code}m{symbol}\x1b[0m {message}");
+            eprintln!("\x1b[{color_code}m{symbol}\x1b[0m {safe_msg}");
         } else {
-            eprintln!("{symbol} {message}");
+            eprintln!("{symbol} {safe_msg}");
         }
+    }
+}
+
+/// Sanitizes a string for safe terminal display by stripping ANSI escape sequences
+/// and unprintable ASCII control characters (CWE-150 / Terminal Escape Injection).
+pub fn sanitize_terminal_text(input: &str) -> String {
+    let mut clean = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            match chars.peek() {
+                Some('[') => {
+                    chars.next(); // consume '['
+                    // CSI sequence ends at 0x40..=0x7E (@..=~)
+                    for c in chars.by_ref() {
+                        if ('@'..='~').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    chars.next(); // consume ']'
+                    // OSC sequence ends at BEL (\x07) or ST (\x1b\)
+                    let mut prev = '\0';
+                    for c in chars.by_ref() {
+                        if c == '\x07' || (prev == '\x1b' && c == '\\') {
+                            break;
+                        }
+                        prev = c;
+                    }
+                }
+                Some(_) => {
+                    chars.next();
+                }
+                None => {}
+            }
+            continue;
+        }
+
+        // Filter out control characters except newline and tab
+        if ch.is_ascii_control() && ch != '\n' && ch != '\t' {
+            continue;
+        }
+
+        clean.push(ch);
+    }
+
+    clean
+}
+
+/// Sanitizes a title string for terminal presentation by removing escape sequences and collapsing whitespace.
+pub fn sanitize_title(title: &str) -> String {
+    sanitize_terminal_text(title)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_terminal_text_strips_ansi_and_osc() {
+        let csi_injected = "Hello \x1b[31;1mRed Alert\x1b[0m World";
+        assert_eq!(sanitize_terminal_text(csi_injected), "Hello Red Alert World");
+
+        let osc_injected = "Normal \x1b]0;Evil Title\x07Text";
+        assert_eq!(sanitize_terminal_text(osc_injected), "Normal Text");
+
+        let control_chars = "Line\x00with\x08bell\x07and\x1bsome chars";
+        assert_eq!(sanitize_terminal_text(control_chars), "Linewithbellandome chars");
+    }
+
+    #[test]
+    fn test_sanitize_title_collapses_newlines() {
+        let raw_title = "\x1b[1mImportant\x1b[0m\nDocument\r\nTitle";
+        assert_eq!(sanitize_title(raw_title), "Important Document Title");
     }
 }
