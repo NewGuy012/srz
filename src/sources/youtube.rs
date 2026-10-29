@@ -12,6 +12,8 @@ pub struct CaptionTrack {
     #[serde(rename = "languageCode", default)]
     pub language_code: String,
     #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
     pub name: Option<CaptionTrackName>,
 }
 
@@ -39,6 +41,37 @@ struct TimedTextEvent {
 struct TimedTextSegment {
     #[serde(default)]
     utf8: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct InnertubePlayerResponse {
+    #[serde(rename = "videoDetails")]
+    video_details: Option<InnertubeVideoDetails>,
+    captions: Option<InnertubeCaptions>,
+}
+
+#[derive(Deserialize, Debug)]
+struct InnertubeVideoDetails {
+    title: Option<String>,
+    #[allow(dead_code)]
+    author: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+struct InnertubeCaptions {
+    #[serde(rename = "playerCaptionsTracklistRenderer")]
+    renderer: Option<InnertubeTracklistRenderer>,
+}
+
+#[derive(Deserialize, Debug)]
+struct InnertubeTracklistRenderer {
+    #[serde(rename = "captionTracks", default)]
+    caption_tracks: Vec<CaptionTrack>,
+}
+
+pub struct ParsedPlayerData {
+    pub title: Option<String>,
+    pub caption_tracks: Option<Vec<CaptionTrack>>,
 }
 
 /// Checks if a URL is a YouTube video link and returns its 11-character video ID.
@@ -265,7 +298,7 @@ pub fn parse_json3_timedtext(json_str: &str) -> Option<String> {
     builder.finish()
 }
 
-/// Parses XML timed text `<text start="1.23" dur="4.56">...</text>` into formatted paragraphs.
+/// Parses XML timed text format 1 `<text start="1.23" dur="4.56">...</text>` into formatted paragraphs.
 pub fn parse_xml_timedtext(xml_str: &str) -> Option<String> {
     if !xml_str.contains("<text") {
         return None;
@@ -308,71 +341,291 @@ pub fn parse_xml_timedtext(xml_str: &str) -> Option<String> {
     builder.finish()
 }
 
+/// Parses XML timed text format 3 (`<p t="160" d="4000"><s>word</s>...</p>`) into formatted paragraphs.
+pub fn parse_xml_format3_timedtext(xml_str: &str) -> Option<String> {
+    if !xml_str.contains("<p") {
+        return None;
+    }
+
+    let mut builder = TimedTranscriptBuilder::new(xml_str.len() / 2);
+    let mut cursor = 0;
+
+    while let Some(pos) = xml_str[cursor..].find("<p") {
+        let tag_start = cursor + pos;
+        let after_p = tag_start + 2;
+        let Some(next_ch) = xml_str[after_p..].chars().next() else {
+            break;
+        };
+        if !next_ch.is_ascii_whitespace() && next_ch != '>' && next_ch != '/' {
+            cursor = after_p;
+            continue;
+        }
+
+        let tag_open_end = match xml_str[after_p..].find('>') {
+            Some(p) => after_p + p,
+            None => break,
+        };
+
+        // Skip self-closing <p ... />
+        if xml_str[tag_start..tag_open_end].trim_end().ends_with('/') {
+            cursor = tag_open_end + 1;
+            continue;
+        }
+
+        let tag_header = &xml_str[tag_start..tag_open_end];
+
+        let close_tag = match xml_str[tag_open_end + 1..].find("</p>") {
+            Some(p) => tag_open_end + 1 + p,
+            None => break,
+        };
+
+        let inner_xml = &xml_str[tag_open_end + 1..close_tag];
+        cursor = close_tag + "</p>".len();
+
+        // Extract t="..." in milliseconds
+        let seconds = extract_attr_u64(tag_header, "t")
+            .map(|ms| ms / 1000)
+            .unwrap_or(0);
+
+        let stripped = strip_xml_tags(inner_xml);
+        let decoded = decode_html_entities(&stripped);
+        let clean = decoded.trim();
+        if !clean.is_empty() {
+            builder.add_cue(seconds, clean);
+        }
+    }
+
+    builder.finish()
+}
+
+pub fn extract_attr_u64(tag_content: &str, attr_name: &str) -> Option<u64> {
+    let prefix = format!("{}=", attr_name);
+    let pos = tag_content.find(&prefix)?;
+    let after = &tag_content[pos + prefix.len()..];
+    let quote = after.chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let rest = &after[1..];
+    let end_quote = rest.find(quote)?;
+    rest[..end_quote].parse().ok()
+}
+
+pub fn strip_xml_tags(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut in_tag = false;
+    for c in input.chars() {
+        if c == '<' {
+            in_tag = true;
+        } else if c == '>' {
+            in_tag = false;
+        } else if !in_tag {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Dispatches timed text payloads to the appropriate parser based on payload structure.
+pub fn parse_timedtext(body: &str) -> Option<String> {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with('{') {
+        if let Some(res) = parse_json3_timedtext(trimmed) {
+            return Some(res);
+        }
+    }
+    if trimmed.contains("<p") {
+        if let Some(res) = parse_xml_format3_timedtext(trimmed) {
+            return Some(res);
+        }
+    }
+    if trimmed.contains("<text") {
+        if let Some(res) = parse_xml_timedtext(trimmed) {
+            return Some(res);
+        }
+    }
+    None
+}
+
+/// Queries YouTube's internal Innertube Player API for video metadata and caption tracks.
+pub async fn fetch_innertube_player(
+    client: &Client,
+    video_id: &str,
+    client_name: &str,
+    client_version: &str,
+) -> Result<ParsedPlayerData> {
+    let endpoint = "https://www.youtube.com/youtubei/v1/player";
+    let body = serde_json::json!({
+        "context": {
+            "client": {
+                "clientName": client_name,
+                "clientVersion": client_version,
+                "hl": "en",
+                "gl": "US"
+            }
+        },
+        "videoId": video_id
+    });
+
+    let resp = client
+        .post(endpoint)
+        .header("Content-Type", "application/json")
+        .header(
+            "User-Agent",
+            format!("com.google.android.youtube/{}", client_version),
+        )
+        .json(&body)
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .context("Failed to send player request")?;
+
+    if !resp.status().is_success() {
+        anyhow::bail!("Player API returned status {}", resp.status());
+    }
+
+    let text = crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES).await?;
+    let player: InnertubePlayerResponse =
+        serde_json::from_str(&text).context("Failed to parse player JSON")?;
+
+    let title = player.video_details.and_then(|vd| vd.title);
+    let tracks = player
+        .captions
+        .and_then(|c| c.renderer.map(|r| r.caption_tracks));
+
+    Ok(ParsedPlayerData {
+        title,
+        caption_tracks: tracks,
+    })
+}
+
 async fn download_and_parse_captions(client: &Client, url: &str) -> Option<String> {
+    // 1. Try fetching baseUrl directly with mobile and desktop user agents
+    if let Some(parsed) = fetch_single_caption_url(client, url, "com.google.android.youtube/20.10.38").await {
+        return Some(parsed);
+    }
+    if let Some(parsed) = fetch_single_caption_url(client, url, "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36").await {
+        return Some(parsed);
+    }
+
+    // 2. If url didn't have fmt=json3, try appending fmt=json3
+    if !url.contains("fmt=") {
+        let json_url = format!("{}&fmt=json3", url);
+        if let Some(parsed) = fetch_single_caption_url(client, &json_url, "com.google.android.youtube/20.10.38").await {
+            return Some(parsed);
+        }
+        if let Some(parsed) = fetch_single_caption_url(client, &json_url, "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36").await {
+            return Some(parsed);
+        }
+    }
+
+    None
+}
+
+async fn fetch_single_caption_url(client: &Client, url: &str, user_agent: &str) -> Option<String> {
     let resp = client
         .get(url)
-        .header("User-Agent", "Mozilla/5.0")
+        .header("User-Agent", user_agent)
+        .header("Accept-Language", "en-US,en;q=0.9")
         .timeout(Duration::from_secs(10))
         .send()
         .await
         .ok()?;
+
     if !resp.status().is_success() {
         return None;
     }
+
     let body = crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES)
         .await
         .ok()?;
-    parse_json3_timedtext(&body).or_else(|| parse_xml_timedtext(&body))
+
+    if body.trim().is_empty() {
+        return None;
+    }
+
+    parse_timedtext(&body)
 }
 
 /// Fetches and extracts transcript and metadata for a YouTube video.
 pub async fn fetch_youtube_transcript(client: &Client, video_id: &str) -> Result<ScrapedPage> {
     let watch_url = format!("https://www.youtube.com/watch?v={}", video_id);
 
-    // 1. Fetch watch page HTML
-    let resp = client
-        .get(&watch_url)
-        .header(
-            "User-Agent",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        )
-        .header("Accept-Language", "en-US,en;q=0.9")
-        .timeout(Duration::from_secs(10))
-        .send()
-        .await
-        .with_context(|| format!("Failed to reach YouTube for video ID: {}", video_id))?;
+    // 1. First, attempt to fetch video details and caption tracks via Innertube Android Player API
+    let mut title: Option<String> = None;
+    let mut tracks: Option<Vec<CaptionTrack>> = None;
 
-    if !resp.status().is_success() {
-        anyhow::bail!("YouTube watch page returned HTTP status: {}", resp.status());
+    if let Ok(player_data) = fetch_innertube_player(client, video_id, "ANDROID", "20.10.38").await {
+        if let Some(t) = player_data.title {
+            title = Some(t);
+        }
+        if let Some(t_list) = player_data.caption_tracks {
+            if !t_list.is_empty() {
+                tracks = Some(t_list);
+            }
+        }
     }
 
-    let html = crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES)
-        .await
-        .unwrap_or_default();
-    let title = extract_video_title(&html).unwrap_or_else(|| format!("YouTube Video ({})", video_id));
+    // 2. Fallback to Innertube WEB Player API if tracks were not found
+    if tracks.is_none() {
+        if let Ok(player_data) = fetch_innertube_player(client, video_id, "WEB", "2.20240101.00.00").await {
+            if title.is_none() && player_data.title.is_some() {
+                title = player_data.title;
+            }
+            if let Some(t_list) = player_data.caption_tracks {
+                if !t_list.is_empty() {
+                    tracks = Some(t_list);
+                }
+            }
+        }
+    }
 
-    // 2. Extract caption tracks from watch page
-    let tracks = extract_caption_tracks(&html);
+    // 3. Fallback to watch page HTML if tracks or title are still missing
+    if tracks.is_none() || title.is_none() {
+        if let Ok(resp) = client
+            .get(&watch_url)
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            )
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+        {
+            if resp.status().is_success() {
+                if let Ok(html) = crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES).await {
+                    if title.is_none() {
+                        title = extract_video_title(&html);
+                    }
+                    if tracks.is_none() {
+                        tracks = extract_caption_tracks(&html);
+                    }
+                }
+            }
+        }
+    }
 
+    let resolved_title = title.unwrap_or_else(|| format!("YouTube Video ({})", video_id));
+
+    // 4. Select the best caption track (preferring English, human-authored over ASR)
     let chosen_url = if let Some(ref list) = tracks {
-        // Prefer English track if available, else first track
-        let english_track = list
+        let best_track = list
             .iter()
-            .find(|t| t.language_code.starts_with("en"))
+            .find(|t| t.language_code.starts_with("en") && t.kind.as_deref() != Some("asr"))
+            .or_else(|| list.iter().find(|t| t.language_code.starts_with("en")))
             .or_else(|| list.first());
-        english_track.map(|t| t.base_url.clone())
+        best_track.map(|t| t.base_url.clone())
     } else {
         None
     };
 
-    // 3. Download and parse captions
+    // 5. Download and parse captions
     let transcript = if let Some(base_url) = chosen_url {
-        let json_url = if base_url.contains("fmt=") {
-            base_url
-        } else {
-            format!("{}&fmt=json3", base_url)
-        };
-        download_and_parse_captions(client, &json_url).await
+        download_and_parse_captions(client, &base_url).await
     } else {
         let fallback_url = format!(
             "https://www.youtube.com/api/timedtext?v={}&lang=en&fmt=json3",
@@ -383,14 +636,14 @@ pub async fn fetch_youtube_transcript(client: &Client, video_id: &str) -> Result
 
     let content = transcript.context(format!(
         "No English closed captions or transcript found for YouTube video '{}' (ID: {}). The video creator may have disabled subtitles.",
-        title, video_id
+        resolved_title, video_id
     ))?;
 
     let word_count = content.split_whitespace().count();
 
     Ok(ScrapedPage {
         url: watch_url,
-        title: Some(title),
+        title: Some(resolved_title),
         content,
         word_count,
     })
@@ -460,6 +713,46 @@ mod tests {
         let parsed = parse_xml_timedtext(xml).unwrap();
         assert!(parsed.contains("[00:02] Welcome to & the course"));
         assert!(parsed.contains("[01:02] Second minute begins"));
+    }
+
+    #[test]
+    fn test_parse_xml_format3_timedtext() {
+        let xml = r#"<?xml version="1.0" encoding="utf-8" ?><timedtext format="3">
+        <head></head>
+        <body>
+            <p t="160" d="4000"><s ac="0">rust</s><s t="680" ac="0"> a</s><s t="840" ac="0"> memory</s><s t="1279" ac="0"> safe</s></p>
+            <p t="65000" d="3000"><s ac="0">second</s><s t="500"> minute</s></p>
+        </body>
+        </timedtext>"#;
+
+        let parsed = parse_xml_format3_timedtext(xml).unwrap();
+        assert!(parsed.contains("[00:00] rust a memory safe"));
+        assert!(parsed.contains("[01:05] second minute"));
+    }
+
+    #[test]
+    fn test_parse_timedtext_dispatch() {
+        let json = r#"{"events": [{"tStartMs": 2000, "segs": [{"utf8": "json format"}]}]}"#;
+        assert!(parse_timedtext(json).unwrap().contains("[00:02] json format"));
+
+        let format1 = r#"<transcript><text start="3.0">format 1</text></transcript>"#;
+        assert!(parse_timedtext(format1).unwrap().contains("[00:03] format 1"));
+
+        let format3 = r#"<timedtext format="3"><body><p t="4000"><s>format 3</s></p></body></timedtext>"#;
+        assert!(parse_timedtext(format3).unwrap().contains("[00:04] format 3"));
+    }
+
+    #[test]
+    fn test_strip_xml_tags() {
+        let s = "<s ac=\"0\">rust</s><s t=\"680\"> a</s> &amp; <b>code</b>";
+        assert_eq!(strip_xml_tags(s), "rust a &amp; code");
+    }
+
+    #[test]
+    fn test_extract_attr_u64() {
+        assert_eq!(extract_attr_u64(r#"<p t="160" d="4000">"#, "t"), Some(160));
+        assert_eq!(extract_attr_u64(r#"<p d="4000" t='65000'>"#, "t"), Some(65000));
+        assert_eq!(extract_attr_u64(r#"<p>"#, "t"), None);
     }
 
     #[test]
