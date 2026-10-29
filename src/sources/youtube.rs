@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use reqwest::Client;
+use reqwest::{Client, Url};
 use serde::Deserialize;
 use std::time::Duration;
 
@@ -83,13 +83,53 @@ pub fn extract_youtube_video_id(url: &str) -> Option<&str> {
         return None;
     }
 
-    const PATTERNS: &[&str] = &["youtu.be/", "/shorts/", "/embed/", "v="];
-    for &pat in PATTERNS {
-        if let Some(pos) = trimmed.find(pat) {
-            let after = &trimmed[pos + pat.len()..];
-            let id = after.split(['?', '&', '/', '#']).next().unwrap_or("");
+    let parsed = Url::parse(trimmed).ok()?;
+    let host = parsed.host_str()?;
+    let is_youtube_host = host == "youtube.com"
+        || host.ends_with(".youtube.com")
+        || host == "youtu.be";
+
+    if !is_youtube_host {
+        return None;
+    }
+
+    // For youtu.be/<id>
+    if host == "youtu.be" {
+        let path = parsed.path().trim_start_matches('/');
+        let id = path.split('/').next().unwrap_or("");
+        if is_valid_youtube_id(id) {
+            let marker = format!("youtu.be/{}", id);
+            if let Some(pos) = trimmed.find(&marker) {
+                let start = pos + "youtu.be/".len();
+                return Some(&trimmed[start..start + id.len()]);
+            }
+        }
+        return None;
+    }
+
+    // For youtube.com / *.youtube.com:
+    // 1. Check query parameter v=<id>
+    if let Some((_, v)) = parsed.query_pairs().find(|(k, _)| k == "v") {
+        if is_valid_youtube_id(&v) {
+            let marker = format!("v={}", v);
+            if let Some(pos) = trimmed.find(&marker) {
+                let start = pos + "v=".len();
+                return Some(&trimmed[start..start + v.len()]);
+            }
+        }
+    }
+
+    // 2. Check path prefixes: /shorts/<id>, /embed/<id>, /v/<id>
+    let path = parsed.path();
+    for prefix in &["/shorts/", "/embed/", "/v/"] {
+        if let Some(after) = path.strip_prefix(prefix) {
+            let id = after.split('/').next().unwrap_or("");
             if is_valid_youtube_id(id) {
-                return Some(id);
+                let marker = format!("{}{}", prefix, id);
+                if let Some(pos) = trimmed.find(&marker) {
+                    let start = pos + prefix.len();
+                    return Some(&trimmed[start..start + id.len()]);
+                }
             }
         }
     }
@@ -467,7 +507,26 @@ pub async fn fetch_innertube_player(
     })
 }
 
+/// Validates that a caption track URL belongs to the official YouTube timedtext API to prevent SSRF.
+pub fn is_safe_caption_url(url_str: &str) -> bool {
+    let Ok(parsed) = Url::parse(url_str) else {
+        return false;
+    };
+    if parsed.scheme() != "https" {
+        return false;
+    }
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    let is_youtube = host == "youtube.com" || host.ends_with(".youtube.com");
+    is_youtube && parsed.path().starts_with("/api/timedtext")
+}
+
 async fn download_and_parse_captions(client: &Client, url: &str) -> Option<String> {
+    if !is_safe_caption_url(url) {
+        return None;
+    }
+
     let mut candidate_urls = vec![url.to_string()];
     if !url.contains("fmt=") {
         candidate_urls.push(format!("{}&fmt=json3", url));
@@ -638,6 +697,23 @@ mod tests {
         );
         assert_eq!(extract_youtube_video_id("https://example.com/article"), None);
         assert_eq!(extract_youtube_video_id("Dune"), None);
+
+        // Security regression: ensure non-YouTube hosts with YouTube paths/params are rejected
+        assert_eq!(extract_youtube_video_id("https://evil.com/watch?v=dQw4w9WgXcQ"), None);
+        assert_eq!(extract_youtube_video_id("https://evil.com/youtu.be/dQw4w9WgXcQ"), None);
+        assert_eq!(extract_youtube_video_id("https://attacker.com/shorts/dQw4w9WgXcQ"), None);
+        assert_eq!(extract_youtube_video_id("https://notyoutube.com/watch?v=dQw4w9WgXcQ"), None);
+        assert_eq!(extract_youtube_video_id("https://youtube.com.evil.com/watch?v=dQw4w9WgXcQ"), None);
+    }
+
+    #[test]
+    fn test_is_safe_caption_url() {
+        assert!(is_safe_caption_url("https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en"));
+        assert!(is_safe_caption_url("https://youtube.com/api/timedtext?v=dQw4w9WgXcQ"));
+        assert!(!is_safe_caption_url("http://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ")); // insecure HTTP
+        assert!(!is_safe_caption_url("https://evil.com/api/timedtext?v=dQw4w9WgXcQ")); // evil domain
+        assert!(!is_safe_caption_url("http://169.254.169.254/latest/meta-data")); // cloud metadata SSRF
+        assert!(!is_safe_caption_url("https://www.youtube.com/account_settings")); // non-caption path
     }
 
     #[test]

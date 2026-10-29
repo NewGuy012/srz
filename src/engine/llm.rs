@@ -284,8 +284,14 @@ impl LlmClient {
             .context("Failed to build LLM HTTP client")?;
 
         let normalized_base = base_url.trim_end_matches('/').to_string();
-        let fallback_base_url = if normalized_base.contains("localhost") {
-            Some(normalized_base.replace("localhost", "127.0.0.1"))
+        let fallback_base_url = if let Ok(parsed) = reqwest::Url::parse(&normalized_base) {
+            if parsed.host_str() == Some("localhost") {
+                let mut fallback = parsed.clone();
+                let _ = fallback.set_host(Some("127.0.0.1"));
+                Some(fallback.to_string().trim_end_matches('/').to_string())
+            } else {
+                None
+            }
         } else {
             None
         };
