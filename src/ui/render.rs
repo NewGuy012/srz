@@ -41,20 +41,30 @@ pub fn ensure_view_files(
 
 /// Launches the default system browser to view the specified file or URL.
 pub fn open_in_browser(path: &Path) -> std::io::Result<()> {
+    let abs_path = path.canonicalize().unwrap_or_else(|_| {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(path))
+                .unwrap_or_else(|_| path.to_path_buf())
+        }
+    });
+
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open").arg(path).spawn()?;
+        std::process::Command::new("open").arg(&abs_path).spawn()?;
     }
     #[cfg(target_os = "linux")]
     {
-        std::process::Command::new("xdg-open").arg(path).spawn()?;
+        std::process::Command::new("xdg-open").arg(&abs_path).spawn()?;
     }
     #[cfg(target_os = "windows")]
     {
         // Avoid cmd.exe /C start shell parsing metacharacters (&, ^, %, etc.)
         // Use rundll32.exe url.dll,FileProtocolHandler which opens files/URLs in the default handler safely
         std::process::Command::new("rundll32.exe")
-            .args(["url.dll,FileProtocolHandler", &path.to_string_lossy()])
+            .args(["url.dll,FileProtocolHandler", &abs_path.to_string_lossy()])
             .spawn()?;
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]

@@ -32,8 +32,16 @@ TARGET="${ARCH_TARGET}-${OS_TARGET}"
 
 # Determine release download URL
 if [ -n "${VERSION}" ]; then
-  ARCHIVE_NAME="srz-${VERSION}-${TARGET}.tar.gz"
-  DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/${ARCHIVE_NAME}"
+  if ! echo "${VERSION}" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+    echo "Error: Invalid version format '${VERSION}'. Must match semver (e.g. '0.4.0' or 'v0.4.0')." >&2
+    exit 1
+  fi
+  case "${VERSION}" in
+    v*) TAG="${VERSION}" ;;
+    *)  TAG="v${VERSION}" ;;
+  esac
+  ARCHIVE_NAME="srz-${TAG}-${TARGET}.tar.gz"
+  DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/${ARCHIVE_NAME}"
 else
   # Use latest release asset
   ARCHIVE_NAME="srz-${TARGET}.tar.gz"

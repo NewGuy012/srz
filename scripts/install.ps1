@@ -13,8 +13,13 @@ $InstallDir = if ($env:INSTALL_DIR) { $env:INSTALL_DIR } else { Join-Path $env:U
 
 # Determine download URL
 if ($env:VERSION) {
-    $ArchiveName = "srz-$($env:VERSION)-$Target.zip"
-    $DownloadUrl = "https://github.com/$Repo/releases/download/$($env:VERSION)/$ArchiveName"
+    if ($env:VERSION -notmatch '^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$') {
+        Write-Error "Invalid version format '$($env:VERSION)'. Must match semver (e.g. '0.4.0' or 'v0.4.0')."
+        exit 1
+    }
+    $Tag = if ($env:VERSION.StartsWith("v")) { $env:VERSION } else { "v$($env:VERSION)" }
+    $ArchiveName = "srz-$Tag-$Target.zip"
+    $DownloadUrl = "https://github.com/$Repo/releases/download/$Tag/$ArchiveName"
 } else {
     $ArchiveName = "srz-$Target.zip"
     $DownloadUrl = "https://github.com/$Repo/releases/latest/download/$ArchiveName"

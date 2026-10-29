@@ -109,13 +109,13 @@ pub fn extract_youtube_video_id(url: &str) -> Option<&str> {
 
     // For youtube.com / *.youtube.com:
     // 1. Check query parameter v=<id>
-    if let Some((_, v)) = parsed.query_pairs().find(|(k, _)| k == "v") {
-        if is_valid_youtube_id(&v) {
-            let marker = format!("v={}", v);
-            if let Some(pos) = trimmed.find(&marker) {
-                let start = pos + "v=".len();
-                return Some(&trimmed[start..start + v.len()]);
-            }
+    if let Some((_, v)) = parsed.query_pairs().find(|(k, _)| k == "v")
+        && is_valid_youtube_id(&v)
+    {
+        let marker = format!("v={}", v);
+        if let Some(pos) = trimmed.find(&marker) {
+            let start = pos + "v=".len();
+            return Some(&trimmed[start..start + v.len()]);
         }
     }
 
