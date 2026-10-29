@@ -2,8 +2,8 @@ use indicatif::{ProgressBar, ProgressStyle};
 use std::env;
 use std::future::Future;
 use std::io::IsTerminal;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 static QUIET: AtomicBool = AtomicBool::new(false);
@@ -30,10 +30,14 @@ static USE_COLOR: LazyLock<bool> = LazyLock::new(|| {
 });
 
 static SPINNER_STYLE: LazyLock<ProgressStyle> = LazyLock::new(|| {
-    ProgressStyle::default_spinner()
-        .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
-        .template("{spinner:.green} {msg}")
+    let template = if Ui::use_color() {
+        "{spinner:.cyan.bold} {wide_msg}"
+    } else {
+        "{spinner} {wide_msg}"
+    };
+    ProgressStyle::with_template(template)
         .expect("Valid spinner template")
+        .tick_chars("⠋⠙⠚⠞⠖⠦⠴⠲⠳⠓")
 });
 
 pub struct Ui;
@@ -78,10 +82,58 @@ impl Ui {
         pb
     }
 
-    /// Clears the spinner from stderr and prints a clean completion line if not in quiet mode.
+    /// Clears the spinner from stderr and prints a clean completion line with elapsed timing.
     pub fn finish_spinner(pb: &ProgressBar, message: &str) {
+        let elapsed = pb.elapsed();
         pb.finish_and_clear();
-        Self::success(message);
+        Self::success_with_elapsed(message, elapsed);
+    }
+
+    /// Prints a success message to stderr, optionally appending formatted elapsed duration.
+    pub fn success_with_elapsed(message: &str, elapsed: Duration) {
+        if Self::is_quiet() {
+            return;
+        }
+        let safe_msg = sanitize_terminal_text(message);
+        if elapsed >= Duration::from_millis(50) {
+            let elapsed_str = format_duration_short(elapsed);
+            if Self::use_color() {
+                eprintln!(
+                    "\x1b[1;32m✔\x1b[0m {} \x1b[2m({})\x1b[0m",
+                    safe_msg, elapsed_str
+                );
+            } else {
+                eprintln!("✔ {} ({})", safe_msg, elapsed_str);
+            }
+        } else {
+            Self::success(message);
+        }
+    }
+
+    /// Formats an LLM live progress message with stage, token count, elapsed time, and optional rate.
+    pub fn format_llm_status(
+        label: &str,
+        stage: &str,
+        tokens: usize,
+        elapsed: Duration,
+        rate: Option<f64>,
+    ) -> String {
+        let elapsed_str = format_duration_short(elapsed);
+        let token_unit = if tokens == 1 { "token" } else { "tokens" };
+        let mut meta = format!("{} · {} {}", stage, tokens, token_unit);
+        if let Some(r) = rate
+            && r > 0.0
+            && tokens >= 8
+        {
+            meta.push_str(&format!(" · {:.1} t/s", r));
+        }
+        meta.push_str(&format!(" · {}", elapsed_str));
+
+        if Self::use_color() {
+            format!("{} \x1b[2m[{}]\x1b[0m", label, meta)
+        } else {
+            format!("{} [{}]", label, meta)
+        }
     }
 
     /// Runs an async operation with a spinner, cleanly clearing the spinner before printing
@@ -281,20 +333,74 @@ pub fn sanitize_title(title: &str) -> String {
     out
 }
 
+/// Formats a duration into a human-readable compact string (e.g., `80ms`, `1.4s`, `2m 15s`).
+pub fn format_duration_short(d: Duration) -> String {
+    let secs = d.as_secs_f64();
+    if secs < 0.1 {
+        format!("{:.0}ms", d.as_millis())
+    } else if secs < 60.0 {
+        format!("{:.1}s", secs)
+    } else {
+        let mins = (secs / 60.0).floor() as u64;
+        let rem_secs = secs - (mins as f64 * 60.0);
+        format!("{}m {:.0}s", mins, rem_secs)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn test_format_duration_short() {
+        assert_eq!(format_duration_short(Duration::from_millis(45)), "45ms");
+        assert_eq!(format_duration_short(Duration::from_millis(1400)), "1.4s");
+        assert_eq!(format_duration_short(Duration::from_secs(65)), "1m 5s");
+        assert_eq!(format_duration_short(Duration::from_secs(120)), "2m 0s");
+    }
+
+    #[test]
+    fn test_format_llm_status() {
+        let status = Ui::format_llm_status(
+            "Synthesizing",
+            "thinking",
+            42,
+            Duration::from_millis(1800),
+            None,
+        );
+        assert!(status.contains("Synthesizing"));
+        assert!(status.contains("thinking"));
+        assert!(status.contains("42 tokens"));
+        assert!(status.contains("1.8s"));
+
+        let gen_status = Ui::format_llm_status(
+            "Synthesizing",
+            "generating",
+            128,
+            Duration::from_millis(3200),
+            Some(40.0),
+        );
+        assert!(gen_status.contains("generating"));
+        assert!(gen_status.contains("128 tokens"));
+        assert!(gen_status.contains("40.0 t/s"));
+    }
+
+    #[test]
     fn test_sanitize_terminal_text_strips_ansi_and_osc() {
         let csi_injected = "Hello \x1b[31;1mRed Alert\x1b[0m World";
-        assert_eq!(sanitize_terminal_text(csi_injected), "Hello Red Alert World");
+        assert_eq!(
+            sanitize_terminal_text(csi_injected),
+            "Hello Red Alert World"
+        );
 
         let osc_injected = "Normal \x1b]0;Evil Title\x07Text";
         assert_eq!(sanitize_terminal_text(osc_injected), "Normal Text");
 
         let control_chars = "Line\x00with\x08bell\x07and\x1bsome chars";
-        assert_eq!(sanitize_terminal_text(control_chars), "Linewithbellandome chars");
+        assert_eq!(
+            sanitize_terminal_text(control_chars),
+            "Linewithbellandome chars"
+        );
     }
 
     #[test]
@@ -325,5 +431,16 @@ mod tests {
 
         let bidi_title = "Title \u{202E}with \n \t BiDi\u{202C}";
         assert_eq!(sanitize_title(bidi_title), "Title with BiDi");
+    }
+
+    #[test]
+    fn test_spinner_template() {
+        let style = ProgressStyle::with_template("{spinner:.cyan.bold} {wide_msg}")
+            .expect("Valid spinner template")
+            .tick_chars("⠋⠙⠚⠞⠖⠦⠴⠲⠳⠓");
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(style);
+        pb.set_message("Testing spinner");
+        pb.tick();
     }
 }

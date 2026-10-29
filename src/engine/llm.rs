@@ -2,7 +2,7 @@ use crate::chunker::TextChunker;
 use crate::cli::SummaryStyle;
 use crate::ui::Ui;
 use anyhow::{Context, Result};
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::io::{self, Write};
@@ -130,7 +130,6 @@ pub struct LlmClient {
     concurrency: usize,
 }
 
-#[derive(Default)]
 struct SseStreamState {
     content_buf: String,
     thinking_tokens: usize,
@@ -140,6 +139,26 @@ struct SseStreamState {
     truncated: bool,
     last_usage: Option<TokenUsage>,
     needs_stdout_flush: bool,
+    start_time: std::time::Instant,
+    last_spinner_update: std::time::Instant,
+}
+
+impl Default for SseStreamState {
+    fn default() -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            content_buf: String::with_capacity(2048),
+            thinking_tokens: 0,
+            output_tokens: 0,
+            started_visible: false,
+            is_thinking: false,
+            truncated: false,
+            last_usage: None,
+            needs_stdout_flush: false,
+            start_time: now,
+            last_spinner_update: now,
+        }
+    }
 }
 
 pub const MAX_SSE_LINE_BYTES: usize = 1024 * 1024; // 1 MB per line
@@ -147,9 +166,11 @@ pub const MAX_CONTENT_BUFFER_BYTES: usize = 10 * 1024 * 1024; // 10 MB total con
 pub const MAX_HTTP_RESPONSE_BYTES: usize = 10 * 1024 * 1024; // 10 MB for JSON responses
 
 impl SseStreamState {
-    fn new() -> Self {
+    fn new(start_time: std::time::Instant) -> Self {
         Self {
             content_buf: String::with_capacity(2048),
+            start_time,
+            last_spinner_update: start_time,
             ..Self::default()
         }
     }
@@ -192,9 +213,20 @@ impl SseStreamState {
             && !self.started_visible
         {
             self.thinking_tokens += 1;
-            if !self.is_thinking {
-                self.is_thinking = true;
-                pb.set_message(format!("{} (thinking...)", spinner_label));
+            self.is_thinking = true;
+            let now = std::time::Instant::now();
+            if self.thinking_tokens == 1
+                || now.duration_since(self.last_spinner_update) >= Duration::from_millis(80)
+            {
+                self.last_spinner_update = now;
+                let elapsed = self.start_time.elapsed();
+                pb.set_message(Ui::format_llm_status(
+                    spinner_label,
+                    "thinking",
+                    self.thinking_tokens,
+                    elapsed,
+                    None,
+                ));
             }
         }
 
@@ -236,7 +268,21 @@ impl SseStreamState {
                     self.needs_stdout_flush = true;
                 }
                 StreamMode::Buffered => {
-                    pb.set_message(format!("{} (generating...)", spinner_label));
+                    let now = std::time::Instant::now();
+                    self.last_spinner_update = now;
+                    let elapsed = self.start_time.elapsed();
+                    let rate = if elapsed.as_secs_f64() > 0.05 {
+                        Some(self.output_tokens as f64 / elapsed.as_secs_f64())
+                    } else {
+                        None
+                    };
+                    pb.set_message(Ui::format_llm_status(
+                        spinner_label,
+                        "generating",
+                        self.output_tokens,
+                        elapsed,
+                        rate,
+                    ));
                 }
             }
         } else {
@@ -248,7 +294,25 @@ impl SseStreamState {
                     print!("{}", crate::ui::sanitize_terminal_text(delta_text));
                     self.needs_stdout_flush = true;
                 }
-                StreamMode::Buffered => {}
+                StreamMode::Buffered => {
+                    let now = std::time::Instant::now();
+                    if now.duration_since(self.last_spinner_update) >= Duration::from_millis(80) {
+                        self.last_spinner_update = now;
+                        let elapsed = self.start_time.elapsed();
+                        let rate = if elapsed.as_secs_f64() > 0.05 {
+                            Some(self.output_tokens as f64 / elapsed.as_secs_f64())
+                        } else {
+                            None
+                        };
+                        pb.set_message(Ui::format_llm_status(
+                            spinner_label,
+                            "generating",
+                            self.output_tokens,
+                            elapsed,
+                            rate,
+                        ));
+                    }
+                }
             }
         }
     }
@@ -257,11 +321,7 @@ impl SseStreamState {
 fn compute_tokens_per_second(completion_tokens: Option<u32>, elapsed: Duration) -> Option<f64> {
     completion_tokens.and_then(|c| {
         let s = elapsed.as_secs_f64();
-        if s > 0.05 {
-            Some(c as f64 / s)
-        } else {
-            None
-        }
+        if s > 0.05 { Some(c as f64 / s) } else { None }
     })
 }
 
@@ -271,8 +331,9 @@ impl LlmClient {
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         let clean_key = api_key.trim();
         if !clean_key.is_empty() {
-            let val = HeaderValue::from_str(&format!("Bearer {}", clean_key))
-                .with_context(|| "Configured API key contains invalid characters for an HTTP header")?;
+            let val = HeaderValue::from_str(&format!("Bearer {}", clean_key)).with_context(
+                || "Configured API key contains invalid characters for an HTTP header",
+            )?;
             headers.insert(AUTHORIZATION, val);
         }
 
@@ -414,13 +475,16 @@ impl LlmClient {
         done_label: &str,
         start_time: std::time::Instant,
     ) -> Result<LlmOutput> {
-        let bytes = match crate::scraper::read_response_bytes_limited(response, MAX_HTTP_RESPONSE_BYTES).await {
-            Ok(b) => b,
-            Err(e) => {
-                pb.finish_and_clear();
-                return Err(e).context("Failed to read LLM response");
-            }
-        };
+        let bytes =
+            match crate::scraper::read_response_bytes_limited(response, MAX_HTTP_RESPONSE_BYTES)
+                .await
+            {
+                Ok(b) => b,
+                Err(e) => {
+                    pb.finish_and_clear();
+                    return Err(e).context("Failed to read LLM response");
+                }
+            };
         let completion: ChatCompletionResponse = match serde_json::from_slice(&bytes) {
             Ok(c) => c,
             Err(e) => {
@@ -472,7 +536,9 @@ impl LlmClient {
             temperature: 0.3,
             max_tokens: self.max_tokens,
             stream: true,
-            stream_options: Some(StreamOptions { include_usage: true }),
+            stream_options: Some(StreamOptions {
+                include_usage: true,
+            }),
         };
 
         let mut response = self.send_completion_request(&body, &pb).await?;
@@ -491,13 +557,9 @@ impl LlmClient {
         }
 
         let mut line_buf: Vec<u8> = Vec::with_capacity(512);
-        let mut state = SseStreamState::new();
+        let mut state = SseStreamState::new(start_time);
 
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .context("Error reading LLM stream")?
-        {
+        while let Some(chunk) = response.chunk().await.context("Error reading LLM stream")? {
             if line_buf.len().saturating_add(chunk.len()) > MAX_SSE_LINE_BYTES {
                 pb.finish_and_clear();
                 anyhow::bail!("LLM SSE stream exceeded maximum line buffer limit (1 MB)");
@@ -529,11 +591,10 @@ impl LlmClient {
             }
         }
 
-        let streamed_to_stdout =
-            matches!(mode, StreamMode::Stdout { .. }) && state.started_visible;
+        let streamed_to_stdout = matches!(mode, StreamMode::Stdout { .. }) && state.started_visible;
         if streamed_to_stdout {
             println!("\n");
-            Ui::success(done_label);
+            Ui::success_with_elapsed(done_label, start_time.elapsed());
         } else {
             Ui::finish_spinner(&pb, done_label);
         }
@@ -584,7 +645,8 @@ impl LlmClient {
             content: user_prompt,
         });
 
-        self.complete_chat(&messages, spinner_label, done_label, mode).await
+        self.complete_chat(&messages, spinner_label, done_label, mode)
+            .await
     }
 
     fn build_truncation_warning(truncated: bool, usage: Option<&TokenUsage>) -> Option<String> {
@@ -616,8 +678,15 @@ impl LlmClient {
         mode: StreamMode<'_>,
     ) -> Result<LlmOutput> {
         let title_str = title.unwrap_or("Untitled Webpage");
-        self.summarize_document_counted(title_str, Some(url), content, Some(word_count), style, mode)
-            .await
+        self.summarize_document_counted(
+            title_str,
+            Some(url),
+            content,
+            Some(word_count),
+            style,
+            mode,
+        )
+        .await
     }
 
     /// Summarize any document text with an optional pre-computed word count to avoid redundant scans,
@@ -639,7 +708,8 @@ impl LlmClient {
             if chunks.len() > 1 {
                 let chunks_len = chunks.len();
                 let client_arc = std::sync::Arc::new(self.clone());
-                let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(self.concurrency.max(1)));
+                let semaphore =
+                    std::sync::Arc::new(tokio::sync::Semaphore::new(self.concurrency.max(1)));
                 let shared_title: std::sync::Arc<str> = crate::ui::sanitize_title(title).into();
                 let mut handles = Vec::with_capacity(chunks_len);
 

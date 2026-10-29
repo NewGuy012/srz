@@ -1,10 +1,10 @@
-use anyhow::{Context, Result};
 use crate::cache::{Cache, CachedSummary, SetBookSummaryParams};
 use crate::cli::Cli;
 use crate::llm::{self, LlmClient, LlmOutput, StreamMode};
 use crate::scraper::{ScrapedPage, WebScraper};
 use crate::search::{BookSearcher, SearchResult};
 use crate::ui::Ui;
+use anyhow::{Context, Result};
 use serde::Serialize;
 use std::io::{self, IsTerminal, Write};
 
@@ -184,8 +184,7 @@ pub async fn handle_stdin(
     }
 
     let is_html = raw.contains("<!DOCTYPE") || raw.contains("<html") || raw.contains("<body");
-    let (content, word_count, title) = if is_html
-        && let Ok(norm) = scraper.normalize("stdin", &raw)
+    let (content, word_count, title) = if is_html && let Ok(norm) = scraper.normalize("stdin", &raw)
     {
         let t = norm.title.unwrap_or_else(|| "Standard Input".to_string());
         (norm.content, norm.word_count, t)
@@ -209,12 +208,7 @@ pub async fn handle_stdin(
         .await?;
 
     Ok(SummaryOutcome::from_llm(
-        "stdin",
-        title,
-        None,
-        None,
-        word_count,
-        output,
+        "stdin", title, None, None, word_count, output,
     ))
 }
 
@@ -356,18 +350,26 @@ pub async fn handle_news(
     ));
 
     let pb = Ui::spinner("Fetching and reading news articles...");
-    let sources_res = news_client
+    let sources = match news_client
         .collect_news_articles(topic, timeframe, limit, scraper)
-        .await;
-    pb.finish_and_clear();
-
-    let sources = sources_res?;
-
-    Ui::success(&format!(
-        "Aggregated {} news article(s) on '{}' for briefing synthesis.",
-        sources.len(),
-        topic
-    ));
+        .await
+    {
+        Ok(sources) => {
+            Ui::finish_spinner(
+                &pb,
+                &format!(
+                    "Aggregated {} news article(s) on '{}' for briefing synthesis.",
+                    sources.len(),
+                    topic
+                ),
+            );
+            sources
+        }
+        Err(err) => {
+            pb.finish_and_clear();
+            return Err(err);
+        }
+    };
 
     let mut digest = String::new();
     let mut total_words = 0;
@@ -399,13 +401,7 @@ pub async fn handle_news(
     );
 
     let output = llm
-        .summarize_news_digest(
-            topic,
-            timeframe.display_label(),
-            &digest,
-            args.style,
-            mode,
-        )
+        .summarize_news_digest(topic, timeframe.display_label(), &digest, args.style, mode)
         .await?;
 
     Ok(SummaryOutcome::from_llm(
@@ -433,8 +429,7 @@ pub async fn handle_book(
     };
 
     // 1. Check for a cached summary matching title + author + style + model + search mode
-    if let Some(cached) =
-        cache.get_book_summary(title, author, args.style, &args.model, no_search)
+    if let Some(cached) = cache.get_book_summary(title, author, args.style, &args.model, no_search)
     {
         Ui::info("Loaded book summary from local cache (pass `--no-cache` to refresh).");
         return Ok(SummaryOutcome::from_cached(
@@ -571,7 +566,10 @@ fn disambiguate_candidates_if_needed(
         return;
     }
 
-    Ui::header(&format!("Reference Disambiguation for \"{}\"", crate::ui::sanitize_title(effective_title)));
+    Ui::header(&format!(
+        "Reference Disambiguation for \"{}\"",
+        crate::ui::sanitize_title(effective_title)
+    ));
     eprintln!("Multiple references found online:");
     let display_limit = ordered_candidates.len().min(4);
     for (i, cand) in ordered_candidates[..display_limit].iter().enumerate() {
@@ -613,13 +611,9 @@ async fn generate_book_summary(
         let effective_title = resolved_title.as_str();
         let effective_author = resolved_author.as_deref().or(query.author);
 
-        let mut candidates = fetch_or_cache_candidates(
-            effective_title,
-            effective_author,
-            cache,
-            &mut searcher,
-        )
-        .await?;
+        let mut candidates =
+            fetch_or_cache_candidates(effective_title, effective_author, cache, &mut searcher)
+                .await?;
 
         if !candidates.is_empty() {
             disambiguate_candidates_if_needed(effective_title, &mut candidates, args);
@@ -628,7 +622,10 @@ async fn generate_book_summary(
             let mut fallback_url = None;
 
             for res in &candidates {
-                Ui::info(&format!("Attempting reference: {} ({})", res.title, res.url));
+                Ui::info(&format!(
+                    "Attempting reference: {} ({})",
+                    res.title, res.url
+                ));
 
                 let page_result = fetch_or_cache_page(
                     &res.url,
@@ -665,7 +662,9 @@ async fn generate_book_summary(
                             "Could not scrape {}: {}. Trying next reference...",
                             res.url, err
                         ));
-                        if fallback_snippet.is_none() && let Some(snippet) = &res.snippet {
+                        if fallback_snippet.is_none()
+                            && let Some(snippet) = &res.snippet
+                        {
                             fallback_snippet = Some(snippet.clone());
                             fallback_url = Some(res.url.clone());
                         }
@@ -692,7 +691,9 @@ async fn generate_book_summary(
                 }
             }
 
-            Ui::warn("All online references failed to scrape. Falling back to LLM internal memory.");
+            Ui::warn(
+                "All online references failed to scrape. Falling back to LLM internal memory.",
+            );
         } else {
             Ui::warn("No web synopsis found online. Falling back to LLM trained memory.");
         }
