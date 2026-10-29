@@ -2,12 +2,10 @@ use anyhow::{Context, Result};
 use crate::cache::{Cache, CachedSummary, SetBookSummaryParams};
 use crate::cli::Cli;
 use crate::llm::{self, LlmClient, LlmOutput, StreamMode};
-use crate::render;
 use crate::scraper::{ScrapedPage, WebScraper};
 use crate::search::{BookSearcher, SearchResult};
 use crate::ui::Ui;
 use serde::Serialize;
-use std::fs;
 use std::io::{self, IsTerminal, Write};
 
 pub use crate::sources::document::MAX_FILE_BYTES;
@@ -630,10 +628,8 @@ async fn generate_book_summary(
                             "Could not scrape {}: {}. Trying next reference...",
                             res.url, err
                         ));
-                        if fallback_snippet.is_none() && res.snippet.is_none() {
-                            // nothing
-                        } else if fallback_snippet.is_none() && res.snippet.is_some() {
-                            fallback_snippet = res.snippet.clone();
+                        if fallback_snippet.is_none() && let Some(snippet) = &res.snippet {
+                            fallback_snippet = Some(snippet.clone());
                             fallback_url = Some(res.url.clone());
                         }
                     }
