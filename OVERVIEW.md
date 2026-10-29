@@ -118,23 +118,45 @@ graph LR
 
 ---
 
-## 4. Component Directory & Responsibilities
+## 4. Component Directory & Subsystems
 
-| File | Module | Primary Responsibility |
-| :--- | :--- | :--- |
-| [`src/main.rs`](src/main.rs) | `main` | Entry point, pipeline orchestration, lazy DB opening, candidate disambiguation, and subcommand handlers. |
-| [`src/cli.rs`](src/cli.rs) | `cli` | `clap` argument parsing, 8 `SummaryStyle` presets, `stream_mode` selection, news query routing, and config merging. |
-| [`src/config.rs`](src/config.rs) | `config` | TOML configuration loading (`~/.config/srz/config.toml`), starter template generation, and named profile definitions. |
-| [`src/news.rs`](src/news.rs) | `news` | Google News RSS client, `batchexecute` RPC redirect URL decoding, and concurrent multi-article scraping. |
-| [`src/llm.rs`](src/llm.rs) | `llm` | Zero-copy SSE client (`SseStreamState`), localhost IPv4 fallback, parallel map-reduce synthesis, and untrusted-content prompt framing. |
-| [`src/search.rs`](src/search.rs) | `search` | Open Library metadata, Wikipedia OpenSearch/fulltext, DDG search, and hoisted `PreparedQuery` candidate scoring. |
-| [`src/scraper.rs`](src/scraper.rs) | `scraper` | HTTP client (10 MB response cap), MediaWiki/article DOM extraction, and single-pass text cleaning. |
-| [`src/chunker.rs`](src/chunker.rs) | `chunker` | Zero-copy `Cow` text windowing and paragraph chunking for long documents (> 12k words). |
-| [`src/cache.rs`](src/cache.rs) | `cache` | Disk caching in `~/.cache/srz/`, zero-allocation `AsciiLower` hashing, and private `0700`/`0600` permission helpers. |
-| [`src/db.rs`](src/db.rs) | `db` | Embedded DuckDB engine with transactional writes, reading telemetry (`book`, `web`, `news`, `file`, `stdin`), and zero-copy snippet search. |
-| [`src/render.rs`](src/render.rs) | `render` | Markdown-to-HTML5 reader rendering (with CSP & HTML escaping), standalone library dashboard (`srz index`), and slugification. |
-| [`src/ui.rs`](src/ui.rs) | `ui` | Spinners (`indicatif`) and `LazyLock`-cached terminal detection (`is_terminal`) and `NO_COLOR`/`CLICOLOR` hygiene. |
-| [`src/upgrade.rs`](src/upgrade.rs) | `upgrade` | In-place self-update engine: platform detection, rate-limit-safe GitHub release queries, SHA256 verification, and atomic binary swapping (`self-replace`). |
+The codebase is organized into cohesive functional subgroups within `src/`:
+
+```
+src/
+├── commands/     # CLI subcommand workflows and action dispatchers
+├── config/       # CLI argument parsing, flags, and config file profiles
+├── engine/       # LLM streaming client, prompts, and document chunking
+├── sources/      # Content ingestion: web scraping, book search, and news RSS
+├── storage/      # Local disk caching and embedded DuckDB analytics
+├── system/       # Filesystem security helpers and in-place self-updater
+├── ui/           # Terminal console formatting, spinners, and HTML reader views
+├── lib.rs        # Library crate root and backwards-compatible module exports
+└── main.rs       # Binary entry point and CLI orchestration
+```
+
+### Module Responsibilities
+
+| Subsystem | File | Module | Primary Responsibility |
+| :--- | :--- | :--- | :--- |
+| **Entry Points** | [`src/main.rs`](src/main.rs) | `main` | Entry point, CLI lifecycle, profile loading, and subcommand dispatch. |
+| | [`src/lib.rs`](src/lib.rs) | `lib` | Root library interface and backward-compatible module re-exports. |
+| **Commands** | [`src/commands/summarize.rs`](src/commands/summarize.rs) | `commands::summarize` | Workflows for web articles, books, local documents, stdin streams, and news digests. |
+| | [`src/commands/library.rs`](src/commands/library.rs) | `commands::library` | Handlers for `history`, `stats`, `find`, `index`, and `cache` subcommands. |
+| | [`src/commands/diagnostics.rs`](src/commands/diagnostics.rs) | `commands::diagnostics` | Handlers for `doctor`, `models`, and `config` verification. |
+| **Configuration** | [`src/config/cli.rs`](src/config/cli.rs) | `config::cli` | `clap` CLI parser, `SummaryStyle` presets, `NewsTimeframe`, and target auto-detection. |
+| | [`src/config/file.rs`](src/config/file.rs) | `config::file` | `config.toml` file loading, named profile switching, and starter template generation. |
+| **Engine** | [`src/engine/llm.rs`](src/engine/llm.rs) | `engine::llm` | Zero-copy SSE client (`SseStreamState`), localhost IPv4 fallback, and map-reduce synthesis. |
+| | [`src/engine/chunker.rs`](src/engine/chunker.rs) | `engine::chunker` | Zero-copy `Cow` text windowing and paragraph chunking for long documents (> 12k words). |
+| **Sources** | [`src/sources/scraper.rs`](src/sources/scraper.rs) | `sources::scraper` | HTTP client (10 MB cap), MediaWiki/article DOM extraction, EPUB reading, and text cleaning. |
+| | [`src/sources/search.rs`](src/sources/search.rs) | `sources::search` | Open Library metadata, Wikipedia OpenSearch/fulltext, DDG search, and candidate scoring. |
+| | [`src/sources/news.rs`](src/sources/news.rs) | `sources::news` | Google News RSS client, `batchexecute` RPC redirect decoding, and concurrent article fetching. |
+| **Storage** | [`src/storage/cache.rs`](src/storage/cache.rs) | `storage::cache` | Local JSON disk caching in `~/.cache/srz/` with compact serialization and private file permissions. |
+| | [`src/storage/db.rs`](src/storage/db.rs) | `storage::db` | Lazy DuckDB database for history telemetry and offline library full-text snippet search. |
+| **UI & Render** | [`src/ui/terminal.rs`](src/ui/terminal.rs) | `ui::terminal` | CLI progress spinners (`indicatif`), colored text formatting, and quiet/verbose mode handling. |
+| | [`src/ui/render.rs`](src/ui/render.rs) | `ui::render` | Single-pass streaming Markdown-to-HTML converter, CSS styling, index dashboard, and slugify. |
+| **System** | [`src/system/fs_util.rs`](src/system/fs_util.rs) | `system::fs_util` | Platform filesystem utilities and private directory/file permissions (`0700`/`0600`). |
+| | [`src/system/upgrade.rs`](src/system/upgrade.rs) | `system::upgrade` | In-place self-updater: target detection, GitHub release queries, SHA256 verification, and atomic swap. |
 
 ---
 

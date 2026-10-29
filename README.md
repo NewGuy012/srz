@@ -196,7 +196,16 @@ srz "The Hobbit" --profile "google"    # Runs via Google Gemini
 
 ## Architecture & Modules
 
-See [`OVERVIEW.md`](OVERVIEW.md) for detailed Mermaid architecture and sequence diagrams.
+The codebase is organized into modular subsystems under `src/`:
+- **`commands/`**: Subcommand action handlers (`summarize`, `library`, `diagnostics`).
+- **`sources/`**: Web scraping, Open Library / Wikipedia book discovery, and Google News RSS ingestion.
+- **`engine/`**: OpenAI-compatible LLM client, SSE streaming, and map-reduce document chunking.
+- **`storage/`**: Local cache (`~/.cache/srz/`) and embedded DuckDB analytics engine.
+- **`ui/`**: Terminal spinners / formatted output and distraction-free HTML5 reader view generation.
+- **`config/`**: CLI argument parsing (`clap`) and configuration file / profile management (`config.toml`).
+- **`system/`**: Platform utilities, private file security helpers, and in-place self-updater (`srz upgrade`).
+
+See [`OVERVIEW.md`](OVERVIEW.md) for detailed Mermaid architecture diagrams and execution sequences.
 
 
 ## Running Tests

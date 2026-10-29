@@ -1,14 +1,20 @@
-pub mod cache;
-pub mod chunker;
-pub mod cli;
 pub mod commands;
 pub mod config;
-pub mod db;
-pub mod fs_util;
-pub mod llm;
-pub mod news;
-pub mod render;
-pub mod scraper;
-pub mod search;
+pub mod engine;
+pub mod sources;
+pub mod storage;
+pub mod system;
 pub mod ui;
-pub mod upgrade;
+
+// Backwards-compatible aliases for crate root
+pub use config::cli;
+pub use engine::chunker;
+pub use engine::llm;
+pub use sources::news;
+pub use sources::scraper;
+pub use sources::search;
+pub use storage::cache;
+pub use storage::db;
+pub use system::fs_util;
+pub use system::upgrade;
+pub use ui::render;
