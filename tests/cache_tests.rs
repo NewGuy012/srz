@@ -424,3 +424,56 @@ fn test_fs_util_rejects_symlinks() {
 
     let _ = fs::remove_dir_all(dir);
 }
+
+#[test]
+fn test_cache_duckdb_consolidation() {
+    let dir = temp_test_dir("duckdb_cache");
+    let cache = Cache::with_dir(dir.clone(), true);
+
+    let page = ScrapedPage {
+        url: "https://duckdb-cached.com".to_string(),
+        title: Some("DuckDB Cache".to_string()),
+        content: "Testing DuckDB cache consolidation".to_string(),
+        word_count: 4,
+    };
+    cache.set_page("https://duckdb-cached.com", &page);
+
+    cache.set_web_summary(
+        "https://duckdb-cached.com",
+        SummaryStyle::Concise,
+        "gemma-4",
+        "DuckDB Cache",
+        "Consolidated cache in DuckDB",
+    );
+
+    let db_path = dir.join("cache.duckdb");
+    assert!(db_path.exists(), "cache.duckdb database file must exist");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let meta = fs::metadata(&db_path).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+    }
+
+    let loaded_page = cache.get_page("https://duckdb-cached.com");
+    assert!(loaded_page.is_some());
+    assert_eq!(loaded_page.unwrap().title.as_deref(), Some("DuckDB Cache"));
+
+    let loaded_summary = cache.get_web_summary(
+        "https://duckdb-cached.com",
+        SummaryStyle::Concise,
+        "gemma-4",
+    );
+    assert!(loaded_summary.is_some());
+    assert_eq!(
+        loaded_summary.unwrap().summary,
+        "Consolidated cache in DuckDB"
+    );
+
+    // Clean should clear the cache
+    cache.clean().unwrap();
+    assert!(cache.get_page("https://duckdb-cached.com").is_none());
+
+    let _ = fs::remove_dir_all(dir);
+}

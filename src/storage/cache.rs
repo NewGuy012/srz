@@ -4,13 +4,15 @@ use crate::fs_util::{
 };
 use crate::scraper::ScrapedPage;
 use crate::search::{BookMetadata, SearchResult};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use duckdb::{params, Connection};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::env;
 use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -236,6 +238,7 @@ pub struct Cache {
     base_dir: PathBuf,
     enabled: bool,
     policy: CachePolicy,
+    db_conn: Mutex<Option<Connection>>,
 }
 
 impl Cache {
@@ -256,7 +259,51 @@ impl Cache {
             base_dir,
             enabled,
             policy,
+            db_conn: Mutex::new(None),
         }
+    }
+
+    fn get_or_init_db(&self) -> Option<std::sync::MutexGuard<'_, Option<Connection>>> {
+        if !self.enabled {
+            return None;
+        }
+        let mut guard = self.db_conn.lock().ok()?;
+        if guard.is_none() {
+            let db_path = self.base_dir.join("cache.duckdb");
+            if let Some(parent) = db_path.parent() {
+                let _ = create_private_dir_all(parent);
+            }
+            if let Ok(conn) = Connection::open(&db_path) {
+                if db_path.exists() {
+                    crate::fs_util::set_private_file_perms(&db_path);
+                }
+                let _ = conn.execute_batch(
+                    "SET autoinstall_known_extensions = false;
+                     SET autoload_known_extensions = false;
+                     CREATE TABLE IF NOT EXISTS cache_pages (
+                         cache_key VARCHAR PRIMARY KEY,
+                         url VARCHAR NOT NULL,
+                         title VARCHAR,
+                         content TEXT NOT NULL,
+                         word_count UINTEGER NOT NULL,
+                         cached_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+                     );
+                     CREATE TABLE IF NOT EXISTS cache_search (
+                         cache_key VARCHAR PRIMARY KEY,
+                         data TEXT NOT NULL,
+                         cached_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+                     );
+                     CREATE TABLE IF NOT EXISTS cache_summaries (
+                         cache_key VARCHAR PRIMARY KEY,
+                         title VARCHAR NOT NULL,
+                         summary TEXT NOT NULL,
+                         cached_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+                     );"
+                );
+                *guard = Some(conn);
+            }
+        }
+        Some(guard)
     }
 
     /// Returns the root cache directory path.
@@ -310,6 +357,15 @@ impl Cache {
     /// Removes all cached files in pages, search, summaries, and views, returning stats of what was cleared.
     pub fn clean(&self) -> std::io::Result<CacheStats> {
         let current = self.stats();
+        if let Some(guard) = self.get_or_init_db() {
+            if let Some(conn) = guard.as_ref() {
+                let _ = conn.execute_batch(
+                    "DELETE FROM cache_pages;
+                     DELETE FROM cache_search;
+                     DELETE FROM cache_summaries;",
+                );
+            }
+        }
         for ns in CacheNamespace::all() {
             let p = self.base_dir.join(ns.as_str());
             if p.exists() {
@@ -333,6 +389,46 @@ impl Cache {
             Some(ns) => vec![ns],
             None => CacheNamespace::all().to_vec(),
         };
+
+        if let Some(guard) = self.get_or_init_db() {
+            if let Some(conn) = guard.as_ref() {
+                let now_secs = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+
+                for ns in &namespaces {
+                    let ttl = match options.older_than {
+                        Some(dur) => dur,
+                        None => ns.ttl(&self.policy),
+                    };
+                    if ttl != Duration::MAX {
+                        let cutoff = now_secs.saturating_sub(ttl.as_secs() as i64);
+                        match ns {
+                            CacheNamespace::Pages => {
+                                let _ = conn.execute(
+                                    "DELETE FROM cache_pages WHERE strftime(cached_at, '%s')::BIGINT < ?",
+                                    params![cutoff],
+                                );
+                            }
+                            CacheNamespace::Search => {
+                                let _ = conn.execute(
+                                    "DELETE FROM cache_search WHERE strftime(cached_at, '%s')::BIGINT < ?",
+                                    params![cutoff],
+                                );
+                            }
+                            CacheNamespace::Summaries => {
+                                let _ = conn.execute(
+                                    "DELETE FROM cache_summaries WHERE strftime(cached_at, '%s')::BIGINT < ?",
+                                    params![cutoff],
+                                );
+                            }
+                            CacheNamespace::Views => {}
+                        }
+                    }
+                }
+            }
+        }
 
         let mut files_removed = 0;
         let mut bytes_reclaimed = 0;
@@ -524,6 +620,61 @@ impl Cache {
         if !self.enabled {
             return None;
         }
+
+        // 1. Try DuckDB cache first
+        if let Some(guard) = self.get_or_init_db() {
+            if let Some(conn) = guard.as_ref() {
+                let now_secs = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+
+                let table = match namespace {
+                    "search" => Some("cache_search"),
+                    "summaries" => Some("cache_summaries"),
+                    _ => None,
+                };
+
+                if let Some(tbl) = table {
+                    let sql = format!(
+                        "SELECT data, strftime(cached_at, '%s')::BIGINT
+                         FROM {}
+                         WHERE cache_key = ?",
+                        tbl
+                    );
+                    if let Ok(mut stmt) = conn.prepare(&sql) {
+                        if let Ok(mut rows) = stmt.query(params![key_hash]) {
+                            if let Some(row) = rows.next().ok().flatten() {
+                                if let (Ok(json_data), Ok(cached_secs)) =
+                                    (row.get::<_, String>(0), row.get::<_, i64>(1))
+                                {
+                                    if let Some(ttl_dur) = ttl {
+                                        if ttl_dur != Duration::MAX
+                                            && (now_secs - cached_secs) > ttl_dur.as_secs() as i64
+                                        {
+                                            let del_sql =
+                                                format!("DELETE FROM {} WHERE cache_key = ?", tbl);
+                                            let _ = conn.execute(&del_sql, params![key_hash]);
+                                            let path = self
+                                                .base_dir
+                                                .join(namespace)
+                                                .join(format!("{}.json", key_hash));
+                                            let _ = fs::remove_file(path);
+                                            return None;
+                                        }
+                                    }
+                                    if let Ok(val) = serde_json::from_str(&json_data) {
+                                        return Some(val);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Fallback to file on disk
         let path = self
             .base_dir
             .join(namespace)
@@ -545,6 +696,32 @@ impl Cache {
     }
 
     fn write_entry<T: Serialize>(&self, namespace: &str, key_hash: &str, value: &T) {
+        if !self.enabled {
+            return;
+        }
+
+        // Save into DuckDB cache
+        if let Some(guard) = self.get_or_init_db() {
+            if let Some(conn) = guard.as_ref() {
+                let table = match namespace {
+                    "search" => Some("cache_search"),
+                    "summaries" => Some("cache_summaries"),
+                    _ => None,
+                };
+                if let Some(tbl) = table {
+                    if let Ok(json_str) = serde_json::to_string(value) {
+                        let sql = format!(
+                            "INSERT OR REPLACE INTO {} (cache_key, data, cached_at)
+                             VALUES (?, ?, current_timestamp)",
+                            tbl
+                        );
+                        let _ = conn.execute(&sql, params![key_hash, json_str]);
+                    }
+                }
+            }
+        }
+
+        // Also write private file
         let dir = self.base_dir.join(namespace);
         if create_private_dir_all(&dir).is_err() {
             return;
@@ -568,11 +745,72 @@ impl Cache {
 
     pub fn get_page_with_ttl(&self, url: &str, ttl: Duration) -> Option<ScrapedPage> {
         let key = Self::hash_key(&url.trim());
+        if !self.enabled {
+            return None;
+        }
+
+        // 1. Try DuckDB cache first
+        if let Some(guard) = self.get_or_init_db() {
+            if let Some(conn) = guard.as_ref() {
+                let now_secs = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+
+                if let Ok(mut stmt) = conn.prepare(
+                    "SELECT url, title, content, word_count, strftime(cached_at, '%s')::BIGINT
+                     FROM cache_pages
+                     WHERE cache_key = ?"
+                ) {
+                    if let Ok(mut rows) = stmt.query(params![&key]) {
+                        if let Some(row) = rows.next().ok().flatten() {
+                            let page_url: String = row.get(0).unwrap_or_default();
+                            let title: Option<String> = row.get(1).ok();
+                            let content: String = row.get(2).unwrap_or_default();
+                            let word_count: usize = row.get::<_, u32>(3).unwrap_or(0) as usize;
+                            let cached_secs: i64 = row.get(4).unwrap_or(0);
+
+                            if ttl != Duration::MAX && (now_secs - cached_secs) > ttl.as_secs() as i64 {
+                                let _ = conn.execute("DELETE FROM cache_pages WHERE cache_key = ?", params![&key]);
+                                let path = self.base_dir.join("pages").join(format!("{}.json", key));
+                                let _ = fs::remove_file(path);
+                                return None;
+                            }
+
+                            return Some(ScrapedPage {
+                                url: page_url,
+                                title,
+                                content,
+                                word_count,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Fallback to file on disk
         self.read_entry_with_ttl("pages", &key, Some(ttl))
     }
 
     pub fn set_page(&self, url: &str, page: &ScrapedPage) {
         let key = Self::hash_key(&url.trim());
+        if !self.enabled {
+            return;
+        }
+
+        // 1. Save into DuckDB cache
+        if let Some(guard) = self.get_or_init_db() {
+            if let Some(conn) = guard.as_ref() {
+                let _ = conn.execute(
+                    "INSERT OR REPLACE INTO cache_pages (cache_key, url, title, content, word_count, cached_at)
+                     VALUES (?, ?, ?, ?, ?, current_timestamp)",
+                    params![&key, &page.url, &page.title, &page.content, page.word_count as u32],
+                );
+            }
+        }
+
+        // 2. Write private file
         self.write_entry("pages", &key, page);
     }
 
