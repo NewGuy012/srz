@@ -306,10 +306,6 @@ pub enum Commands {
         /// Install a specific version (e.g. "0.2.0" or "v0.2.0")
         #[arg(long)]
         version: Option<String>,
-
-        /// Show what would be done without modifying the binary
-        #[arg(long)]
-        dry_run: bool,
     },
 }
 
@@ -399,7 +395,6 @@ pub enum ResolvedAction<'a> {
         check: bool,
         force: bool,
         version: Option<String>,
-        dry_run: bool,
     },
 }
 
@@ -488,12 +483,10 @@ impl Cli {
                     check,
                     force,
                     version,
-                    dry_run,
                 } => Ok(ResolvedAction::Upgrade {
                     check: *check,
                     force: *force,
                     version: version.clone(),
-                    dry_run: *dry_run,
                 }),
             }
         } else if let Some(target) = &self.target {

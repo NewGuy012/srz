@@ -551,7 +551,6 @@ fn test_upgrade_subcommand_flags() {
             check: false,
             force: false,
             version: None,
-            dry_run: false,
         }
     );
 
@@ -563,19 +562,17 @@ fn test_upgrade_subcommand_flags() {
             check: true,
             force: false,
             version: None,
-            dry_run: false,
         }
     );
 
-    // srz upgrade --force --dry-run
-    let force_dry_cli = Cli::parse_from(["srz", "upgrade", "--force", "--dry-run"]);
+    // srz upgrade --force
+    let force_cli = Cli::parse_from(["srz", "upgrade", "--force"]);
     assert_eq!(
-        force_dry_cli.resolve_action().unwrap(),
+        force_cli.resolve_action().unwrap(),
         ResolvedAction::Upgrade {
             check: false,
             force: true,
             version: None,
-            dry_run: true,
         }
     );
 
@@ -587,7 +584,6 @@ fn test_upgrade_subcommand_flags() {
             check: false,
             force: false,
             version: Some("0.2.0".to_string()),
-            dry_run: false,
         }
     );
 }

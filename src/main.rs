@@ -93,9 +93,8 @@ async fn main() -> Result<()> {
             check,
             force,
             version,
-            dry_run,
         } => {
-            srz::upgrade::run_upgrade(check, force, version.as_deref(), dry_run, args.json).await?;
+            srz::upgrade::run_upgrade(check, force, version.as_deref(), args.json).await?;
             return Ok(());
         }
         _ => {}

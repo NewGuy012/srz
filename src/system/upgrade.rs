@@ -190,7 +190,6 @@ pub enum UpgradeStatus {
     Upgraded,
     HomebrewManaged,
     CargoManaged,
-    DryRun,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -225,8 +224,7 @@ impl UpgradeResult {
             match status {
                 UpgradeStatus::Upgraded | UpgradeStatus::AlreadyUpToDate => Ui::success(&message),
                 UpgradeStatus::UpdateAvailable
-                | UpgradeStatus::HomebrewManaged
-                | UpgradeStatus::DryRun => Ui::info(&message),
+                | UpgradeStatus::HomebrewManaged => Ui::info(&message),
                 UpgradeStatus::CargoManaged => Ui::warn(&message),
             }
         }
@@ -385,7 +383,6 @@ pub async fn run_upgrade(
     check: bool,
     force: bool,
     custom_version: Option<&str>,
-    dry_run: bool,
     json: bool,
 ) -> Result<()> {
     let current_version_str = env!("CARGO_PKG_VERSION");
@@ -581,24 +578,6 @@ pub async fn run_upgrade(
         .with_context(|| format!("Failed to flush temporary binary at {:?}", temp_path))?;
 
     // 8. Swap binary
-    if dry_run {
-        let _ = std::fs::remove_file(&temp_path);
-        let msg = format!(
-            "[dry-run] Would replace {} with srz v{} ({})",
-            current_exe.display(),
-            target_version,
-            target_info.target
-        );
-        UpgradeResult::emit(
-            UpgradeStatus::DryRun,
-            target_version.to_string(),
-            target_info.target,
-            msg,
-            json,
-        )?;
-        return Ok(());
-    }
-
     let swap_pb = Ui::spinner(format!("Installing to {}...", current_exe.display()));
     if let Err(err) = self_replace::self_replace(&temp_path) {
         let _ = std::fs::remove_file(&temp_path);
