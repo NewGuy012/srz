@@ -668,11 +668,10 @@ impl LlmClient {
                     final_out.completion_tokens = Some(total_completion_tokens);
                 }
                 final_out.duration_ms = total_duration_ms;
-                if total_duration_ms > 50 && total_completion_tokens > 0 {
-                    final_out.tokens_per_second = Some(
-                        total_completion_tokens as f64 / (total_duration_ms as f64 / 1000.0),
-                    );
-                }
+                final_out.tokens_per_second = compute_tokens_per_second(
+                    Some(total_completion_tokens),
+                    Duration::from_millis(total_duration_ms),
+                );
                 return Ok(final_out);
             }
         }

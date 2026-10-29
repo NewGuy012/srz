@@ -24,32 +24,36 @@ pub struct ProfileConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Config {
-    pub base_url: Option<String>,
-    pub model: Option<String>,
-    pub api_key: Option<String>,
-    pub style: Option<SummaryStyle>,
-    pub max_tokens: Option<u32>,
-    pub no_search: Option<bool>,
-    pub no_cache: Option<bool>,
-    pub quiet: Option<bool>,
-    pub verbose: Option<bool>,
-    pub open: Option<bool>,
-    pub concurrency: Option<usize>,
-    pub stream: Option<bool>,
+    #[serde(flatten)]
+    pub settings: ProfileConfig,
     #[serde(default)]
     pub profiles: HashMap<String, ProfileConfig>,
+}
+
+impl std::ops::Deref for Config {
+    type Target = ProfileConfig;
+
+    fn deref(&self) -> &Self::Target {
+        &self.settings
+    }
+}
+
+impl std::ops::DerefMut for Config {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.settings
+    }
 }
 
 impl Config {
     /// Returns the default path for `config.toml` (`$SRZ_CONFIG`, `$XDG_CONFIG_HOME/srz/config.toml`, or `~/.config/srz/config.toml`).
     pub fn default_config_path() -> PathBuf {
-        if let Some(env_path) = crate::cache::non_empty_env_path("SRZ_CONFIG") {
+        if let Some(env_path) = crate::fs_util::non_empty_env_path("SRZ_CONFIG") {
             return env_path;
         }
-        if let Some(xdg) = crate::cache::non_empty_env_path("XDG_CONFIG_HOME") {
+        if let Some(xdg) = crate::fs_util::non_empty_env_path("XDG_CONFIG_HOME") {
             return xdg.join("srz").join("config.toml");
         }
-        if let Some(home) = crate::cache::non_empty_env_path("HOME") {
+        if let Some(home) = crate::fs_util::non_empty_env_path("HOME") {
             return home.join(".config").join("srz").join("config.toml");
         }
         env::temp_dir().join("srz").join("config.toml")

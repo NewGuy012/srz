@@ -90,6 +90,34 @@ pub fn slugify(title: &str) -> String {
     }
 }
 
+const SHARED_THEME_CSS: &str = r#"    :root {
+      --bg: #faf9f5;
+      --surface: #ffffff;
+      --text: #1c1e21;
+      --muted: #5f6672;
+      --accent: #0f62fe;
+      --border: #e5e4de;
+      --code-bg: #f1f0ea;
+      --quote-bg: #f4f3ed;
+      --badge-bg: #f1f0ea;
+      --card-hover: #f7f6f0;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111317;
+        --surface: #181b20;
+        --text: #e6e8ec;
+        --muted: #9aa2b1;
+        --accent: #6ea8fe;
+        --border: #2a2f3a;
+        --code-bg: #222630;
+        --quote-bg: #1b1f27;
+        --badge-bg: #222630;
+        --card-hover: #1e2229;
+      }
+    }
+    * { box-sizing: border-box; }"#;
+
 /// Renders a standalone HTML5 document with editorial typography and automatic light/dark mode.
 pub fn render_html_document(title: &str, markdown: &str) -> String {
     let escaped_title = escape_html(title);
@@ -104,30 +132,13 @@ pub fn render_html_document(title: &str, markdown: &str) -> String {
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: https:;">
   <title>Summary: {escaped_title}</title>
   <style>
-    :root {{
-      --bg: #faf9f5;
-      --surface: #ffffff;
-      --text: #1c1e21;
-      --muted: #5f6672;
-      --accent: #0f62fe;
-      --border: #e5e4de;
-      --code-bg: #f1f0ea;
-      --quote-bg: #f4f3ed;
-    }}
-    @media (prefers-color-scheme: dark) {{
-      :root {{
-        --bg: #111317;
-        --surface: #181b20;
-        --text: #e6e8ec;
-        --muted: #9aa2b1;
-        --accent: #6ea8fe;
-        --border: #2a2f3a;
-        --code-bg: #222630;
-        --quote-bg: #1b1f27;
-      }}
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
+{SHARED_THEME_CSS}
+    body {{"#,
+        SHARED_THEME_CSS = SHARED_THEME_CSS,
+        escaped_title = escaped_title,
+    )
+    + &format!(
+        r#"
       margin: 0;
       padding: 3rem 1.25rem 5rem;
       background: var(--bg);
@@ -549,29 +560,7 @@ pub fn render_index_html(stats: &LibraryStats, entries: &[HistoryEntry]) -> Stri
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
   <title>srz &bull; Summary Library</title>
   <style>
-    :root {{
-      --bg: #faf9f5;
-      --surface: #ffffff;
-      --text: #1c1e21;
-      --muted: #5f6672;
-      --accent: #0f62fe;
-      --border: #e5e4de;
-      --badge-bg: #f1f0ea;
-      --card-hover: #f7f6f0;
-    }}
-    @media (prefers-color-scheme: dark) {{
-      :root {{
-        --bg: #111317;
-        --surface: #181b20;
-        --text: #e6e8ec;
-        --muted: #9aa2b1;
-        --accent: #6ea8fe;
-        --border: #2a2f3a;
-        --badge-bg: #222630;
-        --card-hover: #1e2229;
-      }}
-    }}
-    * {{ box-sizing: border-box; }}
+{SHARED_THEME_CSS}
     body {{
       margin: 0;
       padding: 2.5rem 1.25rem 5rem;
@@ -804,6 +793,7 @@ pub fn render_index_html(stats: &LibraryStats, entries: &[HistoryEntry]) -> Stri
 </body>
 </html>
 "#,
+        SHARED_THEME_CSS = SHARED_THEME_CSS,
         total_summaries = stats.total_summaries,
         book_summaries = stats.book_summaries,
         web_summaries = stats.web_summaries,

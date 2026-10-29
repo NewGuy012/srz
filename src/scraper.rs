@@ -43,7 +43,19 @@ const REFERENCE_HEADINGS: &[&str] = &[
     "## see also",
 ];
 
+pub const DEFAULT_USER_AGENT: &str =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
 pub const MAX_SCRAPE_BYTES: usize = 10 * 1024 * 1024; // 10 MB limit for web responses
+
+/// Converts HTML bytes to plain text without table borders or footnote links.
+pub fn html_to_plain_text(html_bytes: &[u8]) -> Result<String> {
+    html2text::config::plain()
+        .link_footnotes(false)
+        .no_table_borders()
+        .string_from_read(html_bytes, 10_000)
+        .context("Failed to convert HTML to text")
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScrapedPage {
@@ -63,10 +75,7 @@ impl WebScraper {
         let mut headers = HeaderMap::new();
         headers.insert(
             USER_AGENT,
-            HeaderValue::from_static(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
-                 AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            ),
+            HeaderValue::from_static(DEFAULT_USER_AGENT),
         );
         headers.insert(
             reqwest::header::ACCEPT,
@@ -175,11 +184,7 @@ impl WebScraper {
         let target_html = self.extract_main_html(&document);
 
         // 3. Convert HTML to clean plain text without link footnote bloat or 100-col artificial wraps
-        let rendered_text = html2text::config::plain()
-            .link_footnotes(false)
-            .no_table_borders()
-            .string_from_read(target_html.as_bytes(), 10_000)
-            .context("Failed to convert HTML to text")?;
+        let rendered_text = html_to_plain_text(target_html.as_bytes())?;
 
         // 4. Clean and normalize whitespace/formatting + count words in a single pass
         let (cleaned_content, word_count) = clean_text(&rendered_text, true, 2);
@@ -272,11 +277,7 @@ pub fn extract_epub(path: &Path) -> Result<ExtractedDocument> {
     let num_chapters = doc.get_num_chapters();
     for _ in 0..num_chapters {
         if let Some((page_html, _mime)) = doc.get_current_str() {
-            let rendered = html2text::config::plain()
-                .link_footnotes(false)
-                .no_table_borders()
-                .string_from_read(page_html.as_bytes(), 10_000)
-                .unwrap_or_default();
+            let rendered = html_to_plain_text(page_html.as_bytes()).unwrap_or_default();
             if !rendered.trim().is_empty() {
                 if !full_text.is_empty() {
                     full_text.push_str("\n\n");

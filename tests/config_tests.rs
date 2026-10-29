@@ -63,11 +63,14 @@ style = "detailed"
 #[test]
 fn test_config_applied_to_cli_when_not_specified_on_command_line() {
     let config = Config {
-        base_url: Some("http://ollama:11434/v1".to_string()),
-        model: Some("custom-model:latest".to_string()),
-        style: Some(SummaryStyle::Detailed),
-        max_tokens: Some(2048),
-        stream: Some(true),
+        settings: ProfileConfig {
+            base_url: Some("http://ollama:11434/v1".to_string()),
+            model: Some("custom-model:latest".to_string()),
+            style: Some(SummaryStyle::Detailed),
+            max_tokens: Some(2048),
+            stream: Some(true),
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -86,9 +89,12 @@ fn test_config_applied_to_cli_when_not_specified_on_command_line() {
 #[test]
 fn test_cli_flags_take_precedence_over_config() {
     let config = Config {
-        base_url: Some("http://config-url/v1".to_string()),
-        model: Some("config-model".to_string()),
-        style: Some(SummaryStyle::Executive),
+        settings: ProfileConfig {
+            base_url: Some("http://config-url/v1".to_string()),
+            model: Some("config-model".to_string()),
+            style: Some(SummaryStyle::Executive),
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -114,7 +120,10 @@ fn test_cli_flags_take_precedence_over_config() {
 #[test]
 fn test_profile_flag_overrides_root_config() {
     let mut config = Config {
-        model: Some("root-model".to_string()),
+        settings: ProfileConfig {
+            model: Some("root-model".to_string()),
+            ..Default::default()
+        },
         ..Default::default()
     };
 
