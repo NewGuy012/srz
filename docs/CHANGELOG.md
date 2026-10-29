@@ -5,7 +5,9 @@ All notable changes to `srz` are documented in this file.
 ## Release Notes Template
 
 ```markdown
-## What's Changed in vX.Y.Z
+## vX.Y.Z
+
+### Summary
 
 > One to two sentence summary describing the primary focus of this release.
 
@@ -18,6 +20,8 @@ All notable changes to `srz` are documented in this file.
 ---
 
 ## v0.5.0
+
+### Summary
 
 > Expands DuckDB utilization across the engine with offline BM25 library search, reading habit and model telemetry in `srz stats`, persistent multi-turn chat sessions with resumption for `srz ask`, consolidated DuckDB caching, and CI/workflow modernization.
 
@@ -37,6 +41,8 @@ All notable changes to `srz` are documented in this file.
 
 ## v0.4.0
 
+### Summary
+
 > Introduces automated cache retention policies and LRU pruning, expands news aggregation with dedicated RSS parsing, upgrades YouTube ingestion via Innertube API, and completes comprehensive security and performance hardening across all subsystems.
 
 ### Changes
@@ -53,6 +59,8 @@ All notable changes to `srz` are documented in this file.
 
 ## v0.3.0
 
+### Summary
+
 > Introduces an interactive terminal library explorer (`srz browse`), grounded document Q&A (`srz ask`), YouTube caption ingestion, native PDF extraction, and completes Phase 3 security hardening.
 
 ### Changes
@@ -68,6 +76,8 @@ All notable changes to `srz` are documented in this file.
 
 ## v0.2.0
 
+### Summary
+
 > Adds an in-place self-updater (`srz upgrade`), automated Homebrew tap integration, and cross-platform support for Windows PowerShell.
 
 ### Changes
@@ -80,6 +90,8 @@ All notable changes to `srz` are documented in this file.
 ---
 
 ## v0.1.0
+
+### Summary
 
 > Initial public release of `srz`: a modular CLI to summarize webpages, documents, books, and live news using local LLMs.
 
