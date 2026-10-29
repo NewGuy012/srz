@@ -4,12 +4,29 @@ on:
   push:
     branches:
       - master
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'assets/**'
+      - '.gitignore'
+      - 'LICENSE*'
   pull_request:
     branches:
       - master
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'assets/**'
+      - '.gitignore'
+      - 'LICENSE*'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
+  actions: write
 
 jobs:
   test:
@@ -30,6 +47,18 @@ jobs:
         with:
           components: clippy
 
+      - name: Set up sccache
+        uses: mozilla/sccache-action@v0.0.8
+
+      - name: Configure sccache
+        shell: bash
+        run: |
+          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
       - name: Install Linux build dependencies
         if: matrix.os == 'ubuntu-latest'
         run: |
@@ -41,6 +70,10 @@ jobs:
 
       - name: Run cargo clippy (warnings denied)
         run: cargo clippy --all-targets -- -D warnings
+
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats
 
   security-audit:
     name: Dependency Security Audit
