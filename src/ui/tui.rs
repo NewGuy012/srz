@@ -27,7 +27,6 @@ enum FocusPane {
 
 struct AppState {
     items: Vec<LibraryItem>,
-    search_blobs: Vec<String>,
     filtered_indices: Vec<usize>,
     list_state: ListState,
     scroll_offset: u16,
@@ -39,28 +38,14 @@ struct AppState {
 }
 
 impl AppState {
-    fn build_search_blob(item: &LibraryItem) -> String {
-        format!(
-            "{} {} {} {} {}",
-            item.title,
-            item.author.as_deref().unwrap_or(""),
-            item.url.as_deref().unwrap_or(""),
-            item.summary,
-            item.target_type
-        )
-        .to_lowercase()
-    }
-
     fn new(items: Vec<LibraryItem>, views_dir: std::path::PathBuf) -> Self {
         let indices: Vec<usize> = (0..items.len()).collect();
-        let search_blobs = items.iter().map(Self::build_search_blob).collect();
         let mut list_state = ListState::default();
         if !indices.is_empty() {
             list_state.select(Some(0));
         }
         Self {
             items,
-            search_blobs,
             filtered_indices: indices,
             list_state,
             scroll_offset: 0,
@@ -73,17 +58,16 @@ impl AppState {
     }
 
     fn apply_filter(&mut self) {
-        let q = self.filter_query.trim().to_lowercase();
+        let q = self.filter_query.trim();
+        self.filtered_indices.clear();
         if q.is_empty() {
-            self.filtered_indices = (0..self.items.len()).collect();
+            self.filtered_indices.extend(0..self.items.len());
         } else {
-            self.filtered_indices = self
-                .search_blobs
-                .iter()
-                .enumerate()
-                .filter(|(_, blob)| blob.contains(&q))
-                .map(|(i, _)| i)
-                .collect();
+            for (idx, item) in self.items.iter().enumerate() {
+                if item.matches_query(q) {
+                    self.filtered_indices.push(idx);
+                }
+            }
         }
 
         if self.filtered_indices.is_empty() {
@@ -278,14 +262,15 @@ fn run_loop(
                         }
                     }
                     KeyCode::Char('d') => {
-                        if let Some(item) = state.selected_item().cloned() {
-                            if db.delete_library_item(item.id).is_ok() {
-                                if let Some(pos) = state.items.iter().position(|it| it.id == item.id) {
+                        if let Some(item) = state.selected_item() {
+                            let id = item.id;
+                            let title = item.title.clone();
+                            if db.delete_library_item(id).is_ok() {
+                                if let Some(pos) = state.items.iter().position(|it| it.id == id) {
                                     state.items.remove(pos);
-                                    state.search_blobs.remove(pos);
                                 }
                                 state.apply_filter();
-                                state.set_status(format!("✓ Deleted '{}'", item.title));
+                                state.set_status(format!("✓ Deleted '{}'", title));
                             } else {
                                 state.set_status("⚠ Failed to delete item from database");
                             }

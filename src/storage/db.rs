@@ -83,6 +83,42 @@ pub struct LibraryItem {
     pub created_at: String,
 }
 
+impl LibraryItem {
+    /// Returns true if this item's title, author, url, summary, or target type matches `query` (case-insensitively).
+    pub fn matches_query(&self, query: &str) -> bool {
+        let q = query.trim();
+        if q.is_empty() {
+            return true;
+        }
+        if q.is_ascii() {
+            crate::search::contains_ascii_case_insensitive(&self.title, q)
+                || self
+                    .author
+                    .as_deref()
+                    .is_some_and(|a| crate::search::contains_ascii_case_insensitive(a, q))
+                || self
+                    .url
+                    .as_deref()
+                    .is_some_and(|u| crate::search::contains_ascii_case_insensitive(u, q))
+                || crate::search::contains_ascii_case_insensitive(&self.summary, q)
+                || crate::search::contains_ascii_case_insensitive(&self.target_type, q)
+        } else {
+            let q_lower = q.to_lowercase();
+            self.title.to_lowercase().contains(&q_lower)
+                || self
+                    .author
+                    .as_ref()
+                    .is_some_and(|a| a.to_lowercase().contains(&q_lower))
+                || self
+                    .url
+                    .as_ref()
+                    .is_some_and(|u| u.to_lowercase().contains(&q_lower))
+                || self.summary.to_lowercase().contains(&q_lower)
+                || self.target_type.to_lowercase().contains(&q_lower)
+        }
+    }
+}
+
 pub struct Database {
     conn: Connection,
 }
