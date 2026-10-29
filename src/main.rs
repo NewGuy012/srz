@@ -7,20 +7,9 @@ use srz::cli::{Cli, ResolvedAction};
 use srz::commands::{self, with_db};
 use srz::config::Config;
 use srz::db::NewSummaryRecord;
-use srz::llm::LlmClient;
 use srz::render;
 use srz::scraper::WebScraper;
 use srz::ui::Ui;
-
-fn init_llm_or_exit(args: &Cli) -> LlmClient {
-    match LlmClient::new(&args.base_url, &args.model, &args.api_key, args.max_tokens) {
-        Ok(c) => c,
-        Err(err) => {
-            Ui::error(&format!("Failed to initialize LLM client: {}", err));
-            std::process::exit(1);
-        }
-    }
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -123,7 +112,7 @@ async fn main() -> Result<()> {
         Ui::info("Cache bypassed (`--no-cache`). Forcing fresh fetch and generation.");
     }
 
-    let llm = init_llm_or_exit(&args).with_concurrency(args.concurrency);
+    let llm = commands::init_llm_or_exit(&args);
 
     let scraper = match WebScraper::new() {
         Ok(s) => s,

@@ -291,6 +291,13 @@ impl LlmClient {
         })
     }
 
+    pub fn from_cli(args: &crate::cli::Cli) -> Result<Self> {
+        Ok(
+            Self::new(&args.base_url, &args.model, &args.api_key, args.max_tokens)?
+                .with_concurrency(args.concurrency),
+        )
+    }
+
     pub fn with_concurrency(mut self, concurrency: usize) -> Self {
         self.concurrency = concurrency.max(1);
         self

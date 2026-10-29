@@ -9,13 +9,7 @@ use std::path::Path;
 
 /// Lists available models reported by the local LLM endpoint (`GET /models`).
 pub async fn handle_models(args: &Cli, as_json: bool) -> Result<()> {
-    let llm = match LlmClient::new(&args.base_url, &args.model, &args.api_key, args.max_tokens) {
-        Ok(c) => c,
-        Err(err) => {
-            Ui::error(&format!("Failed to initialize LLM client: {}", err));
-            std::process::exit(1);
-        }
-    };
+    let llm = crate::commands::init_llm_or_exit(args);
 
     let pb = Ui::spinner("Querying LLM server for available models...");
     let models_result = llm.list_models().await;
@@ -70,7 +64,7 @@ pub async fn handle_doctor(
     as_json: bool,
 ) -> Result<()> {
     // 1. LLM connectivity & latency
-    let llm_init = LlmClient::new(&args.base_url, &args.model, &args.api_key, args.max_tokens);
+    let llm_init = LlmClient::from_cli(args);
     let mut endpoint_ok = false;
     let mut latency_ms = None;
     let mut model_found = false;

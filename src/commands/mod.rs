@@ -19,6 +19,17 @@ pub use summarize::{
     handle_stdin, handle_web, SummaryOutcome,
 };
 
+/// Initializes an `LlmClient` from CLI arguments, printing a UI error and exiting on failure.
+pub fn init_llm_or_exit(args: &Cli) -> crate::llm::LlmClient {
+    match crate::llm::LlmClient::from_cli(args) {
+        Ok(c) => c,
+        Err(err) => {
+            Ui::error(&format!("Failed to initialize LLM client: {}", err));
+            std::process::exit(1);
+        }
+    }
+}
+
 /// Safely opens the DuckDB database, issuing a UI warning on failure.
 pub fn open_db_or_warn() -> Option<Database> {
     match Database::open_default() {
