@@ -280,7 +280,7 @@ async fn download_and_verify_archive(
     let v_url = format!("{}/{}", base_dl, versioned_name);
     let alias_url = format!("{}/{}", base_dl, latest_alias);
 
-    let (archive_url, sha_url, mut archive_res) = {
+    let (archive_url, sha_url, archive_res) = {
         let resp = client.get(&v_url).send().await;
         match resp {
             Ok(r) if r.status().is_success() => (v_url.clone(), format!("{}.sha256", v_url), r),
@@ -302,32 +302,14 @@ async fn download_and_verify_archive(
         );
     }
 
-    if let Some(content_len) = archive_res.content_length()
-        && content_len as usize > MAX_ARCHIVE_BYTES
-    {
-        bail!(
-            "Release archive content length ({} bytes) exceeds security limit of {} MB",
-            content_len,
-            MAX_ARCHIVE_BYTES / (1024 * 1024)
-        );
-    }
-
     let archive_pb = Ui::spinner(format!("Downloading {}...", archive_url));
-    let mut archive_bytes = if let Some(content_len) = archive_res.content_length() {
-        Vec::with_capacity((content_len as usize).min(MAX_ARCHIVE_BYTES))
-    } else {
-        Vec::new()
-    };
-    while let Some(chunk) = archive_res.chunk().await.context("Failed to read archive bytes")? {
-        if archive_bytes.len() + chunk.len() > MAX_ARCHIVE_BYTES {
+    let archive_bytes = match crate::scraper::read_response_bytes_limited(archive_res, MAX_ARCHIVE_BYTES).await {
+        Ok(b) => b,
+        Err(err) => {
             archive_pb.finish_and_clear();
-            bail!(
-                "Release archive exceeded maximum allowed size of {} MB",
-                MAX_ARCHIVE_BYTES / (1024 * 1024)
-            );
+            return Err(err);
         }
-        archive_bytes.extend_from_slice(&chunk);
-    }
+    };
     Ui::finish_spinner(&archive_pb, "Downloaded release archive.");
 
     let sha_pb = Ui::spinner("Verifying SHA256 checksum...");

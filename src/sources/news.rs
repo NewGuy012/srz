@@ -97,28 +97,7 @@ impl GoogleNewsClient {
             );
         }
 
-        if let Some(content_len) = resp.content_length()
-            && content_len as usize > crate::scraper::MAX_SCRAPE_BYTES
-        {
-            anyhow::bail!("Google News RSS feed exceeded security limit of 10 MB");
-        }
-
-        let mut bytes = if let Some(content_len) = resp.content_length() {
-            Vec::with_capacity((content_len as usize).min(crate::scraper::MAX_SCRAPE_BYTES))
-        } else {
-            Vec::new()
-        };
-        let mut stream = resp;
-        while let Some(chunk) = stream.chunk().await.context("Failed to read RSS chunk")? {
-            if bytes.len() + chunk.len() > crate::scraper::MAX_SCRAPE_BYTES {
-                anyhow::bail!("Google News RSS feed body exceeded security limit of 10 MB");
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        let xml = match String::from_utf8(bytes) {
-            Ok(s) => s,
-            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
-        };
+        let xml = crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES).await?;
         let doc = Html::parse_document(&xml);
 
         let mut items = Vec::new();

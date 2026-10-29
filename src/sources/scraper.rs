@@ -56,6 +56,52 @@ pub fn html_to_plain_text(html_bytes: &[u8]) -> Result<String> {
         .context("Failed to convert HTML to text")
 }
 
+/// Reads response body bytes up to `max_bytes`, erroring if the content length or streamed bytes exceed `max_bytes`.
+pub async fn read_response_bytes_limited(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>> {
+    if let Some(content_len) = response.content_length()
+        && content_len as usize > max_bytes
+    {
+        anyhow::bail!(
+            "Response content length ({} bytes) exceeds limit of {} MB",
+            content_len,
+            max_bytes / (1024 * 1024)
+        );
+    }
+
+    let mut bytes = if let Some(content_len) = response.content_length() {
+        Vec::with_capacity((content_len as usize).min(max_bytes))
+    } else {
+        Vec::new()
+    };
+
+    while let Some(chunk) = response.chunk().await.context("Failed to read response body chunk")? {
+        if bytes.len() + chunk.len() > max_bytes {
+            anyhow::bail!(
+                "Response body exceeded limit of {} MB",
+                max_bytes / (1024 * 1024)
+            );
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+
+    Ok(bytes)
+}
+
+/// Reads response body text up to `max_bytes`, decoding with lossy UTF-8 fallback.
+pub async fn read_response_text_limited(
+    response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<String> {
+    let bytes = read_response_bytes_limited(response, max_bytes).await?;
+    match String::from_utf8(bytes) {
+        Ok(s) => Ok(s),
+        Err(e) => Ok(String::from_utf8_lossy(e.as_bytes()).into_owned()),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScrapedPage {
     pub url: String,
@@ -142,7 +188,7 @@ impl WebScraper {
 
     /// Fetches and normalizes the text from the given URL with a strict maximum response limit (10 MB).
     pub async fn scrape(&self, url: &str) -> Result<ScrapedPage> {
-        let mut response = self
+        let response = self
             .client
             .get(url)
             .send()
@@ -156,34 +202,7 @@ impl WebScraper {
             );
         }
 
-        if let Some(content_len) = response.content_length()
-            && content_len as usize > MAX_SCRAPE_BYTES
-        {
-            anyhow::bail!(
-                "Webpage content length ({} bytes) exceeds security limit of 10 MB",
-                content_len
-            );
-        }
-
-        let mut bytes = if let Some(content_len) = response.content_length() {
-            Vec::with_capacity((content_len as usize).min(MAX_SCRAPE_BYTES))
-        } else {
-            Vec::new()
-        };
-        while let Some(chunk) = response.chunk().await.context("Failed to read response body")? {
-            if bytes.len() + chunk.len() > MAX_SCRAPE_BYTES {
-                anyhow::bail!(
-                    "Webpage response body exceeded security limit of 10 MB"
-                );
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-
-        let html = match String::from_utf8(bytes) {
-            Ok(s) => s,
-            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
-        };
-
+        let html = read_response_text_limited(response, MAX_SCRAPE_BYTES).await?;
         self.normalize(url, &html)
     }
 
@@ -225,18 +244,10 @@ impl WebScraper {
         // Try <title> tag, then <h1> tag
         for sel in [&*TITLE_SEL, &*H1_SEL] {
             if let Some(elem) = document.select(sel).next() {
-                let mut title = String::new();
-                for chunk in elem.text() {
-                    title.push_str(chunk);
-                }
-                let trimmed_end = title.trim_end().len();
-                title.truncate(trimmed_end);
-                let trimmed_start = title.len() - title.trim_start().len();
-                if trimmed_start > 0 {
-                    title.replace_range(..trimmed_start, "");
-                }
-                if !title.is_empty() {
-                    return Some(title);
+                let text: String = elem.text().collect();
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
                 }
             }
         }

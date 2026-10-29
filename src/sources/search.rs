@@ -264,30 +264,13 @@ impl BookSearcher {
             urlencoding::encode(&query)
         );
 
-        let Some(mut resp) = self.get_with_timeout(&endpoint, 4).await else {
+        let Some(resp) = self.get_with_timeout(&endpoint, 4).await else {
             return Ok(Vec::new());
         };
 
-        if let Some(content_len) = resp.content_length()
-            && content_len as usize > crate::scraper::MAX_SCRAPE_BYTES
-        {
-            return Ok(Vec::new());
-        }
-
-        let mut bytes = if let Some(content_len) = resp.content_length() {
-            Vec::with_capacity((content_len as usize).min(crate::scraper::MAX_SCRAPE_BYTES))
-        } else {
-            Vec::new()
-        };
-        while let Some(chunk) = resp.chunk().await.ok().flatten() {
-            if bytes.len() + chunk.len() > crate::scraper::MAX_SCRAPE_BYTES {
-                return Ok(Vec::new());
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        let html = match String::from_utf8(bytes) {
-            Ok(s) => s,
-            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        let html = match crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES).await {
+            Ok(h) => h,
+            Err(_) => return Ok(Vec::new()),
         };
         let document = Html::parse_document(&html);
 

@@ -149,6 +149,58 @@ pub fn decode_html_entities(s: &str) -> String {
         .replace("&nbsp;", " ")
 }
 
+struct TimedTranscriptBuilder {
+    result: String,
+    current_interval: u64,
+    current_line: String,
+}
+
+impl TimedTranscriptBuilder {
+    fn new(capacity: usize) -> Self {
+        Self {
+            result: String::with_capacity(capacity),
+            current_interval: u64::MAX,
+            current_line: String::new(),
+        }
+    }
+
+    fn add_cue(&mut self, seconds: u64, text: &str) {
+        let clean = text.replace('\n', " ");
+        let trimmed = clean.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+
+        let interval = seconds / 60; // Group by ~1 minute cues
+        if interval != self.current_interval {
+            if !self.current_line.is_empty() {
+                self.result.push_str(&self.current_line);
+                self.result.push_str("\n\n");
+                self.current_line.clear();
+            }
+            self.current_interval = interval;
+            self.current_line.push_str(&format_timestamp(seconds));
+            self.current_line.push(' ');
+        } else if !self.current_line.is_empty() && !self.current_line.ends_with(' ') {
+            self.current_line.push(' ');
+        }
+
+        self.current_line.push_str(trimmed);
+    }
+
+    fn finish(mut self) -> Option<String> {
+        if !self.current_line.is_empty() {
+            self.result.push_str(&self.current_line);
+            self.result.push('\n');
+        }
+        if self.result.trim().is_empty() {
+            None
+        } else {
+            Some(self.result)
+        }
+    }
+}
+
 /// Parses JSON3 format timed text into formatted timestamped paragraphs.
 pub fn parse_json3_timedtext(json_str: &str) -> Option<String> {
     let parsed: TimedTextJson = serde_json::from_str(json_str).ok()?;
@@ -156,9 +208,7 @@ pub fn parse_json3_timedtext(json_str: &str) -> Option<String> {
         return None;
     }
 
-    let mut result = String::with_capacity(json_str.len() / 2);
-    let mut current_interval = u64::MAX;
-    let mut current_line = String::new();
+    let mut builder = TimedTranscriptBuilder::new(json_str.len() / 2);
 
     for ev in parsed.events {
         let text_segs: Vec<&str> = ev
@@ -174,41 +224,11 @@ pub fn parse_json3_timedtext(json_str: &str) -> Option<String> {
             continue;
         }
 
-        let seconds = ev.start_ms / 1000;
-        let interval = seconds / 60; // Group by ~1 minute cues
-
         let combined = text_segs.join("");
-        let clean = combined.replace('\n', " ").trim().to_string();
-        if clean.is_empty() {
-            continue;
-        }
-
-        if interval != current_interval {
-            if !current_line.is_empty() {
-                result.push_str(&current_line);
-                result.push_str("\n\n");
-                current_line.clear();
-            }
-            current_interval = interval;
-            current_line.push_str(&format_timestamp(seconds));
-            current_line.push(' ');
-        } else if !current_line.is_empty() && !current_line.ends_with(' ') {
-            current_line.push(' ');
-        }
-
-        current_line.push_str(&clean);
+        builder.add_cue(ev.start_ms / 1000, &combined);
     }
 
-    if !current_line.is_empty() {
-        result.push_str(&current_line);
-        result.push('\n');
-    }
-
-    if result.trim().is_empty() {
-        None
-    } else {
-        Some(result)
-    }
+    builder.finish()
 }
 
 /// Parses XML timed text `<text start="1.23" dur="4.56">...</text>` into formatted paragraphs.
@@ -217,9 +237,7 @@ pub fn parse_xml_timedtext(xml_str: &str) -> Option<String> {
         return None;
     }
 
-    let mut result = String::with_capacity(xml_str.len() / 2);
-    let mut current_interval = u64::MAX;
-    let mut current_line = String::new();
+    let mut builder = TimedTranscriptBuilder::new(xml_str.len() / 2);
 
     let mut cursor = 0;
     while let Some(pos) = xml_str[cursor..].find("<text") {
@@ -237,10 +255,7 @@ pub fn parse_xml_timedtext(xml_str: &str) -> Option<String> {
         let inner_text = &xml_str[tag_end + 1..close_tag];
         cursor = close_tag + "</text>".len();
 
-        let clean_text = decode_html_entities(inner_text.trim()).replace('\n', " ");
-        if clean_text.is_empty() {
-            continue;
-        }
+        let clean_text = decode_html_entities(inner_text);
 
         let seconds = if let Some(start_pos) = tag_content.find("start=\"") {
             let after = &tag_content[start_pos + "start=\"".len()..];
@@ -253,33 +268,22 @@ pub fn parse_xml_timedtext(xml_str: &str) -> Option<String> {
             0
         };
 
-        let interval = seconds / 60;
-        if interval != current_interval {
-            if !current_line.is_empty() {
-                result.push_str(&current_line);
-                result.push_str("\n\n");
-                current_line.clear();
-            }
-            current_interval = interval;
-            current_line.push_str(&format_timestamp(seconds));
-            current_line.push(' ');
-        } else if !current_line.is_empty() && !current_line.ends_with(' ') {
-            current_line.push(' ');
-        }
-
-        current_line.push_str(&clean_text);
+        builder.add_cue(seconds, &clean_text);
     }
 
-    if !current_line.is_empty() {
-        result.push_str(&current_line);
-        result.push('\n');
-    }
+    builder.finish()
+}
 
-    if result.trim().is_empty() {
-        None
-    } else {
-        Some(result)
-    }
+async fn download_and_parse_captions(client: &Client, url: &str) -> Option<String> {
+    let resp = client
+        .get(url)
+        .header("User-Agent", "Mozilla/5.0")
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .ok()?;
+    let body = resp.text().await.unwrap_or_default();
+    parse_json3_timedtext(&body).or_else(|| parse_xml_timedtext(&body))
 }
 
 /// Fetches and extracts transcript and metadata for a YouTube video.
@@ -318,45 +322,18 @@ pub async fn fetch_youtube_transcript(client: &Client, video_id: &str) -> Result
 
     // 3. Download and parse captions
     let transcript = if let Some(base_url) = chosen_url {
-        // Try JSON3 format first
         let json_url = if base_url.contains("fmt=") {
-            base_url.clone()
+            base_url
         } else {
             format!("{}&fmt=json3", base_url)
         };
-
-        let caption_resp = client
-            .get(&json_url)
-            .header("User-Agent", "Mozilla/5.0")
-            .timeout(Duration::from_secs(10))
-            .send()
-            .await;
-
-        if let Ok(res) = caption_resp {
-            let body = res.text().await.unwrap_or_default();
-            parse_json3_timedtext(&body).or_else(|| parse_xml_timedtext(&body))
-        } else {
-            None
-        }
+        download_and_parse_captions(client, &json_url).await
     } else {
-        // Fallback: direct timedtext endpoint
         let fallback_url = format!(
             "https://www.youtube.com/api/timedtext?v={}&lang=en&fmt=json3",
             video_id
         );
-        let fb_resp = client
-            .get(&fallback_url)
-            .header("User-Agent", "Mozilla/5.0")
-            .timeout(Duration::from_secs(10))
-            .send()
-            .await;
-
-        if let Ok(res) = fb_resp {
-            let body = res.text().await.unwrap_or_default();
-            parse_json3_timedtext(&body).or_else(|| parse_xml_timedtext(&body))
-        } else {
-            None
-        }
+        download_and_parse_captions(client, &fallback_url).await
     };
 
     let content = transcript.context(format!(
