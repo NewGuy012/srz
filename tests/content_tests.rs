@@ -213,7 +213,14 @@ fn test_render_index_html() {
     assert!(html.contains("data-type=\"book\""));
     assert!(html.contains("data-type=\"web\""));
 
-    let tmp_dir = std::env::temp_dir().join("srz_test_index_dashboard");
+    let tmp_dir = std::env::temp_dir().join(format!(
+        "srz_test_index_dashboard_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
     let _ = fs::remove_dir_all(&tmp_dir);
     let index_file = ensure_index_file(&tmp_dir, &stats, &entries).unwrap();
     assert!(index_file.exists());
