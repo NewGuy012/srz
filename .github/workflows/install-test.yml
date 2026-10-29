@@ -1,0 +1,110 @@
+name: Install Script Verification
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'scripts/install.sh'
+      - 'scripts/install.ps1'
+      - '.github/workflows/install-test.yml'
+  pull_request:
+    branches:
+      - master
+    paths:
+      - 'scripts/install.sh'
+      - 'scripts/install.ps1'
+      - '.github/workflows/install-test.yml'
+  schedule:
+    # Weekly verification on Monday at 06:00 UTC
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test-unix-installer:
+    name: Test install.sh (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Make install.sh executable
+        run: chmod +x scripts/install.sh
+
+      - name: Test direct execution (install.sh)
+        run: |
+          mkdir -p "${RUNNER_TEMP}/bin_direct"
+          INSTALL_DIR="${RUNNER_TEMP}/bin_direct" VERSION="v0.4.0" ./scripts/install.sh
+          "${RUNNER_TEMP}/bin_direct/srz" --version
+          "${RUNNER_TEMP}/bin_direct/srz" --help
+
+      - name: Test piped execution (cat install.sh | sh)
+        run: |
+          mkdir -p "${RUNNER_TEMP}/bin_pipe"
+          cat scripts/install.sh | INSTALL_DIR="${RUNNER_TEMP}/bin_pipe" VERSION="v0.4.0" sh
+          "${RUNNER_TEMP}/bin_pipe/srz" --version
+
+      - name: Test invalid semver validation
+        run: |
+          mkdir -p "${RUNNER_TEMP}/bin_invalid"
+          if INSTALL_DIR="${RUNNER_TEMP}/bin_invalid" VERSION="invalid-semver-string" ./scripts/install.sh; then
+            echo "::error::install.sh failed to reject invalid semver version!"
+            exit 1
+          else
+            echo "✔ Correctly rejected invalid semver string."
+          fi
+
+  test-windows-installer:
+    name: Test install.ps1 (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Test direct execution (install.ps1)
+        shell: pwsh
+        run: |
+          $InstallDir = Join-Path $env:RUNNER_TEMP "bin_direct"
+          New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+          $env:INSTALL_DIR = $InstallDir
+          $env:VERSION = "v0.4.0"
+
+          .\scripts\install.ps1
+
+          $ExePath = Join-Path $InstallDir "srz.exe"
+          if (-not (Test-Path $ExePath)) {
+            throw "srz.exe was not found in $InstallDir after installation."
+          }
+
+          & $ExePath --version
+          & $ExePath --help
+
+      - name: Test invalid semver validation
+        shell: pwsh
+        run: |
+          $InstallDir = Join-Path $env:RUNNER_TEMP "bin_invalid"
+          $env:INSTALL_DIR = $InstallDir
+          $env:VERSION = "invalid-semver-string"
+
+          $FailedAsExpected = $false
+          try {
+            .\scripts\install.ps1
+          } catch {
+            $FailedAsExpected = $true
+            Write-Host "✔ Correctly rejected invalid semver: $_" -ForegroundColor Green
+          }
+
+          if (-not $FailedAsExpected) {
+            throw "install.ps1 did not reject invalid semver format!"
+          }
