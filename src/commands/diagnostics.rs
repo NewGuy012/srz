@@ -104,7 +104,7 @@ pub async fn handle_doctor(
 
     // 3. Cache directory check
     let cache_dir = cache.dir().to_path_buf();
-    let cache_ok = cache_dir.exists() || std::fs::create_dir_all(&cache_dir).is_ok();
+    let cache_ok = cache_dir.exists() || crate::fs_util::create_private_dir_all(&cache_dir).is_ok();
     let cache_stats = cache.stats();
 
     if as_json {

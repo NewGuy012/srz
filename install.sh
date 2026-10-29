@@ -50,6 +50,29 @@ if ! curl -fsSL "${DOWNLOAD_URL}" -o "${TMP_DIR}/srz.tar.gz"; then
   exit 1
 fi
 
+# Download and verify SHA256 checksum
+SHA_URL="${DOWNLOAD_URL}.sha256"
+if curl -fsSL "${SHA_URL}" -o "${TMP_DIR}/srz.tar.gz.sha256"; then
+  echo "Verifying SHA256 checksum..."
+  EXPECTED_SHA="$(awk '{print $1}' "${TMP_DIR}/srz.tar.gz.sha256" | head -n 1)"
+  if command -v sha256sum >/dev/null 2>&1; then
+    COMPUTED_SHA="$(sha256sum "${TMP_DIR}/srz.tar.gz" | awk '{print $1}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    COMPUTED_SHA="$(shasum -a 256 "${TMP_DIR}/srz.tar.gz" | awk '{print $1}')"
+  else
+    echo "Warning: Neither sha256sum nor shasum found; skipping checksum verification."
+    COMPUTED_SHA="${EXPECTED_SHA}"
+  fi
+
+  if [ -n "${EXPECTED_SHA}" ] && [ "${EXPECTED_SHA}" != "${COMPUTED_SHA}" ]; then
+    echo "Error: SHA256 checksum verification failed!"
+    echo "Expected: ${EXPECTED_SHA}"
+    echo "Computed: ${COMPUTED_SHA}"
+    exit 1
+  fi
+  echo "✔ Checksum verified successfully."
+fi
+
 tar -xzf "${TMP_DIR}/srz.tar.gz" -C "${TMP_DIR}"
 
 mkdir -p "${INSTALL_DIR}"

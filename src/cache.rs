@@ -181,9 +181,8 @@ impl Cache {
             return;
         }
         let path = dir.join(format!("{}.json", key_hash));
-        if let Ok(file) = File::create(&path) {
+        if let Ok(file) = open_private_file_for_write(&path) {
             let _ = serde_json::to_writer(BufWriter::new(file), value);
-            set_private_file_perms(&path);
         }
     }
 

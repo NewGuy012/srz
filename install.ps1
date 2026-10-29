@@ -29,6 +29,25 @@ try {
     $ZipPath = Join-Path $TempDir $ArchiveName
     Invoke-WebRequest -Uri $DownloadUrl -OutFile $ZipPath -UseBasicParsing
 
+    # Download and verify SHA256 checksum
+    $ShaUrl = "$DownloadUrl.sha256"
+    $ShaPath = "$ZipPath.sha256"
+    try {
+        Invoke-WebRequest -Uri $ShaUrl -OutFile $ShaPath -UseBasicParsing
+        $ShaContent = (Get-Content -Path $ShaPath -Raw).Trim()
+        $ExpectedHash = ($ShaContent -split '\s+')[0]
+        if ($ExpectedHash) {
+            Write-Host "Verifying SHA256 checksum..." -ForegroundColor Cyan
+            $ComputedHash = (Get-FileHash -Path $ZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($ComputedHash -ne $ExpectedHash.ToLowerInvariant()) {
+                throw "SHA256 checksum mismatch! Expected: $ExpectedHash, Computed: $ComputedHash"
+            }
+            Write-Host "✔ Checksum verified successfully." -ForegroundColor Green
+        }
+    } catch {
+        Write-Warning "Could not verify release checksum: $_"
+    }
+
     Expand-Archive -Path $ZipPath -DestinationPath $TempDir -Force
 
     if (-not (Test-Path -Path $InstallDir)) {

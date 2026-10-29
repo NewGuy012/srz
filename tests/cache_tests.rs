@@ -173,3 +173,19 @@ fn test_cache_file_permissions() {
 
     let _ = fs::remove_dir_all(dir);
 }
+
+#[cfg(unix)]
+#[test]
+fn test_write_private_file_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = temp_test_dir("private_write");
+    fs::create_dir_all(&dir).unwrap();
+    let file_path = dir.join("test.txt");
+
+    srz::fs_util::write_private_file(&file_path, b"test private content").unwrap();
+
+    let meta = fs::metadata(&file_path).unwrap();
+    assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+
+    let _ = fs::remove_dir_all(dir);
+}

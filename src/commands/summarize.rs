@@ -10,6 +10,9 @@ use serde::Serialize;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
 
+pub const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024; // 20 MB limit for local files
+pub const MAX_STDIN_BYTES: usize = 10 * 1024 * 1024; // 10 MB limit for standard input
+
 #[derive(Serialize)]
 pub struct SummaryOutcome {
     pub title: String,
@@ -104,6 +107,19 @@ pub async fn handle_file(
         anyhow::bail!("File not found: {:?}", path);
     }
 
+    let meta = fs::metadata(path)
+        .with_context(|| format!("Failed to access file metadata: {:?}", path))?;
+    if !meta.is_file() {
+        anyhow::bail!("Path is not a regular file: {:?}", path);
+    }
+    if meta.len() > MAX_FILE_BYTES {
+        anyhow::bail!(
+            "File size ({} bytes) exceeds security limit of {} MB",
+            meta.len(),
+            MAX_FILE_BYTES / (1024 * 1024)
+        );
+    }
+
     if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf")) {
         anyhow::bail!(
             "PDF files are not supported: {:?}. Supported formats include EPUB, HTML, Markdown, and plain text.",
@@ -173,9 +189,17 @@ pub async fn handle_stdin(
 ) -> Result<SummaryOutcome> {
     use std::io::Read;
     let mut raw = String::new();
-    std::io::stdin()
+    let mut stdin_limited = io::stdin().take((MAX_STDIN_BYTES + 1) as u64);
+    stdin_limited
         .read_to_string(&mut raw)
         .context("Failed to read from standard input")?;
+
+    if raw.len() > MAX_STDIN_BYTES {
+        anyhow::bail!(
+            "Standard input exceeded security limit of {} MB",
+            MAX_STDIN_BYTES / (1024 * 1024)
+        );
+    }
 
     if raw.trim().is_empty() {
         anyhow::bail!("Standard input was empty.");

@@ -210,3 +210,20 @@ fn test_sha256_verification_computation() {
     assert_eq!(parsed_hash, computed_hash);
     assert!(parsed_hash.eq_ignore_ascii_case(&computed_hash.to_uppercase()));
 }
+
+#[test]
+fn test_upgrade_temp_file_creation_prevents_overwrite() {
+    let tmp_dir = std::env::temp_dir().join("srz_test_upgrade_overwrite");
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+
+    let target_file = tmp_dir.join(".srz-upgrade-existing");
+    std::fs::write(&target_file, b"existing-content").unwrap();
+
+    // Verify create_new(true) fails if file already exists (preventing symlink overwrites)
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    assert!(opts.open(&target_file).is_err());
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+}

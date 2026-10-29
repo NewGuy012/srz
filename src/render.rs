@@ -51,8 +51,10 @@ pub fn open_in_browser(path: &Path) -> std::io::Result<()> {
     }
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", &path.to_string_lossy()])
+        // Avoid cmd.exe /C start shell parsing metacharacters (&, ^, %, etc.)
+        // Use rundll32.exe url.dll,FileProtocolHandler which opens files/URLs in the default handler safely
+        std::process::Command::new("rundll32.exe")
+            .args(["url.dll,FileProtocolHandler", &path.to_string_lossy()])
             .spawn()?;
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -292,7 +294,7 @@ pub fn markdown_to_html(md: &str) -> String {
         }
 
         if in_code_block {
-            out.push_str(&escape_html(raw_line));
+            escape_html_to(&mut out, raw_line);
             out.push('\n');
             continue;
         }
@@ -321,10 +323,13 @@ pub fn markdown_to_html(md: &str) -> String {
         if let Some((level, heading_text)) = parse_heading(trimmed) {
             close_paragraph(&mut out, &mut paragraph_buf);
             set_list_state(&mut out, &mut list_state, ListState::None);
-            out.push_str(&format!(
-                "    <h{level}>{}</h{level}>\n",
-                render_inline(heading_text)
-            ));
+            out.push_str("    <h");
+            out.push((b'0' + level as u8) as char);
+            out.push('>');
+            render_inline_to(&mut out, heading_text);
+            out.push_str("</h");
+            out.push((b'0' + level as u8) as char);
+            out.push_str(">\n");
             continue;
         }
 
@@ -333,7 +338,7 @@ pub fn markdown_to_html(md: &str) -> String {
             close_paragraph(&mut out, &mut paragraph_buf);
             set_list_state(&mut out, &mut list_state, ListState::None);
             out.push_str("    <blockquote>");
-            out.push_str(&render_inline(quote.trim()));
+            render_inline_to(&mut out, quote.trim());
             out.push_str("</blockquote>\n");
             continue;
         }
@@ -346,7 +351,7 @@ pub fn markdown_to_html(md: &str) -> String {
             close_paragraph(&mut out, &mut paragraph_buf);
             set_list_state(&mut out, &mut list_state, ListState::Ul);
             out.push_str("      <li>");
-            out.push_str(&render_inline(item.trim()));
+            render_inline_to(&mut out, item.trim());
             out.push_str("</li>\n");
             continue;
         }
@@ -356,7 +361,7 @@ pub fn markdown_to_html(md: &str) -> String {
             close_paragraph(&mut out, &mut paragraph_buf);
             set_list_state(&mut out, &mut list_state, ListState::Ol);
             out.push_str("      <li>");
-            out.push_str(&render_inline(item));
+            render_inline_to(&mut out, item);
             out.push_str("</li>\n");
             continue;
         }
@@ -368,7 +373,7 @@ pub fn markdown_to_html(md: &str) -> String {
         } else if !paragraph_buf.is_empty() {
             paragraph_buf.push(' ');
         }
-        paragraph_buf.push_str(&render_inline(trimmed));
+        render_inline_to(&mut paragraph_buf, trimmed);
     }
 
     if in_code_block {
@@ -402,8 +407,8 @@ fn parse_ordered_list_item(line: &str) -> Option<&str> {
     None
 }
 
-fn escape_html(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
+/// Appends HTML-escaped text directly into the provided output buffer.
+pub fn escape_html_to(out: &mut String, text: &str) {
     for ch in text.chars() {
         match ch {
             '&' => out.push_str("&amp;"),
@@ -414,26 +419,27 @@ fn escape_html(text: &str) -> String {
             _ => out.push(ch),
         }
     }
+}
+
+pub fn escape_html(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    escape_html_to(&mut out, text);
     out
 }
 
-/// Renders inline Markdown (`**bold**`, `*italic*`, `` `code` ``) after HTML-escaping.
-fn render_inline(text: &str) -> String {
-    render_inline_escaped(&escape_html(text))
-}
-
-fn render_inline_escaped(escaped: &str) -> String {
-    let bytes = escaped.as_bytes();
-    let mut out = String::with_capacity(escaped.len() + 16);
+/// Appends rendered inline Markdown (`**bold**`, `*italic*`, `` `code` ``) directly
+/// into the output buffer with HTML escaping in a single pass without intermediate allocations.
+pub fn render_inline_to(out: &mut String, text: &str) {
+    let bytes = text.as_bytes();
     let mut i = 0;
 
     while i < bytes.len() {
         // Inline code: `...`
         if bytes[i] == b'`'
-            && let Some(end) = escaped[i + 1..].find('`')
+            && let Some(end) = text[i + 1..].find('`')
         {
             out.push_str("<code>");
-            out.push_str(&escaped[i + 1..i + 1 + end]);
+            escape_html_to(out, &text[i + 1..i + 1 + end]);
             out.push_str("</code>");
             i += end + 2;
             continue;
@@ -441,10 +447,10 @@ fn render_inline_escaped(escaped: &str) -> String {
 
         // Bold: **...**
         if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'*'
-            && let Some(end) = escaped[i + 2..].find("**")
+            && let Some(end) = text[i + 2..].find("**")
         {
             out.push_str("<strong>");
-            out.push_str(&render_inline_escaped(&escaped[i + 2..i + 2 + end]));
+            render_inline_to(out, &text[i + 2..i + 2 + end]);
             out.push_str("</strong>");
             i += end + 4;
             continue;
@@ -452,21 +458,33 @@ fn render_inline_escaped(escaped: &str) -> String {
 
         // Italic: *...*
         if bytes[i] == b'*'
-            && let Some(end) = escaped[i + 1..].find('*')
+            && let Some(end) = text[i + 1..].find('*')
             && end > 0
         {
             out.push_str("<em>");
-            out.push_str(&escaped[i + 1..i + 1 + end]);
+            escape_html_to(out, &text[i + 1..i + 1 + end]);
             out.push_str("</em>");
             i += end + 2;
             continue;
         }
 
-        let ch = escaped[i..].chars().next().unwrap();
-        out.push(ch);
+        let ch = text[i..].chars().next().unwrap();
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
         i += ch.len_utf8();
     }
+}
 
+/// Renders inline Markdown (`**bold**`, `*italic*`, `` `code` ``) after HTML-escaping.
+pub fn render_inline(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 16);
+    render_inline_to(&mut out, text);
     out
 }
 

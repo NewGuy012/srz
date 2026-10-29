@@ -3,7 +3,7 @@ use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::env;
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tar::Archive;
@@ -12,6 +12,8 @@ use zip::ZipArchive;
 use crate::ui::Ui;
 
 pub const DEFAULT_REPO: &str = "NewGuy012/srz";
+pub const MAX_ARCHIVE_BYTES: usize = 50 * 1024 * 1024; // 50 MB limit for release archives
+pub const MAX_BINARY_BYTES: u64 = 100 * 1024 * 1024; // 100 MB limit for decompressed binary
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArchiveFormat {
@@ -121,7 +123,7 @@ pub fn format_asset_names(
     (versioned, latest_alias)
 }
 
-/// Extracts the named binary from a gzipped tarball.
+/// Extracts the named binary from a gzipped tarball with bounded decompression.
 pub fn extract_binary_from_tar_gz(bytes: &[u8], binary_name: &str) -> Result<Vec<u8>> {
     let gz = GzDecoder::new(Cursor::new(bytes));
     let mut archive = Archive::new(gz);
@@ -130,14 +132,22 @@ pub fn extract_binary_from_tar_gz(bytes: &[u8], binary_name: &str) -> Result<Vec
         let path = entry.path().context("Invalid tar entry path")?;
         if path.file_name().and_then(|n| n.to_str()) == Some(binary_name) {
             let mut buf = Vec::new();
-            std::io::copy(&mut entry, &mut buf).context("Failed to extract binary from tar entry")?;
+            let mut limited = (&mut entry).take(MAX_BINARY_BYTES + 1);
+            let bytes_copied = std::io::copy(&mut limited, &mut buf)
+                .context("Failed to extract binary from tar entry")?;
+            if bytes_copied > MAX_BINARY_BYTES {
+                bail!(
+                    "Decompressed binary exceeds security limit of {} MB",
+                    MAX_BINARY_BYTES / (1024 * 1024)
+                );
+            }
             return Ok(buf);
         }
     }
     bail!("Binary '{}' not found in release archive", binary_name)
 }
 
-/// Extracts the named binary from a zip archive.
+/// Extracts the named binary from a zip archive with bounded decompression.
 pub fn extract_binary_from_zip(bytes: &[u8], binary_name: &str) -> Result<Vec<u8>> {
     let mut zip = ZipArchive::new(Cursor::new(bytes)).context("Failed to read zip archive")?;
     for i in 0..zip.len() {
@@ -148,7 +158,15 @@ pub fn extract_binary_from_zip(bytes: &[u8], binary_name: &str) -> Result<Vec<u8
             .to_string();
         if name == binary_name || name.ends_with(&format!("/{}", binary_name)) || name.ends_with(&format!("\\{}", binary_name)) {
             let mut buf = Vec::new();
-            std::io::copy(&mut file, &mut buf).context("Failed to extract binary from zip entry")?;
+            let mut limited = (&mut file).take(MAX_BINARY_BYTES + 1);
+            let bytes_copied = std::io::copy(&mut limited, &mut buf)
+                .context("Failed to extract binary from zip entry")?;
+            if bytes_copied > MAX_BINARY_BYTES {
+                bail!(
+                    "Decompressed binary exceeds security limit of {} MB",
+                    MAX_BINARY_BYTES / (1024 * 1024)
+                );
+            }
             return Ok(buf);
         }
     }
@@ -256,12 +274,13 @@ async fn download_and_verify_archive(
     tag: &str,
     versioned_name: &str,
     latest_alias: &str,
+    force: bool,
 ) -> Result<Vec<u8>> {
     let base_dl = format!("https://github.com/{}/releases/download/{}", repo, tag);
     let v_url = format!("{}/{}", base_dl, versioned_name);
     let alias_url = format!("{}/{}", base_dl, latest_alias);
 
-    let (archive_url, sha_url, archive_res) = {
+    let (archive_url, sha_url, mut archive_res) = {
         let resp = client.get(&v_url).send().await;
         match resp {
             Ok(r) if r.status().is_success() => (v_url.clone(), format!("{}.sha256", v_url), r),
@@ -276,14 +295,39 @@ async fn download_and_verify_archive(
         }
     };
 
+    if !archive_res.status().is_success() {
+        bail!(
+            "Failed to download release archive (HTTP status: {})",
+            archive_res.status()
+        );
+    }
+
+    if let Some(content_len) = archive_res.content_length()
+        && content_len as usize > MAX_ARCHIVE_BYTES
+    {
+        bail!(
+            "Release archive content length ({} bytes) exceeds security limit of {} MB",
+            content_len,
+            MAX_ARCHIVE_BYTES / (1024 * 1024)
+        );
+    }
+
     let archive_pb = Ui::spinner(format!("Downloading {}...", archive_url));
-    let archive_bytes = archive_res
-        .error_for_status()
-        .context("Failed to download release archive")?
-        .bytes()
-        .await
-        .context("Failed to read archive bytes")?
-        .to_vec();
+    let mut archive_bytes = if let Some(content_len) = archive_res.content_length() {
+        Vec::with_capacity((content_len as usize).min(MAX_ARCHIVE_BYTES))
+    } else {
+        Vec::new()
+    };
+    while let Some(chunk) = archive_res.chunk().await.context("Failed to read archive bytes")? {
+        if archive_bytes.len() + chunk.len() > MAX_ARCHIVE_BYTES {
+            archive_pb.finish_and_clear();
+            bail!(
+                "Release archive exceeded maximum allowed size of {} MB",
+                MAX_ARCHIVE_BYTES / (1024 * 1024)
+            );
+        }
+        archive_bytes.extend_from_slice(&chunk);
+    }
     Ui::finish_spinner(&archive_pb, "Downloaded release archive.");
 
     let sha_pb = Ui::spinner("Verifying SHA256 checksum...");
@@ -309,12 +353,25 @@ async fn download_and_verify_archive(
                     );
                 }
                 Ui::finish_spinner(&sha_pb, &format!("Checksum verified ({:.8}...).", computed_hash));
+            } else if force {
+                Ui::finish_spinner(&sha_pb, "Checksum file empty; bypassing check due to --force.");
             } else {
-                Ui::finish_spinner(&sha_pb, "Checksum file empty; skipping strict hash check.");
+                sha_pb.finish_and_clear();
+                bail!(
+                    "SHA256 checksum file was empty. Aborting upgrade for security. Use `srz upgrade --force` to bypass."
+                );
             }
         }
         _ => {
-            Ui::finish_spinner(&sha_pb, "Checksum file unavailable on release; proceeding.");
+            if force {
+                Ui::finish_spinner(&sha_pb, "Checksum file unavailable; bypassing check due to --force.");
+            } else {
+                sha_pb.finish_and_clear();
+                bail!(
+                    "Failed to retrieve SHA256 checksum file from {}. Aborting upgrade for security. Use `srz upgrade --force` to bypass.",
+                    sha_url
+                );
+            }
         }
     }
 
@@ -459,6 +516,7 @@ pub async fn run_upgrade(
         &target_tag,
         &versioned_name,
         &latest_alias,
+        force,
     )
     .await?;
 
@@ -472,30 +530,40 @@ pub async fn run_upgrade(
     };
     Ui::finish_spinner(&extract_pb, "Extracted new executable.");
 
-    // 7. Write to temp file in current_exe directory or system temp
+    // 7. Write to temp file with atomic creation and private executable permissions
     let temp_dir = current_exe
         .parent()
         .map(PathBuf::from)
         .unwrap_or_else(env::temp_dir);
 
+    let nonce: u64 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+
     let temp_name = format!(
-        ".srz-upgrade-{}-{}",
+        ".srz-upgrade-{}-{:x}-{}",
         std::process::id(),
+        nonce,
         target_info.binary_name
     );
     let temp_path = temp_dir.join(temp_name);
-    std::fs::write(&temp_path, &binary_bytes)
-        .with_context(|| format!("Failed to write temporary binary at {:?}", temp_path))?;
 
+    let mut open_opts = std::fs::OpenOptions::new();
+    open_opts.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = std::fs::metadata(&temp_path) {
-            let mut perms = meta.permissions();
-            perms.set_mode(0o755);
-            let _ = std::fs::set_permissions(&temp_path, perms);
-        }
+        use std::os::unix::fs::OpenOptionsExt;
+        open_opts.mode(0o755);
     }
+
+    let mut temp_file = open_opts
+        .open(&temp_path)
+        .with_context(|| format!("Failed to create temporary binary at {:?}", temp_path))?;
+    std::io::Write::write_all(&mut temp_file, &binary_bytes)
+        .with_context(|| format!("Failed to write temporary binary at {:?}", temp_path))?;
+    std::io::Write::flush(&mut temp_file)
+        .with_context(|| format!("Failed to flush temporary binary at {:?}", temp_path))?;
 
     // 8. Swap binary
     if dry_run {
