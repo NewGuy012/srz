@@ -1,8 +1,7 @@
 # `srz` Architectural Overview
 
-`srz` (Summarize) is a high-performance, modular Rust CLI tool for extracting and synthesizing structured summaries from **webpages**, **YouTube video transcripts**, **local files**, **Unix stdin streams**, **books**, and **live news digests** using local OpenAI-compliant LLMs (such as llama.cpp, Ollama, LM Studio, or vLLM).
+`srz` (Summarize) is a high-performance, modular Rust CLI tool for extracting and synthesizing structured summaries from **webpages**, **YouTube video transcripts**, **PDF documents & local files**, **Unix stdin streams**, **books**, and **live news digests** using local OpenAI-compliant LLMs (such as llama.cpp, Ollama, LM Studio, or vLLM).
 
----
 
 ## 1. High-Level Architecture
 
@@ -13,7 +12,8 @@ flowchart TD
     subgraph Inputs["1. Input Ingestion & Routing"]
         CLI["CLI Args / Env / config.toml"] --> Router{"Router / Auto-Detect"}
         Router -->|"YouTube URL"| YTFlow["YouTube Timed-Text Client"]
-        Router -->|"Web URL (http://...)"| WebFlow["Web Scraper"]
+        Router -->|"Web URL (http://...)"| WebFlow["Web Scraper / PDF Stream"]
+        Router -->|"PDF File (.pdf)"| PDFFlow["Pure-Rust PDF Extractor"]
         Router -->|"Local Path or Stdin (-)"| FileFlow["File / Stdin Reader"]
         Router -->|"Book Title"| BookFlow["Book Pipeline"]
         Router -->|"News Query or Subcommand"| NewsFlow["Google News RSS Client"]
@@ -39,6 +39,7 @@ flowchart TD
     subgraph LLMEngine["3. LLM Synthesis & Streaming"]
         YTCaptions --> Chunker{"Word Count > 12k?"}
         WebFlow --> Chunker
+        PDFFlow --> Chunker
         FileFlow --> Chunker
         RefScrape --> Chunker
         Grounding --> MultiTurn["Multi-Turn Chat / Q&A Prompt Framing"]
@@ -64,7 +65,6 @@ flowchart TD
     end
 ```
 
----
 
 ## 2. Request & Execution Sequence
 
@@ -106,7 +106,6 @@ sequenceDiagram
     end
 ```
 
----
 
 ## 3. Storage & Cache Architecture
 
@@ -129,7 +128,6 @@ graph LR
     end
 ```
 
----
 
 ## 4. Component Directory & Subsystems
 
@@ -163,6 +161,7 @@ src/
 | **Engine** | [`src/engine/llm.rs`](src/engine/llm.rs) | `engine::llm` | Zero-copy SSE client (`complete_chat` / `SseStreamState`), localhost IPv4 fallback, and map-reduce synthesis. |
 | | [`src/engine/chunker.rs`](src/engine/chunker.rs) | `engine::chunker` | Zero-copy `Cow` text windowing and paragraph chunking for long documents (> 12k words). |
 | **Sources** | [`src/sources/scraper.rs`](src/sources/scraper.rs) | `sources::scraper` | HTTP client (10 MB cap), MediaWiki/article DOM extraction, and text cleaning. |
+| | [`src/sources/pdf.rs`](src/sources/pdf.rs) | `sources::pdf` | Native pure-Rust PDF text extraction, document info metadata, and scanned-PDF detection via `pdf-extract`. |
 | | [`src/sources/youtube.rs`](src/sources/youtube.rs) | `sources::youtube` | YouTube video ID extraction, public timed-text XML/JSON3 caption resolution, and chapter cues. |
 | | [`src/sources/search.rs`](src/sources/search.rs) | `sources::search` | Open Library metadata, Wikipedia OpenSearch/fulltext, DDG search, and candidate scoring. |
 | | [`src/sources/news.rs`](src/sources/news.rs) | `sources::news` | Google News RSS client, `batchexecute` RPC redirect decoding, and concurrent article fetching. |
@@ -175,7 +174,6 @@ src/
 | **System** | [`src/system/fs_util.rs`](src/system/fs_util.rs) | `system::fs_util` | Platform filesystem utilities and private directory/file permissions (`0700`/`0600`). |
 | | [`src/system/upgrade.rs`](src/system/upgrade.rs) | `system::upgrade` | In-place self-updater: target detection, GitHub release queries, SHA256 verification, and atomic swap. |
 
----
 
 ## 5. Performance, Security & Architectural Optimizations
 
@@ -186,11 +184,11 @@ src/
 - **Defense-in-Depth Security**: Enforces a 10 MB cap on scraped HTTP bodies (`MAX_SCRAPE_BYTES`), isolates untrusted source text inside XML tags with explicit system-role boundaries, embeds strict `Content-Security-Policy` headers in generated HTML views, and sets `0700`/`0600` owner-only permissions on local cache, config, and database files.
 - **Transactional Telemetry & Release Hardening**: Dual `history` + `library` inserts execute in a single atomic DuckDB transaction, parallel map-reduce runs aggregate token counts and durations across all chunks, and release builds enable thin LTO, single codegen-unit, symbol stripping, and integer overflow checks.
 
----
 
 ## 6. Key CLI Features & Flags
 
-- **Universal Input**: `srz <URL>`, `srz <YOUTUBE_URL>`, `srz <BOOK>`, `srz <FILE>` (`.html`, `.md`, `.txt`), `cat ... | srz -`, or `srz news <TOPIC>` (with auto-detection for `"current ... news"`).
+- **Universal Input**: `srz <URL>`, `srz <YOUTUBE_URL>`, `srz <BOOK>`, `srz <FILE>` (`.pdf`, `.html`, `.md`, `.txt`), `cat ... | srz -`, or `srz news <TOPIC>` (with auto-detection for `"current ... news"`).
+- **Native Pure-Rust PDF Ingestion**: Zero-dependency PDF extraction (`srz "document.pdf"` or web PDF URLs), including trailer metadata parsing, hyphen rejoining, and scanned-document detection.
 - **YouTube Caption Ingestion**: Direct extraction of timed-text captions and transcripts into timestamped chapter summaries (`srz "https://youtube.com/watch?v=..."`).
 - **Interactive Grounded Q&A**: `srz ask [TARGET] [QUESTION]` answers questions grounded on source documents or past reads, with multi-turn chat via `-i` / `--interactive`.
 - **Interactive TUI Library Explorer**: `srz browse` (or `srz tui`) opens a split-view terminal reader to browse, search, copy (`y`), and open summaries.
