@@ -132,6 +132,14 @@ async fn main() -> Result<()> {
     };
 
     let summary_result = match action {
+        ResolvedAction::Ask {
+            target,
+            question,
+            interactive,
+        } => {
+            commands::handle_ask(target, question, interactive, &scraper, &llm, &cache, &args).await?;
+            return Ok(());
+        }
         ResolvedAction::Web { url } => commands::handle_web(url, &scraper, &llm, &cache, &args).await,
         ResolvedAction::File { path } => commands::handle_file(&path, &scraper, &llm, &args).await,
         ResolvedAction::Stdin => commands::handle_stdin(&scraper, &llm, &args).await,

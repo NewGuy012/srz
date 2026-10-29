@@ -24,10 +24,10 @@ struct ChatCompletionRequest<'a> {
     stream_options: Option<StreamOptions>,
 }
 
-#[derive(Serialize)]
-struct RequestMessage<'a> {
-    role: &'static str,
-    content: &'a str,
+#[derive(Serialize, Clone, Debug)]
+pub struct RequestMessage<'a> {
+    pub role: &'static str,
+    pub content: &'a str,
 }
 
 #[derive(Deserialize)]
@@ -417,10 +417,10 @@ impl LlmClient {
     }
 
     /// Streams completion tokens via SSE (`stream: true`) with live spinner feedback on stderr.
-    pub async fn complete_streaming(
+    /// Sends a multi-message chat completion request via SSE streaming.
+    pub async fn complete_chat(
         &self,
-        system_prompt: &str,
-        user_prompt: &str,
+        messages: &[RequestMessage<'_>],
         spinner_label: &'static str,
         done_label: &str,
         mode: StreamMode<'_>,
@@ -428,21 +428,9 @@ impl LlmClient {
         let start_time = std::time::Instant::now();
         let pb = Ui::spinner(spinner_label);
 
-        let mut messages = Vec::with_capacity(2);
-        if !system_prompt.is_empty() {
-            messages.push(RequestMessage {
-                role: "system",
-                content: system_prompt,
-            });
-        }
-        messages.push(RequestMessage {
-            role: "user",
-            content: user_prompt,
-        });
-
         let body = ChatCompletionRequest {
             model: &self.model,
-            messages: &messages,
+            messages,
             temperature: 0.3,
             max_tokens: self.max_tokens,
             stream: true,
@@ -531,6 +519,30 @@ impl LlmClient {
             duration_ms,
             tokens_per_second: compute_tokens_per_second(completion_tokens, elapsed),
         })
+    }
+
+    /// Streams completion tokens via SSE (`stream: true`) with live spinner feedback on stderr.
+    pub async fn complete_streaming(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        spinner_label: &'static str,
+        done_label: &str,
+        mode: StreamMode<'_>,
+    ) -> Result<LlmOutput> {
+        let mut messages = Vec::with_capacity(2);
+        if !system_prompt.is_empty() {
+            messages.push(RequestMessage {
+                role: "system",
+                content: system_prompt,
+            });
+        }
+        messages.push(RequestMessage {
+            role: "user",
+            content: user_prompt,
+        });
+
+        self.complete_chat(&messages, spinner_label, done_label, mode).await
     }
 
     fn build_truncation_warning(truncated: bool, usage: Option<&TokenUsage>) -> Option<String> {

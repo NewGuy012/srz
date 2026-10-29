@@ -1,0 +1,291 @@
+use anyhow::{Context, Result};
+use std::io::{self, BufRead, Write};
+use std::path::Path;
+
+use crate::cache::Cache;
+use crate::cli::Cli;
+use crate::commands::open_db_or_warn;
+use crate::engine::llm::{LlmClient, RequestMessage, StreamMode};
+use crate::scraper::WebScraper;
+use crate::storage::db::Database;
+use crate::ui::{display_summary, render_markdown, Ui};
+
+/// Resolves the grounding document context (title and full text content).
+async fn resolve_document_context(
+    target: Option<&str>,
+    scraper: &WebScraper,
+    cache: &Cache,
+    db_opt: Option<&Database>,
+) -> Result<(String, String)> {
+    if let Some(target_str) = target {
+        let trimmed = target_str.trim();
+
+        // 1. Web URL
+        if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+            let page = if let Some(cached) = cache.get_page(trimmed) {
+                cached
+            } else {
+                let fetched = scraper.scrape(trimmed).await?;
+                cache.set_page(trimmed, &fetched);
+                fetched
+            };
+            let title = page.title.unwrap_or_else(|| trimmed.to_string());
+            return Ok((title, page.content));
+        }
+
+        // 2. Local File
+        let path = Path::new(trimmed);
+        if path.exists() {
+            let content = std::fs::read_to_string(path)
+                .with_context(|| format!("Failed to read file {:?}", path))?;
+            let title = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("Local Document")
+                .to_string();
+            return Ok((title, content));
+        }
+
+        // 3. Search in DuckDB library for matching title
+        if let Some(db) = db_opt {
+            let results = db.search(trimmed)?;
+            if let Some(hit) = results.into_iter().next() {
+                if let Some(url) = &hit.url {
+                    if let Some(page) = cache.get_page(url) {
+                        let title = page.title.unwrap_or(hit.title);
+                        return Ok((title, page.content));
+                    }
+                }
+                return Ok((hit.title, hit.snippet));
+            }
+        }
+
+        // 4. Fallback: treat as book title / generic search query
+        let searcher = crate::search::BookSearcher::with_client(scraper.client().clone());
+        let candidates = searcher.search_candidates(trimmed, None).await;
+        if let Some(best) = candidates.first() {
+            let page = if let Some(cached) = cache.get_page(&best.url) {
+                cached
+            } else {
+                let fetched = scraper.scrape(&best.url).await?;
+                cache.set_page(&best.url, &fetched);
+                fetched
+            };
+            let title = page.title.unwrap_or_else(|| best.title.clone());
+            return Ok((title, page.content));
+        }
+
+        anyhow::bail!("Could not resolve target document: '{}'", target_str);
+    } else {
+        // No target provided: look up the most recent summary in DuckDB
+        let db = db_opt.context("DuckDB database unavailable to look up previous summary")?;
+        let latest = db.get_latest_summary()?.context(
+            "No previous summary found in history. Please specify a document or URL to ask about:\n  srz ask <URL_OR_FILE> <QUESTION>",
+        )?;
+
+        Ui::info(&format!("Answering based on latest read: '{}'", latest.title));
+
+        if let Some(url) = &latest.url {
+            if let Some(page) = cache.get_page(url) {
+                let title = page.title.unwrap_or(latest.title);
+                return Ok((title, page.content));
+            }
+        }
+
+        Ok((latest.title, latest.summary))
+    }
+}
+
+/// Handles the `srz ask` subcommand.
+pub async fn handle_ask(
+    target: Option<String>,
+    question: Option<String>,
+    interactive: bool,
+    scraper: &WebScraper,
+    llm: &LlmClient,
+    cache: &Cache,
+    args: &Cli,
+) -> Result<()> {
+    let db = open_db_or_warn();
+    let (title, content) =
+        resolve_document_context(target.as_deref(), scraper, cache, db.as_ref()).await?;
+
+    let system_prompt = format!(
+        "You are an expert reading assistant. Answer questions accurately, clearly, and concisely based strictly on the provided document content.\n\
+         If the answer cannot be found in the document, state that clearly and politely without guessing or hallucinating.\n\
+         Format your responses with clean Markdown.\n\n\
+         <document title=\"{}\">\n\
+         {}\n\
+         </document>",
+        title, content
+    );
+
+    let is_interactive = interactive || question.is_none();
+
+    if !is_interactive {
+        // Single question mode
+        let q = question.unwrap();
+        let messages = [
+            RequestMessage {
+                role: "system",
+                content: &system_prompt,
+            },
+            RequestMessage {
+                role: "user",
+                content: &q,
+            },
+        ];
+
+        let mode = if args.stream {
+            StreamMode::Stdout {
+                header_title: &format!("Answer: {}", title),
+            }
+        } else {
+            StreamMode::Buffered
+        };
+
+        let output = llm
+            .complete_chat(&messages, "Thinking...", "Answer ready", mode)
+            .await?;
+
+        if !output.streamed_to_stdout {
+            display_summary(
+                &format!("Answer: {}", title),
+                &output.content,
+                args.effective_paging(),
+                args.plain,
+            )?;
+        }
+        return Ok(());
+    }
+
+    // Interactive REPL chat session
+    println!("\n\x1b[1;36m=== Interactive Q&A: {} ===\x1b[0m", title);
+    println!("\x1b[2mType your question, or 'exit' / 'quit' to end the session.\x1b[0m\n");
+
+    let mut history: Vec<(String, String)> = Vec::new();
+
+    // If an initial question was passed alongside --interactive, answer it first
+    if let Some(initial_q) = question {
+        println!("\x1b[1;32mQuestion:\x1b[0m {}", initial_q);
+        let ans = ask_turn(
+            &system_prompt,
+            &history,
+            &initial_q,
+            llm,
+            args.stream,
+            args.plain,
+        )
+        .await?;
+        history.push((initial_q, ans));
+        println!();
+    }
+
+    let stdin = io::stdin();
+    let mut reader = stdin.lock();
+
+    loop {
+        print!("\x1b[1;36msrz [ask]>\x1b[0m ");
+        io::stdout().flush()?;
+
+        let mut line = String::new();
+        let bytes_read = reader.read_line(&mut line)?;
+        if bytes_read == 0 {
+            // EOF (Ctrl+D)
+            println!();
+            break;
+        }
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.eq_ignore_ascii_case("exit") || trimmed.eq_ignore_ascii_case("quit") {
+            println!("\x1b[2mGoodbye!\x1b[0m\n");
+            break;
+        }
+
+        let ans = ask_turn(
+            &system_prompt,
+            &history,
+            trimmed,
+            llm,
+            args.stream,
+            args.plain,
+        )
+        .await?;
+        history.push((trimmed.to_string(), ans));
+        println!();
+    }
+
+    Ok(())
+}
+
+async fn ask_turn(
+    system_prompt: &str,
+    history: &[(String, String)],
+    question: &str,
+    llm: &LlmClient,
+    stream: bool,
+    plain: bool,
+) -> Result<String> {
+    let mut messages: Vec<RequestMessage<'_>> = Vec::with_capacity(history.len() * 2 + 2);
+    messages.push(RequestMessage {
+        role: "system",
+        content: system_prompt,
+    });
+
+    for (q, a) in history {
+        messages.push(RequestMessage {
+            role: "user",
+            content: q,
+        });
+        messages.push(RequestMessage {
+            role: "assistant",
+            content: a,
+        });
+    }
+
+    messages.push(RequestMessage {
+        role: "user",
+        content: question,
+    });
+
+    let mode = if stream {
+        StreamMode::Stdout {
+            header_title: "Answer",
+        }
+    } else {
+        StreamMode::Buffered
+    };
+
+    let output = llm
+        .complete_chat(&messages, "Thinking...", "Answer ready", mode)
+        .await?;
+
+    if !output.streamed_to_stdout {
+        if plain || !Ui::use_color() {
+            println!("{}", output.content);
+        } else {
+            let rendered = render_markdown(&output.content, None);
+            println!("{}", rendered);
+        }
+    }
+
+    Ok(output.content)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_ask_system_prompt_structure() {
+        let title = "Sample Article";
+        let content = "The sky is blue.";
+        let prompt = format!(
+            "Document: {}\nContent:\n{}",
+            title, content
+        );
+        assert!(prompt.contains("Sample Article"));
+        assert!(prompt.contains("The sky is blue."));
+    }
+}

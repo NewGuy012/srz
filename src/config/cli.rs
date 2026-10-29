@@ -269,6 +269,19 @@ pub enum Commands {
     /// Launch the interactive terminal UI library explorer
     #[command(alias = "tui", alias = "library")]
     Browse,
+    /// Ask questions grounded on a document, URL, file, or the most recent read
+    #[command(alias = "chat")]
+    Ask {
+        /// Target document (URL/file/title) or question
+        first: Option<String>,
+
+        /// Question to ask (when target is provided as the first argument)
+        second: Option<String>,
+
+        /// Run in interactive multi-turn chat mode
+        #[arg(short, long)]
+        interactive: bool,
+    },
     /// Search and summarize latest news on a topic using Google News RSS
     News {
         /// Topic or query to search for (e.g. "javascript", "rust", "tech")
@@ -353,6 +366,11 @@ pub enum ResolvedAction<'a> {
     Doctor,
     Index,
     Browse,
+    Ask {
+        target: Option<String>,
+        question: Option<String>,
+        interactive: bool,
+    },
     News {
         topic: String,
         timeframe: NewsTimeframe,
@@ -407,6 +425,31 @@ impl Cli {
                 Commands::Doctor => Ok(ResolvedAction::Doctor),
                 Commands::Index => Ok(ResolvedAction::Index),
                 Commands::Browse => Ok(ResolvedAction::Browse),
+                Commands::Ask {
+                    first,
+                    second,
+                    interactive,
+                } => {
+                    let (target, question) = match (first.as_deref(), second.as_deref()) {
+                        (Some(f), Some(s)) => {
+                            (Some(f.trim().to_string()), Some(s.trim().to_string()))
+                        }
+                        (Some(f), None) => {
+                            if is_probable_question(f) {
+                                (None, Some(f.trim().to_string()))
+                            } else {
+                                (Some(f.trim().to_string()), None)
+                            }
+                        }
+                        (None, None) => (None, None),
+                        (None, Some(s)) => (None, Some(s.trim().to_string())),
+                    };
+                    Ok(ResolvedAction::Ask {
+                        target,
+                        question,
+                        interactive: *interactive,
+                    })
+                }
                 Commands::News {
                     topic,
                     timeframe,
@@ -545,4 +588,25 @@ pub fn clean_news_query(s: &str) -> String {
     } else {
         filtered.join(" ")
     }
+}
+
+pub fn is_probable_question(s: &str) -> bool {
+    let trimmed = s.trim();
+    if trimmed.ends_with('?') {
+        return true;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let question_prefixes = [
+        "what", "why", "how", "who", "when", "where", "which", "can", "could", "should", "would",
+        "is", "are", "explain", "summarize", "tell", "describe", "clarify",
+    ];
+    for prefix in question_prefixes {
+        if lower.starts_with(prefix)
+            && lower.len() > prefix.len()
+            && lower[prefix.len()..].starts_with(' ')
+        {
+            return true;
+        }
+    }
+    false
 }

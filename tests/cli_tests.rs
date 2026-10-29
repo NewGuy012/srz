@@ -222,6 +222,64 @@ fn test_missing_target_returns_error() {
 }
 
 #[test]
+fn test_ask_subcommand_resolution() {
+    use srz::cli::is_probable_question;
+
+    assert!(is_probable_question("What is the thesis?"));
+    assert!(is_probable_question("How does this compare?"));
+    assert!(is_probable_question("Can you explain point 3?"));
+    assert!(is_probable_question("Explain the methodology"));
+    assert!(is_probable_question("Tell me about the ending?"));
+    assert!(!is_probable_question("The Hobbit"));
+    assert!(!is_probable_question("https://example.com/article"));
+    assert!(!is_probable_question("document.pdf"));
+
+    // Case 1: Target and Question
+    let cli1 = Cli::parse_from(["srz", "ask", "https://example.com", "What is the key takeaway?"]);
+    assert_eq!(
+        cli1.resolve_action().unwrap(),
+        ResolvedAction::Ask {
+            target: Some("https://example.com".to_string()),
+            question: Some("What is the key takeaway?".to_string()),
+            interactive: false,
+        }
+    );
+
+    // Case 2: Only question provided (auto-detected as question)
+    let cli2 = Cli::parse_from(["srz", "ask", "What are the limitations?"]);
+    assert_eq!(
+        cli2.resolve_action().unwrap(),
+        ResolvedAction::Ask {
+            target: None,
+            question: Some("What are the limitations?".to_string()),
+            interactive: false,
+        }
+    );
+
+    // Case 3: Only target provided (e.g. for interactive chat)
+    let cli3 = Cli::parse_from(["srz", "ask", "The Hobbit"]);
+    assert_eq!(
+        cli3.resolve_action().unwrap(),
+        ResolvedAction::Ask {
+            target: Some("The Hobbit".to_string()),
+            question: None,
+            interactive: false,
+        }
+    );
+
+    // Case 4: Interactive flag
+    let cli4 = Cli::parse_from(["srz", "ask", "--interactive"]);
+    assert_eq!(
+        cli4.resolve_action().unwrap(),
+        ResolvedAction::Ask {
+            target: None,
+            question: None,
+            interactive: true,
+        }
+    );
+}
+
+#[test]
 fn test_browse_subcommand_resolution() {
     let browse_cli = Cli::parse_from(["srz", "browse"]);
     assert_eq!(browse_cli.resolve_action().unwrap(), ResolvedAction::Browse);

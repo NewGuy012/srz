@@ -1,3 +1,4 @@
+pub mod ask;
 pub mod diagnostics;
 pub mod library;
 pub mod summarize;
@@ -10,6 +11,7 @@ use crate::db::Database;
 use crate::ui::Ui;
 use std::path::Path;
 
+pub use ask::handle_ask;
 pub use diagnostics::{handle_doctor, handle_models};
 pub use library::{handle_find, handle_history, handle_index, handle_stats, update_index_dashboard};
 pub use summarize::{
