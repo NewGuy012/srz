@@ -80,13 +80,13 @@ See [Configuring Your LLM Backend](#configuring-your-llm-backend) below for step
 **macOS & Linux**:
 
 ```bash
-curl -LsSf https://raw.githubusercontent.com/NewGuy012/srz/master/install.sh | sh
+curl -LsSf https://raw.githubusercontent.com/NewGuy012/srz/master/scripts/install.sh | sh
 ```
 
 **Windows**:
 
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/NewGuy012/srz/master/install.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/NewGuy012/srz/master/scripts/install.ps1 | iex"
 ```
 
 ### Homebrew (macOS & Linux)
@@ -110,7 +110,7 @@ cargo install --path .
 ```bash
 srz "https://en.wikipedia.org/wiki/Rust_(programming_language)" # Webpage, blog, or article
 srz "https://youtu.be/5C_HPTJg5ek"    # YouTube video: "Rust in 100 Seconds" (captions & timed transcript)
-srz document.pdf                      # Local PDF document (pure-Rust extractor)
+srz assets/document.pdf               # Local PDF document (pure-Rust extractor)
 srz "The Rust Programming Language" --style bullets --open  # Book synopsis & open in browser
 srz news "Rust language updates" -t week  # Live news digest (day, week, month)
 git diff | srz -                      # Unix stdin stream
@@ -119,7 +119,7 @@ git diff | srz -                      # Unix stdin stream
 ### Ask & Chat
 ```bash
 srz ask "What are the main findings?" # Grounded Q&A based on latest read
-srz ask document.pdf "Key takeaways?" # Grounded Q&A on a specific document
+srz ask assets/document.pdf "Key takeaways?" # Grounded Q&A on a specific document
 srz ask -i                            # Interactive multi-turn chat REPL
 ```
 
@@ -146,17 +146,17 @@ Run `srz --help` to see all available subcommands and flags.
 
 ## Features
 
-- [**Universal Ingestion**](OVERVIEW.md#6-key-cli-features--commands): Webpages, YouTube captions, PDFs, local text files, Unix pipes (`-`), book synopses, and live news.
-- [**Interactive Q&A (`srz ask`)**](OVERVIEW.md#module-responsibilities): Ask questions or launch a multi-turn chat REPL grounded on any document or past read.
-- [**TUI Dashboard (`srz browse`)**](OVERVIEW.md#performance--memory-efficiency): Browse, search, filter, and copy past summaries in a split-pane terminal UI.
-- [**3 Summary Presets**](OVERVIEW.md#6-key-cli-features--commands): Tailor summaries with `concise` (default), `bullets`, or `detailed`.
-- [**Offline Library & Search**](OVERVIEW.md#3-storage--cache-architecture): Embedded DuckDB indexes every read for instant full-text search (`srz find`) and HTML dashboards (`srz index`).
-- [**Reader Views & Paging**](OVERVIEW.md#module-responsibilities): Standalone dark-mode HTML/Markdown exports, plus automatic terminal paging (`less -RFX`).
-- [**Map-Reduce Chunking**](OVERVIEW.md#performance--memory-efficiency): Splits and synthesizes long documents exceeding LLM context windows in parallel.
-- [**Private & Secure**](OVERVIEW.md#security--privacy): 100% local inference, zero tracking, safe Rust, private file permissions (`0700`/`0600`), and SHA-256 verified binary updates.
-- [**Profiles & Diagnostics**](OVERVIEW.md#6-key-cli-features--commands): Switch backends in `config.toml`, test server health (`srz doctor`), and self-update (`srz upgrade`).
+- [**Universal Ingestion**](docs/OVERVIEW.md#6-key-cli-features--commands): Webpages, YouTube captions, PDFs, local text files, Unix pipes (`-`), book synopses, and live news.
+- [**Interactive Q&A (`srz ask`)**](docs/OVERVIEW.md#module-responsibilities): Ask questions or launch a multi-turn chat REPL grounded on any document or past read.
+- [**TUI Dashboard (`srz browse`)**](docs/OVERVIEW.md#performance--memory-efficiency): Browse, search, filter, and copy past summaries in a split-pane terminal UI.
+- [**3 Summary Presets**](docs/OVERVIEW.md#6-key-cli-features--commands): Tailor summaries with `concise` (default), `bullets`, or `detailed`.
+- [**Offline Library & Search**](docs/OVERVIEW.md#3-storage--cache-architecture): Embedded DuckDB indexes every read for instant full-text search (`srz find`) and HTML dashboards (`srz index`).
+- [**Reader Views & Paging**](docs/OVERVIEW.md#module-responsibilities): Standalone dark-mode HTML/Markdown exports, plus automatic terminal paging (`less -RFX`).
+- [**Map-Reduce Chunking**](docs/OVERVIEW.md#performance--memory-efficiency): Splits and synthesizes long documents exceeding LLM context windows in parallel.
+- [**Private & Secure**](docs/OVERVIEW.md#security--privacy): 100% local inference, zero tracking, safe Rust, private file permissions (`0700`/`0600`), and SHA-256 verified binary updates.
+- [**Profiles & Diagnostics**](docs/OVERVIEW.md#6-key-cli-features--commands): Switch backends in `config.toml`, test server health (`srz doctor`), and self-update (`srz upgrade`).
 
-> For architectural diagrams, lifecycle execution sequences, and in-depth subsystem specs, see [**`OVERVIEW.md`**](OVERVIEW.md).
+> For architectural diagrams, lifecycle execution sequences, and in-depth subsystem specs, see [**`OVERVIEW.md`**](docs/OVERVIEW.md).
 
 
 ## Configuring Your LLM Backend
@@ -222,7 +222,7 @@ srz "The Rust Programming Language" --profile openai     # Named cloud profile
 
 ## Architecture & Modules
 
-See [`OVERVIEW.md`](OVERVIEW.md) for detailed Mermaid architecture diagrams and execution sequences.
+See [`OVERVIEW.md`](docs/OVERVIEW.md) for detailed Mermaid architecture diagrams and execution sequences.
 
 
 ## Running Tests & Static Analysis

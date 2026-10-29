@@ -238,9 +238,9 @@ fn test_sample_pdf_generation_and_extraction() {
     assert!(page.content.contains("Universal Ingestion"));
     assert!(page.word_count >= 50);
 
-    // Also persist document.pdf in workspace root so CLI examples in README work out-of-the-box
-    let doc_path = std::path::Path::new("document.pdf");
+    // Also persist document.pdf in assets/ folder so CLI examples in README work out-of-the-box
+    let doc_path = std::path::Path::new("assets/document.pdf");
     if !doc_path.exists() {
-        std::fs::write(doc_path, &bytes).expect("Failed to write document.pdf");
+        std::fs::write(doc_path, &bytes).expect("Failed to write assets/document.pdf");
     }
 }

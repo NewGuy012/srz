@@ -556,9 +556,16 @@ fn test_readme_usage_examples_cli_resolution() {
     );
 
     // 3. Local PDF document (auto-detected as file via is_file_like even if missing)
-    let cmd3 = Cli::parse_from(["srz", "document.pdf"]);
+    let cmd3 = Cli::parse_from(["srz", "assets/document.pdf"]);
     assert_eq!(
         cmd3.resolve_action().unwrap(),
+        ResolvedAction::File {
+            path: std::path::PathBuf::from("assets/document.pdf")
+        }
+    );
+    let cmd3_raw = Cli::parse_from(["srz", "document.pdf"]);
+    assert_eq!(
+        cmd3_raw.resolve_action().unwrap(),
         ResolvedAction::File {
             path: std::path::PathBuf::from("document.pdf")
         }
@@ -610,9 +617,18 @@ fn test_readme_usage_examples_cli_resolution() {
     );
 
     // 8. Ask based on specific document
-    let cmd8 = Cli::parse_from(["srz", "ask", "document.pdf", "Key takeaways?"]);
+    let cmd8 = Cli::parse_from(["srz", "ask", "assets/document.pdf", "Key takeaways?"]);
     assert_eq!(
         cmd8.resolve_action().unwrap(),
+        ResolvedAction::Ask {
+            target: Some("assets/document.pdf".to_string()),
+            question: Some("Key takeaways?".to_string()),
+            interactive: false,
+        }
+    );
+    let cmd8_raw = Cli::parse_from(["srz", "ask", "document.pdf", "Key takeaways?"]);
+    assert_eq!(
+        cmd8_raw.resolve_action().unwrap(),
         ResolvedAction::Ask {
             target: Some("document.pdf".to_string()),
             question: Some("Key takeaways?".to_string()),

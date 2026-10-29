@@ -57,7 +57,7 @@ if ! curl -fsSL "${SHA_URL}" -o "${TMP_DIR}/srz.tar.gz.sha256"; then
     echo "Warning: Could not download SHA256 checksum from ${SHA_URL}; bypassing due to FORCE=1."
   else
     echo "Error: Failed to download SHA256 checksum file from ${SHA_URL}."
-    echo "Aborting installation for security. Run with 'FORCE=1 ./install.sh' to bypass."
+    echo "Aborting installation for security. Run with 'FORCE=1 ./scripts/install.sh' to bypass."
     exit 1
   fi
 else
