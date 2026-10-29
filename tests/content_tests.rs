@@ -246,6 +246,30 @@ fn test_sample_pdf_generation_and_extraction() {
 }
 
 #[test]
+fn test_assets_document_pdf_cli_access_and_extraction() {
+    use srz::sources::pdf::PdfExtractor;
+
+    let path = std::path::Path::new("assets/document.pdf");
+    assert!(path.exists(), "assets/document.pdf must exist for CLI access and tests");
+
+    // Test low-level PdfExtractor
+    let page = PdfExtractor::extract_file(path).expect("Failed to extract assets/document.pdf");
+    assert!(page.content.contains("THE HISTORY OF RUST"));
+    assert!(page.content.contains("Ownership & Borrowing"));
+    assert!(page.content.contains("Graydon Hoare"));
+    assert!(page.content.contains("The Rust Foundation"));
+    assert!(page.word_count >= 100);
+
+    // Test high-level CLI DocumentLoader used by `srz assets/document.pdf` and `srz ask assets/document.pdf`
+    let scraper = srz::scraper::WebScraper::new().unwrap();
+    let doc = srz::sources::DocumentLoader::load_file(path, &scraper)
+        .expect("CLI DocumentLoader failed to access assets/document.pdf");
+    assert!(doc.word_count >= 100);
+    assert!(doc.content.contains("THE HISTORY OF RUST"));
+    assert!(doc.content.contains("CHRONOLOGICAL MILESTONE TIMELINE"));
+}
+
+#[test]
 fn test_escape_closing_tag_case_insensitive_and_whitespace_variations() {
     use srz::engine::llm::escape_closing_tag;
 
