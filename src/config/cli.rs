@@ -130,10 +130,6 @@ pub struct Cli {
     #[arg(long, global = true, default_value_t = 8192)]
     pub max_tokens: u32,
 
-    /// Skip web search for books (force using LLM trained knowledge directly)
-    #[arg(long, global = true)]
-    pub no_search: bool,
-
     /// Bypass local cache and force fresh web scraping and LLM summarization
     #[arg(long, global = true)]
     pub no_cache: bool,
@@ -350,7 +346,6 @@ pub enum ResolvedAction<'a> {
     },
     Book {
         title: &'a str,
-        no_search: bool,
     },
     File {
         path: PathBuf,
@@ -408,7 +403,6 @@ impl Cli {
                 Commands::Web { url } => Ok(ResolvedAction::Web { url: url.trim() }),
                 Commands::Book { title } => Ok(ResolvedAction::Book {
                     title: title.trim(),
-                    no_search: self.no_search,
                 }),
                 Commands::File { path } => {
                     if path.as_os_str() == "-" {
@@ -505,7 +499,6 @@ impl Cli {
                 } else {
                     Ok(ResolvedAction::Book {
                         title: trimmed,
-                        no_search: self.no_search,
                     })
                 }
             }
@@ -549,7 +542,6 @@ impl Cli {
         apply_field!(api_key);
         apply_field!(style);
         apply_field!(max_tokens);
-        apply_field!(no_search);
         apply_field!(no_cache);
         apply_field!(quiet);
         apply_field!(verbose);

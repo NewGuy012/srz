@@ -13,7 +13,6 @@ pub struct ProfileConfig {
     pub api_key: Option<String>,
     pub style: Option<SummaryStyle>,
     pub max_tokens: Option<u32>,
-    pub no_search: Option<bool>,
     pub no_cache: Option<bool>,
     pub quiet: Option<bool>,
     pub verbose: Option<bool>,

@@ -166,12 +166,8 @@ fn test_auto_detect_book_with_global_flags() {
     assert_eq!(cli.style, SummaryStyle::Concise);
 
     match cli.resolve_action().unwrap() {
-        ResolvedAction::Book {
-            title,
-            no_search,
-        } => {
+        ResolvedAction::Book { title } => {
             assert_eq!(title, "The Great Gatsby");
-            assert!(!no_search);
         }
         _ => panic!("Expected Book action"),
     }
@@ -183,7 +179,6 @@ fn test_book_subcommand_flags() {
         "srz",
         "book",
         "Dune",
-        "--no-search",
         "--max-tokens",
         "4096",
     ]);
@@ -191,12 +186,8 @@ fn test_book_subcommand_flags() {
     assert_eq!(cli.max_tokens, 4096);
 
     match cli.resolve_action().unwrap() {
-        ResolvedAction::Book {
-            title,
-            no_search,
-        } => {
+        ResolvedAction::Book { title } => {
             assert_eq!(title, "Dune");
-            assert!(no_search);
         }
         _ => panic!("Expected Book action"),
     }
@@ -633,7 +624,6 @@ fn test_readme_usage_examples_cli_resolution() {
         cmd4.resolve_action().unwrap(),
         ResolvedAction::Book {
             title: "The Rust Programming Language",
-            no_search: false,
         }
     );
 
@@ -797,7 +787,6 @@ fn test_readme_usage_examples_cli_resolution() {
         cmd_rust_book.resolve_action().unwrap(),
         ResolvedAction::Book {
             title: "The Rust Programming Language",
-            no_search: false,
         }
     );
 

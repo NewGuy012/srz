@@ -417,7 +417,6 @@ pub async fn handle_news(
 pub async fn handle_book(
     title: &str,
     author: Option<&str>,
-    no_search: bool,
     scraper: &WebScraper,
     llm: &LlmClient,
     cache: &Cache,
@@ -428,8 +427,8 @@ pub async fn handle_book(
         None => format!("\"{}\"", title),
     };
 
-    // 1. Check for a cached summary matching title + author + style + model + search mode
-    if let Some(cached) = cache.get_book_summary(title, author, args.style, &args.model, no_search)
+    // 1. Check for a cached summary matching title + author + style + model
+    if let Some(cached) = cache.get_book_summary(title, author, args.style, &args.model, false)
     {
         Ui::info("Loaded book summary from local cache (pass `--no-cache` to refresh).");
         return Ok(SummaryOutcome::from_cached(
@@ -444,7 +443,6 @@ pub async fn handle_book(
     let query = BookQuery {
         title,
         author,
-        no_search,
     };
 
     // 2. Generate summary (via grounded web search or LLM memory fallback)
@@ -458,7 +456,7 @@ pub async fn handle_book(
             author,
             style: args.style,
             model: &args.model,
-            no_search,
+            no_search: false,
             display_title: &book_display,
             summary: &output.content,
         });
@@ -477,7 +475,6 @@ pub async fn handle_book(
 struct BookQuery<'a> {
     title: &'a str,
     author: Option<&'a str>,
-    no_search: bool,
 }
 
 async fn resolve_book_identity(
@@ -603,8 +600,7 @@ async fn generate_book_summary(
     args: &Cli,
     mode: StreamMode<'_>,
 ) -> Result<(LlmOutput, usize, Option<String>)> {
-    if !query.no_search {
-        let mut searcher = BookSearcher::with_client(scraper.client().clone());
+    let mut searcher = BookSearcher::with_client(scraper.client().clone());
         let (resolved_title, resolved_author) =
             resolve_book_identity(query.title, query.author, cache, &mut searcher).await;
 
@@ -691,14 +687,11 @@ async fn generate_book_summary(
                 }
             }
 
-            Ui::warn(
-                "All online references failed to scrape. Falling back to LLM internal memory.",
-            );
-        } else {
-            Ui::warn("No web synopsis found online. Falling back to LLM trained memory.");
-        }
+        Ui::warn(
+            "All online references failed to scrape. Falling back to LLM internal memory.",
+        );
     } else {
-        Ui::info("Web search disabled. Using local LLM memory directly.");
+        Ui::warn("No web synopsis found online. Falling back to LLM trained memory.");
     }
 
     let output = llm
