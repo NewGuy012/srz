@@ -19,13 +19,20 @@ All notable changes to `srz` are documented in this file.
 
 ## v0.5.0 (Unreleased)
 
-> Expands DuckDB utilization across the srz engine with pure-offline BM25 relevance ranking for full-text library search, rich reading habits and model telemetry in srz stats, persistent multi-turn chat sessions with resumption support for srz ask, and consolidated embedded DuckDB caching.
+> Expands DuckDB utilization across the srz engine with pure-offline BM25 relevance ranking for full-text library search, rich reading habits and model telemetry in srz stats, persistent multi-turn chat sessions with resumption support for srz ask, consolidated embedded DuckDB caching, and engine-wide performance and prompt framing optimizations.
 
 ### Changes
 - **BM25 Full-Text Search (`srz find`)**: Implemented an offline inverted term index table (`library_terms`) in DuckDB with $2.5\times$ title boosting, term frequency saturation ($k_1=1.2, b=0.75$), and Robertson-Sparck Jones IDF calculation, returning relevance-ranked search results and query-focused snippet extraction without external network dependencies.
 - **Rich Habit & Model Telemetry (`srz stats`)**: Expanded reading analytics to compute active reading days, reading streaks, estimated reading time saved (based on human reading speed of 225 wpm), top source domains, and model P50/P95 token throughput percentiles using pure DuckDB SQL aggregation without external ICU extensions.
 - **Persistent Multi-Turn Chat Sessions (`srz ask`)**: Added chat session persistence in DuckDB (`chat_sessions`, `chat_messages`) supporting `--chats` (list past sessions), `--resume <ID>` (continue conversation from previous context), `--show-chat <ID>` (review complete message transcripts), and `--delete-chat <ID>`.
-- **DuckDB Cache Consolidation**: Consolidated ephemeral disk cache (scraped web pages, search metadata, and LLM summaries) into an embedded `cache.duckdb` database with atomic transactions, SQL timestamp TTL pruning, and transparent fallback to legacy JSON files, dramatically reducing inode usage and disk fragmentation.
+- **DuckDB Cache Consolidation & Native Millisecond TTL Pruning**: Consolidated ephemeral disk cache (scraped web pages, search metadata, and LLM summaries) into an embedded `cache.duckdb` database with atomic transactions and transparent fallback to legacy JSON files; aligned `cache_summaries` schema, introduced DuckDB-native `epoch_ms(cached_at)::BIGINT` queries for millisecond-accurate TTL pruning without ICU extensions, and unified cache directory traversals in `Cache::prune` into a single pass.
+- **Search & Render Performance Optimizations**:
+  - `LibraryItem::matches_query`: Short-circuits metadata fields before checking full summaries, and eliminates intermediate heap allocations for non-ASCII search terms against ASCII metadata.
+  - `escape_html_to` & `escape_html_cow`: Scans text in multi-byte chunks via `rest.find(['&', '<', '>', '"', '\''])` pattern matching and returns `Cow::Borrowed` with zero allocations when no characters require escaping.
+  - Canonical `target_meta` mapping helper deduplicating icon, category, and badge formatting.
+- **Prompt Framing & Delimiter Consolidation**: Replaced fragmented manual closing tag escaping across all LLM pipelines (`summarize_document_counted`, `summarize_book_with_context`, `summarize_news_digest`, and `commands::ask::format_grounded_context`) with a centralized `format_untrusted_section` helper.
+- **Centralized Text Utilities (`system::text_util`)**: Unified HTML entity decoding (`decode_html_entities`) and ASCII case-insensitive search (`find_ascii_case_insensitive`, `contains_ascii_case_insensitive`) into `src/system/text_util.rs`, eliminating ad-hoc cross-module dependencies between `sources::news` and `sources::youtube`.
+- **CLI Flag & Subcommand Simplification**: Streamlined command-line interface by hiding redundant subcommands (`web`, `book`, `file`) from `--help` in favor of primary root arguments (`srz <TARGET>`), and removed legacy flags (`--author`, `--no-search`, `-y/--yes`, `--max-tokens`, `--concurrency`, `--no-pager`, and `--namespace` on prune).
 
 ---
 

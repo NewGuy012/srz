@@ -156,7 +156,7 @@ src/
 ├── engine/       # LLM streaming client, prompts, and document chunking
 ├── sources/      # Content ingestion: web scraping, book search, and news RSS
 ├── storage/      # Local disk caching and embedded DuckDB analytics
-├── system/       # Filesystem security helpers and in-place self-updater
+├── system/       # Filesystem security helpers, text utilities, and in-place self-updater
 ├── ui/           # Terminal console formatting, spinners, and HTML reader views
 ├── lib.rs        # Library crate root and backwards-compatible module exports
 └── main.rs       # Binary entry point and CLI orchestration
@@ -188,7 +188,8 @@ src/
 | | [`src/ui/printer.rs`](src/ui/printer.rs) | `ui::printer` | Cached `LazyLock<MadSkin>` terminal Markdown styling and automatic `$PAGER` / `less -RFX` integration. |
 | | [`src/ui/tui.rs`](src/ui/tui.rs) | `ui::tui` | Interactive `ratatui` + `crossterm` terminal UI library explorer (`srz browse`) with event-driven redraws and pre-indexed live search. |
 | | [`src/ui/render.rs`](src/ui/render.rs) | `ui::render` | Single-pass streaming Markdown-to-HTML converter, CSS styling, index dashboard, unified `target_icon`/`target_badge`, and slugify. |
-| **System** | [`src/system/fs_util.rs`](src/system/fs_util.rs) | `system::fs_util` | Platform filesystem utilities and private directory/file permissions (`0700`/`0600`). |
+| **System** | [`src/system/text_util.rs`](src/system/text_util.rs) | `system::text_util` | Centralized HTML entity decoding (`decode_html_entities`), ASCII case-insensitive search (`find_ascii_case_insensitive`, `contains_ascii_case_insensitive`), and zero-copy string utilities. |
+| | [`src/system/fs_util.rs`](src/system/fs_util.rs) | `system::fs_util` | Platform filesystem utilities and private directory/file permissions (`0700`/`0600`). |
 | | [`src/system/upgrade.rs`](src/system/upgrade.rs) | `system::upgrade` | In-place self-updater: target detection, GitHub release queries, bounded archive extraction (`read_bounded_binary`), SHA256 verification, and atomic swap. |
 
 
@@ -203,25 +204,26 @@ src/
 - **Unified Bounded HTTP Streaming**: All network fetches (web scraping, news RSS feeds and RPC redirects, search APIs, YouTube transcripts, self-updater binary downloads and checksums) share chunked streaming with strict byte limits to avoid unbuffered memory spikes.
 - **Single-Pass PDF Parsing**: `PdfExtractor` parses the in-memory `pdf_extract::Document` structure once for both text layer extraction and `Info` trailer dictionary metadata lookup.
 - **Zero-Copy HTML Fallback & Entity Decoding**: `WebScraper` borrows raw HTML zero-copy when no main article container matches, and YouTube caption parsing uses single-pass `Cow::Borrowed` HTML entity decoding and segment buffer reuse.
-- **Zero-Allocation TUI Search & Memory Optimization**: `AppState` searches across library items on-the-fly via zero-copy ASCII case-insensitive matching (`LibraryItem::matches_query`) without duplicating lowercased text blobs in RAM, halving memory consumption and avoiding deep clones during item deletion.
+- **Zero-Allocation TUI Search & Short-Circuit Query Matching**: `AppState` searches across library items on-the-fly via zero-copy ASCII case-insensitive matching (`LibraryItem::matches_query`), short-circuiting on metadata fields (`title`, `author`, `target_type`, `url`) before scanning full summary texts and eliminating allocations for non-ASCII queries against ASCII metadata.
+- **Fast Chunk-Scanning HTML Escaping**: HTML escaping in `escape_html_to` scans text in multi-byte chunks using `Pattern` matching (`find(['&', '<', '>', '"', '\''])`), with `escape_html_cow` returning `Cow::Borrowed` with zero allocations when no characters require escaping.
 - **JoinSet Early-Abort Concurrent Scraping**: Google News parallel article fetching uses `tokio::task::JoinSet` with `abort_all()` to immediately terminate excess background network requests once the target article limit is reached.
 - **Single-Allocation Checksum Computation**: Upgrade verification and testing format SHA-256 digests in a single pre-allocated string pass (`compute_sha256_hex`), eliminating intermediate heap allocations.
 - **Direct File Handle Permissions**: Files created with private owner-only permissions (`0600`) enforce security directly on open file descriptors (`fchmod`), eliminating redundant filesystem path traversals.
 - **Cached Terminal Markdown Skin**: Terminal Markdown rendering caches `MadSkin` in a global `LazyLock` rather than reconstructing style rules on each render or interactive chat turn.
 - **Parallel Map-Reduce**: Large documents (> 12,000 words) are split along paragraph boundaries and processed concurrently (configurable via `config.toml`), sharing `Arc<str>` metadata and aggregating token metrics across chunks.
-- **Single-Pass Output Streaming**: Markdown-to-HTML conversion and HTML entity escaping stream directly into a pre-allocated output buffer without allocating intermediate strings.
+- **Single-Pass Output Streaming & Unified Cache Pruning**: Markdown-to-HTML conversion streams directly into pre-allocated output buffers, and `Cache::prune` performs a single-pass traversal over cache namespaces for both age and size limits.
 - **Transactional Database Safety**: DuckDB operations (`record_summary`, `delete_library_item`, chat session mutations) use `Database::with_transaction` to guarantee ACID atomicity and rollback on failure.
 - **Offline BM25 Full-Text Relevance**: Pure SQL Robertson-Sparck Jones BM25 ranking algorithm implemented in DuckDB without network-downloaded extensions (`fts`), utilizing an inverted index table (`library_terms`), $2.5\times$ title weight boosting, and document length normalization ($k_1=1.2, b=0.75$).
 - **Rich Telemetry & Habit Aggregation**: Pure DuckDB SQL analytics calculating active reading days, reading streaks, estimated reading time saved (at 225 wpm), top source domains, and P50/P95 token throughput percentiles (`quantile_cont`) using civil calendar arithmetic without requiring external ICU extensions.
 - **Persistent Chat Sessions**: ACID-compliant DuckDB session persistence (`chat_sessions` and `chat_messages`) enabling multi-turn conversation resumption (`--resume`), transcript review (`--show-chat`), and safe cascading cleanup.
-- **Consolidated DuckDB Cache**: Replaces thousands of small individual JSON files with an embedded `cache.duckdb` database, drastically decreasing inode pressure and file descriptor thrashing while enabling sub-millisecond atomic lookups and instantaneous SQL timestamp TTL eviction.
+- **Consolidated DuckDB Cache**: Replaces thousands of small individual JSON files with an embedded `cache.duckdb` database, drastically decreasing inode pressure and file descriptor thrashing while enabling sub-millisecond atomic lookups and instantaneous SQL timestamp TTL eviction via DuckDB-native `epoch_ms(cached_at)::BIGINT`.
 - **In-Place DB Snippet Formatting**: Search snippet extraction pre-allocates exact capacities and normalizes whitespace in place without redundant string allocations.
 
 ### Security & Privacy
 - **100% Safe Rust Guarantee**: The entire crate strictly enforces `#![forbid(unsafe_code)]` at `src/lib.rs` and `src/main.rs`. Zero `unsafe` blocks are permitted.
 - **Strict Local Isolation & Symlink Hardening**: Cache files, configuration, and database files are created with owner-only Unix permissions (`0700` directories, `0600` files atomically created via `O_CREAT | O_EXCL` and `mode(0o600)`). Filesystem operations reject pre-planted symlink paths to prevent unauthorized file manipulation across directory boundaries.
 - **Cryptographic SHA-256 Cache Hashing**: Cache keys across all namespaces (`pages`, `search`, `summaries`) are hashed via 256-bit SHA-256 (`Sha256Hasher`), providing collision-free, persistent, and toolchain-independent cache indexing.
-- **Prompt Injection Defense**: Untrusted source text is enclosed inside tagged XML blocks (`<source_document>`, `<source_section>`, `<reference_context>`, `<news_articles>`, `<section_summaries>`) within the LLM prompt. Neutralizes delimiter collision bypasses via case-insensitive, whitespace-tolerant tag escaping (`escape_closing_tag`) and defensive prompt metadata sanitization.
+- **Prompt Injection Defense & Unified Framing**: Untrusted source text is enclosed inside tagged XML blocks (`<source_document>`, `<source_section>`, `<reference_context>`, `<news_articles>`, `<section_summaries>`) via centralized `format_untrusted_section`. Neutralizes delimiter collision bypasses via case-insensitive, whitespace-tolerant tag escaping (`escape_closing_tag`) and defensive prompt metadata sanitization.
 - **Bounded Resource Limits & Client Timeouts**: Enforces strict safety limits on network downloads (10 MB), local files (20 MB), standard input streams (10 MB), SSE streaming line buffers (1 MB), total LLM content buffers (10 MB), upgrade archives (50 MB), and decompressed binaries (100 MB), accompanied by 5-second connect and 60-second request timeouts.
 - **Terminal Escape Sequence & BiDi Sanitization**: Untrusted document titles, scraped page metadata, LLM streaming output, and CLI messages are stripped of 7-bit ANSI CSI/OSC sequences, 8-bit C1 controls (`U+0080`..=`U+009F`), string-type sequences (DCS, SOS, PM, APC), and Unicode Bidirectional (BiDi) override codepoints (preventing Trojan Source spoofing and clipboard hijacking).
 - **Media Scraper & SSRF Defense**: YouTube video ingestion strictly validates host authority against official domains (`youtube.com`, `*.youtube.com`, `youtu.be`). Caption downloads are pinned to HTTPS `api/timedtext` endpoints, preventing SSRF against internal services or cloud metadata.
