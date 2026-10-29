@@ -429,17 +429,31 @@ pub fn escape_html_char(out: &mut String, ch: char) {
     }
 }
 
-/// Appends HTML-escaped text directly into the provided output buffer.
+/// Appends HTML-escaped text directly into the provided output buffer using fast chunk scanning.
 pub fn escape_html_to(out: &mut String, text: &str) {
-    for ch in text.chars() {
+    let mut rest = text;
+    while let Some(idx) = rest.find(|c: char| matches!(c, '&' | '<' | '>' | '"' | '\'')) {
+        out.push_str(&rest[..idx]);
+        let ch = rest[idx..].chars().next().unwrap();
         escape_html_char(out, ch);
+        rest = &rest[idx + ch.len_utf8()..];
+    }
+    out.push_str(rest);
+}
+
+/// Returns a zero-allocation `Cow::Borrowed` when `text` requires no escaping.
+pub fn escape_html_cow(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains(|c: char| matches!(c, '&' | '<' | '>' | '"' | '\'')) {
+        std::borrow::Cow::Borrowed(text)
+    } else {
+        let mut out = String::with_capacity(text.len() + 16);
+        escape_html_to(&mut out, text);
+        std::borrow::Cow::Owned(out)
     }
 }
 
 pub fn escape_html(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    escape_html_to(&mut out, text);
-    out
+    escape_html_cow(text).into_owned()
 }
 
 /// Appends rendered inline Markdown (`**bold**`, `*italic*`, `` `code` ``) directly
@@ -506,29 +520,27 @@ pub fn format_author_by(author: Option<&str>) -> String {
     }
 }
 
+/// Returns the canonical `(icon, label, badge)` tuple for a summary target type.
+pub fn target_meta(target_type: &str) -> (&'static str, &'static str, &'static str) {
+    match target_type {
+        "book" => ("📚", "Book", "📚 Book"),
+        "web" => ("🌐", "Web", "🌐 Web"),
+        "news" => ("📰", "News", "📰 News"),
+        "file" => ("📄", "File", "📄 File"),
+        "stdin" => ("⌨️", "Stdin", "⌨️ Stdin"),
+        "youtube" => ("📺", "Video", "📺 Video"),
+        _ => ("🌐", "Doc", "📝 Doc"),
+    }
+}
+
 /// Returns the display emoji icon for a summary target type.
 pub fn target_icon(target_type: &str) -> &'static str {
-    match target_type {
-        "book" => "📚",
-        "file" => "📄",
-        "stdin" => "⌨️",
-        "news" => "📰",
-        "youtube" => "📺",
-        _ => "🌐",
-    }
+    target_meta(target_type).0
 }
 
 /// Returns the formatted badge label (icon + category name) for a summary target type.
 pub fn target_badge(target_type: &str) -> &'static str {
-    match target_type {
-        "book" => "📚 Book",
-        "web" => "🌐 Web",
-        "news" => "📰 News",
-        "file" => "📄 File",
-        "stdin" => "⌨️ Stdin",
-        "youtube" => "📺 Video",
-        _ => "📝 Doc",
-    }
+    target_meta(target_type).2
 }
 
 /// Generates a standalone HTML5 dashboard index of all past summaries in the library.
