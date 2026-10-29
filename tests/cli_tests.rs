@@ -355,7 +355,7 @@ fn test_news_subcommand_resolution() {
         ResolvedAction::News {
             topic: "javascript".to_string(),
             timeframe: NewsTimeframe::Day,
-            limit: 4,
+            limit: 5,
         }
     );
 
@@ -380,7 +380,7 @@ fn test_news_natural_query_auto_detection() {
         ResolvedAction::News {
             topic: "javascript".to_string(),
             timeframe: NewsTimeframe::Day,
-            limit: 4,
+            limit: 5,
         }
     );
 
@@ -390,7 +390,7 @@ fn test_news_natural_query_auto_detection() {
         ResolvedAction::News {
             topic: "rust".to_string(),
             timeframe: NewsTimeframe::Day,
-            limit: 4,
+            limit: 5,
         }
     );
 
@@ -400,7 +400,7 @@ fn test_news_natural_query_auto_detection() {
         ResolvedAction::News {
             topic: "quantum computing".to_string(),
             timeframe: NewsTimeframe::Day,
-            limit: 4,
+            limit: 5,
         }
     );
 
@@ -410,7 +410,7 @@ fn test_news_natural_query_auto_detection() {
         ResolvedAction::News {
             topic: "top stories".to_string(),
             timeframe: NewsTimeframe::Day,
-            limit: 4,
+            limit: 5,
         }
     );
 }

@@ -269,8 +269,8 @@ pub enum Commands {
         /// Timeframe for news recency (day, week, month, all; default: day)
         #[arg(short = 't', long, value_enum, default_value = "day")]
         timeframe: NewsTimeframe,
-        /// Maximum number of top articles to aggregate and summarize (default: 4)
-        #[arg(short, long, default_value_t = 4)]
+        /// Maximum number of top articles to aggregate and summarize (default: 5)
+        #[arg(short, long, default_value_t = 5)]
         limit: usize,
     },
     /// Generate shell auto-completion script
@@ -487,7 +487,7 @@ impl Cli {
                     Ok(ResolvedAction::News {
                         topic: clean_topic,
                         timeframe: NewsTimeframe::Day,
-                        limit: 4,
+                        limit: 5,
                     })
                 } else {
                     Ok(ResolvedAction::Book {
