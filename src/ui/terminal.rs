@@ -166,6 +166,13 @@ impl Ui {
 /// Sanitizes a string for safe terminal display by stripping ANSI escape sequences
 /// and unprintable ASCII control characters (CWE-150 / Terminal Escape Injection).
 pub fn sanitize_terminal_text(input: &str) -> String {
+    let has_suspicious = input
+        .bytes()
+        .any(|b| b == 0x1b || (b.is_ascii_control() && b != b'\n' && b != b'\t'));
+    if !has_suspicious {
+        return input.to_string();
+    }
+
     let mut clean = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
 
@@ -214,6 +221,16 @@ pub fn sanitize_terminal_text(input: &str) -> String {
 /// Sanitizes a title string for terminal presentation by removing escape sequences and collapsing whitespace.
 pub fn sanitize_title(title: &str) -> String {
     let sanitized = sanitize_terminal_text(title);
+    if !sanitized.contains('\n')
+        && !sanitized.contains('\r')
+        && !sanitized.contains('\t')
+        && !sanitized.contains("  ")
+        && !sanitized.starts_with(' ')
+        && !sanitized.ends_with(' ')
+    {
+        return sanitized;
+    }
+
     let mut out = String::with_capacity(sanitized.len());
     for word in sanitized.split_whitespace() {
         if !out.is_empty() {

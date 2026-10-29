@@ -405,17 +405,22 @@ fn parse_ordered_list_item(line: &str) -> Option<&str> {
     None
 }
 
+/// Escapes a single character for HTML and appends to `out`.
+pub fn escape_html_char(out: &mut String, ch: char) {
+    match ch {
+        '&' => out.push_str("&amp;"),
+        '<' => out.push_str("&lt;"),
+        '>' => out.push_str("&gt;"),
+        '"' => out.push_str("&quot;"),
+        '\'' => out.push_str("&#39;"),
+        _ => out.push(ch),
+    }
+}
+
 /// Appends HTML-escaped text directly into the provided output buffer.
 pub fn escape_html_to(out: &mut String, text: &str) {
     for ch in text.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(ch),
-        }
+        escape_html_char(out, ch);
     }
 }
 
@@ -467,14 +472,7 @@ pub fn render_inline_to(out: &mut String, text: &str) {
         }
 
         let ch = text[i..].chars().next().unwrap();
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(ch),
-        }
+        escape_html_char(out, ch);
         i += ch.len_utf8();
     }
 }
@@ -484,6 +482,14 @@ pub fn render_inline(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 16);
     render_inline_to(&mut out, text);
     out
+}
+
+/// Formats an author name with a leading " by " if present.
+pub fn format_author_by(author: Option<&str>) -> String {
+    match author {
+        Some(a) if !a.trim().is_empty() => format!(" by {}", a.trim()),
+        _ => String::new(),
+    }
 }
 
 /// Returns the display emoji icon for a summary target type.

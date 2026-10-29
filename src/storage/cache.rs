@@ -233,6 +233,11 @@ impl Cache {
         self.base_dir.join("views")
     }
 
+    /// Returns the path to the HTML view file for a given title.
+    pub fn html_view_path(&self, title: &str) -> PathBuf {
+        self.views_dir().join(format!("{}.html", crate::render::slugify(title)))
+    }
+
     /// Returns the active retention and storage policy.
     pub fn policy(&self) -> &CachePolicy {
         &self.policy

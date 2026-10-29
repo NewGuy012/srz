@@ -20,11 +20,7 @@ pub fn handle_history(db: &Database, limit: usize, as_json: bool) -> Result<()> 
     Ui::header(&format!("Summarization History (last {} entries)", entries.len()));
     for entry in &entries {
         let icon = render::target_icon(&entry.target_type);
-        let author_str = entry
-            .author
-            .as_ref()
-            .map(|a| format!(" by {}", a))
-            .unwrap_or_default();
+        let author_str = render::format_author_by(entry.author.as_deref());
 
         println!("[#{}] {} \"{}\"{}", entry.id, icon, entry.title, author_str);
         println!(
@@ -91,16 +87,11 @@ pub fn handle_find(db: &Database, query: &str, cache: &Cache, as_json: bool) -> 
     Ui::header(&format!("Search Results for \"{}\" ({} match(es))", query, results.len()));
     for (i, res) in results.iter().enumerate() {
         let icon = render::target_icon(&res.target_type);
-        let author_str = res
-            .author
-            .as_ref()
-            .map(|a| format!(" by {}", a))
-            .unwrap_or_default();
+        let author_str = render::format_author_by(res.author.as_deref());
 
         println!("[#{}] {} \"{}\"{} ({})", i + 1, icon, res.title, author_str, res.created_at);
         println!("     \"{}\"", res.snippet);
-        let slug = render::slugify(&res.title);
-        let view_path = cache.views_dir().join(format!("{}.html", slug));
+        let view_path = cache.html_view_path(&res.title);
         if view_path.exists() {
             println!("     View: file://{}", view_path.display());
         }
