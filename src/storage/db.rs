@@ -63,6 +63,24 @@ pub struct LibrarySearchResult {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibraryItem {
+    pub id: i64,
+    pub target_type: String,
+    pub title: String,
+    pub author: Option<String>,
+    pub url: Option<String>,
+    pub summary: String,
+    pub style: String,
+    pub model: String,
+    pub word_count: u32,
+    pub prompt_tokens: Option<u32>,
+    pub completion_tokens: Option<u32>,
+    pub duration_ms: u64,
+    pub tokens_per_second: Option<f64>,
+    pub created_at: String,
+}
+
 pub struct Database {
     conn: Connection,
 }
@@ -228,6 +246,32 @@ impl Database {
         rows.collect::<duckdb::Result<Vec<_>>>().map_err(Into::into)
     }
 
+    /// Fetches all library items joined with history metadata for the interactive TUI browser.
+    pub fn get_all_library_items(&self) -> Result<Vec<LibraryItem>> {
+        let mut stmt = self.conn.prepare(SELECT_LIBRARY_ITEMS_SQL)?;
+        let rows = stmt.query_map([], map_library_item_row)?;
+        rows.collect::<duckdb::Result<Vec<_>>>().map_err(Into::into)
+    }
+
+    /// Fetches the single most recently generated summary item from the library.
+    pub fn get_latest_summary(&self) -> Result<Option<LibraryItem>> {
+        let sql = format!("{SELECT_LIBRARY_ITEMS_SQL} LIMIT 1");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt.query_map([], map_library_item_row)?;
+        if let Some(row) = rows.next() {
+            Ok(Some(row?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Deletes a summary from both library and history tables by its ID.
+    pub fn delete_library_item(&self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM library WHERE id = ?", params![id])?;
+        self.conn.execute("DELETE FROM history WHERE id = ?", params![id])?;
+        Ok(())
+    }
+
     /// Computes aggregated analytics across all past summarization runs.
     pub fn get_stats(&self) -> Result<LibraryStats> {
         let mut total_stmt = self.conn.prepare(
@@ -317,6 +361,35 @@ const SELECT_HISTORY_SQL: &str =
             strftime(created_at, '%Y-%m-%d %H:%M')
      FROM history
      ORDER BY id DESC";
+
+const SELECT_LIBRARY_ITEMS_SQL: &str =
+    "SELECT l.id, l.target_type, l.title, l.author, l.url, l.summary,
+            coalesce(h.style, 'concise'), coalesce(h.model, 'unknown'),
+            coalesce(h.word_count, 0), h.prompt_tokens, h.completion_tokens,
+            coalesce(h.duration_ms, 0), h.tokens_per_second,
+            strftime(l.created_at, '%Y-%m-%d %H:%M')
+     FROM library l
+     LEFT JOIN history h ON l.id = h.id
+     ORDER BY l.id DESC";
+
+fn map_library_item_row(row: &duckdb::Row<'_>) -> duckdb::Result<LibraryItem> {
+    Ok(LibraryItem {
+        id: row.get(0)?,
+        target_type: row.get(1)?,
+        title: row.get(2)?,
+        author: row.get(3)?,
+        url: row.get(4)?,
+        summary: row.get(5)?,
+        style: row.get(6)?,
+        model: row.get(7)?,
+        word_count: row.get::<_, u32>(8)?,
+        prompt_tokens: row.get(9)?,
+        completion_tokens: row.get(10)?,
+        duration_ms: row.get::<_, u32>(11)? as u64,
+        tokens_per_second: row.get(12)?,
+        created_at: row.get(13)?,
+    })
+}
 
 fn map_history_row(row: &duckdb::Row<'_>) -> duckdb::Result<HistoryEntry> {
     Ok(HistoryEntry {

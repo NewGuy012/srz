@@ -266,6 +266,9 @@ pub enum Commands {
     Doctor,
     /// Generate and view the standalone HTML library dashboard
     Index,
+    /// Launch the interactive terminal UI library explorer
+    #[command(alias = "tui", alias = "library")]
+    Browse,
     /// Search and summarize latest news on a topic using Google News RSS
     News {
         /// Topic or query to search for (e.g. "javascript", "rust", "tech")
@@ -349,6 +352,7 @@ pub enum ResolvedAction<'a> {
     Models,
     Doctor,
     Index,
+    Browse,
     News {
         topic: String,
         timeframe: NewsTimeframe,
@@ -402,6 +406,7 @@ impl Cli {
                 Commands::Models => Ok(ResolvedAction::Models),
                 Commands::Doctor => Ok(ResolvedAction::Doctor),
                 Commands::Index => Ok(ResolvedAction::Index),
+                Commands::Browse => Ok(ResolvedAction::Browse),
                 Commands::News {
                     topic,
                     timeframe,

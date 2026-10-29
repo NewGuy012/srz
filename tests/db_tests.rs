@@ -139,6 +139,59 @@ fn test_database_search_multibyte_utf8_snippet_safety() {
 }
 
 #[test]
+fn test_database_library_items_and_deletion() {
+    let db = Database::open_in_memory().unwrap();
+
+    let record1 = NewSummaryRecord {
+        target_type: "book",
+        title: "Dune",
+        author: Some("Frank Herbert"),
+        url: None,
+        style: "concise",
+        model: "gemma-4",
+        word_count: 1000,
+        prompt_tokens: Some(500),
+        completion_tokens: Some(250),
+        duration_ms: 1200,
+        tokens_per_second: Some(45.0),
+        summary: "Spice on Arrakis.",
+    };
+    db.record_summary(&record1).unwrap();
+
+    let record2 = NewSummaryRecord {
+        target_type: "web",
+        title: "Rust Lang",
+        author: None,
+        url: Some("https://rust-lang.org"),
+        style: "detailed",
+        model: "gemma-4",
+        word_count: 800,
+        prompt_tokens: Some(400),
+        completion_tokens: Some(200),
+        duration_ms: 1000,
+        tokens_per_second: Some(48.0),
+        summary: "Modern systems programming.",
+    };
+    db.record_summary(&record2).unwrap();
+
+    let items = db.get_all_library_items().unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].title, "Rust Lang");
+    assert_eq!(items[1].title, "Dune");
+
+    let latest = db.get_latest_summary().unwrap();
+    assert!(latest.is_some());
+    assert_eq!(latest.unwrap().title, "Rust Lang");
+
+    let id_to_delete = items[0].id;
+    db.delete_library_item(id_to_delete).unwrap();
+
+    let items_after = db.get_all_library_items().unwrap();
+    assert_eq!(items_after.len(), 1);
+    assert_eq!(items_after[0].title, "Dune");
+}
+
+#[test]
 fn test_database_reset() {
     let db = Database::open_in_memory().unwrap();
 

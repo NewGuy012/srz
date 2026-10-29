@@ -86,6 +86,9 @@ async fn main() -> Result<()> {
         ResolvedAction::Index => {
             return with_db(|db| commands::handle_index(db, &cache, args.open));
         }
+        ResolvedAction::Browse => {
+            return with_db(|db| srz::ui::run_tui(db, &cache));
+        }
         ResolvedAction::Completions { shell } => {
             clap_complete::generate(
                 shell,

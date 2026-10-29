@@ -222,6 +222,18 @@ fn test_missing_target_returns_error() {
 }
 
 #[test]
+fn test_browse_subcommand_resolution() {
+    let browse_cli = Cli::parse_from(["srz", "browse"]);
+    assert_eq!(browse_cli.resolve_action().unwrap(), ResolvedAction::Browse);
+
+    let tui_cli = Cli::parse_from(["srz", "tui"]);
+    assert_eq!(tui_cli.resolve_action().unwrap(), ResolvedAction::Browse);
+
+    let library_cli = Cli::parse_from(["srz", "library"]);
+    assert_eq!(library_cli.resolve_action().unwrap(), ResolvedAction::Browse);
+}
+
+#[test]
 fn test_quiet_and_verbose_flags() {
     let quiet_cli = Cli::parse_from(["srz", "Dune", "-q"]);
     assert!(quiet_cli.quiet);
