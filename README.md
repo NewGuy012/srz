@@ -19,18 +19,18 @@
 ```mermaid
 %%{init: {"flowchart": {"minNodeWidth": 210, "minNodeHeight": 54}}}%%
 flowchart LR
-    subgraph Sources["Input Sources"]
+    subgraph Sources["    Input Sources"]
         S1["🌐 Web & YouTube URLs\nArticles & Captions"]
         S2["📄 PDFs & Documents\nFiles & Stdin Streams"]
         S3["📚 Book Synopses\nOpen Library Overviews"]
         S4["📰 Live News Feeds\nGoogle News RSS"]
     end
 
-    subgraph Core["srz Core (100% Private)"]
-        C["<div style='text-align: left; margin: 0;'>⚡ Ingest & Chunking Pipeline<br/>🔒 100% Local LLM Inference<br/>📝 Summary Presets & Synthesis</div>"]
+    subgraph Core["  srz Core (100% Private)"]
+        C["⚡ Ingest & Chunking Pipeline\n🔒 100% Local LLM Inference\n📝 Summary Presets & Synthesis"]
     end
 
-    subgraph Highlights["Key Highlights"]
+    subgraph Highlights["   Key Highlights"]
         H1["⚡ Rich Terminal Paging\nSyntax-Colored Output"]
         H2["💬 Grounded Q&A Chat\nInteractive srz ask"]
         H3["🖥️ TUI Dashboard View\nRatatui srz browse"]
