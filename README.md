@@ -228,7 +228,7 @@ See [`OVERVIEW.md`](docs/OVERVIEW.md) for detailed Mermaid architecture diagrams
 ## Running Tests & Static Analysis
 
 ```bash
-# Run full automated test suite (86 tests)
+# Run full automated test suite (99 tests)
 cargo test
 
 # Strict static analysis (warnings denied)

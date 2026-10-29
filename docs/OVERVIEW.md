@@ -199,10 +199,14 @@ src/
 - **Unified Bounded HTTP Streaming**: All network fetches (web scraping, news RSS feeds and RPC redirects, search APIs, YouTube transcripts, self-updater binary downloads and checksums) share chunked streaming with strict byte limits to avoid unbuffered memory spikes.
 - **Single-Pass PDF Parsing**: `PdfExtractor` parses the in-memory `pdf_extract::Document` structure once for both text layer extraction and `Info` trailer dictionary metadata lookup.
 - **Zero-Copy HTML Fallback & Entity Decoding**: `WebScraper` borrows raw HTML zero-copy when no main article container matches, and YouTube caption parsing uses single-pass `Cow::Borrowed` HTML entity decoding and segment buffer reuse.
-- **Event-Driven TUI & Pre-Indexed Search**: Library items pre-compute lowercased search blobs at startup on `AppState`, and `srz browse` redraws terminal frames strictly on user input, terminal resize, or status timer expiration.
+- **Zero-Allocation TUI Search & Memory Optimization**: `AppState` searches across library items on-the-fly via zero-copy ASCII case-insensitive matching (`LibraryItem::matches_query`) without duplicating lowercased text blobs in RAM, halving memory consumption and avoiding deep clones during item deletion.
+- **JoinSet Early-Abort Concurrent Scraping**: Google News parallel article fetching uses `tokio::task::JoinSet` with `abort_all()` to immediately terminate excess background network requests once the target article limit is reached.
+- **Single-Allocation Checksum Computation**: Upgrade verification and testing format SHA-256 digests in a single pre-allocated string pass (`compute_sha256_hex`), eliminating intermediate heap allocations.
+- **Direct File Handle Permissions**: Files created with private owner-only permissions (`0600`) enforce security directly on open file descriptors (`fchmod`), eliminating redundant filesystem path traversals.
 - **Cached Terminal Markdown Skin**: Terminal Markdown rendering caches `MadSkin` in a global `LazyLock` rather than reconstructing style rules on each render or interactive chat turn.
 - **Parallel Map-Reduce**: Large documents (> 12,000 words) are split along paragraph boundaries and processed concurrently (`--concurrency`), sharing `Arc<str>` metadata and aggregating token metrics across chunks.
 - **Single-Pass Output Streaming**: Markdown-to-HTML conversion and HTML entity escaping stream directly into a pre-allocated output buffer without allocating intermediate strings.
+- **Transactional Database Safety**: DuckDB operations (`record_summary`, `delete_library_item`) use `Database::with_transaction` to guarantee ACID atomicity and rollback on failure.
 - **In-Place DB Snippet Formatting**: Search snippet extraction pre-allocates exact capacities and normalizes whitespace in place without redundant string allocations.
 
 ### Security & Privacy
