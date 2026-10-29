@@ -50,11 +50,9 @@ pub fn detect_target_from(os: &str, arch: &str) -> Result<TargetInfo, String> {
             format: ArchiveFormat::TarGz,
             binary_name: "srz",
         }),
-        ("macos", "x86_64") => Ok(TargetInfo {
-            target: "x86_64-apple-darwin",
-            format: ArchiveFormat::TarGz,
-            binary_name: "srz",
-        }),
+        ("macos", "x86_64") => Err(
+            "Intel Macs (x86_64) are not supported with prebuilt binaries. Please install from source using 'cargo install srz'.".to_string(),
+        ),
         ("linux", "x86_64") => Ok(TargetInfo {
             target: "x86_64-unknown-linux-gnu",
             format: ArchiveFormat::TarGz,

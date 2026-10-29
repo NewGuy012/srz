@@ -28,6 +28,15 @@ case "${ARCH}" in
     ;;
 esac
 
+# Intel Mac deprecation / non-support check
+if [ "${OS}" = "Darwin" ] && [ "${ARCH_TARGET}" = "x86_64" ]; then
+  echo "Error: Intel Macs (x86_64) are not supported with prebuilt binaries." >&2
+  echo "Prebuilt binaries are only provided for Apple Silicon (arm64/aarch64)." >&2
+  echo "Please build and install srz from source using:" >&2
+  echo "  cargo install srz" >&2
+  exit 1
+fi
+
 TARGET="${ARCH_TARGET}-${OS_TARGET}"
 
 # Determine release download URL

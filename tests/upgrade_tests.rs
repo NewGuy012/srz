@@ -14,11 +14,9 @@ fn test_detect_target_mappings() {
     assert_eq!(mac_arm.format, ArchiveFormat::TarGz);
     assert_eq!(mac_arm.binary_name, "srz");
 
-    // macOS Intel
-    let mac_intel = detect_target_from("macos", "x86_64").expect("Valid target");
-    assert_eq!(mac_intel.target, "x86_64-apple-darwin");
-    assert_eq!(mac_intel.format, ArchiveFormat::TarGz);
-    assert_eq!(mac_intel.binary_name, "srz");
+    // macOS Intel (unsupported prebuilt binaries)
+    let mac_intel_err = detect_target_from("macos", "x86_64").unwrap_err();
+    assert!(mac_intel_err.contains("Intel Macs (x86_64) are not supported"));
 
     // Linux x86_64
     let linux = detect_target_from("linux", "x86_64").expect("Valid target");
