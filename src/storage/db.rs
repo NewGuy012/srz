@@ -37,6 +37,24 @@ pub struct HistoryEntry {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelStats {
+    pub model: String,
+    pub runs: i64,
+    pub total_completion_tokens: i64,
+    pub avg_tokens_per_second: f64,
+    pub p50_tokens_per_second: f64,
+    pub p95_tokens_per_second: f64,
+    pub avg_duration_ms: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DomainStats {
+    pub domain: String,
+    pub count: i64,
+    pub total_words: i64,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LibraryStats {
     pub total_summaries: i64,
@@ -47,11 +65,22 @@ pub struct LibraryStats {
     pub news_summaries: i64,
     pub video_summaries: i64,
     pub total_source_words: i64,
+    pub total_summary_words: i64,
     pub total_prompt_tokens: i64,
     pub total_completion_tokens: i64,
     pub avg_tokens_per_second: f64,
     pub max_tokens_per_second: f64,
     pub total_duration_ms: i64,
+    pub estimated_minutes_saved: f64,
+    pub reads_today: i64,
+    pub reads_this_week: i64,
+    pub reads_this_month: i64,
+    pub active_reading_days: i64,
+    pub current_streak_days: i64,
+    #[serde(default)]
+    pub models: Vec<ModelStats>,
+    #[serde(default)]
+    pub top_domains: Vec<DomainStats>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,6 +179,7 @@ impl Database {
         if path.exists() {
             fs_util::set_private_file_perms(path);
         }
+        let _ = conn.execute_batch("SET autoinstall_known_extensions = false; SET autoload_known_extensions = false;");
         let db = Self { conn };
         if !exists || !db.is_schema_initialized() {
             db.init_schema()?;
@@ -160,6 +190,7 @@ impl Database {
     /// Opens an in-memory DuckDB database (useful for testing).
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory().context("Failed to open in-memory DuckDB")?;
+        let _ = conn.execute_batch("SET autoinstall_known_extensions = false; SET autoload_known_extensions = false;");
         let db = Self { conn };
         db.init_schema()?;
         Ok(db)
@@ -364,6 +395,14 @@ impl Database {
 
     /// Computes aggregated analytics across all past summarization runs.
     pub fn get_stats(&self) -> Result<LibraryStats> {
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let today_str = format_date_from_timestamp(now_secs);
+        let week_str = format_date_from_timestamp(now_secs.saturating_sub(7 * 86400));
+        let month_str = format_date_from_timestamp(now_secs.saturating_sub(30 * 86400));
+
         let mut total_stmt = self.conn.prepare(
             "SELECT count(*),
                     coalesce(sum(case when target_type = 'book' then 1 else 0 end), 0),
@@ -377,11 +416,14 @@ impl Database {
                     coalesce(sum(completion_tokens), 0),
                     coalesce(avg(tokens_per_second), 0.0),
                     coalesce(max(tokens_per_second), 0.0),
-                    coalesce(sum(duration_ms), 0)
+                    coalesce(sum(duration_ms), 0),
+                    coalesce(sum(case when strftime(created_at, '%Y-%m-%d') = ? then 1 else 0 end), 0),
+                    coalesce(sum(case when strftime(created_at, '%Y-%m-%d') >= ? then 1 else 0 end), 0),
+                    coalesce(sum(case when strftime(created_at, '%Y-%m-%d') >= ? then 1 else 0 end), 0)
              FROM history"
         )?;
 
-        let stats = total_stmt.query_row([], |row| {
+        let mut stats = total_stmt.query_row(params![&today_str, &week_str, &month_str], |row| {
             Ok(LibraryStats {
                 total_summaries: row.get(0)?,
                 book_summaries: row.get(1)?,
@@ -391,13 +433,120 @@ impl Database {
                 news_summaries: row.get(5)?,
                 video_summaries: row.get(6)?,
                 total_source_words: row.get(7)?,
+                total_summary_words: 0,
                 total_prompt_tokens: row.get(8)?,
                 total_completion_tokens: row.get(9)?,
                 avg_tokens_per_second: row.get(10)?,
                 max_tokens_per_second: row.get(11)?,
                 total_duration_ms: row.get(12)?,
+                estimated_minutes_saved: 0.0,
+                reads_today: row.get(13)?,
+                reads_this_week: row.get(14)?,
+                reads_this_month: row.get(15)?,
+                active_reading_days: 0,
+                current_streak_days: 0,
+                models: Vec::new(),
+                top_domains: Vec::new(),
             })
         })?;
+
+        // Summary words and time saved
+        let total_summary_words: i64 = self
+            .conn
+            .query_row(
+                "SELECT coalesce(sum(length(summary) - length(replace(summary, ' ', '')) + 1), 0) FROM library",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        stats.total_summary_words = total_summary_words;
+        if stats.total_source_words > total_summary_words {
+            stats.estimated_minutes_saved =
+                (stats.total_source_words - total_summary_words) as f64 / 225.0;
+        }
+
+        // Active days and current streak
+        let mut days_stmt = self.conn.prepare(
+            "SELECT DISTINCT strftime(created_at, '%Y-%m-%d') AS day_str
+             FROM history
+             ORDER BY day_str DESC"
+        )?;
+        let days: Vec<String> = days_stmt
+            .query_map([], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        stats.active_reading_days = days.len() as i64;
+        let day_nums: Vec<i64> = days.iter().filter_map(|d| ymd_to_day_number(d)).collect();
+        let today_num = ymd_to_day_number(&today_str).unwrap_or(0);
+
+        if let Some(&most_recent) = day_nums.first() {
+            if most_recent == today_num || most_recent == today_num - 1 {
+                let mut streak = 1;
+                for i in 1..day_nums.len() {
+                    if day_nums[i] == day_nums[i - 1] - 1 {
+                        streak += 1;
+                    } else {
+                        break;
+                    }
+                }
+                stats.current_streak_days = streak;
+            }
+        }
+
+        // Model Performance Breakdown
+        let mut model_stmt = self.conn.prepare(
+            "SELECT
+                 model,
+                 count(*)::BIGINT AS runs,
+                 coalesce(sum(completion_tokens), 0)::BIGINT AS total_completion_tokens,
+                 coalesce(avg(tokens_per_second), 0.0)::DOUBLE AS avg_tps,
+                 coalesce(quantile_cont(tokens_per_second, 0.50), 0.0)::DOUBLE AS p50_tps,
+                 coalesce(quantile_cont(tokens_per_second, 0.95), 0.0)::DOUBLE AS p95_tps,
+                 coalesce(avg(duration_ms), 0.0)::DOUBLE AS avg_duration_ms
+             FROM history
+             GROUP BY model
+             ORDER BY runs DESC"
+        )?;
+        let models: Vec<ModelStats> = model_stmt
+            .query_map([], |row| {
+                Ok(ModelStats {
+                    model: row.get(0)?,
+                    runs: row.get(1)?,
+                    total_completion_tokens: row.get(2)?,
+                    avg_tokens_per_second: row.get(3)?,
+                    p50_tokens_per_second: row.get(4)?,
+                    p95_tokens_per_second: row.get(5)?,
+                    avg_duration_ms: row.get(6)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        stats.models = models;
+
+        // Top Domains
+        let mut domain_stmt = self.conn.prepare(
+            "SELECT
+                 regexp_extract(url, '^https?://([^/:]+)', 1) AS domain,
+                 count(*)::BIGINT AS count,
+                 coalesce(sum(word_count), 0)::BIGINT AS total_words
+             FROM history
+             WHERE url IS NOT NULL AND length(regexp_extract(url, '^https?://([^/:]+)', 1)) > 0
+             GROUP BY domain
+             ORDER BY count DESC
+             LIMIT 5"
+        )?;
+        let top_domains: Vec<DomainStats> = domain_stmt
+            .query_map([], |row| {
+                Ok(DomainStats {
+                    domain: row.get(0)?,
+                    count: row.get(1)?,
+                    total_words: row.get(2)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        stats.top_domains = top_domains;
 
         Ok(stats)
     }
@@ -678,4 +827,30 @@ fn extract_snippet(text: &str, query: &str) -> String {
     }
     out.push_str(suffix);
     out
+}
+
+/// Converts Unix epoch seconds to UTC date string formatted as `YYYY-MM-DD`.
+fn format_date_from_timestamp(secs: u64) -> String {
+    let z = (secs / 86400) as i64 + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1024 + doe / 1461 - doe / 142401) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{:04}-{:02}-{:02}", y, m, d)
+}
+
+/// Converts a `YYYY-MM-DD` date string to continuous day number for streak comparisons.
+fn ymd_to_day_number(s: &str) -> Option<i64> {
+    let mut parts = s.split('-');
+    let y: i64 = parts.next()?.parse().ok()?;
+    let m: i64 = parts.next()?.parse().ok()?;
+    let d: i64 = parts.next()?.parse().ok()?;
+    let m = (m + 9) % 12;
+    let y = y - m / 10;
+    Some(365 * y + y / 4 - y / 100 + y / 400 + (m * 306 + 5) / 10 + (d - 1))
 }

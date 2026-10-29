@@ -51,9 +51,9 @@ pub fn handle_stats(db: &Database, as_json: bool) -> Result<()> {
         return Ok(());
     }
 
-    Ui::header("Library & LLM Performance Statistics (DuckDB)");
+    Ui::header("Library & LLM Performance Telemetry (DuckDB)");
     println!(
-        "  Total Summaries:     {} ({} books, {} web articles, {} videos, {} news digests, {} files, {} stdin)",
+        "  Total Summaries:     {} ({} books, {} web, {} videos, {} news, {} files, {} stdin)",
         stats.total_summaries,
         stats.book_summaries,
         stats.web_summaries,
@@ -63,13 +63,56 @@ pub fn handle_stats(db: &Database, as_json: bool) -> Result<()> {
         stats.stdin_summaries
     );
     println!("  Source Words Read:   {} words", stats.total_source_words);
+    if stats.estimated_minutes_saved > 0.0 {
+        if stats.estimated_minutes_saved >= 60.0 {
+            let hours = stats.estimated_minutes_saved / 60.0;
+            println!("  Reading Time Saved:  ~{:.1} hours (based on 225 wpm)", hours);
+        } else {
+            println!("  Reading Time Saved:  ~{:.0} minutes (based on 225 wpm)", stats.estimated_minutes_saved);
+        }
+    }
     println!("  Tokens Processed:    {} prompt tokens", stats.total_prompt_tokens);
     println!("  Tokens Generated:    {} completion tokens", stats.total_completion_tokens);
     println!(
-        "  Average Speed:       {:.1} tok/s (peak: {:.1} tok/s)",
+        "  Generation Speed:    {:.1} tok/s avg (peak: {:.1} tok/s)",
         stats.avg_tokens_per_second, stats.max_tokens_per_second
     );
     println!("  Total Compute Time:  {:.1}s\n", stats.total_duration_ms as f64 / 1000.0);
+
+    // Reading Habits
+    Ui::header("Reading Habits & Activity");
+    println!(
+        "  Activity Window:     {} today | {} this week | {} this month",
+        stats.reads_today, stats.reads_this_week, stats.reads_this_month
+    );
+    let streak_icon = if stats.current_streak_days > 0 { "🔥" } else { "⏳" };
+    println!(
+        "  Reading Streak:      {} {} day(s) (across {} active days)\n",
+        streak_icon, stats.current_streak_days, stats.active_reading_days
+    );
+
+    // Model Performance Breakdown
+    if !stats.models.is_empty() {
+        Ui::header("Model Throughput & Latency Breakdown");
+        for m in &stats.models {
+            let safe_model = crate::ui::sanitize_terminal_text(&m.model);
+            println!(
+                "  • {:<18} {:>3} runs | avg: {:>5.1} tok/s | p50: {:>5.1} tok/s | p95: {:>5.1} tok/s | avg time: {:>4.1}s",
+                safe_model, m.runs, m.avg_tokens_per_second, m.p50_tokens_per_second, m.p95_tokens_per_second, m.avg_duration_ms / 1000.0
+            );
+        }
+        println!();
+    }
+
+    // Top Domains
+    if !stats.top_domains.is_empty() {
+        Ui::header("Top Reading Sources");
+        for d in &stats.top_domains {
+            let safe_domain = crate::ui::sanitize_terminal_text(&d.domain);
+            println!("  • {:<24} {:>3} reads ({} words)", safe_domain, d.count, d.total_words);
+        }
+        println!();
+    }
 
     Ok(())
 }

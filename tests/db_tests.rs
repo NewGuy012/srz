@@ -78,6 +78,15 @@ fn test_database_stats() {
     assert_eq!(stats.total_completion_tokens, 2000);
     assert_eq!(stats.total_duration_ms, 4000);
     assert!((stats.avg_tokens_per_second - 50.0).abs() < 0.1);
+    assert_eq!(stats.reads_today, 2);
+    assert_eq!(stats.active_reading_days, 1);
+    assert_eq!(stats.current_streak_days, 1);
+    assert!(stats.estimated_minutes_saved > 0.0);
+    assert_eq!(stats.models.len(), 1);
+    assert_eq!(stats.models[0].model, "gemma-4");
+    assert_eq!(stats.models[0].runs, 2);
+    assert_eq!(stats.top_domains.len(), 1);
+    assert_eq!(stats.top_domains[0].domain, "example.com");
 }
 
 #[test]
