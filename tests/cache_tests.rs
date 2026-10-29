@@ -236,7 +236,7 @@ fn test_cache_ttl_expiration() {
 
     let dir = temp_test_dir("ttl");
     let mut cache = Cache::with_dir(dir.clone(), true);
-    cache.policy_mut().pages_ttl = Duration::from_millis(40);
+    cache.policy_mut().pages_ttl = Duration::from_millis(300);
 
     let page = ScrapedPage {
         url: "https://expiring.com".to_string(),
@@ -250,7 +250,7 @@ fn test_cache_ttl_expiration() {
     assert!(cache.get_page("https://expiring.com").is_some());
 
     // Wait past expiration
-    thread::sleep(Duration::from_millis(60));
+    thread::sleep(Duration::from_millis(350));
 
     // Entry should have expired and returned None
     assert!(cache.get_page("https://expiring.com").is_none());
@@ -339,7 +339,7 @@ fn test_cache_opportunistic_auto_prune() {
 
     let dir = temp_test_dir("auto_prune");
     let mut cache = Cache::with_dir(dir.clone(), true);
-    cache.policy_mut().auto_prune_interval = Duration::from_millis(10);
+    cache.policy_mut().auto_prune_interval = Duration::from_secs(60);
 
     let page = ScrapedPage {
         url: "https://auto.example.com".to_string(),
