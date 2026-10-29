@@ -211,8 +211,8 @@ impl Database {
 
             self.conn
                 .execute(
-                    "INSERT INTO library (target_type, title, author, url, summary)
-                     VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO library (id, target_type, title, author, url, summary)
+                     VALUES (currval('history_id_seq'), ?, ?, ?, ?, ?)",
                     params![
                         record.target_type,
                         record.title,
