@@ -1,5 +1,5 @@
-use crate::cache;
 use crate::db::{HistoryEntry, LibraryStats};
+use crate::fs_util;
 use std::path::{Path, PathBuf};
 
 pub struct RenderedFiles {
@@ -30,11 +30,11 @@ pub fn ensure_view_files(
         return Ok(RenderedFiles { html_path, md_path });
     }
 
-    cache::create_private_dir_all(views_dir)?;
-    cache::write_private_file(&md_path, markdown)?;
+    fs_util::create_private_dir_all(views_dir)?;
+    fs_util::write_private_file(&md_path, markdown)?;
 
     let html_doc = render_html_document(title, markdown);
-    cache::write_private_file(&html_path, html_doc)?;
+    fs_util::write_private_file(&html_path, html_doc)?;
 
     Ok(RenderedFiles { html_path, md_path })
 }
@@ -135,12 +135,7 @@ pub fn render_html_document(title: &str, markdown: &str) -> String {
   <title>Summary: {escaped_title}</title>
   <style>
 {SHARED_THEME_CSS}
-    body {{"#,
-        SHARED_THEME_CSS = SHARED_THEME_CSS,
-        escaped_title = escaped_title,
-    )
-    + &format!(
-        r#"
+    body {{
       margin: 0;
       padding: 3rem 1.25rem 5rem;
       background: var(--bg);
@@ -234,7 +229,10 @@ pub fn render_html_document(title: &str, markdown: &str) -> String {
 {body_html}  </main>
 </body>
 </html>
-"#
+"#,
+        SHARED_THEME_CSS = SHARED_THEME_CSS,
+        escaped_title = escaped_title,
+        body_html = body_html,
     )
 }
 
@@ -827,9 +825,9 @@ pub fn ensure_index_file(
     stats: &LibraryStats,
     entries: &[HistoryEntry],
 ) -> std::io::Result<PathBuf> {
-    cache::create_private_dir_all(views_dir)?;
+    fs_util::create_private_dir_all(views_dir)?;
     let html = render_index_html(stats, entries);
     let index_path = views_dir.join("index.html");
-    cache::write_private_file(&index_path, html)?;
+    fs_util::write_private_file(&index_path, html)?;
     Ok(index_path)
 }

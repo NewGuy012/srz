@@ -1,4 +1,5 @@
 use crate::cli::SummaryStyle;
+use crate::fs_util::{create_private_dir_all, non_empty_env_path, open_private_file_for_write};
 use crate::scraper::ScrapedPage;
 use crate::search::{BookMetadata, SearchResult};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -318,5 +319,3 @@ impl Cache {
         );
     }
 }
-
-pub use crate::fs_util::*;

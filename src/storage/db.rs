@@ -1,8 +1,9 @@
-use crate::cache::{self, Cache};
+use crate::cache::Cache;
+use crate::fs_util;
 use anyhow::{Context, Result};
 use duckdb::{params, Connection};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub struct NewSummaryRecord<'a> {
     pub target_type: &'a str, // 'book' or 'web'
@@ -87,12 +88,18 @@ pub struct Database {
 }
 
 impl Database {
+    /// Returns the default path for the DuckDB database (`~/.cache/srz/srz.duckdb`).
+    pub fn default_path() -> PathBuf {
+        Cache::default_cache_dir().join("srz.duckdb")
+    }
+
     /// Opens the default DuckDB database located at `~/.cache/srz/srz.duckdb`.
     pub fn open_default() -> Result<Self> {
-        let base_dir = Cache::default_cache_dir();
-        cache::create_private_dir_all(&base_dir)
-            .with_context(|| format!("Failed to create directory {:?}", base_dir))?;
-        let db_path = base_dir.join("srz.duckdb");
+        let db_path = Self::default_path();
+        if let Some(base_dir) = db_path.parent() {
+            fs_util::create_private_dir_all(base_dir)
+                .with_context(|| format!("Failed to create directory {:?}", base_dir))?;
+        }
         Self::open_at(&db_path)
     }
 
@@ -103,7 +110,7 @@ impl Database {
         let conn = Connection::open(path)
             .with_context(|| format!("Failed to open DuckDB database at {:?}", path))?;
         if path.exists() {
-            cache::set_private_file_perms(path);
+            fs_util::set_private_file_perms(path);
         }
         let db = Self { conn };
         if !exists || !db.is_schema_initialized() {

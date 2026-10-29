@@ -93,7 +93,7 @@ pub async fn handle_doctor(
     }
 
     // 2. DuckDB database check
-    let db_path = Cache::default_cache_dir().join("srz.duckdb");
+    let db_path = Database::default_path();
     let (db_ok, db_entries_count) = match Database::open_default() {
         Ok(db) => match db.get_stats() {
             Ok(stats) => (true, stats.total_summaries),
