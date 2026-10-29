@@ -106,6 +106,15 @@ impl CacheNamespace {
     pub fn all() -> &'static [Self] {
         &[Self::Pages, Self::Search, Self::Summaries, Self::Views]
     }
+
+    pub fn ttl(&self, policy: &CachePolicy) -> Duration {
+        match self {
+            Self::Pages => policy.pages_ttl,
+            Self::Search => policy.search_ttl,
+            Self::Summaries => policy.summaries_ttl,
+            Self::Views => policy.views_ttl,
+        }
+    }
 }
 
 /// Options controlling targeted or automatic cache pruning.
@@ -123,24 +132,28 @@ pub struct PruneStats {
     pub bytes_reclaimed: u64,
 }
 
-/// Parses user-friendly duration strings like `7d`, `24h`, `30m`, `60s`, `2w`.
-pub fn parse_duration(s: &str) -> Result<Duration, String> {
+fn parse_number_and_unit(s: &str, default_unit: &str, type_label: &str) -> Result<(f64, String), String> {
     let s = s.trim();
     if s.is_empty() {
-        return Err("Empty duration string".to_string());
+        return Err(format!("Empty {} string", type_label));
     }
     let (num_str, unit) = match s.find(|c: char| !c.is_ascii_digit() && c != '.') {
         Some(idx) => (&s[..idx], s[idx..].trim().to_ascii_lowercase()),
-        None => (s, "d".to_string()),
+        None => (s, default_unit.to_string()),
     };
 
     let val: f64 = num_str
         .parse()
-        .map_err(|_| format!("Invalid number in duration: '{}'", num_str))?;
+        .map_err(|_| format!("Invalid number in {}: '{}'", type_label, num_str))?;
     if val < 0.0 {
-        return Err("Duration cannot be negative".to_string());
+        return Err(format!("{} cannot be negative", type_label));
     }
+    Ok((val, unit))
+}
 
+/// Parses user-friendly duration strings like `7d`, `24h`, `30m`, `60s`, `2w`.
+pub fn parse_duration(s: &str) -> Result<Duration, String> {
+    let (val, unit) = parse_number_and_unit(s, "d", "duration")?;
     let secs = match unit.as_str() {
         "s" | "sec" | "secs" | "second" | "seconds" => val,
         "m" | "min" | "mins" | "minute" | "minutes" => val * 60.0,
@@ -155,22 +168,7 @@ pub fn parse_duration(s: &str) -> Result<Duration, String> {
 
 /// Parses user-friendly byte strings like `500MB`, `1GB`, `100KB`, `1048576`.
 pub fn parse_bytes(s: &str) -> Result<u64, String> {
-    let s = s.trim();
-    if s.is_empty() {
-        return Err("Empty byte size string".to_string());
-    }
-    let (num_str, unit) = match s.find(|c: char| !c.is_ascii_digit() && c != '.') {
-        Some(idx) => (&s[..idx], s[idx..].trim().to_ascii_lowercase()),
-        None => (s, "b".to_string()),
-    };
-
-    let val: f64 = num_str
-        .parse()
-        .map_err(|_| format!("Invalid number in byte size: '{}'", num_str))?;
-    if val < 0.0 {
-        return Err("Byte size cannot be negative".to_string());
-    }
-
+    let (val, unit) = parse_number_and_unit(s, "b", "byte size")?;
     const KB: f64 = 1024.0;
     const MB: f64 = KB * 1024.0;
     const GB: f64 = MB * 1024.0;
@@ -270,8 +268,8 @@ impl Cache {
     /// Removes all cached files in pages, search, summaries, and views, returning stats of what was cleared.
     pub fn clean(&self) -> std::io::Result<CacheStats> {
         let current = self.stats();
-        for dir_name in &["pages", "search", "summaries", "views"] {
-            let p = self.base_dir.join(dir_name);
+        for ns in CacheNamespace::all() {
+            let p = self.base_dir.join(ns.as_str());
             if p.exists() {
                 fs::remove_dir_all(&p)?;
             }
@@ -306,12 +304,7 @@ impl Cache {
 
             let ttl = match options.older_than {
                 Some(dur) => dur,
-                None => match ns {
-                    CacheNamespace::Pages => self.policy.pages_ttl,
-                    CacheNamespace::Search => self.policy.search_ttl,
-                    CacheNamespace::Summaries => self.policy.summaries_ttl,
-                    CacheNamespace::Views => self.policy.views_ttl,
-                },
+                None => ns.ttl(&self.policy),
             };
 
             if ttl != Duration::MAX {
