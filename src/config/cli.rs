@@ -492,9 +492,7 @@ impl Cli {
                         limit: 5,
                     })
                 } else {
-                    Ok(ResolvedAction::Book {
-                        title: trimmed,
-                    })
+                    Ok(ResolvedAction::Book { title: trimmed })
                 }
             }
         } else {

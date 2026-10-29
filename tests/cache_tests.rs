@@ -463,7 +463,10 @@ fn test_cache_duckdb_consolidation() {
     assert!(!dir.join("summaries").exists());
 
     let loaded_page = cache.get_page("https://duckdb-cached.com");
-    assert!(loaded_page.is_some(), "DuckDB must serve cached page without disk JSON files");
+    assert!(
+        loaded_page.is_some(),
+        "DuckDB must serve cached page without disk JSON files"
+    );
     assert_eq!(loaded_page.unwrap().title.as_deref(), Some("DuckDB Cache"));
 
     let loaded_summary = cache.get_web_summary(
@@ -471,7 +474,10 @@ fn test_cache_duckdb_consolidation() {
         SummaryStyle::Concise,
         "gemma-4",
     );
-    assert!(loaded_summary.is_some(), "DuckDB must serve cached summary without disk JSON files");
+    assert!(
+        loaded_summary.is_some(),
+        "DuckDB must serve cached summary without disk JSON files"
+    );
     assert_eq!(
         loaded_summary.unwrap().summary,
         "Consolidated cache in DuckDB"

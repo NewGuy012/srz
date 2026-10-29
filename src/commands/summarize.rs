@@ -428,8 +428,7 @@ pub async fn handle_book(
     };
 
     // 1. Check for a cached summary matching title + author + style + model
-    if let Some(cached) = cache.get_book_summary(title, author, args.style, &args.model, false)
-    {
+    if let Some(cached) = cache.get_book_summary(title, author, args.style, &args.model, false) {
         Ui::info("Loaded book summary from local cache (pass `--no-cache` to refresh).");
         return Ok(SummaryOutcome::from_cached(
             "book",
@@ -440,10 +439,7 @@ pub async fn handle_book(
     }
 
     let mode = args.stream_mode(&book_display);
-    let query = BookQuery {
-        title,
-        author,
-    };
+    let query = BookQuery { title, author };
 
     // 2. Generate summary (via grounded web search or LLM memory fallback)
     let (output, word_count, source_url) =
@@ -547,11 +543,7 @@ fn disambiguate_candidates_if_needed(
     ordered_candidates: &mut Vec<SearchResult>,
     args: &Cli,
 ) {
-    if ordered_candidates.len() <= 1
-        || args.quiet
-        || args.json
-        || !io::stdin().is_terminal()
-    {
+    if ordered_candidates.len() <= 1 || args.quiet || args.json || !io::stdin().is_terminal() {
         return;
     }
 
@@ -600,95 +592,92 @@ async fn generate_book_summary(
     mode: StreamMode<'_>,
 ) -> Result<(LlmOutput, usize, Option<String>)> {
     let mut searcher = BookSearcher::with_client(scraper.client().clone());
-        let (resolved_title, resolved_author) =
-            resolve_book_identity(query.title, query.author, cache, &mut searcher).await;
+    let (resolved_title, resolved_author) =
+        resolve_book_identity(query.title, query.author, cache, &mut searcher).await;
 
-        let effective_title = resolved_title.as_str();
-        let effective_author = resolved_author.as_deref().or(query.author);
+    let effective_title = resolved_title.as_str();
+    let effective_author = resolved_author.as_deref().or(query.author);
 
-        let mut candidates =
-            fetch_or_cache_candidates(effective_title, effective_author, cache, &mut searcher)
-                .await?;
+    let mut candidates =
+        fetch_or_cache_candidates(effective_title, effective_author, cache, &mut searcher).await?;
 
-        if !candidates.is_empty() {
-            disambiguate_candidates_if_needed(effective_title, &mut candidates, args);
+    if !candidates.is_empty() {
+        disambiguate_candidates_if_needed(effective_title, &mut candidates, args);
 
-            let mut fallback_snippet = None;
-            let mut fallback_url = None;
+        let mut fallback_snippet = None;
+        let mut fallback_url = None;
 
-            for res in &candidates {
-                Ui::info(&format!(
-                    "Attempting reference: {} ({})",
-                    res.title, res.url
-                ));
+        for res in &candidates {
+            Ui::info(&format!(
+                "Attempting reference: {} ({})",
+                res.title, res.url
+            ));
 
-                let page_result = fetch_or_cache_page(
-                    &res.url,
-                    scraper,
-                    cache,
-                    "Loaded reference page from local cache.",
-                    "Scraping reference page...",
-                    "Reference page scraped.",
+            let page_result = fetch_or_cache_page(
+                &res.url,
+                scraper,
+                cache,
+                "Loaded reference page from local cache.",
+                "Scraping reference page...",
+                "Reference page scraped.",
+            )
+            .await;
+
+            match page_result {
+                Ok(page) => {
+                    Ui::info(&format!(
+                        "Grounded reference text: {} words (budgeted up to {} words for 32k LLM context)",
+                        page.word_count,
+                        llm::MAX_CONTEXT_WORDS
+                    ));
+
+                    let output = llm
+                        .summarize_book_with_context(
+                            effective_title,
+                            effective_author,
+                            &res.url,
+                            &page.content,
+                            args.style,
+                            mode,
+                        )
+                        .await?;
+                    return Ok((output, page.word_count, Some(res.url.clone())));
+                }
+                Err(err) => {
+                    Ui::warn(&format!(
+                        "Could not scrape {}: {}. Trying next reference...",
+                        res.url, err
+                    ));
+                    if fallback_snippet.is_none()
+                        && let Some(snippet) = &res.snippet
+                    {
+                        fallback_snippet = Some(snippet.clone());
+                        fallback_url = Some(res.url.clone());
+                    }
+                }
+            }
+        }
+
+        // If scraping all candidate pages failed, try using search snippet
+        if let (Some(snippet), Some(url)) = (fallback_snippet, fallback_url) {
+            Ui::info("Using search snippet as grounded context...");
+            let word_count = snippet.split_whitespace().count();
+            if let Ok(output) = llm
+                .summarize_book_with_context(
+                    effective_title,
+                    effective_author,
+                    &url,
+                    &snippet,
+                    args.style,
+                    mode,
                 )
-                .await;
-
-                match page_result {
-                    Ok(page) => {
-                        Ui::info(&format!(
-                            "Grounded reference text: {} words (budgeted up to {} words for 32k LLM context)",
-                            page.word_count,
-                            llm::MAX_CONTEXT_WORDS
-                        ));
-
-                        let output = llm
-                            .summarize_book_with_context(
-                                effective_title,
-                                effective_author,
-                                &res.url,
-                                &page.content,
-                                args.style,
-                                mode,
-                            )
-                            .await?;
-                        return Ok((output, page.word_count, Some(res.url.clone())));
-                    }
-                    Err(err) => {
-                        Ui::warn(&format!(
-                            "Could not scrape {}: {}. Trying next reference...",
-                            res.url, err
-                        ));
-                        if fallback_snippet.is_none()
-                            && let Some(snippet) = &res.snippet
-                        {
-                            fallback_snippet = Some(snippet.clone());
-                            fallback_url = Some(res.url.clone());
-                        }
-                    }
-                }
+                .await
+            {
+                return Ok((output, word_count, Some(url)));
             }
+        }
 
-            // If scraping all candidate pages failed, try using search snippet
-            if let (Some(snippet), Some(url)) = (fallback_snippet, fallback_url) {
-                Ui::info("Using search snippet as grounded context...");
-                let word_count = snippet.split_whitespace().count();
-                if let Ok(output) = llm
-                    .summarize_book_with_context(
-                        effective_title,
-                        effective_author,
-                        &url,
-                        &snippet,
-                        args.style,
-                        mode,
-                    )
-                    .await
-                {
-                    return Ok((output, word_count, Some(url)));
-                }
-            }
-
-        Ui::warn(
-            "All online references failed to scrape. Falling back to LLM internal memory.",
-        );
+        Ui::warn("All online references failed to scrape. Falling back to LLM internal memory.");
     } else {
         Ui::warn("No web synopsis found online. Falling back to LLM trained memory.");
     }

@@ -223,8 +223,9 @@ impl UpgradeResult {
         } else {
             match status {
                 UpgradeStatus::Upgraded | UpgradeStatus::AlreadyUpToDate => Ui::success(&message),
-                UpgradeStatus::UpdateAvailable
-                | UpgradeStatus::HomebrewManaged => Ui::info(&message),
+                UpgradeStatus::UpdateAvailable | UpgradeStatus::HomebrewManaged => {
+                    Ui::info(&message)
+                }
                 UpgradeStatus::CargoManaged => Ui::warn(&message),
             }
         }

@@ -69,12 +69,18 @@ mod tests {
     #[test]
     fn test_decode_html_entities() {
         assert_eq!(decode_html_entities("Hello world"), "Hello world");
-        assert!(matches!(decode_html_entities("Hello world"), Cow::Borrowed(_)));
+        assert!(matches!(
+            decode_html_entities("Hello world"),
+            Cow::Borrowed(_)
+        ));
         assert_eq!(
             decode_html_entities("&lt;div&gt;&quot;Hello &amp; welcome&quot;&lt;/div&gt;"),
             "<div>\"Hello & welcome\"</div>"
         );
-        assert_eq!(decode_html_entities("It&#39;s sunny &amp; warm"), "It's sunny & warm");
+        assert_eq!(
+            decode_html_entities("It&#39;s sunny &amp; warm"),
+            "It's sunny & warm"
+        );
     }
 
     #[test]

@@ -145,9 +145,9 @@ async fn main() -> Result<()> {
         }
         ResolvedAction::File { path } => commands::handle_file(&path, &scraper, &llm, &args).await,
         ResolvedAction::Stdin => commands::handle_stdin(&scraper, &llm, &args).await,
-        ResolvedAction::Book {
-            title,
-        } => commands::handle_book(title, None, &scraper, &llm, &cache, &args).await,
+        ResolvedAction::Book { title } => {
+            commands::handle_book(title, None, &scraper, &llm, &cache, &args).await
+        }
         ResolvedAction::News {
             topic,
             timeframe,

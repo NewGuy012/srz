@@ -376,7 +376,10 @@ fn test_library_item_matches_query() {
     };
     db.record_summary(&unicode_record).unwrap();
     let all_items = db.get_all_library_items().unwrap();
-    let unicode_item = all_items.iter().find(|i| i.title == "Les Misérables").unwrap();
+    let unicode_item = all_items
+        .iter()
+        .find(|i| i.title == "Les Misérables")
+        .unwrap();
     assert!(unicode_item.matches_query("Misérables"));
     assert!(unicode_item.matches_query("misérables"));
     assert!(!unicode_item.matches_query("München"));
