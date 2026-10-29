@@ -17,6 +17,18 @@ All notable changes to `srz` are documented in this file.
 
 ---
 
+## v0.5.0 (Unreleased)
+
+> Expands DuckDB utilization across the srz engine with pure-offline BM25 relevance ranking for full-text library search, rich reading habits and model telemetry in srz stats, persistent multi-turn chat sessions with resumption support for srz ask, and consolidated embedded DuckDB caching.
+
+### Changes
+- **BM25 Full-Text Search (`srz find`)**: Implemented an offline inverted term index table (`library_terms`) in DuckDB with $2.5\times$ title boosting, term frequency saturation ($k_1=1.2, b=0.75$), and Robertson-Sparck Jones IDF calculation, returning relevance-ranked search results and query-focused snippet extraction without external network dependencies.
+- **Rich Habit & Model Telemetry (`srz stats`)**: Expanded reading analytics to compute active reading days, reading streaks, estimated reading time saved (based on human reading speed of 225 wpm), top source domains, and model P50/P95 token throughput percentiles using pure DuckDB SQL aggregation without external ICU extensions.
+- **Persistent Multi-Turn Chat Sessions (`srz ask`)**: Added chat session persistence in DuckDB (`chat_sessions`, `chat_messages`) supporting `--chats` (list past sessions), `--resume <ID>` (continue conversation from previous context), `--show-chat <ID>` (review complete message transcripts), and `--delete-chat <ID>`.
+- **DuckDB Cache Consolidation**: Consolidated ephemeral disk cache (scraped web pages, search metadata, and LLM summaries) into an embedded `cache.duckdb` database with atomic transactions, SQL timestamp TTL pruning, and transparent fallback to legacy JSON files, dramatically reducing inode usage and disk fragmentation.
+
+---
+
 ## v0.4.0
 
 > Introduces automated cache retention policies and LRU pruning, expands news aggregation with dedicated RSS parsing, upgrades YouTube ingestion via Innertube API, and completes comprehensive security and performance hardening across all subsystems.

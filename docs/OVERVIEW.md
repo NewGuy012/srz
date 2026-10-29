@@ -59,8 +59,8 @@ flowchart TD
         TermMarkdown -->|"Fits on Screen"| TermStdout["Terminal Output"]
         Formatter -->|"Piped / --plain / --json"| RawStdout["Pure Markdown / JSON"]
         SSE -->|"Throttled Thinking & Token Counter"| Stderr["stderr (UI Diagnostics)"]
-        SSE --> CacheStore["Disk Cache (~/.cache/srz/, 0700/0600 perms)"]
-        SSE --> DuckDBStore["Lazy DuckDB Engine (Transactional Write)"]
+        SSE --> CacheStore["Consolidated Cache (~/.cache/srz/cache.duckdb & views/)"]
+        SSE --> DuckDBStore["Lazy DuckDB Engine (srz.duckdb: history, library, BM25 terms, chats)"]
         CacheStore --> Views["Rendered HTML, MD & Library Index (views/)"]
     end
 ```
@@ -114,16 +114,20 @@ All state is isolated under `~/.cache/srz/` (or `$XDG_CACHE_HOME/srz/`), unified
 ```mermaid
 graph LR
     subgraph Root["~/.cache/srz/ (0700)"]
-        subgraph Namespaces["JSON Cache & View Directories (LRU & TTL Enforced)"]
-            P["pages/"] --- P_desc["Scraped webpage DOM & text (7d TTL, 30d YouTube/PDF)"]
-            S["search/"] --- S_desc["Open Library metadata & search candidates (14d TTL)"]
-            M["summaries/"] --- M_desc["Completed LLM summaries (90d TTL / persistent)"]
-            V["views/"] --- V_desc["Rendered HTML5 reader, .md files & index.html (14d TTL)"]
+        subgraph CacheEngine["Consolidated Cache (cache.duckdb)"]
+            CP["cache_pages (7d TTL, 30d YouTube/PDF)"]
+            CS["cache_search (14d TTL)"]
+            CM["cache_summaries (90d TTL / persistent)"]
         end
-        subgraph DB["Analytics & Library Database (Preserved across cache clean)"]
+        subgraph ViewsDir["Rendered Reader Views"]
+            V["views/"] --- V_desc["HTML5 reader, .md files & index.html (14d TTL)"]
+        end
+        subgraph LibraryDB["Analytics, Search & Sessions (srz.duckdb)"]
             D["srz.duckdb"]
-            D --> T1["Table: history (book 📚, web 🌐, youtube 📺, news 📰, file 📄, stdin ⌨️ telemetry)"]
-            D --> T2["Table: library (Synchronized IDs & offline full-text search for srz find)"]
+            D --> T1["Table: history (telemetry, words, tokens, latency)"]
+            D --> T2["Table: library (titles, URLs, full text)"]
+            D --> T3["Table: library_terms (BM25 inverted index & title boosting)"]
+            D --> T4["Table: chat_sessions & chat_messages (multi-turn history)"]
         end
     end
 ```
@@ -132,13 +136,13 @@ graph LR
 
 | Namespace / Asset | Retention Policy (TTL) | Eviction Trigger | Notes |
 | :--- | :--- | :--- | :--- |
-| **`pages/` (Web & News)** | **7 days** | TTL expiration / LRU | Prevents stale article caching; YouTube & PDFs retain for 30 days. |
-| **`search/`** | **14 days** | TTL expiration / LRU | Periodically refreshes Open Library metadata and DDG candidates. |
-| **`summaries/`** | **90 days** | LRU past max budget | Deterministic for `(target, model, style)`. Longest TTL to save inference tokens. |
+| **`cache_pages` (in `cache.duckdb`)** | **7 days** | SQL TTL expiration / LRU | Scraped DOM and clean text; YouTube & PDFs retain for 30 days. Transparent fallback to legacy `pages/`. |
+| **`cache_search` (in `cache.duckdb`)** | **14 days** | SQL TTL expiration / LRU | Open Library metadata and DDG candidates. Transparent fallback to legacy `search/`. |
+| **`cache_summaries` (in `cache.duckdb`)** | **90 days** | LRU past max budget | Deterministic for `(target, model, style)`. Longest TTL to save inference tokens. Fallback to `summaries/`. |
 | **`views/`** | **14 days** | TTL expiration / LRU | Ephemeral reader views; lazily regenerated via `srz browse` or `srz index`. |
-| **Total Cache Budget** | **500 MB** (configurable) | LRU eviction by `mtime` | Evicts oldest entries across namespaces down to 85% headroom. |
+| **Total Cache Budget** | **500 MB** (configurable) | LRU eviction by size & `mtime` | Evicts oldest entries across caches down to 85% headroom. |
 | **Auto-Prune Schedule** | **Opportunistic (24h)** | Daily CLI invocation check | Throttled via `~/.cache/srz/.last_prune` (sub-millisecond overhead). |
-| **DuckDB Database** | **Permanent (Not a cache)** | Explicit `--reset-db` only | `srz cache clean` preserves reading history unless `--reset-db` is supplied. |
+| **Library DuckDB (`srz.duckdb`)** | **Permanent (Not a cache)** | Explicit `--reset-db` only | Preserved across `srz cache clean`; contains reading history, habits, BM25 index, and chats. |
 
 
 ## 4. Component Directory & Subsystems
@@ -165,10 +169,10 @@ src/
 | **Entry Points** | [`src/main.rs`](src/main.rs) | `main` | Entry point, CLI lifecycle, profile loading, and subcommand dispatch. |
 | | [`src/lib.rs`](src/lib.rs) | `lib` | Root library interface and backward-compatible module re-exports. |
 | **Commands** | [`src/commands/summarize.rs`](src/commands/summarize.rs) | `commands::summarize` | Workflows for web articles, YouTube videos, books, local documents, stdin streams, news digests, and unified page caching (`fetch_or_cache_page_with`). |
-| | [`src/commands/ask.rs`](src/commands/ask.rs) | `commands::ask` | Grounded question answering, interactive multi-turn chat REPL (`srz ask`), sliding conversational history, and prompt injection defense. |
-| | [`src/commands/library.rs`](src/commands/library.rs) | `commands::library` | Handlers for `history`, `stats`, `find`, `index`, and `cache` subcommands. |
+| | [`src/commands/ask.rs`](src/commands/ask.rs) | `commands::ask` | Grounded question answering, interactive multi-turn chat REPL (`srz ask`), DuckDB session persistence (`--chats`, `--resume`, `--show-chat`, `--delete-chat`), sliding conversational history, and prompt injection defense. |
+| | [`src/commands/library.rs`](src/commands/library.rs) | `commands::library` | Handlers for `history`, `stats` (reading habit telemetry, time saved, P50/P95 model throughput), `find` (BM25 relevance scoring), `index`, and `cache` subcommands. |
 | | [`src/commands/diagnostics.rs`](src/commands/diagnostics.rs) | `commands::diagnostics` | Handlers for `doctor`, `models`, and `config` verification. |
-| **Configuration** | [`src/config/cli.rs`](src/config/cli.rs) | `config::cli` | `clap` CLI parser, `SummaryStyle` presets, `NewsTimeframe`, paging flags, and target auto-detection. |
+| **Configuration** | [`src/config/cli.rs`](src/config/cli.rs) | `config::cli` | `clap` CLI parser, `SummaryStyle` presets, `NewsTimeframe`, paging flags, chat session flags, and target auto-detection. |
 | | [`src/config/file.rs`](src/config/file.rs) | `config::file` | `config.toml` file loading, named profile switching, and starter template generation. |
 | **Engine** | [`src/engine/llm.rs`](src/engine/llm.rs) | `engine::llm` | Zero-copy SSE client (`complete_chat` / `SseStreamState`), `send_with_fallback` IPv4 retry, zero-copy XML delimiter escaping (`escape_closing_tag`), and map-reduce synthesis. |
 | | [`src/engine/chunker.rs`](src/engine/chunker.rs) | `engine::chunker` | Zero-copy `Cow` text windowing and paragraph chunking for long documents (> 12k words). |
@@ -178,8 +182,8 @@ src/
 | | [`src/sources/youtube.rs`](src/sources/youtube.rs) | `sources::youtube` | YouTube video ID extraction, timed-text XML/JSON3 caption resolution, single-pass zero-copy HTML entity decoding, and chapter cue grouping via `TimedTranscriptBuilder`. |
 | | [`src/sources/search.rs`](src/sources/search.rs) | `sources::search` | Open Library metadata, Wikipedia OpenSearch/fulltext, DDG search, and candidate scoring. |
 | | [`src/sources/news.rs`](src/sources/news.rs) | `sources::news` | Google News RSS client, bounded `batchexecute` RPC redirect decoding, and concurrent article fetching. |
-| **Storage** | [`src/storage/cache.rs`](src/storage/cache.rs) | `storage::cache` | Local JSON disk caching in `~/.cache/srz/` with compact serialization and private file permissions. |
-| | [`src/storage/db.rs`](src/storage/db.rs) | `storage::db` | Lazy DuckDB database for history telemetry and synchronized `library` full-text search (`Database::default_path`), using 100% safe UTF-8 snippet formatting. |
+| **Storage** | [`src/storage/cache.rs`](src/storage/cache.rs) | `storage::cache` | Consolidated DuckDB cache storage (`cache.duckdb`) for pages, search metadata, and LLM summaries with fallback to legacy JSON files, atomic transactions, and SQL-powered TTL pruning. |
+| | [`src/storage/db.rs`](src/storage/db.rs) | `storage::db` | Embedded DuckDB database (`srz.duckdb`) for reading history, rich habit/model telemetry, inverted index BM25 search ranking (`library_terms`), and persistent multi-turn chat sessions (`chat_sessions`, `chat_messages`). |
 | **UI & Render** | [`src/ui/terminal.rs`](src/ui/terminal.rs) | `ui::terminal` | CLI progress spinners (`indicatif`), colored text formatting, and terminal escape/control character sanitization (`sanitize_terminal_text`, `sanitize_title`). |
 | | [`src/ui/printer.rs`](src/ui/printer.rs) | `ui::printer` | Cached `LazyLock<MadSkin>` terminal Markdown styling and automatic `$PAGER` / `less -RFX` integration. |
 | | [`src/ui/tui.rs`](src/ui/tui.rs) | `ui::tui` | Interactive `ratatui` + `crossterm` terminal UI library explorer (`srz browse`) with event-driven redraws and pre-indexed live search. |
@@ -206,7 +210,11 @@ src/
 - **Cached Terminal Markdown Skin**: Terminal Markdown rendering caches `MadSkin` in a global `LazyLock` rather than reconstructing style rules on each render or interactive chat turn.
 - **Parallel Map-Reduce**: Large documents (> 12,000 words) are split along paragraph boundaries and processed concurrently (`--concurrency`), sharing `Arc<str>` metadata and aggregating token metrics across chunks.
 - **Single-Pass Output Streaming**: Markdown-to-HTML conversion and HTML entity escaping stream directly into a pre-allocated output buffer without allocating intermediate strings.
-- **Transactional Database Safety**: DuckDB operations (`record_summary`, `delete_library_item`) use `Database::with_transaction` to guarantee ACID atomicity and rollback on failure.
+- **Transactional Database Safety**: DuckDB operations (`record_summary`, `delete_library_item`, chat session mutations) use `Database::with_transaction` to guarantee ACID atomicity and rollback on failure.
+- **Offline BM25 Full-Text Relevance**: Pure SQL Robertson-Sparck Jones BM25 ranking algorithm implemented in DuckDB without network-downloaded extensions (`fts`), utilizing an inverted index table (`library_terms`), $2.5\times$ title weight boosting, and document length normalization ($k_1=1.2, b=0.75$).
+- **Rich Telemetry & Habit Aggregation**: Pure DuckDB SQL analytics calculating active reading days, reading streaks, estimated reading time saved (at 225 wpm), top source domains, and P50/P95 token throughput percentiles (`quantile_cont`) using civil calendar arithmetic without requiring external ICU extensions.
+- **Persistent Chat Sessions**: ACID-compliant DuckDB session persistence (`chat_sessions` and `chat_messages`) enabling multi-turn conversation resumption (`--resume`), transcript review (`--show-chat`), and safe cascading cleanup.
+- **Consolidated DuckDB Cache**: Replaces thousands of small individual JSON files with an embedded `cache.duckdb` database, drastically decreasing inode pressure and file descriptor thrashing while enabling sub-millisecond atomic lookups and instantaneous SQL timestamp TTL eviction.
 - **In-Place DB Snippet Formatting**: Search snippet extraction pre-allocates exact capacities and normalizes whitespace in place without redundant string allocations.
 
 ### Security & Privacy
@@ -241,10 +249,12 @@ src/
 | | `--stream` | Streams LLM output tokens live to `stdout` as they are generated. |
 | **Interactive Tools** | `srz ask [TARGET] [Q]` | Grounded Q&A against a document, URL, file, or latest read. |
 | | `srz ask -i` | Interactive multi-turn chat REPL grounded on source context. |
+| | `srz ask [--chats\|--resume <ID>]` | Lists saved chat sessions or resumes a previous multi-turn conversation. |
+| | `srz ask [--show-chat\|--delete-chat] <ID>` | Inspects or deletes a persisted multi-turn chat session transcript. |
 | | `srz browse` (alias `tui`) | Interactive TUI dashboard (`[j/k]` navigate, `[/]` filter, `[y]` copy, `[d]` delete, `[Enter]` open). |
-| **Library & History** | `srz find "keyword"` | Offline full-text search across all past summaries in DuckDB. |
+| **Library & History** | `srz find "keyword"` | Offline BM25 relevance-ranked search across past summaries in DuckDB. |
 | | `srz history [--limit N]` | Displays recent reads, word counts, model usage, and generation speeds. |
-| | `srz stats` | Telemetry overview: total words read, tokens generated, and throughput. |
+| | `srz stats` | Telemetry overview: reading streaks, days active, time saved, top domains, and model throughput percentiles (P50/P95). |
 | | `srz index [--open]` | Generates and opens an interactive HTML library dashboard. |
 | **System & Config** | `--profile <NAME>` | Switches LLM backends defined in `~/.config/srz/config.toml`. |
 | | `srz config <init\|show\|path>` | Manages and inspects the local configuration file. |
