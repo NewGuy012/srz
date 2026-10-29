@@ -181,7 +181,7 @@ pub fn extract_video_title(html: &str) -> Option<String> {
     None
 }
 
-/// Formats seconds into [MM:SS] or [HH:MM:SS].
+/// Formats seconds into `[MM:SS]` or `[HH:MM:SS]`.
 pub fn format_timestamp(seconds: u64) -> String {
     let hrs = seconds / 3600;
     let mins = (seconds % 3600) / 60;
