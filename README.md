@@ -6,22 +6,22 @@
 
 `srz` (Summarize) is a high-performance, modular Rust CLI tool for extracting and synthesizing structured summaries using local OpenAI-compliant LLMs (such as **llama.cpp**, **Ollama**, **LM Studio**, or **vLLM**) from:
 
-- **Webpages**
-- **YouTube video transcripts**
-- **PDF documents & local files**
-- **Unix stdin streams**
-- **Books**
-- **Live news digests**
+- 🌐 **Webpages**
+- 📺 **YouTube video transcripts**
+- 📄 **PDF documents & local files**
+- ⌨️ **Unix stdin streams**
+- 📚 **Books**
+- 📰 **Live news digests**
 
 
 ## Highlights
 
-- **100% Local & Private**: Runs on your machine with complete privacy, zero subscriptions, and no API keys.
-- **Interactive Grounded Q&A**: Ask follow-up questions grounded on documents or past reads via `srz ask`.
-- **Interactive TUI Dashboard**: Browse, search, filter, and copy past summaries with `srz browse`.
-- **Offline Searchable Library**: Automatically saves and indexes every summary in embedded DuckDB.
-- **Distraction-Free Reader Views**: Generates clean HTML and Markdown pages with dark mode support.
-- **Rich Terminal Paging**: Syntax-highlighted CLI output with automatic paging for long summaries.
+- 🔒 **100% Local & Private**: Runs on your machine with complete privacy, zero subscriptions, and no API keys.
+- 💬 **Interactive Grounded Q&A**: Ask follow-up questions grounded on documents or past reads via `srz ask`.
+- 🖥️ **Interactive TUI Dashboard**: Browse, search, filter, and copy past summaries with `srz browse`.
+- 🗄️ **Offline Searchable Library**: Automatically saves and indexes every summary in embedded DuckDB.
+- 📖 **Distraction-Free Reader Views**: Generates clean HTML and Markdown pages with dark mode support.
+- ⚡ **Rich Terminal Paging**: Syntax-highlighted CLI output with automatic paging for long summaries.
 
 
 ## Prerequisites: LLM Backend Server
