@@ -132,7 +132,7 @@ jobs:
   publish-crates-io:
     name: Publish to Crates.io
     needs: verify-version
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -140,6 +140,18 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up sccache
+        uses: mozilla/sccache-action@v0.0.8
+
+      - name: Configure sccache
+        shell: bash
+        run: |
+          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Install Linux build dependencies
         run: |
@@ -150,6 +162,10 @@ jobs:
         run: cargo publish --token ${{ secrets.CRATES_IO_TOKEN }}
         env:
           CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats
 
   bump-homebrew:
     name: Bump Homebrew Formula
