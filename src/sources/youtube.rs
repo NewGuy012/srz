@@ -292,18 +292,14 @@ pub fn parse_xml_timedtext(xml_str: &str) -> Option<String> {
 
     loop {
         match reader.read_event() {
-            Ok(Event::Start(e)) if e.name().as_ref() == b"text" => {
+            Ok(Event::Start(e)) if e.name().as_ref() == "text" => {
                 for attr in e.attributes().flatten() {
-                    if attr.key.as_ref() == b"start"
-                        && let Ok(v) = std::str::from_utf8(&attr.value)
-                    {
-                        current_start = v.parse::<f64>().unwrap_or(0.0);
+                    if attr.key.as_ref() == "start" {
+                        current_start = attr.value.parse::<f64>().unwrap_or(0.0);
                     }
                 }
-                if let Ok(text) = reader.read_text(e.name())
-                    && let Ok(s) = std::str::from_utf8(text.as_ref())
-                {
-                    let decoded = decode_html_entities(s);
+                if let Ok(text) = reader.read_text(e.name()) {
+                    let decoded = decode_html_entities(text.as_ref());
                     let trimmed = decoded.trim();
                     if !trimmed.is_empty() {
                         builder.add_cue(current_start as u64, trimmed);
@@ -334,25 +330,21 @@ pub fn parse_xml_format3_timedtext(xml_str: &str) -> Option<String> {
 
     loop {
         match reader.read_event() {
-            Ok(Event::Start(e)) if e.name().as_ref() == b"p" => {
+            Ok(Event::Start(e)) if e.name().as_ref() == "p" => {
                 in_p = true;
                 p_text.clear();
                 for attr in e.attributes().flatten() {
-                    if attr.key.as_ref() == b"t"
-                        && let Ok(v) = std::str::from_utf8(&attr.value)
-                    {
-                        let ms = v.parse::<u64>().unwrap_or(0);
+                    if attr.key.as_ref() == "t" {
+                        let ms = attr.value.parse::<u64>().unwrap_or(0);
                         current_sec = ms / 1000;
                     }
                 }
             }
             Ok(Event::Text(e)) if in_p => {
-                if let Ok(text) = std::str::from_utf8(e.as_ref()) {
-                    let decoded = decode_html_entities(text);
-                    p_text.push_str(&decoded);
-                }
+                let decoded = decode_html_entities(e.as_ref());
+                p_text.push_str(&decoded);
             }
-            Ok(Event::End(e)) if e.name().as_ref() == b"p" => {
+            Ok(Event::End(e)) if e.name().as_ref() == "p" => {
                 in_p = false;
                 let trimmed = p_text.trim();
                 if !trimmed.is_empty() {

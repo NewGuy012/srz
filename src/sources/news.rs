@@ -271,7 +271,7 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
                 .get(idx)
                 .cloned()
                 .or(entry.source)
-                .or_else(|| entry.authors.first().map(|a| a.name.clone()))
+                .or_else(|| entry.authors.first().and_then(|a| a.name.clone()))
                 .or_else(|| title.rsplit_once(" - ").map(|(_, s)| s.trim().to_string()))
                 .or_else(|| feed_source.clone());
 
