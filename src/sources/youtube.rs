@@ -98,26 +98,15 @@ pub fn extract_youtube_video_id(url: &str) -> Option<&str> {
     if host == "youtu.be" {
         let path = parsed.path().trim_start_matches('/');
         let id = path.split('/').next().unwrap_or("");
-        if is_valid_youtube_id(id) {
-            let marker = format!("youtu.be/{}", id);
-            if let Some(pos) = trimmed.find(&marker) {
-                let start = pos + "youtu.be/".len();
-                return Some(&trimmed[start..start + id.len()]);
-            }
-        }
-        return None;
+        return extract_slice_after(trimmed, "youtu.be/", id);
     }
 
     // For youtube.com / *.youtube.com:
     // 1. Check query parameter v=<id>
     if let Some((_, v)) = parsed.query_pairs().find(|(k, _)| k == "v")
-        && is_valid_youtube_id(&v)
+        && let Some(id_slice) = extract_slice_after(trimmed, "v=", &v)
     {
-        let marker = format!("v={}", v);
-        if let Some(pos) = trimmed.find(&marker) {
-            let start = pos + "v=".len();
-            return Some(&trimmed[start..start + v.len()]);
-        }
+        return Some(id_slice);
     }
 
     // 2. Check path prefixes: /shorts/<id>, /embed/<id>, /v/<id>
@@ -125,16 +114,25 @@ pub fn extract_youtube_video_id(url: &str) -> Option<&str> {
     for prefix in &["/shorts/", "/embed/", "/v/"] {
         if let Some(after) = path.strip_prefix(prefix) {
             let id = after.split('/').next().unwrap_or("");
-            if is_valid_youtube_id(id) {
-                let marker = format!("{}{}", prefix, id);
-                if let Some(pos) = trimmed.find(&marker) {
-                    let start = pos + prefix.len();
-                    return Some(&trimmed[start..start + id.len()]);
-                }
+            if let Some(id_slice) = extract_slice_after(trimmed, prefix, id) {
+                return Some(id_slice);
             }
         }
     }
 
+    None
+}
+
+fn extract_slice_after<'a>(haystack: &'a str, prefix: &str, id: &str) -> Option<&'a str> {
+    if !is_valid_youtube_id(id) {
+        return None;
+    }
+    for (pos, _) in haystack.match_indices(prefix) {
+        let start = pos + prefix.len();
+        if haystack.get(start..start + id.len()) == Some(id) {
+            return Some(&haystack[start..start + id.len()]);
+        }
+    }
     None
 }
 
@@ -370,26 +368,6 @@ pub fn parse_xml_format3_timedtext(xml_str: &str) -> Option<String> {
     builder.finish()
 }
 
-pub fn extract_attr_u64(tag_content: &str, attr_name: &str) -> Option<u64> {
-    let prefix = format!("{}=", attr_name);
-    crate::sources::news::extract_attr_value(tag_content, &prefix).and_then(|v| v.parse().ok())
-}
-
-pub fn strip_xml_tags(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut in_tag = false;
-    for c in input.chars() {
-        if c == '<' {
-            in_tag = true;
-        } else if c == '>' {
-            in_tag = false;
-        } else if !in_tag {
-            out.push(c);
-        }
-    }
-    out
-}
-
 /// Dispatches timed text payloads to the appropriate parser based on payload structure.
 pub fn parse_timedtext(body: &str) -> Option<String> {
     let trimmed = body.trim();
@@ -533,37 +511,35 @@ async fn fetch_single_caption_url(client: &Client, url: &str, user_agent: &str) 
 pub async fn fetch_youtube_transcript(client: &Client, video_id: &str) -> Result<ScrapedPage> {
     let watch_url = format!("https://www.youtube.com/watch?v={}", video_id);
 
-    // 1. First, attempt to fetch video details and caption tracks via Innertube Android Player API
+    // 1. Attempt to fetch video details and caption tracks via Innertube Player APIs (Android, then Web)
     let mut title: Option<String> = None;
     let mut tracks: Option<Vec<CaptionTrack>> = None;
 
-    if let Ok(player_data) = fetch_innertube_player(client, video_id, "ANDROID", "20.10.38").await {
-        if let Some(t) = player_data.title {
-            title = Some(t);
+    const INNERTUBE_CLIENTS: [(&str, &str); 2] = [
+        ("ANDROID", "20.10.38"),
+        ("WEB", "2.20240101.00.00"),
+    ];
+
+    for (client_name, client_version) in INNERTUBE_CLIENTS {
+        if tracks.is_some() && title.is_some() {
+            break;
         }
-        if let Some(t_list) = player_data.caption_tracks
-            && !t_list.is_empty()
+        if let Ok(player_data) =
+            fetch_innertube_player(client, video_id, client_name, client_version).await
         {
-            tracks = Some(t_list);
+            if title.is_none() && player_data.title.is_some() {
+                title = player_data.title;
+            }
+            if tracks.is_none()
+                && let Some(t_list) = player_data.caption_tracks
+                && !t_list.is_empty()
+            {
+                tracks = Some(t_list);
+            }
         }
     }
 
-    // 2. Fallback to Innertube WEB Player API if tracks were not found
-    if tracks.is_none()
-        && let Ok(player_data) =
-            fetch_innertube_player(client, video_id, "WEB", "2.20240101.00.00").await
-    {
-        if title.is_none() && player_data.title.is_some() {
-            title = player_data.title;
-        }
-        if let Some(t_list) = player_data.caption_tracks
-            && !t_list.is_empty()
-        {
-            tracks = Some(t_list);
-        }
-    }
-
-    // 3. Fallback to watch page HTML if tracks or title are still missing
+    // 2. Fallback to watch page HTML if tracks or title are still missing
     if (tracks.is_none() || title.is_none())
         && let Ok(resp) = client
             .get(&watch_url)
@@ -775,22 +751,6 @@ mod tests {
                 .unwrap()
                 .contains("[00:04] format 3")
         );
-    }
-
-    #[test]
-    fn test_strip_xml_tags() {
-        let s = "<s ac=\"0\">rust</s><s t=\"680\"> a</s> &amp; <b>code</b>";
-        assert_eq!(strip_xml_tags(s), "rust a &amp; code");
-    }
-
-    #[test]
-    fn test_extract_attr_u64() {
-        assert_eq!(extract_attr_u64(r#"<p t="160" d="4000">"#, "t"), Some(160));
-        assert_eq!(
-            extract_attr_u64(r#"<p d="4000" t='65000'>"#, "t"),
-            Some(65000)
-        );
-        assert_eq!(extract_attr_u64(r#"<p>"#, "t"), None);
     }
 
     #[test]
