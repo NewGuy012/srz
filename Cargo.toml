@@ -41,6 +41,9 @@ ratatui = "0.30.2"
 crossterm = "0.29.0"
 arboard = "3.7.0"
 pdf-extract = "0.12.1"
+feed-rs = "2"
+dom_smoothie = "0.18"
+tiktoken-rs = "0.6"
 
 [profile.release]
 lto = "thin"

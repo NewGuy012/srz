@@ -203,114 +203,97 @@ fn clean_xml_text(raw: &str) -> String {
     decode_html_entities(trimmed).into_owned()
 }
 
-/// Extracts the inner content of a named XML tag (e.g. `<title>`, `<link>`, `<source ...>`).
-pub fn extract_tag_value(xml: &str, tag_name: &str) -> Option<String> {
-    let tag_bytes = tag_name.as_bytes();
-    let mut search_pos = 0;
-
-    'outer: while search_pos < xml.len() {
-        let rel_open = xml[search_pos..].find('<')?;
-        let open_idx = search_pos + rel_open;
-        let after_open = open_idx + 1;
-        let candidate_bytes = &xml.as_bytes()[after_open..];
-
-        if candidate_bytes.len() >= tag_bytes.len()
-            && candidate_bytes[..tag_bytes.len()].eq_ignore_ascii_case(tag_bytes)
-        {
-            let boundary_idx = after_open + tag_bytes.len();
-            if boundary_idx < xml.len() {
-                let next_byte = xml.as_bytes()[boundary_idx];
-                if next_byte == b'>' || next_byte.is_ascii_whitespace() || next_byte == b'/' {
-                    let rel_close_bracket = xml[boundary_idx..].find('>')?;
-                    let tag_open_end = boundary_idx + rel_close_bracket;
-
-                    // If self-closing (e.g. `<link ... />`), it has no inner text
-                    if xml[open_idx..tag_open_end].trim_end().ends_with('/') {
-                        return None;
-                    }
-
-                    // Look for </tag_name>
-                    let inner_start = tag_open_end + 1;
-                    let mut close_search = inner_start;
-                    while let Some(rel_close) = xml[close_search..].find("</") {
-                        let c_idx = close_search + rel_close;
-                        let after_slash = c_idx + 2;
-                        let c_bytes = &xml.as_bytes()[after_slash..];
-                        if c_bytes.len() >= tag_bytes.len()
-                            && c_bytes[..tag_bytes.len()].eq_ignore_ascii_case(tag_bytes)
-                        {
-                            let post_tag = after_slash + tag_bytes.len();
-                            let trimmed_post = xml[post_tag..].trim_start();
-                            if let Some(stripped) = trimmed_post.strip_prefix('>') {
-                                let inner = &xml[inner_start..c_idx];
-                                let cleaned = clean_xml_text(inner);
-                                if !cleaned.is_empty() {
-                                    return Some(cleaned);
-                                }
-                                search_pos = post_tag + (trimmed_post.len() - stripped.len());
-                                continue 'outer;
-                            }
-                        }
-                        close_search = c_idx + 2;
-                    }
+/// Extracts `<source>` values from `<item>` elements if present.
+fn extract_source_tags(xml: &str) -> Vec<String> {
+    let mut sources = Vec::new();
+    let mut cursor = 0;
+    while let Some(rel_start) = find_ascii_case_insensitive(&xml[cursor..], "<source") {
+        let tag_start = cursor + rel_start;
+        if let Some(tag_close) = xml[tag_start..].find('>') {
+            let inner_start = tag_start + tag_close + 1;
+            if let Some(end_rel) = find_ascii_case_insensitive(&xml[inner_start..], "</source>") {
+                let inner = xml[inner_start..inner_start + end_rel].trim();
+                if !inner.is_empty() {
+                    sources.push(clean_xml_text(inner));
                 }
+                cursor = inner_start + end_rel + "</source>".len();
+                continue;
             }
         }
-        search_pos = open_idx + 1;
+        cursor = tag_start + 7;
     }
-
-    None
+    sources
 }
 
-/// Parses `<item>` elements from an RSS XML string into a list of [`NewsArticleItem`].
+/// Parses RSS 0.9/1.0/2.0, Atom, or JSON Feed items into a list of [`NewsArticleItem`].
 pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
     if limit == 0 {
         return Vec::new();
     }
 
-    let mut items = Vec::new();
-    let mut cursor = 0;
+    let normalized_xml;
+    let xml_to_parse = if xml.contains("<rss") && !xml.contains("version=") {
+        normalized_xml = xml
+            .replacen("<rss>", "<rss version=\"2.0\">", 1)
+            .replacen("<rss ", "<rss version=\"2.0\" ", 1);
+        normalized_xml.as_str()
+    } else {
+        xml
+    };
 
-    while let Some(rel_start) = find_ascii_case_insensitive(&xml[cursor..], "<item") {
-        let item_start = cursor + rel_start;
-        let after_item_tag = match xml[item_start..].find('>') {
-            Some(p) => item_start + p + 1,
-            None => break,
-        };
+    let parsed_feed = feed_rs::parser::parse(xml_to_parse.as_bytes()).ok();
+    let source_tags = extract_source_tags(xml);
 
-        let item_end = match find_ascii_case_insensitive(&xml[after_item_tag..], "</item>") {
-            Some(p) => after_item_tag + p,
-            None => break,
-        };
+    if let Some(feed) = parsed_feed {
+        let mut items = Vec::new();
+        let feed_source = feed.title.as_ref().map(|t| t.content.clone());
 
-        let item_xml = &xml[after_item_tag..item_end];
-        cursor = item_end + "</item>".len();
+        for (idx, entry) in feed.entries.into_iter().take(limit).enumerate() {
+            let title = entry.title.map(|t| t.content).unwrap_or_default();
+            let link = entry
+                .links
+                .into_iter()
+                .find(|l| !l.href.is_empty())
+                .map(|l| l.href)
+                .unwrap_or_else(|| {
+                    if entry.id.starts_with("http://") || entry.id.starts_with("https://") {
+                        entry.id
+                    } else {
+                        String::new()
+                    }
+                });
 
-        let title = extract_tag_value(item_xml, "title").unwrap_or_default();
-        let link = extract_tag_value(item_xml, "link")
-            .or_else(|| {
-                extract_tag_value(item_xml, "guid")
-                    .filter(|g| g.starts_with("http://") || g.starts_with("https://"))
-            })
-            .unwrap_or_default();
+            let pub_date = entry
+                .published
+                .or(entry.updated)
+                .map(|dt| dt.to_rfc2822());
 
-        let pub_date = extract_tag_value(item_xml, "pubDate");
-        let source_name = extract_tag_value(item_xml, "source");
+            let source_name = source_tags
+                .get(idx)
+                .cloned()
+                .or_else(|| entry.source)
+                .or_else(|| entry.authors.first().map(|a| a.name.clone()))
+                .or_else(|| {
+                    title.rsplit_once(" - ").map(|(_, s)| s.trim().to_string())
+                })
+                .or_else(|| feed_source.clone());
 
-        if !title.is_empty() && !link.is_empty() {
-            items.push(NewsArticleItem {
-                title,
-                google_link: link,
-                source_name,
-                pub_date,
-            });
-            if items.len() >= limit {
-                break;
+            if !title.is_empty() && !link.is_empty() {
+                items.push(NewsArticleItem {
+                    title,
+                    google_link: link,
+                    source_name,
+                    pub_date,
+                });
             }
+        }
+
+        if !items.is_empty() {
+            return items;
         }
     }
 
-    items
+    Vec::new()
 }
 
 pub fn extract_article_id(url: &str) -> Option<&str> {
@@ -383,7 +366,7 @@ mod tests {
         );
         assert_eq!(
             items[0].pub_date.as_deref(),
-            Some("Fri, 23 Oct 2026 10:00:00 GMT")
+            Some("Fri, 23 Oct 2026 10:00:00 +0000")
         );
         assert_eq!(items[0].source_name.as_deref(), Some("PensBurgh"));
 
@@ -396,6 +379,33 @@ mod tests {
             "https://news.google.com/rss/articles/CBMi67890?oc=5"
         );
         assert_eq!(items[1].source_name.as_deref(), Some("Rust Blog"));
+    }
+
+    #[test]
+    fn test_parse_atom_feed() {
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Example Feed</title>
+  <entry>
+    <title>Atom Entry Title</title>
+    <link href="https://example.com/atom-1"/>
+    <id>urn:uuid:1225c695-cfb8-4ebb-aaaa-80da344efa6a</id>
+    <updated>2026-10-23T18:30:02Z</updated>
+    <author>
+      <name>John Doe</name>
+    </author>
+  </entry>
+</feed>"#;
+
+        let items = parse_rss_items(xml, 5);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title, "Atom Entry Title");
+        assert_eq!(items[0].google_link, "https://example.com/atom-1");
+        assert_eq!(items[0].source_name.as_deref(), Some("John Doe"));
+        assert_eq!(
+            items[0].pub_date.as_deref(),
+            Some("Fri, 23 Oct 2026 18:30:02 +0000")
+        );
     }
 
     #[test]
