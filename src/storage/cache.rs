@@ -119,6 +119,22 @@ impl CacheNamespace {
             Self::Views => policy.views_ttl,
         }
     }
+
+    pub fn db_table(&self) -> Option<&'static str> {
+        match self {
+            Self::Pages => Some("cache_pages"),
+            Self::Search => Some("cache_search"),
+            Self::Summaries => Some("cache_summaries"),
+            Self::Views => None,
+        }
+    }
+}
+
+fn now_epoch_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// Options controlling targeted or automatic cache pruning.
@@ -393,18 +409,10 @@ impl Cache {
         if let Some(guard) = self.get_or_init_db()
             && let Some(conn) = guard.as_ref()
         {
-            let now_ms = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
+            let now_ms = now_epoch_ms();
 
             for ns in &namespaces {
-                let table = match ns {
-                    CacheNamespace::Pages => "cache_pages",
-                    CacheNamespace::Search => "cache_search",
-                    CacheNamespace::Summaries => "cache_summaries",
-                    CacheNamespace::Views => continue,
-                };
+                let Some(table) = ns.db_table() else { continue };
                 let ttl = match options.older_than {
                     Some(dur) => dur,
                     None => ns.ttl(&self.policy),
@@ -423,7 +431,19 @@ impl Cache {
         let mut files_removed = 0;
         let mut bytes_reclaimed = 0;
 
-        // Pass 1: Prune by expiration / TTL
+        let should_run_size_eviction = options.max_bytes.is_some()
+            || (options.older_than.is_none() && options.namespace.is_none());
+
+        struct FileInfo {
+            path: PathBuf,
+            len: u64,
+            mtime: SystemTime,
+        }
+
+        let mut surviving_files = Vec::new();
+        let mut total_size = 0u64;
+
+        // Pass 1: Prune by expiration / TTL while tracking surviving files for size eviction
         for ns in &namespaces {
             let dir = self.base_dir.join(ns.as_str());
             let Ok(entries) = fs::read_dir(&dir) else {
@@ -435,77 +455,52 @@ impl Cache {
                 None => ns.ttl(&self.policy),
             };
 
-            if ttl != Duration::MAX {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if let Ok(meta) = entry.metadata()
-                        && meta.is_file()
-                        && let Ok(mtime) = meta.modified()
-                        && let Ok(elapsed) = mtime.elapsed()
-                        && elapsed > ttl
-                    {
-                        let len = meta.len();
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Ok(meta) = entry.metadata()
+                    && meta.is_file()
+                {
+                    let len = meta.len();
+                    let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                    let is_expired = if ttl != Duration::MAX {
+                        mtime.elapsed().map(|el| el > ttl).unwrap_or(false)
+                    } else {
+                        false
+                    };
+
+                    if is_expired {
                         if fs::remove_file(&path).is_ok() {
                             files_removed += 1;
                             bytes_reclaimed += len;
                         }
+                    } else if should_run_size_eviction {
+                        total_size += len;
+                        surviving_files.push(FileInfo { path, len, mtime });
                     }
                 }
             }
         }
 
-        // Pass 2: Prune by total size (LRU eviction based on mtime)
-        let should_run_size_eviction = options.max_bytes.is_some()
-            || (options.older_than.is_none() && options.namespace.is_none());
-
+        // Pass 2: Prune by total size (LRU eviction based on mtime) in-memory
         if should_run_size_eviction {
             let max_budget = options.max_bytes.unwrap_or(self.policy.max_bytes);
-            if max_budget < u64::MAX {
-                struct FileInfo {
-                    path: PathBuf,
-                    len: u64,
-                    mtime: SystemTime,
-                }
+            if max_budget < u64::MAX && total_size > max_budget {
+                surviving_files.sort_by_key(|f| f.mtime);
 
-                let mut all_files = Vec::new();
-                let mut total_size = 0u64;
+                let target_size = if options.max_bytes.is_some() {
+                    max_budget
+                } else {
+                    ((max_budget as f64) * 0.85) as u64
+                };
 
-                for ns in &namespaces {
-                    let dir = self.base_dir.join(ns.as_str());
-                    let Ok(entries) = fs::read_dir(&dir) else {
-                        continue;
-                    };
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if let Ok(meta) = entry.metadata()
-                            && meta.is_file()
-                        {
-                            let len = meta.len();
-                            total_size += len;
-                            let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                            all_files.push(FileInfo { path, len, mtime });
-                        }
+                for file in surviving_files {
+                    if total_size <= target_size {
+                        break;
                     }
-                }
-
-                if total_size > max_budget {
-                    all_files.sort_by_key(|f| f.mtime);
-
-                    let target_size = if options.max_bytes.is_some() {
-                        max_budget
-                    } else {
-                        ((max_budget as f64) * 0.85) as u64
-                    };
-
-                    for file in all_files {
-                        if total_size <= target_size {
-                            break;
-                        }
-                        if fs::remove_file(&file.path).is_ok() {
-                            files_removed += 1;
-                            bytes_reclaimed += file.len;
-                            total_size = total_size.saturating_sub(file.len);
-                        }
+                    if fs::remove_file(&file.path).is_ok() {
+                        files_removed += 1;
+                        bytes_reclaimed += file.len;
+                        total_size = total_size.saturating_sub(file.len);
                     }
                 }
             }
@@ -535,10 +530,7 @@ impl Cache {
 
         let stats = self.prune(PruneOptions::default()).ok()?;
         let _ = create_private_dir_all(&self.base_dir);
-        let now_secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let now_secs = now_epoch_ms() / 1000;
         let _ = write_private_file(&marker, format!("{}", now_secs).as_bytes());
         Some(stats)
     }
@@ -593,12 +585,44 @@ impl Cache {
         let mut hasher = Sha256Hasher(Sha256::new());
         key.hash(&mut hasher);
         let result = hasher.0.finalize();
-        let mut hex = String::with_capacity(64);
-        for b in result {
-            use std::fmt::Write;
-            let _ = write!(hex, "{:02x}", b);
+        crate::system::text_util::format_hex(&result)
+    }
+
+    fn read_disk_entry<T: DeserializeOwned>(
+        &self,
+        namespace: &str,
+        key_hash: &str,
+        ttl: Option<Duration>,
+    ) -> Option<T> {
+        let path = self
+            .base_dir
+            .join(namespace)
+            .join(format!("{}.json", key_hash));
+        let file = File::open(&path).ok()?;
+
+        if let Some(ttl) = ttl
+            && ttl != Duration::MAX
+            && let Ok(meta) = file.metadata()
+            && let Ok(mtime) = meta.modified()
+            && let Ok(elapsed) = mtime.elapsed()
+            && elapsed > ttl
+        {
+            let _ = fs::remove_file(&path);
+            return None;
         }
-        hex
+
+        serde_json::from_reader(BufReader::new(file)).ok()
+    }
+
+    fn write_disk_entry<T: Serialize>(&self, namespace: &str, key_hash: &str, value: &T) {
+        let dir = self.base_dir.join(namespace);
+        if create_private_dir_all(&dir).is_err() {
+            return;
+        }
+        let path = dir.join(format!("{}.json", key_hash));
+        if let Ok(file) = open_private_file_for_write(&path) {
+            let _ = serde_json::to_writer(BufWriter::new(file), value);
+        }
     }
 
     fn read_entry_with_ttl<T: DeserializeOwned>(
@@ -615,10 +639,7 @@ impl Cache {
         if let Some(guard) = self.get_or_init_db()
             && let Some(conn) = guard.as_ref()
         {
-            let now_ms = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
+            let now_ms = now_epoch_ms();
 
             let table = match namespace {
                 "search" => Some("cache_search"),
@@ -660,24 +681,7 @@ impl Cache {
         }
 
         // 2. Fallback to file on disk
-        let path = self
-            .base_dir
-            .join(namespace)
-            .join(format!("{}.json", key_hash));
-        let file = File::open(&path).ok()?;
-
-        if let Some(ttl) = ttl
-            && ttl != Duration::MAX
-            && let Ok(meta) = file.metadata()
-            && let Ok(mtime) = meta.modified()
-            && let Ok(elapsed) = mtime.elapsed()
-            && elapsed > ttl
-        {
-            let _ = fs::remove_file(&path);
-            return None;
-        }
-
-        serde_json::from_reader(BufReader::new(file)).ok()
+        self.read_disk_entry(namespace, key_hash, ttl)
     }
 
     fn write_entry<T: Serialize>(&self, namespace: &str, key_hash: &str, value: &T) {
@@ -707,14 +711,7 @@ impl Cache {
         }
 
         // Also write private file
-        let dir = self.base_dir.join(namespace);
-        if create_private_dir_all(&dir).is_err() {
-            return;
-        }
-        let path = dir.join(format!("{}.json", key_hash));
-        if let Ok(file) = open_private_file_for_write(&path) {
-            let _ = serde_json::to_writer(BufWriter::new(file), value);
-        }
+        self.write_disk_entry(namespace, key_hash, value);
     }
 
     // --- Scraped Webpage Cache ---
@@ -738,10 +735,7 @@ impl Cache {
         if let Some(guard) = self.get_or_init_db()
             && let Some(conn) = guard.as_ref()
         {
-            let now_ms = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
+            let now_ms = now_epoch_ms();
 
             if let Ok(mut stmt) = conn.prepare(
                 "SELECT url, title, content, word_count, epoch_ms(cached_at)::BIGINT
@@ -774,7 +768,7 @@ impl Cache {
         }
 
         // 2. Fallback to file on disk
-        self.read_entry_with_ttl("pages", &key, Some(ttl))
+        self.read_disk_entry("pages", &key, Some(ttl))
     }
 
     pub fn set_page(&self, url: &str, page: &ScrapedPage) {
@@ -795,7 +789,7 @@ impl Cache {
         }
 
         // 2. Write private file
-        self.write_entry("pages", &key, page);
+        self.write_disk_entry("pages", &key, page);
     }
 
     // --- Book Metadata & Search Candidates Cache ---

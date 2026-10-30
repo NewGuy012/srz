@@ -5,6 +5,9 @@ use duckdb::{Connection, params};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+pub const DUCKDB_SECURITY_LOCKDOWN: &str =
+    "SET autoinstall_known_extensions = false; SET autoload_known_extensions = false;";
+
 pub struct NewSummaryRecord<'a> {
     pub target_type: &'a str, // 'book' or 'web'
     pub title: &'a str,
@@ -204,9 +207,7 @@ impl Database {
         if path.exists() {
             fs_util::set_private_file_perms(path);
         }
-        let _ = conn.execute_batch(
-            "SET autoinstall_known_extensions = false; SET autoload_known_extensions = false;",
-        );
+        let _ = conn.execute_batch(DUCKDB_SECURITY_LOCKDOWN);
         let db = Self { conn };
         if !exists || !db.is_schema_initialized() {
             db.init_schema()?;
@@ -217,9 +218,7 @@ impl Database {
     /// Opens an in-memory DuckDB database (useful for testing).
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory().context("Failed to open in-memory DuckDB")?;
-        let _ = conn.execute_batch(
-            "SET autoinstall_known_extensions = false; SET autoload_known_extensions = false;",
-        );
+        let _ = conn.execute_batch(DUCKDB_SECURITY_LOCKDOWN);
         let db = Self { conn };
         db.init_schema()?;
         Ok(db)
@@ -495,33 +494,15 @@ impl Database {
 
     /// Retrieves all saved chat sessions ordered by most recently active.
     pub fn get_chat_sessions(&self, limit: usize) -> Result<Vec<ChatSession>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT s.id, s.title, s.target_type, s.target_url, s.model,
-                    count(m.id)::BIGINT AS msg_count,
-                    (SELECT m2.content FROM chat_messages m2 WHERE m2.session_id = s.id AND m2.role = 'user' ORDER BY m2.id DESC LIMIT 1) AS last_q,
-                    strftime(s.created_at, '%Y-%m-%d %H:%M'),
-                    strftime(s.updated_at, '%Y-%m-%d %H:%M')
-             FROM chat_sessions s
-             LEFT JOIN chat_messages m ON s.id = m.session_id
+        let sql = format!(
+            "{}
              GROUP BY s.id, s.title, s.target_type, s.target_url, s.model, s.created_at, s.updated_at
              ORDER BY s.updated_at DESC
-             LIMIT ?"
-        )?;
-
-        let rows = stmt.query_map(params![limit as i64], |row| {
-            Ok(ChatSession {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                target_type: row.get(2)?,
-                target_url: row.get(3)?,
-                model: row.get(4)?,
-                message_count: row.get(5)?,
-                last_question: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
-            })
-        })?;
-
+             LIMIT ?",
+            SELECT_CHAT_SESSIONS_BASE_SQL
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![limit as i64], map_chat_session_row)?;
         rows.collect::<duckdb::Result<Vec<_>>>().map_err(Into::into)
     }
 
@@ -530,32 +511,14 @@ impl Database {
         &self,
         session_id: i64,
     ) -> Result<Option<(ChatSession, Vec<ChatMessage>)>> {
-        let mut session_stmt = self.conn.prepare(
-            "SELECT s.id, s.title, s.target_type, s.target_url, s.model,
-                    count(m.id)::BIGINT AS msg_count,
-                    (SELECT m2.content FROM chat_messages m2 WHERE m2.session_id = s.id AND m2.role = 'user' ORDER BY m2.id DESC LIMIT 1) AS last_q,
-                    strftime(s.created_at, '%Y-%m-%d %H:%M'),
-                    strftime(s.updated_at, '%Y-%m-%d %H:%M')
-             FROM chat_sessions s
-             LEFT JOIN chat_messages m ON s.id = m.session_id
+        let sql = format!(
+            "{}
              WHERE s.id = ?
-             GROUP BY s.id, s.title, s.target_type, s.target_url, s.model, s.created_at, s.updated_at"
-        )?;
-
-        let mut session_rows = session_stmt.query_map(params![session_id], |row| {
-            Ok(ChatSession {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                target_type: row.get(2)?,
-                target_url: row.get(3)?,
-                model: row.get(4)?,
-                message_count: row.get(5)?,
-                last_question: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
-            })
-        })?;
-
+             GROUP BY s.id, s.title, s.target_type, s.target_url, s.model, s.created_at, s.updated_at",
+            SELECT_CHAT_SESSIONS_BASE_SQL
+        );
+        let mut session_stmt = self.conn.prepare(&sql)?;
+        let mut session_rows = session_stmt.query_map(params![session_id], map_chat_session_row)?;
         let session = match session_rows.next() {
             Some(res) => res?,
             None => return Ok(None),
@@ -826,26 +789,8 @@ impl Database {
                     .map(|t| t as &dyn duckdb::ToSql)
                     .collect();
                 if let Ok(rows) = stmt.query_map(params.as_slice(), |row| {
-                    let id: i64 = row.get(0)?;
-                    let target_type: String = row.get(1)?;
-                    let title: String = row.get(2)?;
-                    let author: Option<String> = row.get(3)?;
-                    let url: Option<String> = row.get(4)?;
-                    let summary: String = row.get(5)?;
-                    let created_at: String = row.get(6)?;
                     let score: f64 = row.get(7)?;
-                    let snippet = extract_snippet(&summary, trimmed);
-
-                    Ok(LibrarySearchResult {
-                        id,
-                        target_type,
-                        title,
-                        author,
-                        url,
-                        snippet,
-                        created_at,
-                        score: Some(score),
-                    })
+                    map_search_result_row(row, trimmed, &query_terms, Some(score))
                 }) {
                     for r in rows.flatten() {
                         seen_ids.insert(r.id);
@@ -869,25 +814,7 @@ impl Database {
             )?;
 
             let rows = stmt.query_map(params![trimmed, trimmed, trimmed], |row| {
-                let id: i64 = row.get(0)?;
-                let target_type: String = row.get(1)?;
-                let title: String = row.get(2)?;
-                let author: Option<String> = row.get(3)?;
-                let url: Option<String> = row.get(4)?;
-                let summary: String = row.get(5)?;
-                let created_at: String = row.get(6)?;
-                let snippet = extract_snippet(&summary, trimmed);
-
-                Ok(LibrarySearchResult {
-                    id,
-                    target_type,
-                    title,
-                    author,
-                    url,
-                    snippet,
-                    created_at,
-                    score: None,
-                })
+                map_search_result_row(row, trimmed, &query_terms, None)
             })?;
 
             for r in rows.flatten() {
@@ -907,11 +834,9 @@ impl Database {
 /// Tokenizes text into normalized lowercased terms for BM25 indexing and querying.
 pub fn tokenize_terms(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
-        .map(|s| {
-            s.trim_matches(|c: char| !c.is_alphanumeric())
-                .to_lowercase()
-        })
+        .map(|s| s.trim_matches(|c: char| !c.is_alphanumeric()))
         .filter(|s| !s.is_empty())
+        .map(|s| s.to_lowercase())
         .collect()
 }
 
@@ -946,6 +871,29 @@ fn insert_doc_terms(conn: &Connection, doc_id: i64, title: &str, summary: &str) 
     }
 
     Ok(())
+}
+
+const SELECT_CHAT_SESSIONS_BASE_SQL: &str =
+    "SELECT s.id, s.title, s.target_type, s.target_url, s.model,
+            count(m.id)::BIGINT AS msg_count,
+            (SELECT m2.content FROM chat_messages m2 WHERE m2.session_id = s.id AND m2.role = 'user' ORDER BY m2.id DESC LIMIT 1) AS last_q,
+            strftime(s.created_at, '%Y-%m-%d %H:%M'),
+            strftime(s.updated_at, '%Y-%m-%d %H:%M')
+     FROM chat_sessions s
+     LEFT JOIN chat_messages m ON s.id = m.session_id";
+
+fn map_chat_session_row(row: &duckdb::Row<'_>) -> duckdb::Result<ChatSession> {
+    Ok(ChatSession {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        target_type: row.get(2)?,
+        target_url: row.get(3)?,
+        model: row.get(4)?,
+        message_count: row.get(5)?,
+        last_question: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
+    })
 }
 
 const SELECT_HISTORY_SQL: &str = "SELECT id, target_type, title, author, url, style, model,
@@ -1002,13 +950,40 @@ fn map_history_row(row: &duckdb::Row<'_>) -> duckdb::Result<HistoryEntry> {
     })
 }
 
+fn map_search_result_row(
+    row: &duckdb::Row<'_>,
+    query: &str,
+    terms: &[String],
+    score: Option<f64>,
+) -> duckdb::Result<LibrarySearchResult> {
+    let id: i64 = row.get(0)?;
+    let target_type: String = row.get(1)?;
+    let title: String = row.get(2)?;
+    let author: Option<String> = row.get(3)?;
+    let url: Option<String> = row.get(4)?;
+    let summary: String = row.get(5)?;
+    let created_at: String = row.get(6)?;
+    let snippet = extract_snippet(&summary, query, terms);
+
+    Ok(LibrarySearchResult {
+        id,
+        target_type,
+        title,
+        author,
+        url,
+        snippet,
+        created_at,
+        score,
+    })
+}
+
 /// Extracts a surrounding text excerpt (~200 characters) around the first match of `query`
 /// without allocating a lowercase copy of `text`.
 /// Uses UTF-8 character boundaries to prevent indexing panics on multi-byte characters.
-fn extract_snippet(text: &str, query: &str) -> String {
+fn extract_snippet(text: &str, query: &str, terms: &[String]) -> String {
     let match_pos = crate::search::find_ascii_case_insensitive(text, query).or_else(|| {
-        for term in tokenize_terms(query) {
-            if let Some(pos) = crate::search::find_ascii_case_insensitive(text, &term) {
+        for term in terms {
+            if let Some(pos) = crate::search::find_ascii_case_insensitive(text, term) {
                 return Some(pos);
             }
         }

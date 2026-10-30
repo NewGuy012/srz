@@ -116,15 +116,10 @@ pub fn parse_sha256_checksum(content: &str) -> Option<&str> {
 
 /// Computes the lowercase hex-encoded SHA-256 checksum of `bytes` in a single allocation.
 pub fn compute_sha256_hex(bytes: &[u8]) -> String {
-    use std::fmt::Write;
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     let digest = hasher.finalize();
-    let mut hex = String::with_capacity(64);
-    for b in digest {
-        let _ = write!(hex, "{:02x}", b);
-    }
-    hex
+    crate::system::text_util::format_hex(&digest)
 }
 
 /// Formats primary versioned asset name and fallback alias.
