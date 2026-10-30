@@ -406,13 +406,12 @@ pub async fn handle_ask(
         println!();
     }
 
-    if let Some(sid) = session_id
+    if let Some(_sid) = session_id
         && !args.plain
         && !args.json
     {
         println!(
-            "\x1b[2mSession #{} saved. Resume anytime with: srz ask --resume {}\x1b[0m\n",
-            sid, sid
+            "\x1b[2mSession saved. Resume anytime with: srz ask --resume <SESSION_ID>\x1b[0m\n"
         );
     }
 
