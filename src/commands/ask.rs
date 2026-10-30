@@ -318,8 +318,7 @@ pub async fn handle_ask(
             let _ = db_ref.add_chat_turn(sid, &q, &output.content);
             if !args.plain && !args.json {
                 println!(
-                    "\n\x1b[2mSaved to session #{}. Continue conversation: srz ask --resume {}\x1b[0m",
-                    sid, sid
+                    "\n\x1b[2mSaved to session. Continue conversation with: srz ask --resume <session-id>\x1b[0m"
                 );
             }
         }
