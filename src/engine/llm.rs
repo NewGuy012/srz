@@ -112,13 +112,20 @@ struct ModelsListResponse {
     data: Vec<ModelInfo>,
 }
 
-/// Maximum words of grounded reference context for a 32k context window (~16k-18k tokens),
+/// Maximum tokens of grounded reference context for a 32k context window (~16k tokens),
 /// leaving ample headroom for up to 8,192 completion tokens (thinking + summary).
+pub const MAX_CONTEXT_TOKENS: usize = 16_000;
+
+/// Maximum tokens per chunk when map-reducing extra-long documents.
+pub const CHUNK_MAX_TOKENS: usize = 12_000;
+pub const CHUNK_OVERLAP_TOKENS: usize = 800;
+
+/// Maximum words of grounded reference context for legacy word-based boundaries.
 pub const MAX_CONTEXT_WORDS: usize = 12_000;
 
 /// Maximum words per chunk when map-reducing extra-long articles (> 12,000 words).
-const CHUNK_MAX_WORDS: usize = 10_000;
-const CHUNK_OVERLAP_WORDS: usize = 500;
+pub const CHUNK_MAX_WORDS: usize = 10_000;
+pub const CHUNK_OVERLAP_WORDS: usize = 500;
 
 #[derive(Clone)]
 pub struct LlmClient {
@@ -705,10 +712,11 @@ impl LlmClient {
         mode: StreamMode<'_>,
     ) -> Result<LlmOutput> {
         let word_count = known_word_count.unwrap_or_else(|| content.split_whitespace().count());
+        let token_count = TextChunker::count_tokens(content);
 
-        // If the document exceeds MAX_CONTEXT_WORDS (12,000 words), chunk and map-reduce
-        if word_count > MAX_CONTEXT_WORDS {
-            let chunks = TextChunker::chunk(content, CHUNK_MAX_WORDS, CHUNK_OVERLAP_WORDS);
+        // If the document exceeds MAX_CONTEXT_TOKENS (or legacy MAX_CONTEXT_WORDS), chunk and map-reduce
+        if token_count > MAX_CONTEXT_TOKENS || word_count > MAX_CONTEXT_WORDS {
+            let chunks = TextChunker::chunk_by_tokens(content, CHUNK_MAX_TOKENS, CHUNK_OVERLAP_TOKENS);
             if chunks.len() > 1 {
                 let chunks_len = chunks.len();
                 let client_arc = std::sync::Arc::new(self.clone());
