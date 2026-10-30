@@ -338,8 +338,8 @@ pub async fn handle_ask(
             );
         } else {
             println!(
-                "\n\x1b[1;36m=== Interactive Q&A (Session #{}): {} ===\x1b[0m",
-                sid, safe_title
+                "\n\x1b[1;36m=== Interactive Q&A: {} ===\x1b[0m",
+                safe_title
             );
         }
     } else {
