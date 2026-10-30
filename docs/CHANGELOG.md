@@ -19,7 +19,7 @@ All notable changes to `srz` are documented in this file.
 
 ---
 
-## Unreleased
+## v0.6.0
 
 ### Summary
 
