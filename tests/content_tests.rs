@@ -91,6 +91,14 @@ fn test_markdown_to_styled_html_rendering() {
     assert!(html_body.contains("<ul>"));
     assert!(html_body.contains("<li>Key item 1</li>"));
 
+    // Verify GitHub Flavored Markdown (GFM) features like tables and strikethrough
+    let gfm_md = "| Header 1 | Header 2 |\n|---|---|\n| Cell 1 | Cell 2 |\n\n~~strikethrough~~";
+    let gfm_html = markdown_to_html(gfm_md);
+    assert!(gfm_html.contains("<table>"));
+    assert!(gfm_html.contains("<th>Header 1</th>"));
+    assert!(gfm_html.contains("<td>Cell 1</td>"));
+    assert!(gfm_html.contains("<del>strikethrough</del>"));
+
     let full_doc = render_html_document("\"Dune\"", md);
     assert!(full_doc.contains("<!DOCTYPE html>"));
     assert!(full_doc.contains("Summary: &quot;Dune&quot;"));
@@ -98,7 +106,7 @@ fn test_markdown_to_styled_html_rendering() {
 
     let escaped_quote = render_html_document("O'Reilly", "It's a test");
     assert!(escaped_quote.contains("O&#39;Reilly"));
-    assert!(escaped_quote.contains("It&#39;s a test"));
+    assert!(escaped_quote.contains("It's a test") || escaped_quote.contains("It&#39;s a test"));
 
     // Verify ensure_view_files skips rewrite when force_write is false and files exist
     let tmp_dir = std::env::temp_dir().join(format!(

@@ -51,32 +51,7 @@ pub fn open_in_browser(path: &Path) -> std::io::Result<()> {
         }
     });
 
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open").arg(&abs_path).spawn()?;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(&abs_path)
-            .spawn()?;
-    }
-    #[cfg(target_os = "windows")]
-    {
-        // Avoid cmd.exe /C start shell parsing metacharacters (&, ^, %, etc.)
-        // Use rundll32.exe url.dll,FileProtocolHandler which opens files/URLs in the default handler safely
-        std::process::Command::new("rundll32.exe")
-            .args(["url.dll,FileProtocolHandler", &abs_path.to_string_lossy()])
-            .spawn()?;
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "Unsupported operating system for auto-opening browser",
-        ));
-    }
-    Ok(())
+    open::that_detached(&abs_path)
 }
 
 /// Converts a title into a clean, filesystem-safe ASCII slug (e.g. `"Dune" by Frank Herbert` -> `dune-by-frank-herbert`).
@@ -248,174 +223,27 @@ pub fn render_html_document(title: &str, markdown: &str) -> String {
     )
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ListState {
-    None,
-    Ul,
-    Ol,
-}
-
-/// Lightweight, zero-dependency Markdown-to-HTML converter tailored for LLM summaries.
+/// Converts CommonMark / GFM Markdown into semantic HTML using `pulldown-cmark`.
 pub fn markdown_to_html(md: &str) -> String {
-    let mut out = String::with_capacity(md.len() + md.len() / 2);
-    let mut list_state = ListState::None;
-    let mut in_code_block = false;
-    let mut paragraph_buf = String::new();
+    let mut options = pulldown_cmark::Options::empty();
+    options.insert(pulldown_cmark::Options::ENABLE_TABLES);
+    options.insert(pulldown_cmark::Options::ENABLE_STRIKETHROUGH);
+    options.insert(pulldown_cmark::Options::ENABLE_TASKLISTS);
+    options.insert(pulldown_cmark::Options::ENABLE_HEADING_ATTRIBUTES);
 
-    let close_paragraph = |out: &mut String, buf: &mut String| {
-        if !buf.is_empty() {
-            out.push_str("    <p>");
-            out.push_str(buf);
-            out.push_str("</p>\n");
-            buf.clear();
-        }
-    };
+    // Sanitize raw HTML tags into escaped text to prevent HTML injection from untrusted sources
+    let parser = pulldown_cmark::Parser::new_ext(md, options).map(|event| match event {
+        pulldown_cmark::Event::Html(text) => pulldown_cmark::Event::Text(text),
+        pulldown_cmark::Event::InlineHtml(text) => pulldown_cmark::Event::Text(text),
+        other => other,
+    });
 
-    let set_list_state = |out: &mut String, current: &mut ListState, next: ListState| {
-        if *current != next {
-            match *current {
-                ListState::Ul => out.push_str("    </ul>\n"),
-                ListState::Ol => out.push_str("    </ol>\n"),
-                ListState::None => {}
-            }
-            match next {
-                ListState::Ul => out.push_str("    <ul>\n"),
-                ListState::Ol => out.push_str("    <ol>\n"),
-                ListState::None => {}
-            }
-            *current = next;
-        }
-    };
-
-    for raw_line in md.lines() {
-        let trimmed = raw_line.trim();
-
-        if trimmed.starts_with("```") {
-            close_paragraph(&mut out, &mut paragraph_buf);
-            set_list_state(&mut out, &mut list_state, ListState::None);
-            if in_code_block {
-                out.push_str("</code></pre>\n");
-                in_code_block = false;
-            } else {
-                out.push_str("    <pre><code>");
-                in_code_block = true;
-            }
-            continue;
-        }
-
-        if in_code_block {
-            escape_html_to(&mut out, raw_line);
-            out.push('\n');
-            continue;
-        }
-
-        if trimmed.is_empty() {
-            close_paragraph(&mut out, &mut paragraph_buf);
-            set_list_state(&mut out, &mut list_state, ListState::None);
-            continue;
-        }
-
-        // Horizontal rule (`---`, `***`, `___`)
-        if (trimmed.len() >= 3
-            && (trimmed.chars().all(|c| c == '-')
-                || trimmed.chars().all(|c| c == '*')
-                || trimmed.chars().all(|c| c == '_')))
-            || trimmed == "* * *"
-            || trimmed == "- - -"
-        {
-            close_paragraph(&mut out, &mut paragraph_buf);
-            set_list_state(&mut out, &mut list_state, ListState::None);
-            out.push_str("    <hr>\n");
-            continue;
-        }
-
-        // Headings (`#` .. `####`)
-        if let Some((level, heading_text)) = parse_heading(trimmed) {
-            close_paragraph(&mut out, &mut paragraph_buf);
-            set_list_state(&mut out, &mut list_state, ListState::None);
-            out.push_str("    <h");
-            out.push((b'0' + level as u8) as char);
-            out.push('>');
-            render_inline_to(&mut out, heading_text);
-            out.push_str("</h");
-            out.push((b'0' + level as u8) as char);
-            out.push_str(">\n");
-            continue;
-        }
-
-        // Blockquote (`> ...`)
-        if let Some(quote) = trimmed.strip_prefix('>') {
-            close_paragraph(&mut out, &mut paragraph_buf);
-            set_list_state(&mut out, &mut list_state, ListState::None);
-            out.push_str("    <blockquote>");
-            render_inline_to(&mut out, quote.trim());
-            out.push_str("</blockquote>\n");
-            continue;
-        }
-
-        // Unordered list item (`- ...` or `* ...`)
-        if let Some(item) = trimmed
-            .strip_prefix("- ")
-            .or_else(|| trimmed.strip_prefix("* "))
-        {
-            close_paragraph(&mut out, &mut paragraph_buf);
-            set_list_state(&mut out, &mut list_state, ListState::Ul);
-            out.push_str("      <li>");
-            render_inline_to(&mut out, item.trim());
-            out.push_str("</li>\n");
-            continue;
-        }
-
-        // Ordered list item (`1. ...`)
-        if let Some(item) = parse_ordered_list_item(trimmed) {
-            close_paragraph(&mut out, &mut paragraph_buf);
-            set_list_state(&mut out, &mut list_state, ListState::Ol);
-            out.push_str("      <li>");
-            render_inline_to(&mut out, item);
-            out.push_str("</li>\n");
-            continue;
-        }
-
-        // Regular paragraph line (if a line starts with `**Label:**`, break onto its own paragraph for readability)
-        set_list_state(&mut out, &mut list_state, ListState::None);
-        if !paragraph_buf.is_empty() && trimmed.starts_with("**") {
-            close_paragraph(&mut out, &mut paragraph_buf);
-        } else if !paragraph_buf.is_empty() {
-            paragraph_buf.push(' ');
-        }
-        render_inline_to(&mut paragraph_buf, trimmed);
-    }
-
-    if in_code_block {
-        out.push_str("</code></pre>\n");
-    }
-    close_paragraph(&mut out, &mut paragraph_buf);
-    set_list_state(&mut out, &mut list_state, ListState::None);
-
-    out
+    let mut html_output = String::with_capacity(md.len() * 3 / 2);
+    pulldown_cmark::html::push_html(&mut html_output, parser);
+    html_output.replace("<hr />", "<hr>")
 }
 
-fn parse_heading(line: &str) -> Option<(usize, &str)> {
-    let hashes = line.bytes().take_while(|&b| b == b'#').count();
-    if (1..=4).contains(&hashes) {
-        let rest = &line[hashes..];
-        if let Some(stripped) = rest.strip_prefix(' ') {
-            return Some((hashes, stripped.trim()));
-        }
-    }
-    None
-}
 
-fn parse_ordered_list_item(line: &str) -> Option<&str> {
-    let digits = line.bytes().take_while(|b| b.is_ascii_digit()).count();
-    if digits > 0 {
-        let rest = &line[digits..];
-        if let Some(item) = rest.strip_prefix(". ") {
-            return Some(item.trim());
-        }
-    }
-    None
-}
 
 /// Escapes a single character for HTML and appends to `out`.
 pub fn escape_html_char(out: &mut String, ch: char) {
