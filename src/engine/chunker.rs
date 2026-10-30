@@ -165,7 +165,7 @@ mod tests {
     fn test_count_tokens() {
         let text = "Hello, world! This is a test.";
         let tokens = TextChunker::count_tokens(text);
-        assert!(tokens >= 6 && tokens <= 10);
+        assert!((6..=10).contains(&tokens));
     }
 
     #[test]

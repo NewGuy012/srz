@@ -270,7 +270,7 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
             let source_name = source_tags
                 .get(idx)
                 .cloned()
-                .or_else(|| entry.source)
+                .or(entry.source)
                 .or_else(|| entry.authors.first().map(|a| a.name.clone()))
                 .or_else(|| title.rsplit_once(" - ").map(|(_, s)| s.trim().to_string()))
                 .or_else(|| feed_source.clone());

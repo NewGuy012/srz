@@ -296,19 +296,19 @@ pub fn parse_xml_timedtext(xml_str: &str) -> Option<String> {
         match reader.read_event() {
             Ok(Event::Start(e)) if e.name().as_ref() == b"text" => {
                 for attr in e.attributes().flatten() {
-                    if attr.key.as_ref() == b"start" {
-                        if let Ok(v) = std::str::from_utf8(&attr.value) {
-                            current_start = v.parse::<f64>().unwrap_or(0.0);
-                        }
+                    if attr.key.as_ref() == b"start"
+                        && let Ok(v) = std::str::from_utf8(&attr.value)
+                    {
+                        current_start = v.parse::<f64>().unwrap_or(0.0);
                     }
                 }
-                if let Ok(text) = reader.read_text(e.name()) {
-                    if let Ok(s) = std::str::from_utf8(text.as_ref()) {
-                        let decoded = decode_html_entities(s);
-                        let trimmed = decoded.trim();
-                        if !trimmed.is_empty() {
-                            builder.add_cue(current_start as u64, trimmed);
-                        }
+                if let Ok(text) = reader.read_text(e.name())
+                    && let Ok(s) = std::str::from_utf8(text.as_ref())
+                {
+                    let decoded = decode_html_entities(s);
+                    let trimmed = decoded.trim();
+                    if !trimmed.is_empty() {
+                        builder.add_cue(current_start as u64, trimmed);
                     }
                 }
             }
@@ -340,11 +340,11 @@ pub fn parse_xml_format3_timedtext(xml_str: &str) -> Option<String> {
                 in_p = true;
                 p_text.clear();
                 for attr in e.attributes().flatten() {
-                    if attr.key.as_ref() == b"t" {
-                        if let Ok(v) = std::str::from_utf8(&attr.value) {
-                            let ms = v.parse::<u64>().unwrap_or(0);
-                            current_sec = ms / 1000;
-                        }
+                    if attr.key.as_ref() == b"t"
+                        && let Ok(v) = std::str::from_utf8(&attr.value)
+                    {
+                        let ms = v.parse::<u64>().unwrap_or(0);
+                        current_sec = ms / 1000;
                     }
                 }
             }

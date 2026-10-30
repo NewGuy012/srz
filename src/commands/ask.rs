@@ -362,8 +362,8 @@ pub async fn handle_ask(
         println!();
     }
 
-    let mut rl = rustyline::DefaultEditor::new()
-        .context("Failed to initialize interactive line editor")?;
+    let mut rl =
+        rustyline::DefaultEditor::new().context("Failed to initialize interactive line editor")?;
 
     for (past_q, _) in &history {
         let _ = rl.add_history_entry(past_q.as_str());

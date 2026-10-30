@@ -54,12 +54,12 @@ flowchart LR
 - 📰 **Universal Syndication Feeds**: Parses Google News, RSS 0.9/1.0/2.0, Atom, and JSON feeds seamlessly via `feed-rs`.
 - 🌐 **High-Fidelity Readability**: Scores DOM container density via `dom_smoothie` to strip ads, sidebars, and navbars.
 - ⚡ **Rich Terminal Paging**: Syntax-highlighted CLI output with automatic paging for long summaries.
-- 💬 **Interactive Grounded Q&A**: Ask questions grounded on any document or past read via `srz ask`, with persistent multi-turn chat sessions.
+- 💬 **Interactive Grounded Q&A**: Ask questions grounded on any document or past read via `srz ask`, with persistent multi-turn chat sessions, line editing, and history via `rustyline`.
 - 🖥️ **Interactive TUI Dashboard**: Browse, search, filter, and copy past summaries with `srz browse`.
 - 🔍 **BM25 Full-Text Search**: Embedded DuckDB indexes every read with relevance-scored BM25 search via `srz find`.
 - 📊 **Reading Habits & Model Telemetry**: Track reading streaks, time saved, active days, and P50/P95 model generation throughput with `srz stats`.
 - 🗄️ **Consolidated Embedded Storage**: High-speed, atomic caching and analytics powered entirely by embedded DuckDB (`cache.duckdb` and `srz.duckdb`).
-- 📖 **Distraction-Free Reader Views**: Generates clean HTML and Markdown pages with dark mode support.
+- 📖 **Distraction-Free Reader Views**: Generates clean HTML (GFM tables, task lists, and strikethrough via `pulldown-cmark`) and Markdown pages with dark mode support, opened seamlessly via `open`.
 
 
 ## Prerequisites: LLM Backend Server
@@ -235,7 +235,7 @@ See [`OVERVIEW.md`](docs/OVERVIEW.md) for detailed Mermaid architecture diagrams
 ## Running Tests & Static Analysis
 
 ```bash
-# Run full automated test suite (113 tests)
+# Run full automated test suite (119 tests)
 cargo test
 
 # Strict static analysis (warnings denied)

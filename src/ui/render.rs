@@ -243,8 +243,6 @@ pub fn markdown_to_html(md: &str) -> String {
     html_output.replace("<hr />", "<hr>")
 }
 
-
-
 /// Escapes a single character for HTML and appends to `out`.
 pub fn escape_html_char(out: &mut String, ch: char) {
     match ch {

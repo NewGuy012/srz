@@ -23,12 +23,17 @@ All notable changes to `srz` are documented in this file.
 
 ### Summary
 
-> Enhances content ingestion and chunking accuracy by integrating `feed-rs` for universal RSS/Atom feed syndication, `dom_smoothie` for Mozilla Readability DOM content extraction, and `tiktoken-rs` for exact BPE token-budgeted document chunking.
+> Maximizes Rust crate ecosystem adoption and eliminates fragile custom parsing by integrating `feed-rs` for universal feed syndication, `dom_smoothie` for readability article extraction, `tiktoken-rs` for BPE token budgeting, `html-escape` for HTML entity decoding, `quick-xml` for streaming YouTube caption parsing, `pulldown-cmark` for GitHub Flavored Markdown rendering, `open` for cross-platform browser launching, and `rustyline` for interactive chat line editing and history.
 
 ### Changes
 - **Universal Syndication Feeds (`sources::news`)**: Replaced hand-rolled XML string matching with `feed-rs`, adding robust support for RSS 0.9/1.0/2.0, Atom, and JSON Feed formats while keeping Google News recency query resolution and URL un-obfuscation as the default.
 - **High-Fidelity Article Extraction (`sources::scraper`)**: Integrated Mozilla Readability DOM density scoring via `dom_smoothie` into `WebScraper::normalize`. Automatically strips advertising wrappers, navigation bars, cookie prompts, and sidebars from arbitrary web pages before LLM synthesis.
 - **Token-Budgeted Document Chunking (`engine::chunker`)**: Added exact OpenAI BPE token counting (`TextChunker::count_tokens`) and token-budgeted paragraph chunking (`TextChunker::chunk_by_tokens`) via `tiktoken-rs`, aligning map-reduce chunk boundaries with model context windows (`MAX_CONTEXT_TOKENS = 16_000`, `CHUNK_MAX_TOKENS = 12_000`).
+- **HTML Entity Decoding (`system::text_util`)**: Replaced manual substring matching loops in `decode_html_entities` with `html-escape`, providing high-performance, compliant decoding while preserving zero-copy borrowed strings when no entities are present.
+- **YouTube XML Captions (`sources::youtube`)**: Replaced manual byte slicing and tag scanning in `parse_xml_timedtext` and `parse_xml_format3_timedtext` with `quick-xml` streaming event readers, handling timed text without custom cursor math.
+- **GitHub Flavored Markdown Rendering (`ui::render`)**: Integrated `pulldown-cmark` into `markdown_to_html`, replacing over 170 lines of custom parser code with compliant CommonMark/GFM rendering (supporting tables, strikethrough, and task lists) and defensive HTML tag sanitization.
+- **Cross-Platform Browser Launcher (`ui::render`)**: Replaced platform-conditional subprocess branches (`open`, `xdg-open`, `rundll32.exe`) with `open::that_detached` for non-blocking browser launching across macOS, Linux, and Windows.
+- **Interactive REPL History & Line Editing (`commands::ask`)**: Upgraded `srz ask -i` interactive chat REPL using `rustyline`, providing in-line arrow-key editing, history navigation, clean Ctrl+C/Ctrl+D termination, and preloading prior turns from resumed chat sessions.
 
 ---
 
