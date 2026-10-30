@@ -21,92 +21,60 @@ impl TextChunker {
         max_tokens: usize,
         overlap_tokens: usize,
     ) -> Vec<Cow<'a, str>> {
-        let mut paragraphs: Vec<(&'a str, usize)> = Vec::new();
-        let mut total_tokens = 0;
-
-        for p in text.split("\n\n") {
-            let trimmed = p.trim();
-            if !trimmed.is_empty() {
-                let tokens = Self::count_tokens(trimmed);
-                total_tokens += tokens;
-                paragraphs.push((trimmed, tokens));
-            }
-        }
-
-        if paragraphs.is_empty() || total_tokens <= max_tokens {
+        // Fast path: In BPE, 1 token is at least 1 byte.
+        // If text.len() <= max_tokens, the token count cannot exceed max_tokens.
+        if text.len() <= max_tokens {
             return vec![Cow::Borrowed(text)];
         }
-
-        let mut chunks: Vec<Cow<'a, str>> = Vec::new();
-        let mut current_chunk_paragraphs: Vec<(&'a str, usize)> = Vec::new();
-        let mut current_token_count = 0;
-
-        for &(para, p_tokens) in &paragraphs {
-            if current_token_count + p_tokens > max_tokens && !current_chunk_paragraphs.is_empty() {
-                chunks.push(Self::build_chunk(text, &current_chunk_paragraphs));
-
-                let mut retained = Vec::new();
-                let mut retained_tokens = 0;
-                for &(prev_p, t) in current_chunk_paragraphs.iter().rev() {
-                    if retained_tokens + t <= overlap_tokens {
-                        retained.push((prev_p, t));
-                        retained_tokens += t;
-                    } else {
-                        break;
-                    }
-                }
-                retained.reverse();
-
-                current_chunk_paragraphs = retained;
-                current_token_count = retained_tokens;
-            }
-
-            current_chunk_paragraphs.push((para, p_tokens));
-            current_token_count += p_tokens;
-        }
-
-        if !current_chunk_paragraphs.is_empty() {
-            chunks.push(Self::build_chunk(text, &current_chunk_paragraphs));
-        }
-
-        chunks
+        Self::chunk_with_metric(text, max_tokens, overlap_tokens, Self::count_tokens)
     }
 
     /// Splits text into chunks of roughly `max_words` with `overlap_words` overlap.
     /// Preserves paragraph boundaries wherever possible and returns zero-copy `Cow::Borrowed`
     /// slices whenever the input or a chunk does not require concatenation.
     pub fn chunk<'a>(text: &'a str, max_words: usize, overlap_words: usize) -> Vec<Cow<'a, str>> {
+        Self::chunk_with_metric(text, max_words, overlap_words, |s| s.split_whitespace().count())
+    }
+
+    fn chunk_with_metric<'a, F>(
+        text: &'a str,
+        max_limit: usize,
+        overlap_limit: usize,
+        mut count_fn: F,
+    ) -> Vec<Cow<'a, str>>
+    where
+        F: FnMut(&str) -> usize,
+    {
         let mut paragraphs: Vec<(&'a str, usize)> = Vec::new();
-        let mut total_words = 0;
+        let mut total_count = 0;
 
         for p in text.split("\n\n") {
             let trimmed = p.trim();
             if !trimmed.is_empty() {
-                let words = trimmed.split_whitespace().count();
-                total_words += words;
-                paragraphs.push((trimmed, words));
+                let count = count_fn(trimmed);
+                total_count += count;
+                paragraphs.push((trimmed, count));
             }
         }
 
-        if paragraphs.is_empty() || total_words <= max_words {
+        if paragraphs.is_empty() || total_count <= max_limit {
             return vec![Cow::Borrowed(text)];
         }
 
         let mut chunks: Vec<Cow<'a, str>> = Vec::new();
         let mut current_chunk_paragraphs: Vec<(&'a str, usize)> = Vec::new();
-        let mut current_word_count = 0;
+        let mut current_count = 0;
 
-        for &(para, p_words) in &paragraphs {
-            if current_word_count + p_words > max_words && !current_chunk_paragraphs.is_empty() {
+        for &(para, p_count) in &paragraphs {
+            if current_count + p_count > max_limit && !current_chunk_paragraphs.is_empty() {
                 chunks.push(Self::build_chunk(text, &current_chunk_paragraphs));
 
-                // Calculate overlap paragraphs to retain using pre-computed word counts
                 let mut retained = Vec::new();
-                let mut retained_words = 0;
-                for &(prev_p, w) in current_chunk_paragraphs.iter().rev() {
-                    if retained_words + w <= overlap_words {
-                        retained.push((prev_p, w));
-                        retained_words += w;
+                let mut retained_count = 0;
+                for &(prev_p, c) in current_chunk_paragraphs.iter().rev() {
+                    if retained_count + c <= overlap_limit {
+                        retained.push((prev_p, c));
+                        retained_count += c;
                     } else {
                         break;
                     }
@@ -114,11 +82,11 @@ impl TextChunker {
                 retained.reverse();
 
                 current_chunk_paragraphs = retained;
-                current_word_count = retained_words;
+                current_count = retained_count;
             }
 
-            current_chunk_paragraphs.push((para, p_words));
-            current_word_count += p_words;
+            current_chunk_paragraphs.push((para, p_count));
+            current_count += p_count;
         }
 
         if !current_chunk_paragraphs.is_empty() {

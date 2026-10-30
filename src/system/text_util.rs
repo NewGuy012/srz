@@ -26,6 +26,16 @@ pub fn contains_ascii_case_insensitive(haystack: &str, lowercase_needle: &str) -
     lowercase_needle.is_empty() || find_ascii_case_insensitive(haystack, lowercase_needle).is_some()
 }
 
+/// Formats a byte slice into a lowercase hexadecimal string in a single allocation.
+pub fn format_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(hex, "{:02x}", b);
+    }
+    hex
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,5 +64,11 @@ mod tests {
         assert_eq!(find_ascii_case_insensitive("Hello", "xyz"), None);
         assert!(contains_ascii_case_insensitive("Hello World", "world"));
         assert!(!contains_ascii_case_insensitive("Hello World", "xyz"));
+    }
+
+    #[test]
+    fn test_format_hex() {
+        assert_eq!(format_hex(&[]), "");
+        assert_eq!(format_hex(&[0x00, 0x0f, 0x10, 0xff]), "000f10ff");
     }
 }
