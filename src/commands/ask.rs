@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use std::io::{self, BufRead, Write};
 use std::path::Path;
 
 use crate::cache::Cache;
@@ -336,10 +335,7 @@ pub async fn handle_ask(
                 safe_title
             );
         } else {
-            println!(
-                "\n\x1b[1;36m=== Interactive Q&A: {} ===\x1b[0m",
-                safe_title
-            );
+            println!("\n\x1b[1;36m=== Interactive Q&A: {} ===\x1b[0m", safe_title);
         }
     } else {
         println!("\n\x1b[1;36m=== Interactive Q&A: {} ===\x1b[0m", safe_title);
@@ -366,44 +362,56 @@ pub async fn handle_ask(
         println!();
     }
 
-    let stdin = io::stdin();
-    let mut reader = stdin.lock();
+    let mut rl = rustyline::DefaultEditor::new()
+        .context("Failed to initialize interactive line editor")?;
+
+    for (past_q, _) in &history {
+        let _ = rl.add_history_entry(past_q.as_str());
+    }
 
     loop {
-        print!("\x1b[1;36msrz [ask]>\x1b[0m ");
-        io::stdout().flush()?;
+        let readline = rl.readline("\x1b[1;36msrz [ask]>\x1b[0m ");
+        match readline {
+            Ok(line) => {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if trimmed.eq_ignore_ascii_case("exit") || trimmed.eq_ignore_ascii_case("quit") {
+                    println!("\x1b[2mGoodbye!\x1b[0m\n");
+                    break;
+                }
 
-        let mut line = String::new();
-        let bytes_read = reader.read_line(&mut line)?;
-        if bytes_read == 0 {
-            // EOF (Ctrl+D)
-            println!();
-            break;
-        }
+                let _ = rl.add_history_entry(trimmed);
 
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
+                let ans = ask_turn(
+                    &grounded_context,
+                    &history,
+                    trimmed,
+                    llm,
+                    args.stream,
+                    args.plain,
+                )
+                .await?;
+                if let (Some(sid), Some(db_ref)) = (session_id, &db) {
+                    let _ = db_ref.add_chat_turn(sid, trimmed, &ans);
+                }
+                history.push((trimmed.to_string(), ans));
+                println!();
+            }
+            Err(rustyline::error::ReadlineError::Interrupted) => {
+                println!("\x1b[2mGoodbye!\x1b[0m\n");
+                break;
+            }
+            Err(rustyline::error::ReadlineError::Eof) => {
+                println!();
+                break;
+            }
+            Err(err) => {
+                eprintln!("\x1b[1;31mError reading input:\x1b[0m {}", err);
+                break;
+            }
         }
-        if trimmed.eq_ignore_ascii_case("exit") || trimmed.eq_ignore_ascii_case("quit") {
-            println!("\x1b[2mGoodbye!\x1b[0m\n");
-            break;
-        }
-
-        let ans = ask_turn(
-            &grounded_context,
-            &history,
-            trimmed,
-            llm,
-            args.stream,
-            args.plain,
-        )
-        .await?;
-        if let (Some(sid), Some(db_ref)) = (session_id, &db) {
-            let _ = db_ref.add_chat_turn(sid, trimmed, &ans);
-        }
-        history.push((trimmed.to_string(), ans));
-        println!();
     }
 
     if let Some(_sid) = session_id
