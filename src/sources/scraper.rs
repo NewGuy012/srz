@@ -212,11 +212,17 @@ impl WebScraper {
         // 1. Extract Title
         let title = self.extract_title(&document);
 
-        // 2. Select main content container or fallback to raw HTML zero-copy
-        let target_html = self.extract_main_html(&document, raw_html);
+        // 2. Extract article content using dom_smoothie readability
+        let extracted_html = match dom_smoothie::Readability::new(raw_html, Some(url), None) {
+            Ok(mut readability) => match readability.parse() {
+                Ok(article) => std::borrow::Cow::Owned(article.content.to_string()),
+                Err(_) => self.extract_main_html(&document, raw_html),
+            },
+            Err(_) => self.extract_main_html(&document, raw_html),
+        };
 
         // 3. Convert HTML to clean plain text without link footnote bloat or 100-col artificial wraps
-        let rendered_text = html_to_plain_text(target_html.as_bytes())?;
+        let rendered_text = html_to_plain_text(extracted_html.as_bytes())?;
 
         // 4. Clean and normalize whitespace/formatting + count words in a single pass
         let (cleaned_content, word_count) = clean_text(&rendered_text, true, 2);
@@ -229,7 +235,7 @@ impl WebScraper {
         })
     }
 
-    fn extract_title(&self, document: &Html) -> Option<String> {
+    pub fn extract_title(&self, document: &Html) -> Option<String> {
         // Try og:title first (zero-copy attribute slice until final .to_string())
         if let Some(elem) = document.select(&OG_TITLE_SEL).next()
             && let Some(content) = elem.value().attr("content")
@@ -316,4 +322,40 @@ fn clean_text(text: &str, strip_references: bool, max_empty_lines: usize) -> (St
     let trimmed_len = out.trim_end().len();
     out.truncate(trimmed_len);
     (out, word_count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_scraper_normalize_with_readability() {
+        let scraper = WebScraper::new().unwrap();
+        let html = r#"
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Article Page</title>
+                <meta property="og:title" content="Extracted Article Title">
+            </head>
+            <body>
+                <header><nav><a href="/">Home</a><a href="/about">About</a></nav></header>
+                <aside class="sidebar"><p>Ad sidebar with lots of links</p></aside>
+                <article>
+                    <h1>Article Main Heading</h1>
+                    <p>This is the first paragraph of the core article text with meaningful content.</p>
+                    <p>This is the second paragraph providing in-depth analysis on the topic.</p>
+                </article>
+                <footer><p>© 2026 Company Inc. All rights reserved.</p></footer>
+            </body>
+            </html>
+        "#;
+
+        let page = scraper.normalize("https://example.com/article", html).unwrap();
+        assert_eq!(page.title.as_deref(), Some("Extracted Article Title"));
+        assert!(page.content.contains("first paragraph of the core article text"));
+        assert!(page.content.contains("second paragraph providing in-depth analysis"));
+        assert!(!page.content.contains("Ad sidebar with lots of links"));
+        assert!(!page.content.contains("All rights reserved"));
+    }
 }
