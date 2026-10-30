@@ -317,9 +317,14 @@ pub async fn handle_ask(
         if let (Some(sid), Some(db_ref)) = (session_id, &db) {
             let _ = db_ref.add_chat_turn(sid, &q, &output.content);
             if !args.plain && !args.json {
+                let sid_display = {
+                    let s = sid.to_string();
+                    let visible = if s.len() > 4 { &s[s.len() - 4..] } else { &s[..] };
+                    format!("***{}", visible)
+                };
                 println!(
-                    "\n\x1b[2mSaved to session #{}. Continue conversation: srz ask --resume {}\x1b[0m",
-                    sid, sid
+                    "\n\x1b[2mSaved to session #{}. Continue conversation with your session id using: srz ask --resume <SESSION_ID>\x1b[0m",
+                    sid_display
                 );
             }
         }
@@ -328,18 +333,25 @@ pub async fn handle_ask(
     }
 
     // Interactive REPL chat session
+    fn masked_session_id_for_display(sid: i64) -> String {
+        let s = sid.to_string();
+        let visible = if s.len() > 4 { &s[s.len() - 4..] } else { &s[..] };
+        format!("***{}", visible)
+    }
+
     if let Some(sid) = session_id {
+        let display_sid = masked_session_id_for_display(sid);
         if resume.is_some() {
             println!(
                 "\n\x1b[1;36m=== Resumed Q&A Session #{} ({} past turns): {} ===\x1b[0m",
-                sid,
+                display_sid,
                 history.len(),
                 safe_title
             );
         } else {
             println!(
                 "\n\x1b[1;36m=== Interactive Q&A (Session #{}): {} ===\x1b[0m",
-                sid, safe_title
+                display_sid, safe_title
             );
         }
     } else {
