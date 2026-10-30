@@ -44,6 +44,11 @@ pdf-extract = "0.12.1"
 feed-rs = "2"
 dom_smoothie = "0.18"
 tiktoken-rs = "0.6"
+html-escape = "0.2"
+quick-xml = "0.41"
+pulldown-cmark = "0.13"
+open = "5"
+rustyline = "15"
 
 [profile.release]
 lto = "thin"

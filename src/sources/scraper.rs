@@ -351,10 +351,18 @@ mod tests {
             </html>
         "#;
 
-        let page = scraper.normalize("https://example.com/article", html).unwrap();
+        let page = scraper
+            .normalize("https://example.com/article", html)
+            .unwrap();
         assert_eq!(page.title.as_deref(), Some("Extracted Article Title"));
-        assert!(page.content.contains("first paragraph of the core article text"));
-        assert!(page.content.contains("second paragraph providing in-depth analysis"));
+        assert!(
+            page.content
+                .contains("first paragraph of the core article text")
+        );
+        assert!(
+            page.content
+                .contains("second paragraph providing in-depth analysis")
+        );
         assert!(!page.content.contains("Ad sidebar with lots of links"));
         assert!(!page.content.contains("All rights reserved"));
     }

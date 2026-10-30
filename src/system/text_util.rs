@@ -1,45 +1,9 @@
 use std::borrow::Cow;
 
-/// Decodes common HTML entities in a single pass, returning a zero-copy `Cow::Borrowed`
-/// when `s` contains no `&` character and preventing double-unescaping (e.g. `&amp;lt;`).
+/// Decodes HTML entities in a single pass using `html_escape`, returning a zero-copy
+/// `Cow::Borrowed` when `s` contains no entities.
 pub fn decode_html_entities(s: &str) -> Cow<'_, str> {
-    if !s.contains('&') {
-        return Cow::Borrowed(s);
-    }
-
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(amp_idx) = rest.find('&') {
-        out.push_str(&rest[..amp_idx]);
-        let after_amp = &rest[amp_idx..];
-        let matched = if after_amp.starts_with("&quot;") {
-            Some(('"', 6))
-        } else if after_amp.starts_with("&apos;") {
-            Some(('\'', 6))
-        } else if after_amp.starts_with("&#39;") {
-            Some(('\'', 5))
-        } else if after_amp.starts_with("&amp;") {
-            Some(('&', 5))
-        } else if after_amp.starts_with("&lt;") {
-            Some(('<', 4))
-        } else if after_amp.starts_with("&gt;") {
-            Some(('>', 4))
-        } else if after_amp.starts_with("&nbsp;") {
-            Some((' ', 6))
-        } else {
-            None
-        };
-
-        if let Some((ch, len)) = matched {
-            out.push(ch);
-            rest = &after_amp[len..];
-        } else {
-            out.push('&');
-            rest = &after_amp[1..];
-        }
-    }
-    out.push_str(rest);
-    Cow::Owned(out)
+    html_escape::decode_html_entities(s)
 }
 
 /// Zero-allocation case-insensitive ASCII substring search returning the first byte index of `needle`.

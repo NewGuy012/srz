@@ -716,7 +716,8 @@ impl LlmClient {
 
         // If the document exceeds MAX_CONTEXT_TOKENS (or legacy MAX_CONTEXT_WORDS), chunk and map-reduce
         if token_count > MAX_CONTEXT_TOKENS || word_count > MAX_CONTEXT_WORDS {
-            let chunks = TextChunker::chunk_by_tokens(content, CHUNK_MAX_TOKENS, CHUNK_OVERLAP_TOKENS);
+            let chunks =
+                TextChunker::chunk_by_tokens(content, CHUNK_MAX_TOKENS, CHUNK_OVERLAP_TOKENS);
             if chunks.len() > 1 {
                 let chunks_len = chunks.len();
                 let client_arc = std::sync::Arc::new(self.clone());

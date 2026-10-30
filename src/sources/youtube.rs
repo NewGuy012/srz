@@ -1,4 +1,6 @@
 use anyhow::{Context, Result};
+use quick_xml::events::Event;
+use quick_xml::reader::Reader;
 use reqwest::{Client, Url};
 use serde::Deserialize;
 use std::time::Duration;
@@ -285,31 +287,35 @@ pub fn parse_xml_timedtext(xml_str: &str) -> Option<String> {
         return None;
     }
 
+    let mut reader = Reader::from_str(xml_str);
+
     let mut builder = TimedTranscriptBuilder::new(xml_str.len() / 2);
+    let mut current_start = 0.0;
 
-    let mut cursor = 0;
-    while let Some(pos) = xml_str[cursor..].find("<text") {
-        let tag_start = cursor + pos;
-        let tag_end = match xml_str[tag_start..].find('>') {
-            Some(p) => tag_start + p,
-            None => break,
-        };
-        let tag_content = &xml_str[tag_start..tag_end];
-
-        let close_tag = match xml_str[tag_end..].find("</text>") {
-            Some(p) => tag_end + p,
-            None => break,
-        };
-        let inner_text = &xml_str[tag_end + 1..close_tag];
-        cursor = close_tag + "</text>".len();
-
-        let clean_text = decode_html_entities(inner_text);
-
-        let seconds = crate::sources::news::extract_attr_value(tag_content, "start=")
-            .and_then(|v| v.parse::<f64>().ok())
-            .unwrap_or(0.0) as u64;
-
-        builder.add_cue(seconds, &clean_text);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) if e.name().as_ref() == b"text" => {
+                for attr in e.attributes().flatten() {
+                    if attr.key.as_ref() == b"start" {
+                        if let Ok(v) = std::str::from_utf8(&attr.value) {
+                            current_start = v.parse::<f64>().unwrap_or(0.0);
+                        }
+                    }
+                }
+                if let Ok(text) = reader.read_text(e.name()) {
+                    if let Ok(s) = std::str::from_utf8(text.as_ref()) {
+                        let decoded = decode_html_entities(s);
+                        let trimmed = decoded.trim();
+                        if !trimmed.is_empty() {
+                            builder.add_cue(current_start as u64, trimmed);
+                        }
+                    }
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => return None,
+            _ => {}
+        }
     }
 
     builder.finish()
@@ -321,51 +327,43 @@ pub fn parse_xml_format3_timedtext(xml_str: &str) -> Option<String> {
         return None;
     }
 
+    let mut reader = Reader::from_str(xml_str);
+
     let mut builder = TimedTranscriptBuilder::new(xml_str.len() / 2);
-    let mut cursor = 0;
+    let mut current_sec = 0;
+    let mut in_p = false;
+    let mut p_text = String::new();
 
-    while let Some(pos) = xml_str[cursor..].find("<p") {
-        let tag_start = cursor + pos;
-        let after_p = tag_start + 2;
-        let Some(next_ch) = xml_str[after_p..].chars().next() else {
-            break;
-        };
-        if !next_ch.is_ascii_whitespace() && next_ch != '>' && next_ch != '/' {
-            cursor = after_p;
-            continue;
-        }
-
-        let tag_open_end = match xml_str[after_p..].find('>') {
-            Some(p) => after_p + p,
-            None => break,
-        };
-
-        // Skip self-closing <p ... />
-        if xml_str[tag_start..tag_open_end].trim_end().ends_with('/') {
-            cursor = tag_open_end + 1;
-            continue;
-        }
-
-        let tag_header = &xml_str[tag_start..tag_open_end];
-
-        let close_tag = match xml_str[tag_open_end + 1..].find("</p>") {
-            Some(p) => tag_open_end + 1 + p,
-            None => break,
-        };
-
-        let inner_xml = &xml_str[tag_open_end + 1..close_tag];
-        cursor = close_tag + "</p>".len();
-
-        // Extract t="..." in milliseconds
-        let seconds = extract_attr_u64(tag_header, "t")
-            .map(|ms| ms / 1000)
-            .unwrap_or(0);
-
-        let stripped = strip_xml_tags(inner_xml);
-        let decoded = decode_html_entities(&stripped);
-        let clean = decoded.trim();
-        if !clean.is_empty() {
-            builder.add_cue(seconds, clean);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) if e.name().as_ref() == b"p" => {
+                in_p = true;
+                p_text.clear();
+                for attr in e.attributes().flatten() {
+                    if attr.key.as_ref() == b"t" {
+                        if let Ok(v) = std::str::from_utf8(&attr.value) {
+                            let ms = v.parse::<u64>().unwrap_or(0);
+                            current_sec = ms / 1000;
+                        }
+                    }
+                }
+            }
+            Ok(Event::Text(e)) if in_p => {
+                if let Ok(text) = std::str::from_utf8(e.as_ref()) {
+                    let decoded = decode_html_entities(text);
+                    p_text.push_str(&decoded);
+                }
+            }
+            Ok(Event::End(e)) if e.name().as_ref() == b"p" => {
+                in_p = false;
+                let trimmed = p_text.trim();
+                if !trimmed.is_empty() {
+                    builder.add_cue(current_sec, trimmed);
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => return None,
+            _ => {}
         }
     }
 

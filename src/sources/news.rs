@@ -233,9 +233,11 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
 
     let normalized_xml;
     let xml_to_parse = if xml.contains("<rss") && !xml.contains("version=") {
-        normalized_xml = xml
-            .replacen("<rss>", "<rss version=\"2.0\">", 1)
-            .replacen("<rss ", "<rss version=\"2.0\" ", 1);
+        normalized_xml = xml.replacen("<rss>", "<rss version=\"2.0\">", 1).replacen(
+            "<rss ",
+            "<rss version=\"2.0\" ",
+            1,
+        );
         normalized_xml.as_str()
     } else {
         xml
@@ -263,19 +265,14 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
                     }
                 });
 
-            let pub_date = entry
-                .published
-                .or(entry.updated)
-                .map(|dt| dt.to_rfc2822());
+            let pub_date = entry.published.or(entry.updated).map(|dt| dt.to_rfc2822());
 
             let source_name = source_tags
                 .get(idx)
                 .cloned()
                 .or_else(|| entry.source)
                 .or_else(|| entry.authors.first().map(|a| a.name.clone()))
-                .or_else(|| {
-                    title.rsplit_once(" - ").map(|(_, s)| s.trim().to_string())
-                })
+                .or_else(|| title.rsplit_once(" - ").map(|(_, s)| s.trim().to_string()))
                 .or_else(|| feed_source.clone());
 
             if !title.is_empty() && !link.is_empty() {
