@@ -33,7 +33,9 @@ impl TextChunker {
     /// Preserves paragraph boundaries wherever possible and returns zero-copy `Cow::Borrowed`
     /// slices whenever the input or a chunk does not require concatenation.
     pub fn chunk<'a>(text: &'a str, max_words: usize, overlap_words: usize) -> Vec<Cow<'a, str>> {
-        Self::chunk_with_metric(text, max_words, overlap_words, |s| s.split_whitespace().count())
+        Self::chunk_with_metric(text, max_words, overlap_words, |s| {
+            s.split_whitespace().count()
+        })
     }
 
     fn chunk_with_metric<'a, F>(

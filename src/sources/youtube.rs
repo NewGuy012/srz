@@ -515,10 +515,8 @@ pub async fn fetch_youtube_transcript(client: &Client, video_id: &str) -> Result
     let mut title: Option<String> = None;
     let mut tracks: Option<Vec<CaptionTrack>> = None;
 
-    const INNERTUBE_CLIENTS: [(&str, &str); 2] = [
-        ("ANDROID", "20.10.38"),
-        ("WEB", "2.20240101.00.00"),
-    ];
+    const INNERTUBE_CLIENTS: [(&str, &str); 2] =
+        [("ANDROID", "20.10.38"), ("WEB", "2.20240101.00.00")];
 
     for (client_name, client_version) in INNERTUBE_CLIENTS {
         if tracks.is_some() && title.is_some() {

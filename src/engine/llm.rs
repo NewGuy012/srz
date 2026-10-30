@@ -280,7 +280,9 @@ impl SseStreamState {
             }
             StreamMode::Buffered => {
                 let now = std::time::Instant::now();
-                if is_first || now.duration_since(self.last_spinner_update) >= Duration::from_millis(80) {
+                if is_first
+                    || now.duration_since(self.last_spinner_update) >= Duration::from_millis(80)
+                {
                     self.last_spinner_update = now;
                     let elapsed = self.start_time.elapsed();
                     let rate = compute_tokens_per_second(Some(self.output_tokens as u32), elapsed);
@@ -694,7 +696,8 @@ impl LlmClient {
             false
         } else {
             let word_count = known_word_count.unwrap_or_else(|| content.split_whitespace().count());
-            word_count > MAX_CONTEXT_WORDS || TextChunker::count_tokens(content) > MAX_CONTEXT_TOKENS
+            word_count > MAX_CONTEXT_WORDS
+                || TextChunker::count_tokens(content) > MAX_CONTEXT_TOKENS
         };
 
         // If the document exceeds MAX_CONTEXT_TOKENS (or legacy MAX_CONTEXT_WORDS), chunk and map-reduce

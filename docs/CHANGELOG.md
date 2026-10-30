@@ -4,17 +4,20 @@ All notable changes to `srz` are documented in this file.
 
 ## Release Notes Template
 
+> [!TIP]
+> Keep release notes concise, user-friendly, and focused on practical user impact. Avoid internal implementation minutiae or duplicate bullets; group related refactors into cohesive, readable highlights.
+
 ```markdown
 ## vX.Y.Z
 
 ### Summary
 
-> One to two sentence summary describing the primary focus of this release.
+> Concise 1–2 sentence overview highlighting the primary focus, key features, and user benefits of this release.
 
 ### Changes
-- **Feature / Component**: Description.
-- **Improvement / Refactor**: Description.
-- **Fix / Security**: Description.
+- **User-Facing Feature / Command**: Clear description of the new capability and how it benefits the user.
+- **Performance / Usability Enhancement**: Concise explanation of the optimization or UX improvement.
+- **Fix / Security Hardening**: Brief description of the bug resolved or security enhancement.
 ```
 
 ---
