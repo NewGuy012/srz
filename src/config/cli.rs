@@ -576,16 +576,31 @@ pub fn is_file_like(s: &str) -> bool {
 }
 
 pub fn is_news_query(s: &str) -> bool {
-    let lower = s.to_ascii_lowercase();
-    let words: Vec<&str> = lower.split_whitespace().collect();
-    if words.is_empty() {
+    let mut words = s.split_whitespace();
+    let Some(first) = words.next() else {
         return false;
+    };
+    if first.eq_ignore_ascii_case("news") || first.eq_ignore_ascii_case("headlines") {
+        return true;
     }
-    words.contains(&"news")
-        || words.contains(&"headlines")
-        || ((words[0] == "current" || words[0] == "latest")
-            && words.len() > 1
-            && (words.contains(&"updates") || words.contains(&"stories")))
+    let first_is_current_or_latest =
+        first.eq_ignore_ascii_case("current") || first.eq_ignore_ascii_case("latest");
+    let mut has_update_or_story = false;
+    let mut has_more = false;
+
+    for word in words {
+        has_more = true;
+        if word.eq_ignore_ascii_case("news") || word.eq_ignore_ascii_case("headlines") {
+            return true;
+        }
+        if first_is_current_or_latest
+            && (word.eq_ignore_ascii_case("updates") || word.eq_ignore_ascii_case("stories"))
+        {
+            has_update_or_story = true;
+        }
+    }
+
+    first_is_current_or_latest && has_more && has_update_or_story
 }
 
 pub fn clean_news_query(s: &str) -> String {
@@ -604,15 +619,23 @@ pub fn clean_news_query(s: &str) -> String {
         "for",
     ];
 
-    let filtered: Vec<&str> = s
-        .split_whitespace()
-        .filter(|w| !STOP_WORDS.contains(&w.to_ascii_lowercase().as_str()))
-        .collect();
+    let mut out = String::new();
+    for word in s.split_whitespace() {
+        let is_stop = STOP_WORDS
+            .iter()
+            .any(|stop| word.eq_ignore_ascii_case(stop));
+        if !is_stop {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(word);
+        }
+    }
 
-    if filtered.is_empty() {
+    if out.is_empty() {
         "top stories".to_string()
     } else {
-        filtered.join(" ")
+        out
     }
 }
 
@@ -621,8 +644,13 @@ pub fn is_probable_question(s: &str) -> bool {
     if trimmed.ends_with('?') {
         return true;
     }
-    let lower = trimmed.to_ascii_lowercase();
-    let question_prefixes = [
+    let Some(first_word) = trimmed.split_whitespace().next() else {
+        return false;
+    };
+    if trimmed.len() <= first_word.len() {
+        return false;
+    }
+    const QUESTION_PREFIXES: &[&str] = &[
         "what",
         "why",
         "how",
@@ -642,13 +670,7 @@ pub fn is_probable_question(s: &str) -> bool {
         "describe",
         "clarify",
     ];
-    for prefix in question_prefixes {
-        if lower.starts_with(prefix)
-            && lower.len() > prefix.len()
-            && lower[prefix.len()..].starts_with(' ')
-        {
-            return true;
-        }
-    }
-    false
+    QUESTION_PREFIXES
+        .iter()
+        .any(|prefix| first_word.eq_ignore_ascii_case(prefix))
 }

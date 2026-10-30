@@ -109,7 +109,7 @@ const SHARED_THEME_CSS: &str = r#"    :root {
 
 /// Renders a standalone HTML5 document with editorial typography and automatic light/dark mode.
 pub fn render_html_document(title: &str, markdown: &str) -> String {
-    let escaped_title = escape_html(title);
+    let escaped_title = escape_html_cow(title);
     let body_html = markdown_to_html(markdown);
 
     format!(
@@ -282,62 +282,6 @@ pub fn escape_html(text: &str) -> String {
     escape_html_cow(text).into_owned()
 }
 
-/// Appends rendered inline Markdown (`**bold**`, `*italic*`, `` `code` ``) directly
-/// into the output buffer with HTML escaping in a single pass without intermediate allocations.
-pub fn render_inline_to(out: &mut String, text: &str) {
-    let bytes = text.as_bytes();
-    let mut i = 0;
-
-    while i < bytes.len() {
-        // Inline code: `...`
-        if bytes[i] == b'`'
-            && let Some(end) = text[i + 1..].find('`')
-        {
-            out.push_str("<code>");
-            escape_html_to(out, &text[i + 1..i + 1 + end]);
-            out.push_str("</code>");
-            i += end + 2;
-            continue;
-        }
-
-        // Bold: **...**
-        if i + 1 < bytes.len()
-            && bytes[i] == b'*'
-            && bytes[i + 1] == b'*'
-            && let Some(end) = text[i + 2..].find("**")
-        {
-            out.push_str("<strong>");
-            render_inline_to(out, &text[i + 2..i + 2 + end]);
-            out.push_str("</strong>");
-            i += end + 4;
-            continue;
-        }
-
-        // Italic: *...*
-        if bytes[i] == b'*'
-            && let Some(end) = text[i + 1..].find('*')
-            && end > 0
-        {
-            out.push_str("<em>");
-            escape_html_to(out, &text[i + 1..i + 1 + end]);
-            out.push_str("</em>");
-            i += end + 2;
-            continue;
-        }
-
-        let ch = text[i..].chars().next().unwrap();
-        escape_html_char(out, ch);
-        i += ch.len_utf8();
-    }
-}
-
-/// Renders inline Markdown (`**bold**`, `*italic*`, `` `code` ``) after HTML-escaping.
-pub fn render_inline(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + 16);
-    render_inline_to(&mut out, text);
-    out
-}
-
 /// Formats an author name with a leading " by " if present.
 pub fn format_author_by(author: Option<&str>) -> String {
     match author {
@@ -385,7 +329,7 @@ pub fn render_index_html(stats: &LibraryStats, entries: &[HistoryEntry]) -> Stri
             let icon = target_icon(&entry.target_type);
             let slug = slugify(&entry.title);
             let author_line = if let Some(a) = &entry.author {
-                format!(r#"<div class="entry-author">by {}</div>"#, escape_html(a))
+                format!(r#"<div class="entry-author">by {}</div>"#, escape_html_cow(a))
             } else {
                 String::new()
             };
@@ -423,15 +367,15 @@ pub fn render_index_html(stats: &LibraryStats, entries: &[HistoryEntry]) -> Stri
       </div>
     </div>
 "#,
-                target_type = escape_html(&entry.target_type),
-                search_data = escape_html(&search_data),
+                target_type = escape_html_cow(&entry.target_type),
+                search_data = escape_html_cow(&search_data),
                 slug = slug,
                 icon = icon,
-                title = escape_html(&entry.title),
-                date = escape_html(&entry.created_at),
+                title = escape_html_cow(&entry.title),
+                date = escape_html_cow(&entry.created_at),
                 author_line = author_line,
-                style = escape_html(&entry.style),
-                model = escape_html(&entry.model),
+                style = escape_html_cow(&entry.style),
+                model = escape_html_cow(&entry.model),
                 words = entry.word_count,
                 speed_str = speed_str,
                 time_str = time_str
