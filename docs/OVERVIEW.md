@@ -12,11 +12,11 @@ flowchart TD
     subgraph Inputs["1. Input Ingestion & Routing"]
         CLI["CLI Args / Env / config.toml"] --> Router{"Router / Auto-Detect"}
         Router -->|"YouTube URL"| YTFlow["YouTube Timed-Text Client"]
-        Router -->|"Web URL (http://...)"| WebFlow["Web Scraper / PDF Stream"]
+        Router -->|"Web URL (http://...)"| WebFlow["Web Scraper (dom_smoothie Readability)"]
         Router -->|"PDF File (.pdf)"| PDFFlow["Pure-Rust PDF Extractor"]
         Router -->|"Local Path or Stdin (-)"| FileFlow["File / Stdin Reader"]
         Router -->|"Book Title"| BookFlow["Book Pipeline"]
-        Router -->|"News Query or Subcommand"| NewsFlow["Google News RSS Client"]
+        Router -->|"News Query, RSS or Atom"| NewsFlow["Universal Feed Parser (feed-rs)"]
         Router -->|"ask [TARGET] [Q]"| AskFlow["Grounded Q&A Handler"]
         Router -->|"browse / tui"| TuiFlow["Ratatui TUI Library Explorer"]
         Router -->|"cache / config / history / stats / find / index / models / doctor / completions / upgrade"| UtilFlow["Utility Handlers"]
@@ -29,7 +29,7 @@ flowchart TD
         MultiSearch --> Scorer["PreparedQuery Scoring & Disambiguation"]
         Scorer --> RefScrape["Scrape Best Reference Page (Cached / Live)"]
 
-        NewsFlow --> Feed["Google News RSS (when:1d/7d/30d)"]
+        NewsFlow --> Feed["Google News RSS / Syndication Feed (feed-rs)"]
         Feed --> RPC["Decode Obfuscated URLs (batchexecute RPC)"]
         RPC --> NewsScrape["Concurrent Article Scraping"]
 
@@ -37,13 +37,13 @@ flowchart TD
     end
 
     subgraph LLMEngine["3. LLM Synthesis & Streaming"]
-        YTCaptions --> Chunker{"Word Count > 12k?"}
+        YTCaptions --> Chunker{"Tokens > 16k?"}
         WebFlow --> Chunker
         PDFFlow --> Chunker
         FileFlow --> Chunker
         RefScrape --> Chunker
         Grounding --> MultiTurn["Multi-Turn Chat / Q&A Prompt Framing"]
-        Chunker -->|"Yes"| MapReduce["Parallel Map-Reduce Chunk Summaries (Configured Concurrency)"]
+        Chunker -->|"Yes"| MapReduce["Parallel Map-Reduce Chunk Summaries (tiktoken-rs Token Budget)"]
         Chunker -->|"No"| SinglePass["Direct Single Pass"]
         NewsScrape --> NewsBriefing["News Digest Briefing Synthesis"]
         MapReduce --> SSE["Zero-Copy OpenAI SSE Streaming Client (complete_chat / SseStreamState)"]
@@ -175,13 +175,13 @@ src/
 | **Configuration** | [`src/config/cli.rs`](src/config/cli.rs) | `config::cli` | `clap` CLI parser, `SummaryStyle` presets, `NewsTimeframe`, paging flags, chat session flags, and target auto-detection. |
 | | [`src/config/file.rs`](src/config/file.rs) | `config::file` | `config.toml` file loading, named profile switching, and starter template generation. |
 | **Engine** | [`src/engine/llm.rs`](src/engine/llm.rs) | `engine::llm` | Zero-copy SSE client (`complete_chat` / `SseStreamState`), `send_with_fallback` IPv4 retry, zero-copy XML delimiter escaping (`escape_closing_tag`), and map-reduce synthesis. |
-| | [`src/engine/chunker.rs`](src/engine/chunker.rs) | `engine::chunker` | Zero-copy `Cow` text windowing and paragraph chunking for long documents (> 12k words). |
+| | [`src/engine/chunker.rs`](src/engine/chunker.rs) | `engine::chunker` | Accurate BPE token budgeting (`tiktoken-rs` `cl100k_base`), token counting (`count_tokens`), and zero-copy `Cow` paragraph chunking for long documents (> 16k tokens). |
 | **Sources** | [`src/sources/document.rs`](src/sources/document.rs) | `sources::document` | Unified local document ingestion (`DocumentLoader`): shared file validation (`validate_file`, 20 MB cap), PDF extraction, HTML/Markdown normalization, and title fallbacks. |
-| | [`src/sources/scraper.rs`](src/sources/scraper.rs) | `sources::scraper` | HTTP client (10 MB cap), streaming body readers (`read_response_bytes_limited`, `read_response_text_limited`), MediaWiki/article DOM extraction with zero-copy fallback, and text cleaning. |
+| | [`src/sources/scraper.rs`](src/sources/scraper.rs) | `sources::scraper` | HTTP client (10 MB cap), streaming body readers (`read_response_bytes_limited`, `read_response_text_limited`), Mozilla Readability DOM content extraction (`dom_smoothie`) with zero-copy fallback, and text cleaning. |
 | | [`src/sources/pdf.rs`](src/sources/pdf.rs) | `sources::pdf` | Single-pass pure-Rust PDF `Document` parsing, text layer & `Info` trailer metadata extraction, and scanned-PDF detection via `pdf-extract`. |
 | | [`src/sources/youtube.rs`](src/sources/youtube.rs) | `sources::youtube` | YouTube video ID extraction, timed-text XML/JSON3 caption resolution, single-pass zero-copy HTML entity decoding, and chapter cue grouping via `TimedTranscriptBuilder`. |
 | | [`src/sources/search.rs`](src/sources/search.rs) | `sources::search` | Open Library metadata, Wikipedia OpenSearch/fulltext, DDG search, and candidate scoring. |
-| | [`src/sources/news.rs`](src/sources/news.rs) | `sources::news` | Google News RSS client, bounded `batchexecute` RPC redirect decoding, and concurrent article fetching. |
+| | [`src/sources/news.rs`](src/sources/news.rs) | `sources::news` | Universal syndication feed client (`feed-rs` for RSS 0.9/1.0/2.0, Atom, and JSON feeds), Google News query resolution, bounded `batchexecute` RPC redirect decoding, and concurrent article fetching. |
 | **Storage** | [`src/storage/cache.rs`](src/storage/cache.rs) | `storage::cache` | Consolidated DuckDB cache storage (`cache.duckdb`) for pages, search metadata, and LLM summaries with fallback to legacy JSON files, atomic transactions, and SQL-powered TTL pruning. |
 | | [`src/storage/db.rs`](src/storage/db.rs) | `storage::db` | Embedded DuckDB database (`srz.duckdb`) for reading history, rich habit/model telemetry, inverted index BM25 search ranking (`library_terms`), and persistent multi-turn chat sessions (`chat_sessions`, `chat_messages`). |
 | **UI & Render** | [`src/ui/terminal.rs`](src/ui/terminal.rs) | `ui::terminal` | CLI progress spinners (`indicatif`), colored text formatting, and terminal escape/control character sanitization (`sanitize_terminal_text`, `sanitize_title`). |
@@ -198,6 +198,9 @@ src/
 `srz` is engineered for speed, low memory consumption, and local data privacy:
 
 ### Performance & Memory Efficiency
+- **Exact BPE Token Budgeting**: Replaces word-counting heuristics with the OpenAI `cl100k_base` BPE tokenizer (`tiktoken-rs`), providing exact token measurement (`TextChunker::count_tokens`) and budgeting chunk boundaries (`chunk_by_tokens`) to ensure map-reduce chunk sizes strictly fit local model context windows without risk of truncation.
+- **High-Fidelity Mozilla Readability Extraction**: Web articles are parsed through Mozilla's Readability algorithm via `dom_smoothie`, scoring DOM container density to strip navigation headers, sidebars, tracking wrappers, and cookie notices before converting text for LLM prompts.
+- **Universal Syndication Feed Normalization**: Multi-format feed parsing (`feed-rs`) unifies RSS 0.9/1.0/2.0, Atom, and JSON Feed formats into clean article lists, parsing dates and links with zero fragile regex or manual byte scanning.
 - **Lazy Database Initialization**: DuckDB (`srz.duckdb`) is initialized only when recording a new summary or running analytics. Cache hits and shell completions launch instantly with zero database overhead.
 - **Zero-Copy Streaming**: SSE chunks deserialize directly from network byte buffers into borrowed string slices (`Cow<str>`), batching terminal flushes per packet to minimize heap allocations.
 - **HTTP Connection Pool Sharing**: A single HTTP client connection pool is shared across Open Library metadata queries, DuckDuckGo candidate searches, Google News RSS resolution, and webpage scraping, reusing active TLS/HTTP2 keep-alive connections.

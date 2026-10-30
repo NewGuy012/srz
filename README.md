@@ -6,12 +6,12 @@
 
 `srz` (Summarize) is a high-performance, modular Rust CLI tool for extracting and synthesizing structured summaries using local OpenAI-compliant LLMs (such as **llama.cpp**, **Ollama**, **LM Studio**, or **vLLM**) from:
 
-- 🌐 **Webpages**
+- 🌐 **Webpages & articles** (Mozilla Readability extraction)
 - 📺 **YouTube video transcripts**
 - 📄 **PDF documents & local files**
 - ⌨️ **Unix stdin streams**
 - 📚 **Books**
-- 📰 **Live news digests**
+- 📰 **Live news digests & universal RSS/Atom feeds**
 
 
 ## Highlights
@@ -50,6 +50,9 @@ flowchart LR
 
 - 🔒 **100% Local & Private**: Runs on your machine with complete privacy, zero subscriptions, and no API keys.
 - 🎯 **3 Summary Presets**: Tailor output with `concise` (default), `bullets`, and `detailed`.
+- 🧩 **Exact BPE Token Budgeting**: Accurately bounds context windows via `tiktoken-rs` cl100k_base tokenizer, preventing context truncation on long documents.
+- 📰 **Universal Syndication Feeds**: Parses Google News, RSS 0.9/1.0/2.0, Atom, and JSON feeds seamlessly via `feed-rs`.
+- 🌐 **High-Fidelity Readability**: Scores DOM container density via `dom_smoothie` to strip ads, sidebars, and navbars.
 - ⚡ **Rich Terminal Paging**: Syntax-highlighted CLI output with automatic paging for long summaries.
 - 💬 **Interactive Grounded Q&A**: Ask questions grounded on any document or past read via `srz ask`, with persistent multi-turn chat sessions.
 - 🖥️ **Interactive TUI Dashboard**: Browse, search, filter, and copy past summaries with `srz browse`.
@@ -110,7 +113,7 @@ srz "https://en.wikipedia.org/wiki/Rust_(programming_language)" # Webpage, blog,
 srz "https://youtu.be/5C_HPTJg5ek"    # YouTube video: "Rust in 100 Seconds" (captions & timed transcript)
 srz assets/document.pdf               # Local PDF document (pure-Rust extractor)
 srz "The Rust Programming Language" --style bullets --open  # Book synopsis & open in browser
-srz news "Rust language updates" -t week  # Live news digest (day, week, month)
+srz news "Rust language updates" -t week  # Live news digest (day, week, month) or RSS/Atom feed
 git diff | srz -                      # Unix stdin stream
 ```
 

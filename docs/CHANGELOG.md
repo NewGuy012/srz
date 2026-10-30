@@ -19,6 +19,19 @@ All notable changes to `srz` are documented in this file.
 
 ---
 
+## Unreleased
+
+### Summary
+
+> Enhances content ingestion and chunking accuracy by integrating `feed-rs` for universal RSS/Atom feed syndication, `dom_smoothie` for Mozilla Readability DOM content extraction, and `tiktoken-rs` for exact BPE token-budgeted document chunking.
+
+### Changes
+- **Universal Syndication Feeds (`sources::news`)**: Replaced hand-rolled XML string matching with `feed-rs`, adding robust support for RSS 0.9/1.0/2.0, Atom, and JSON Feed formats while keeping Google News recency query resolution and URL un-obfuscation as the default.
+- **High-Fidelity Article Extraction (`sources::scraper`)**: Integrated Mozilla Readability DOM density scoring via `dom_smoothie` into `WebScraper::normalize`. Automatically strips advertising wrappers, navigation bars, cookie prompts, and sidebars from arbitrary web pages before LLM synthesis.
+- **Token-Budgeted Document Chunking (`engine::chunker`)**: Added exact OpenAI BPE token counting (`TextChunker::count_tokens`) and token-budgeted paragraph chunking (`TextChunker::chunk_by_tokens`) via `tiktoken-rs`, aligning map-reduce chunk boundaries with model context windows (`MAX_CONTEXT_TOKENS = 16_000`, `CHUNK_MAX_TOKENS = 12_000`).
+
+---
+
 ## v0.5.0
 
 ### Summary
