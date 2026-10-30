@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -e
+
+# Ensure cargo is available in PATH (e.g. for GUI git clients or non-standard shells)
+if ! command -v cargo >/dev/null 2>&1; then
+    if [ -f "$HOME/.cargo/bin/cargo" ]; then
+        export PATH="$HOME/.cargo/bin:$PATH"
+    fi
+fi
+
+if command -v cargo >/dev/null 2>&1; then
+    # Only run formatting if staged files include Rust source files
+    if git diff --cached --name-only --diff-filter=ACM | grep -q '\.rs$'; then
+        echo "==> Running cargo fmt --all on staged Rust files..."
+        cargo fmt --all
+        # Re-stage any formatted Rust files that are part of this commit
+        git diff --cached --name-only --diff-filter=ACM | grep '\.rs$' | while read -r file; do
+            if [ -f "$file" ]; then
+                git add "$file"
+            fi
+        done
+    fi
+else
+    echo "Warning: cargo not found in PATH. Skipping pre-commit formatting check."
+fi
