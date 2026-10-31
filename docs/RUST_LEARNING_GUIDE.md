@@ -9,7 +9,7 @@ Whether you are a **beginner**, **non-technical learner**, or an **experienced d
 ### Why Learn Rust with `srz`?
 1. **Real-World Patterns**: See how memory safety works without garbage collection pauses or manual `malloc`/`free` calls.
 2. **Zero-Cost Abstractions**: Observe how iterators, lifetimes, and zero-copy slices (`Cow`, `&str`) deliver speed without wasting RAM.
-3. **From Theory to Practice**: Explore the full architecture first, then follow a hands-on tutorial to build your own minimal CLI tool using the Rust Standard Library.
+3. **From Theory to Practice**: Explore the full architecture first, then follow a hands-on tutorial to build your own practical CLI tool using core ecosystem crates (`clap`, `scraper`, `anyhow`).
 
 ---
 
@@ -542,11 +542,11 @@ Manages files, restricts folder permissions, and performs self-upgrades safely.
 
 ---
 
-## 4. Hands-On Tutorial: Build "Mini-Srz" with Minimal Packages
+## 4. Hands-On Tutorial: Build "Mini-Srz" with Clap, Scraper, and Anyhow
 
 In this tutorial, you will build a standalone, working Rust CLI tool from scratch that implements the core pipeline of `srz`:
-1. **Command-Line Parsing**: Accepts a URL and optional flags (`--model`, `--base-url`, `--max-chars`).
-2. **Web Scraping & Cleaning**: Fetches the webpage and extracts readable text by stripping HTML.
+1. **Command-Line Parsing**: Accepts a URL and optional flags (`--model`, `--base-url`, `--max-chars`) using declarative derive macros.
+2. **Web Scraping & Cleaning**: Fetches the webpage and extracts readable text using CSS selectors.
 3. **Safe Text Truncation**: Slices text on Unicode boundaries with zero memory copies.
 4. **Local LLM Summarization**: Sends an OpenAI-compatible JSON request to a local model (Ollama, LM Studio, etc.) and prints the summary.
 
@@ -558,11 +558,11 @@ Here is the visual roadmap of data flow through `mini-srz`:
 
 ```mermaid
 flowchart TD
-    User(["Terminal User<br/><code>cargo run -- &lt;URL&gt; [--model NAME]</code>"]) --> ParseStep["1. Parse Arguments<br/><code>Config::from_args(env::args())</code><br/><i>(Standard Iterator & Match Guards)</i>"]
+    User(["Terminal User<br/><code>cargo run -- &lt;URL&gt; [--model NAME]</code>"]) --> ParseStep["1. Parse Arguments<br/><code>Args::parse()</code><br/><i>(clap derive macro)</i>"]
 
-    ParseStep --> FetchStep["2. Fetch Webpage<br/><code>fetch_page_text(url)</code><br/><i>(reqwest async non-blocking GET)</i>"]
+    ParseStep --> FetchStep["2. Fetch Webpage<br/><code>fetch_page_text(url)</code><br/><i>(reqwest async GET + anyhow context)</i>"]
 
-    FetchStep --> CleanStep["3. Strip HTML Tags<br/><code>strip_html_tags(html)</code><br/><i>(Pure Rust enum HtmlState machine)</i>"]
+    FetchStep --> CleanStep["3. Extract HTML Text<br/><code>extract_page_text(html)</code><br/><i>(scraper CSS selectors & iterator pipelines)</i>"]
 
     CleanStep --> SliceStep["4. Truncate Safely<br/><code>truncate_to_char_limit(text, max_chars)</code><br/><i>(char_indices zero-copy &str)</i>"]
 
@@ -573,20 +573,22 @@ flowchart TD
 
 ---
 
-### 🎯 The Educational Goal: Maximum Concepts, Minimum Packages
+### 🎯 The Educational Goal: Idiomatic Rust with the Standard Trio
 
-Rather than relying on heavy third-party frameworks for CLI parsing (`clap`), HTML DOM parsing (`scraper`), and error handling (`anyhow`), we keep external dependencies to the **absolute bare minimum** (just an async HTTP client and JSON serializer).
+In real-world Rust development, you don't reinvent CLI parsers, HTML tokenizers, or error trait objects by hand. Production tools like `srz` leverage the industry-standard trio to keep code concise, expressive, and resilient:
 
-By leveraging the **Rust Standard Library**, you will directly practice:
-- **Structs & Constructor Methods (`impl`)** ([Ch 5.3](https://doc.rust-lang.org/book/ch05-03-method-syntax.html))
-- **Enums as State Machines** ([Ch 6.1](https://doc.rust-lang.org/book/ch06-01-defining-an-enum.html))
-- **Pattern Matching with Match Guards** ([Ch 6.2](https://doc.rust-lang.org/book/ch06-02-match.html) & [Ch 18.3](https://doc.rust-lang.org/book/ch18-03-pattern-syntax.html#extra-conditionals-with-match-guards))
-- **Iterators & Combinators (`lines`, `map`, `filter`, `collect`)** ([Ch 13.2](https://doc.rust-lang.org/book/ch13-02-iterators.html))
-- **Trait Objects for Error Handling (`Box<dyn std::error::Error>`)** ([Ch 9.2](https://doc.rust-lang.org/book/ch09-02-recoverable-errors-with-result.html) & [Ch 12.3](https://doc.rust-lang.org/book/ch12-03-improving-error-handling-and-modularity.html))
-- **Safe UTF-8 Slicing & Zero-Copy Memory (`&str`)** ([Ch 8.2](https://doc.rust-lang.org/book/ch08-02-strings.html) & [Ch 4.3](https://doc.rust-lang.org/book/ch04-03-slices.html))
+- **`clap` (derive)**: Transforms a simple Rust `struct` into a production-grade CLI parser with auto-generated `--help`, type validation, and default values.
+- **`scraper`**: Replaces fragile character-by-character tag-stripping with robust CSS selector queries (`h1, h2, h3, p, li`) powered by the Servo browser engine.
+- **`anyhow`**: Delivers ergonomic, application-level error handling with `anyhow::Result<T>`, contextual breadcrumbs (`.context(...)`), and clean early returns (`bail!`).
+
+By building `mini-srz` with this trio, you will directly practice:
+- **Derive Macros (`#[derive(Parser)]`)** ([Ch 19.5](https://doc.rust-lang.org/book/ch19-06-macros.html#how-to-write-a-custom-derive-macro))
+- **CSS Selectors & DOM Traversal (`scraper`)**
+- **Ergonomic Application Error Handling (`anyhow::Result`, `.context()`, `bail!`)** ([Ch 9.2](https://doc.rust-lang.org/book/ch09-02-recoverable-errors-with-result.html))
+- **Iterator Pipelines & Combinators (`select`, `map`, `filter`, `collect`, `join`)** ([Ch 13.2](https://doc.rust-lang.org/book/ch13-02-iterators.html))
+- **Safe UTF-8 Slicing & Zero-Copy Memory (`&str`, `char_indices`)** ([Ch 8.2](https://doc.rust-lang.org/book/ch08-02-strings.html) & [Ch 4.3](https://doc.rust-lang.org/book/ch04-03-slices.html))
 - **Lifetimes in Data Models (`Message<'a>`)** ([Ch 10.3](https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html))
-- **Null Safety with `Option` Combinators** ([Ch 6.1](https://doc.rust-lang.org/book/ch06-01-defining-an-enum.html#the-option-enum-and-its-advantages-over-null-values))
-- **Async/Await I/O** ([Ch 17](https://doc.rust-lang.org/book/ch17-00-async-await.html))
+- **Async/Await Non-Blocking I/O (`tokio`, `reqwest`)** ([Ch 17](https://doc.rust-lang.org/book/ch17-00-async-await.html))
 
 ---
 
@@ -607,9 +609,9 @@ Cargo generates:
 
 ---
 
-### Step 2: Minimal Dependencies (`Cargo.toml`)
+### Step 2: Dependencies (`Cargo.toml`)
 
-Open `Cargo.toml` and replace `[dependencies]` with only what is strictly necessary:
+Open `Cargo.toml` and add the dependencies to match `srz`'s modern stack:
 
 ```toml
 [package]
@@ -618,216 +620,135 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# 1. Async runtime for non-blocking I/O
+# 1. Declarative CLI parsing with derive macros
+clap = { version = "4", features = ["derive"] }
+
+# 2. HTML parsing with CSS selectors
+scraper = "0.29"
+
+# 3. Ergonomic application-level error handling
+anyhow = "1.0"
+
+# 4. Async runtime for non-blocking I/O
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
-# 2. HTTP client to fetch web pages and send LLM requests
-reqwest = { version = "0.12", features = ["json"] }
+# 5. HTTP client to fetch web pages and send LLM requests
+reqwest = { version = "0.13", features = ["json"] }
 
-# 3. JSON serialization and deserialization
+# 6. JSON serialization and deserialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 ```
 
-> 💡 **Notice what is missing!**
-> - **No `clap`**: We parse CLI arguments using the standard library's `std::env::args()` iterator.
-> - **No `scraper`**: We build an elegant 20-line HTML text stripper using a Rust `enum` state machine.
-> - **No `anyhow`**: We use Rust's built-in `Box<dyn std::error::Error>` trait object.
+> 💡 **Why These Three Crates Simplify Everything:**
+> - **`clap`**: Replaces 60+ lines of manual `std::env::args()` loops with a 15-line annotated struct. (See `srz`'s CLI in [`src/config/cli.rs`](file:///Users/myoo/Documents/Repo/srz/src/config/cli.rs#L5)).
+> - **`scraper`**: Eliminates custom regex and state machines for HTML parsing by querying the DOM with standard CSS selectors. (See `srz`'s web scraper in [`src/sources/scraper.rs`](file:///Users/myoo/Documents/Repo/srz/src/sources/scraper.rs#L8)).
+> - **`anyhow`**: Replaces verbose `Box<dyn std::error::Error>` trait objects with a clean `Result<T>` and rich contextual failure messages. (See `srz`'s error handling in [`src/sources/scraper.rs`](file:///Users/myoo/Documents/Repo/srz/src/sources/scraper.rs#L1)).
 >
 > 📖 **The Rust Book Connection**: [Chapter 7.1: Packages and Crates](https://doc.rust-lang.org/book/ch07-01-packages-and-crates.html)
 
 ---
 
-### Step 3: CLI Parsing with `std::env::args()` and Match Guards
+### Step 3: Declarative CLI Parsing with `clap` Derive
 
-Instead of pulling in a 50,000-line external CLI crate, we model our configuration with a `struct` and parse arguments directly using Rust's standard iterator methods:
+Instead of manually reading command-line arguments using `std::env::args()`, matching hyphens, and handling string conversions, we define our command-line interface declaratively with `clap`:
 
-#### How the Argument Token Stream Works:
+```rust
+use clap::Parser;
+
+#[derive(Parser, Debug)]
+#[command(name = "mini-srz", about = "Summarize web pages with a local LLM")]
+struct Args {
+    /// URL of the webpage to summarize
+    url: String,
+
+    /// LLM API base URL
+    #[arg(long, default_value = "http://localhost:11434/v1")]
+    base_url: String,
+
+    /// Model name to use for summarization
+    #[arg(long, default_value = "llama3")]
+    model: String,
+
+    /// Maximum characters of webpage text to send to the LLM
+    #[arg(long, default_value_t = 8000)]
+    max_chars: usize,
+}
+```
+
+#### How `clap` Works Under the Hood:
 ```
 User command: mini-srz https://example.com --model llama3 --max-chars 5000
 
-Token Stream (args: impl Iterator<Item = String>):
-  [0] "mini-srz"             --> Skipped by args.next() (executable name)
-  [1] "https://example.com"  --> Match guard (no '-' prefix): url = Some(...)
-  [2] "--model"              --> Matched flag: consumes next token [3] "llama3"
-  [4] "--max-chars"          --> Matched flag: consumes next token [5] "5000"
-```
-
-```rust
-struct Config {
-    url: String,
-    base_url: String,
-    model: String,
-    max_chars: usize,
-}
-
-impl Config {
-    fn from_args(mut args: impl Iterator<Item = String>) -> Result<Self, String> {
-        args.next(); // Skip executable path (argv[0])
-
-        let mut url = None;
-        let mut base_url = "http://localhost:11434/v1".to_string();
-        let mut model = "llama3".to_string();
-        let mut max_chars = 8000;
-
-        while let Some(arg) = args.next() {
-            match arg.as_str() {
-                "--help" | "-h" => {
-                    return Err(
-                        "Usage: mini-srz <URL> [--base-url <URL>] [--model <NAME>] [--max-chars <NUM>]"
-                            .to_string(),
-                    );
-                }
-                "--base-url" => {
-                    base_url = args
-                        .next()
-                        .ok_or_else(|| "Missing value for --base-url".to_string())?;
-                }
-                "--model" => {
-                    model = args
-                        .next()
-                        .ok_or_else(|| "Missing value for --model".to_string())?;
-                }
-                "--max-chars" => {
-                    let val = args
-                        .next()
-                        .ok_or_else(|| "Missing value for --max-chars".to_string())?;
-                    max_chars = val
-                        .parse::<usize>()
-                        .map_err(|_| "Invalid number for --max-chars".to_string())?;
-                }
-                // Match guard: captures positional URL without leading hyphens
-                val if !val.starts_with('-') && url.is_none() => {
-                    url = Some(val.to_string());
-                }
-                unknown => {
-                    return Err(format!("Unknown option: {}", unknown));
-                }
-            }
-        }
-
-        let url = url.ok_or_else(|| {
-            "Error: Please provide a webpage URL as the first argument.\nRun with --help for usage instructions."
-                .to_string()
-        })?;
-
-        Ok(Self {
-            url,
-            base_url,
-            model,
-            max_chars,
-        })
-    }
-}
+Args::parse() automatically:
+  1. Captures positional argument "https://example.com" -> args.url
+  2. Parses "--model llama3"                           -> args.model = "llama3"
+  3. Parses and validates "--max-chars 5000"           -> args.max_chars: usize = 5000
+  4. Generates formatted --help screen from doc-comments (/// ...)
 ```
 
 > 💡 **Rust Concepts Learned Here:**
-> 1. **`impl Iterator<Item = String>`**: Accepts any iterator yielding strings (demonstrating trait-based abstraction without concrete types).
-> 2. **Match Guard (`val if !val.starts_with('-')`)**: Adds extra conditional logic to pattern matching variants.
-> 3. **`Option::ok_or_else`**: Smoothly converts an `Option<T>` into a `Result<T, E>`.
+> 1. **Derive Macros (`#[derive(Parser)]`)**: Zero-boilerplate code generation at compile time. The compiler generates all argument checking, validation, and help formatting.
+> 2. **Doc Comments as Help Text**: The three slashes `/// URL of the webpage...` are parsed by `clap` into the CLI `--help` text.
+> 3. **Type-Safe Parsing**: Fields like `max_chars: usize` are automatically parsed into numeric types with compile-time type safety; passing invalid text like `--max-chars foo` triggers a user-friendly error message automatically.
 >
-> 📖 **The Rust Book Connection**: [Chapter 12.1: Accepting Command Line Arguments](https://doc.rust-lang.org/book/ch12-01-accepting-command-line-arguments.html) and [Chapter 18.3: Match Guards](https://doc.rust-lang.org/book/ch18-03-pattern-syntax.html#extra-conditionals-with-match-guards)
+> 📖 **The Rust Book Connection**: [Chapter 10.2: Traits](https://doc.rust-lang.org/book/ch10-02-traits.html) and [Chapter 19.5: Macros (Derive Macros)](https://doc.rust-lang.org/book/ch19-06-macros.html#how-to-write-a-custom-derive-macro)
 
 ---
 
-### Step 4: HTML Stripping with a Pure Rust State Machine
+### Step 4: HTML Text Extraction with `scraper` and CSS Selectors
 
-Webpages contain HTML tags (`<p>`, `<div>`) and JavaScript/CSS blocks (`<script>`, `<style>`). We can strip them cleanly in pure Rust using an `enum` state machine.
-
-#### State Machine Flow:
-```mermaid
-stateDiagram-v2
-    [*] --> Text: Start scanning characters
-    Text --> InsideTag: Read '<'
-    InsideTag --> InsideScriptOrStyle: Tag is <script> or <style>
-    InsideTag --> Text: Read '>' (Normal tag or newline)
-    InsideScriptOrStyle --> Text: Read '</script>' or '</style>'
-    Text --> Text: Keep visible text characters
-```
-
-#### Sample Transformation:
-```html
-<!-- Input HTML: -->
-<article>
-  <h1>Rust in 2026</h1>
-  <p>Rust is <b>safe</b> and fast.</p>
-  <script>analytics.track();</script>
-</article>
-
-<!-- Output Text: -->
-Rust in 2026
-
-Rust is safe and fast.
-```
+Webpages contain boilerplate headers, navigation bars, `<script>`, and `<style>` blocks. With `scraper`, we parse the HTML into a DOM tree and use CSS selectors to extract only meaningful content elements:
 
 ```rust
-enum HtmlState {
-    Text,
-    InsideTag,
-    InsideScriptOrStyle,
-}
+use scraper::{Html, Selector};
 
-fn strip_html_tags(html: &str) -> String {
-    let mut state = HtmlState::Text;
-    let mut clean_text = String::with_capacity(html.len() / 2);
-    let mut current_tag = String::new();
+fn extract_page_text(html: &str) -> String {
+    let document = Html::parse_document(html);
+    let selector = Selector::parse("h1, h2, h3, p, li").unwrap();
 
-    for ch in html.chars() {
-        match state {
-            HtmlState::Text => {
-                if ch == '<' {
-                    state = HtmlState::InsideTag;
-                    current_tag.clear();
-                } else {
-                    clean_text.push(ch);
-                }
-            }
-            HtmlState::InsideTag => {
-                if ch == '>' {
-                    let tag = current_tag.trim().to_lowercase();
-                    if tag.starts_with("script") || tag.starts_with("style") {
-                        state = HtmlState::InsideScriptOrStyle;
-                    } else if tag == "p" || tag == "br" || tag == "div" || tag == "h1" || tag == "h2" || tag == "h3" {
-                        clean_text.push('\n');
-                        state = HtmlState::Text;
-                    } else {
-                        state = HtmlState::Text;
-                    }
-                } else {
-                    current_tag.push(ch);
-                }
-            }
-            HtmlState::InsideScriptOrStyle => {
-                if ch == '<' {
-                    current_tag.clear();
-                } else if ch == '>' {
-                    let tag = current_tag.trim().to_lowercase();
-                    if tag.starts_with("/script") || tag.starts_with("/style") {
-                        state = HtmlState::Text;
-                    }
-                } else {
-                    current_tag.push(ch);
-                }
-            }
-        }
-    }
-
-    // Clean up blank lines using iterator chaining
-    clean_text
-        .lines()
-        .map(|line| line.trim())
-        .filter(|line| !line.is_empty())
+    document
+        .select(&selector)
+        .map(|el| el.text().collect::<Vec<_>>().join(" "))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("\n\n")
 }
 ```
 
+#### Sample Transformation:
+```html
+<!-- Input HTML: -->
+<html>
+  <head><style>body { color: red; }</style></head>
+  <body>
+    <header><nav><a href="/">Home</a></nav></header>
+    <h1>Rust in 2026</h1>
+    <p>Rust is <b>safe</b> and fast.</p>
+    <script>analytics.track();</script>
+    <p>It provides memory safety without garbage collection.</p>
+  </body>
+</html>
+
+<!-- Output Text: -->
+Rust in 2026
+
+Rust is safe and fast.
+
+It provides memory safety without garbage collection.
+```
+
 > 💡 **Rust Concepts Learned Here:**
-> 1. **Enums as State Machines (`enum HtmlState`)**: Tracks whether the parser is currently reading visible text, reading inside a tag, or ignoring script contents.
-> 2. **Pre-allocating Buffers (`String::with_capacity`)**: Estimates memory size upfront to avoid repeated heap reallocations.
-> 3. **Iterator Chaining (`.lines().map(...).filter(...).collect(...).join(...)`)**: Pure functional data transformation without explicit loop counters or indices.
+> 1. **DOM Tree Traversal (`Html::parse_document`)**: Parses the raw HTML into a structured node hierarchy.
+> 2. **Targeted CSS Selectors (`Selector::parse`)**: Targets `h1, h2, h3, p, li` directly, naturally ignoring `<script>`, `<style>`, and navigation clutter without complex regex or fragile state machines.
+> 3. **Functional Iterator Pipelines**:
+>    - `.select(&selector)` yields matching element nodes.
+>    - `.map(|el| el.text().collect::<Vec<_>>().join(" "))` flattens inner text (including inline tags like `<b>`).
+>    - `.filter(|s| !s.is_empty())` removes blank nodes.
+>    - `.collect::<Vec<_>>().join("\n\n")` joins paragraphs cleanly.
 >
-> 📖 **The Rust Book Connection**: [Chapter 6.1: Defining an Enum](https://doc.rust-lang.org/book/ch06-01-defining-an-enum.html) and [Chapter 13.2: Processing a Series of Items with Iterators](https://doc.rust-lang.org/book/ch13-02-iterators.html)
+> 📖 **The Rust Book Connection**: [Chapter 13.2: Processing a Series of Items with Iterators](https://doc.rust-lang.org/book/ch13-02-iterators.html)
 
 ---
 
@@ -868,7 +789,7 @@ fn truncate_to_char_limit(text: &str, max_chars: usize) -> &str {
 
 ---
 
-### Step 6: Calling the Local LLM with Lifetimes & Zero-Copy
+### Step 6: Calling the Local LLM with `anyhow` & Zero-Copy Lifetimes
 
 #### API Request/Response Flow:
 ```mermaid
@@ -879,18 +800,19 @@ sequenceDiagram
     participant LLM as Local LLM (Ollama / LM Studio)
 
     User->>CLI: Run with webpage URL
-    CLI->>CLI: Fetch HTML & strip tags into clean text
+    CLI->>CLI: Fetch HTML & extract text via scraper
     CLI->>LLM: POST /v1/chat/completions (ChatRequest JSON)
     Note over CLI,LLM: Borrowed strings (&'a str) - zero memory copies
     LLM-->>CLI: 200 OK (ChatResponse JSON)
-    CLI->>CLI: Extract choices[0].message.content via Option
+    CLI->>CLI: Extract choices[0].message.content via anyhow context
     CLI->>User: Display summary in terminal
 ```
 
 Define the request and response shapes matching OpenAI's `/v1/chat/completions` API:
 
 ```rust
-type AppResult<T> = Result<T, Box<dyn std::error::Error>>;
+use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
 struct Message<'a> {
@@ -920,22 +842,33 @@ struct ResponseMessage {
     content: String,
 }
 
-async fn fetch_page_text(url: &str) -> AppResult<String> {
+async fn fetch_page_text(url: &str) -> Result<String> {
     let client = reqwest::Client::builder()
         .user_agent("mini-srz/0.1")
-        .build()?;
+        .build()
+        .context("Failed to build HTTP client")?;
 
-    let html = client.get(url).send().await?.text().await?;
-    let text = strip_html_tags(&html);
+    let html = client
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("Failed to fetch URL: {}", url))?
+        .error_for_status()
+        .context("Web server returned an HTTP error status")?
+        .text()
+        .await
+        .context("Failed to decode webpage response body")?;
+
+    let text = extract_page_text(&html);
 
     if text.trim().is_empty() {
-        return Err("No readable text content found on the webpage.".into());
+        bail!("No readable text content found on the webpage: {}", url);
     }
 
     Ok(text)
 }
 
-async fn summarize_with_llm(base_url: &str, model: &str, text: &str) -> AppResult<String> {
+async fn summarize_with_llm(base_url: &str, model: &str, text: &str) -> Result<String> {
     let client = reqwest::Client::new();
     let prompt = format!(
         "Please provide a concise summary with key bullet points for the following text:\n\n{}",
@@ -963,27 +896,31 @@ async fn summarize_with_llm(base_url: &str, model: &str, text: &str) -> AppResul
         .post(&endpoint)
         .json(&request_payload)
         .send()
-        .await?
-        .error_for_status()?
+        .await
+        .with_context(|| format!("Failed to reach LLM endpoint at {}", endpoint))?
+        .error_for_status()
+        .context("LLM server returned an error status")?
         .json()
-        .await?;
+        .await
+        .context("Failed to parse LLM JSON response")?;
 
     let summary = response
         .choices
         .first()
         .map(|c| c.message.content.clone())
-        .unwrap_or_else(|| "No summary generated.".to_string());
+        .context("LLM returned an empty choice list")?;
 
     Ok(summary)
 }
 ```
 
 > 💡 **Rust Concepts Learned Here:**
-> 1. **Trait Object Error (`Box<dyn std::error::Error>`)**: Allows returning any error type with `?` without external error-handling libraries.
-> 2. **Lifetimes in Structs (`Message<'a>`)**: Borrows string slices directly from memory without duplicating strings onto the heap.
-> 3. **Null Safety with `Option` Combinators**: `.first().map(...).unwrap_or_else(...)` completely avoids null pointer exceptions.
+> 1. **`anyhow::Result<T>`**: Eliminates verbose error types while allowing any error implementing `std::error::Error` to propagate with `?`.
+> 2. **Contextual Errors (`.context(...)` & `.with_context(...)`)**: Chains human-readable context to errors so users know *what failed and why*.
+> 3. **Early Exits with `bail!`**: Returns an error immediately without verbose `return Err(...)` boilerplate.
+> 4. **Lifetimes in Structs (`Message<'a>`)**: Borrows string slices (`&'a str`) directly from memory without allocating new `String` objects on the heap.
 >
-> 📖 **The Rust Book Connection**: [Chapter 10.3: Lifetimes](https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html) and [Chapter 12.3: Splitting Code into Modules and Error Handling](https://doc.rust-lang.org/book/ch12-03-improving-error-handling-and-modularity.html)
+> 📖 **The Rust Book Connection**: [Chapter 9.2: Recoverable Errors with `Result`](https://doc.rust-lang.org/book/ch09-02-recoverable-errors-with-result.html) and [Chapter 10.3: Lifetimes](https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html)
 
 ---
 
@@ -992,139 +929,47 @@ async fn summarize_with_llm(base_url: &str, model: &str, text: &str) -> AppResul
 Replace `src/main.rs` with the complete, cohesive program:
 
 ```rust
+use anyhow::{bail, Context, Result};
+use clap::Parser;
+use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
-use std::env;
-
-type AppResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 // ============================================================================
-// 1. CLI Configuration (Pure Standard Library)
+// 1. CLI Configuration (clap derive)
 // ============================================================================
 
-struct Config {
+#[derive(Parser, Debug)]
+#[command(name = "mini-srz", about = "Summarize web pages with a local LLM")]
+struct Args {
+    /// URL of the webpage to summarize
     url: String,
+
+    /// LLM API base URL
+    #[arg(long, default_value = "http://localhost:11434/v1")]
     base_url: String,
+
+    /// Model name to use for summarization
+    #[arg(long, default_value = "llama3")]
     model: String,
+
+    /// Maximum characters of webpage text to send to the LLM
+    #[arg(long, default_value_t = 8000)]
     max_chars: usize,
 }
 
-impl Config {
-    fn from_args(mut args: impl Iterator<Item = String>) -> Result<Self, String> {
-        args.next(); // Skip executable path
-
-        let mut url = None;
-        let mut base_url = "http://localhost:11434/v1".to_string();
-        let mut model = "llama3".to_string();
-        let mut max_chars = 8000;
-
-        while let Some(arg) = args.next() {
-            match arg.as_str() {
-                "--help" | "-h" => {
-                    return Err(
-                        "Usage: mini-srz <URL> [--base-url <URL>] [--model <NAME>] [--max-chars <NUM>]"
-                            .to_string(),
-                    );
-                }
-                "--base-url" => {
-                    base_url = args
-                        .next()
-                        .ok_or_else(|| "Missing value for --base-url".to_string())?;
-                }
-                "--model" => {
-                    model = args
-                        .next()
-                        .ok_or_else(|| "Missing value for --model".to_string())?;
-                }
-                "--max-chars" => {
-                    let val = args
-                        .next()
-                        .ok_or_else(|| "Missing value for --max-chars".to_string())?;
-                    max_chars = val
-                        .parse::<usize>()
-                        .map_err(|_| "Invalid number for --max-chars".to_string())?;
-                }
-                val if !val.starts_with('-') && url.is_none() => {
-                    url = Some(val.to_string());
-                }
-                unknown => {
-                    return Err(format!("Unknown option: {}", unknown));
-                }
-            }
-        }
-
-        let url = url.ok_or_else(|| {
-            "Error: Please provide a webpage URL as the first argument.\nRun with --help for usage instructions."
-                .to_string()
-        })?;
-
-        Ok(Self {
-            url,
-            base_url,
-            model,
-            max_chars,
-        })
-    }
-}
-
 // ============================================================================
-// 2. HTML Text Extraction (Pure Rust State Machine)
+// 2. HTML Text Extraction (scraper CSS Selectors)
 // ============================================================================
 
-enum HtmlState {
-    Text,
-    InsideTag,
-    InsideScriptOrStyle,
-}
+fn extract_page_text(html: &str) -> String {
+    let document = Html::parse_document(html);
+    let selector = Selector::parse("h1, h2, h3, p, li").unwrap();
 
-fn strip_html_tags(html: &str) -> String {
-    let mut state = HtmlState::Text;
-    let mut clean_text = String::with_capacity(html.len() / 2);
-    let mut current_tag = String::new();
-
-    for ch in html.chars() {
-        match state {
-            HtmlState::Text => {
-                if ch == '<' {
-                    state = HtmlState::InsideTag;
-                    current_tag.clear();
-                } else {
-                    clean_text.push(ch);
-                }
-            }
-            HtmlState::InsideTag => {
-                if ch == '>' {
-                    let tag = current_tag.trim().to_lowercase();
-                    if tag.starts_with("script") || tag.starts_with("style") {
-                        state = HtmlState::InsideScriptOrStyle;
-                    } else if tag == "p" || tag == "br" || tag == "div" || tag == "h1" || tag == "h2" || tag == "h3" {
-                        clean_text.push('\n');
-                        state = HtmlState::Text;
-                    } else {
-                        state = HtmlState::Text;
-                    }
-                } else {
-                    current_tag.push(ch);
-                }
-            }
-            HtmlState::InsideScriptOrStyle => {
-                if ch == '<' {
-                    current_tag.clear();
-                } else if ch == '>' {
-                    let tag = current_tag.trim().to_lowercase();
-                    if tag.starts_with("/script") || tag.starts_with("/style") {
-                        state = HtmlState::Text;
-                    }
-                } else {
-                    current_tag.push(ch);
-                }
-            }
-        }
-    }
-
-    clean_text
-        .lines()
-        .map(|line| line.trim())
-        .filter(|line| !line.is_empty())
+    document
+        .select(&selector)
+        .map(|el| el.text().collect::<Vec<_>>().join(" "))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("\n\n")
 }
@@ -1173,25 +1018,36 @@ struct ResponseMessage {
 }
 
 // ============================================================================
-// 5. Network Pipelines
+// 5. Network Pipelines (reqwest + anyhow)
 // ============================================================================
 
-async fn fetch_page_text(url: &str) -> AppResult<String> {
+async fn fetch_page_text(url: &str) -> Result<String> {
     let client = reqwest::Client::builder()
         .user_agent("mini-srz/0.1")
-        .build()?;
+        .build()
+        .context("Failed to build HTTP client")?;
 
-    let html = client.get(url).send().await?.text().await?;
-    let text = strip_html_tags(&html);
+    let html = client
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("Failed to fetch URL: {}", url))?
+        .error_for_status()
+        .context("Web server returned an HTTP error status")?
+        .text()
+        .await
+        .context("Failed to decode webpage response body")?;
+
+    let text = extract_page_text(&html);
 
     if text.trim().is_empty() {
-        return Err("No readable text content found on the webpage.".into());
+        bail!("No readable text content found on the webpage: {}", url);
     }
 
     Ok(text)
 }
 
-async fn summarize_with_llm(base_url: &str, model: &str, text: &str) -> AppResult<String> {
+async fn summarize_with_llm(base_url: &str, model: &str, text: &str) -> Result<String> {
     let client = reqwest::Client::new();
     let prompt = format!(
         "Please provide a concise summary with key bullet points for the following text:\n\n{}",
@@ -1219,16 +1075,19 @@ async fn summarize_with_llm(base_url: &str, model: &str, text: &str) -> AppResul
         .post(&endpoint)
         .json(&request_payload)
         .send()
-        .await?
-        .error_for_status()?
+        .await
+        .with_context(|| format!("Failed to reach LLM endpoint at {}", endpoint))?
+        .error_for_status()
+        .context("LLM server returned an error status")?
         .json()
-        .await?;
+        .await
+        .context("Failed to parse LLM JSON response")?;
 
     let summary = response
         .choices
         .first()
         .map(|c| c.message.content.clone())
-        .unwrap_or_else(|| "No summary generated.".to_string());
+        .context("LLM returned an empty choice list")?;
 
     Ok(summary)
 }
@@ -1238,42 +1097,30 @@ async fn summarize_with_llm(base_url: &str, model: &str, text: &str) -> AppResul
 // ============================================================================
 
 #[tokio::main]
-async fn main() {
-    let config = match Config::from_args(env::args()) {
-        Ok(cfg) => cfg,
-        Err(err_msg) => {
-            eprintln!("{}", err_msg);
-            std::process::exit(1);
-        }
-    };
+async fn main() -> Result<()> {
+    let args = Args::parse();
 
-    println!("🌐 Scraping: {}", config.url);
-    let page_text = match fetch_page_text(&config.url).await {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("❌ Failed to fetch webpage: {}", e);
-            std::process::exit(1);
-        }
-    };
+    println!("🌐 Scraping: {}", args.url);
+    let page_text = fetch_page_text(&args.url)
+        .await
+        .with_context(|| format!("Failed to retrieve content from {}", args.url))?;
 
     let char_count = page_text.chars().count();
     println!("📄 Extracted {} characters of text.", char_count);
 
-    let processed_text = truncate_to_char_limit(&page_text, config.max_chars);
+    let processed_text = truncate_to_char_limit(&page_text, args.max_chars);
 
-    println!("🤖 Generating summary with model '{}'...", config.model);
-    let summary = match summarize_with_llm(&config.base_url, &config.model, processed_text).await {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("❌ LLM summarization failed: {}", e);
-            std::process::exit(1);
-        }
-    };
+    println!("🤖 Generating summary with model '{}'...", args.model);
+    let summary = summarize_with_llm(&args.base_url, &args.model, processed_text)
+        .await
+        .context("LLM summarization pipeline failed")?;
 
     println!("\n{}", "=".repeat(50));
     println!("SUMMARY");
     println!("{}\n", "=".repeat(50));
     println!("{}", summary.trim());
+
+    Ok(())
 }
 ```
 
@@ -1286,9 +1133,25 @@ async fn main() {
    cargo check
    ```
 
-2. **Test help message:**
+2. **Test help message (generated automatically by `clap`):**
    ```bash
    cargo run -- --help
+   ```
+
+   Output:
+   ```text
+   Summarize web pages with a local LLM
+
+   Usage: mini-srz [OPTIONS] <URL>
+
+   Arguments:
+     <URL>  URL of the webpage to summarize
+
+   Options:
+         --base-url <BASE_URL>    LLM API base URL [default: http://localhost:11434/v1]
+         --model <MODEL>          Model name to use for summarization [default: llama3]
+         --max-chars <MAX_CHARS>  Maximum characters of webpage text to send to the LLM [default: 8000]
+     -h, --help                   Print help
    ```
 
 3. **Run against any website using your local model (e.g. Ollama with `llama3`):**
@@ -1317,14 +1180,11 @@ SUMMARY
 
 | Concept | Where It Was Used in Mini-Srz | What It Achieved |
 | :--- | :--- | :--- |
-| **`Iterator` Trait** | `Config::from_args(args)` | Walked command-line arguments without index out-of-bounds risks |
-| **Match Guards** | `val if !val.starts_with('-')` | Distinguished positional URL arguments from optional flags |
-| **Enums as State Machines** | `enum HtmlState` | Cleanly stripped HTML tags without needing a 3rd-party parser crate |
-| **Memory Pre-allocation** | `String::with_capacity` | Eliminated continuous heap reallocations while cleaning text |
-| **Iterator Combinators** | `.lines().map().filter().collect().join()` | Transformed and cleaned multi-line strings in pure functional style |
+| **`clap` Derive Macros** | `#[derive(Parser)] struct Args` | Declarative, type-safe CLI flag & positional argument parsing with automatic `--help` |
+| **`scraper` DOM Parsing** | `Html::parse_document` & `Selector::parse` | Clean text extraction using CSS selectors (`h1, h2, h3, p, li`) without manual tag parsing |
+| **`anyhow` Error Handling** | `Result<T>`, `.context(...)`, `bail!` | Rich, readable error chains with human context and effortless error propagation |
+| **Iterator Combinators** | `.select().map().filter().collect().join()` | Expressive, functional element transformation without manual loops or indices |
 | **Safe UTF-8 Slicing** | `char_indices().nth()` | Prevented slicing in the middle of multi-byte Unicode characters |
-| **Borrowing & Lifetimes** | `struct Message<'a> { content: &'a str }` | Passed string slices to JSON serializers without duplicating memory |
-| **Trait Object Errors** | `Box<dyn std::error::Error>` | Propagated multiple error types smoothly using `?` |
-| **Null Safety** | `.first().map().unwrap_or_else()` | Eliminated null pointer crashes when reading LLM responses |
+| **Borrowing & Lifetimes** | `struct Message<'a> { content: &'a str }` | Passed string slices to JSON serializers without duplicating memory on the heap |
 | **Async/Await** | `async fn fetch_page_text()`, `tokio` | Handled non-blocking HTTP network I/O with zero thread overhead |
 
