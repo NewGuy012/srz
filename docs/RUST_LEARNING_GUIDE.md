@@ -1,8 +1,15 @@
-# Rust Architecture & Concepts Guide: `srz`
+# Learning Rust Through Real-World Code: The `srz` Architecture & Concepts Guide
+
+> 🎯 **Primary Purpose**: This guide uses `srz` (a fast, modular AI CLI tool) as a practical case study to help you **learn and understand Rust better**. Instead of memorizing abstract language rules in isolation, you will see how production-grade Rust concepts—ownership, borrowing, enums, lifetimes, state machines, and concurrency—are applied in real-world systems code.
 
 Welcome to `srz`! This guide explains the architecture of the codebase and highlights the **hows and whys** of coding in Rust.
 
-Whether you are a **beginner**, **non-technical learner**, or an **experienced developer coming from Python, JavaScript, Go, or C++**, this guide uses simple real-world analogies, code snippets, and direct connections to [The Rust Programming Language](https://doc.rust-lang.org/book/) book to make Rust concepts easy to grasp.
+Whether you are a **beginner**, **non-technical learner**, or an **experienced developer coming from Python, JavaScript, Go, or C++**, this guide uses simple real-world analogies, visual diagrams, and direct chapter connections to [The Rust Programming Language](https://doc.rust-lang.org/book/) book to make Rust concepts intuitive, memorable, and practical.
+
+### Why Learn Rust with `srz`?
+1. **Real-World Patterns**: See how memory safety works without garbage collection pauses or manual `malloc`/`free` calls.
+2. **Zero-Cost Abstractions**: Observe how iterators, lifetimes, and zero-copy slices (`Cow`, `&str`) deliver speed without wasting RAM.
+3. **From Theory to Practice**: Explore the full architecture first, then follow a hands-on tutorial to build your own minimal CLI tool using the Rust Standard Library.
 
 ---
 
