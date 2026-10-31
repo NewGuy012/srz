@@ -37,15 +37,15 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     -h|--help)
-      echo "Usage: ./scripts/release.sh [OPTIONS] [VERSION | minor | patch | major]"
+      echo "Usage: ./scripts/release.sh [OPTIONS] [VERSION | patch | minor | major]"
       echo ""
       echo "Automates version bump, verification, commit, tag, and push to trigger CI release."
       echo ""
       echo "Arguments:"
       echo "  VERSION       Explicit version (e.g. 0.6.0, v0.6.0)"
-      echo "  minor         Increment minor version (e.g. 0.5.0 -> 0.6.0) [default]"
-      echo "  patch         Increment patch version (e.g. 0.5.0 -> 0.5.1)"
-      echo "  major         Increment major version (e.g. 0.5.0 -> 1.0.0)"
+      echo "  patch         Increment patch version (e.g. 0.6.0 -> 0.6.1) [default]"
+      echo "  minor         Increment minor version (e.g. 0.6.0 -> 0.7.0)"
+      echo "  major         Increment major version (e.g. 0.6.0 -> 1.0.0)"
       echo ""
       echo "Options:"
       echo "  -n, --dry-run     Show what would be done without modifying git or pushing"
@@ -80,11 +80,11 @@ PATCH=$(echo "${CURRENT_VER}" | cut -d. -f3)
 
 # Calculate target version
 case "${REQUESTED_VER}" in
-  ""|minor)
-    NEW_VER="${MAJOR}.$((MINOR + 1)).0"
-    ;;
-  patch)
+  ""|patch)
     NEW_VER="${MAJOR}.${MINOR}.$((PATCH + 1))"
+    ;;
+  minor)
+    NEW_VER="${MAJOR}.$((MINOR + 1)).0"
     ;;
   major)
     NEW_VER="$((MAJOR + 1)).0.0"
