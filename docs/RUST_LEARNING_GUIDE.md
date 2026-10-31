@@ -90,6 +90,28 @@ flowchart TD
 - 🔍 **How it works:** Combines pattern matching and condition checks into a single line, avoiding nested "pyramids" of `if` statements.
 - 📖 **The Rust Book Reference:** [Chapter 6.3: Concise Control Flow with `if let`](https://doc.rust-lang.org/book/ch06-03-if-let.html)
 
+#### 4. The "Move vs. Borrow" Trap in Real Code (`src/main.rs`)
+- 💡 **Simple Analogy:** Handing someone a physical book vs. letting them read over your shoulder. If you hand it to them (move), you no longer have it. If they look over your shoulder (borrow `&`), you both still have access to the book.
+- 🔍 **Real Code in `srz` ([src/main.rs](file:///Users/myoo/Documents/Repo/srz/src/main.rs#L23-L30)):**
+  ```rust
+  let (config, config_path) = match &args.config {
+      Some(p) => {
+          let cfg = Config::load_from_path(p)?;
+          (cfg, Some(p.clone()))
+      }
+      None => Config::load_default(),
+  };
+  args.apply_config(&config, Some(&matches)); // 👈 `args` is used again here!
+  ```
+- 💥 **The Common Beginner Trap:** What happens if you remove that tiny ampersand (`match args.config`)?
+  In other languages like Python, passing an object just passes another reference. In Rust, `args.config` would be **moved** out of `args`. Seven lines later, `args.apply_config(...)` would crash at compile time with:
+  ```text
+  error[E0382]: borrow of partially moved value: `args`
+  ```
+  Adding the `&` (`match &args.config`) **borrows** the config path, leaving `args` completely valid for the rest of `main()`.
+- 🔄 **If you know other languages:** Python and JS pass references automatically. In Rust, values move by default unless you explicitly add `&` to borrow.
+- 📖 **The Rust Book Reference:** [Chapter 4.2: References and Borrowing](https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html)
+
 ---
 
 ### 2.2 CLI Parsing & Configuration (`src/config/cli.rs`, `src/config/file.rs`)
@@ -165,13 +187,45 @@ Slices long text into manageable sections that fit into an AI's memory window, s
 
 #### 1. Zero-Copy Deserialization (`#[serde(borrow)]`)
 - 💡 **Simple Analogy:** Highlighting words directly in a physical letter mailed to you, instead of manually re-copying the entire letter word-for-word onto a separate notepad.
-- 🔍 **How it works:** When an LLM sends 50 words per second, Rust reads strings by pointing directly into the network buffer (`&'a str`), copying zero bytes into heap memory.
+- 🔍 **Real Code in `srz` ([src/engine/llm.rs](file:///Users/myoo/Documents/Repo/srz/src/engine/llm.rs#L33-L55)):**
+  ```rust
+  #[derive(Deserialize)]
+  struct ChatCompletionChunk<'a> {
+      #[serde(default, borrow)]
+      choices: Vec<ChunkChoice<'a>>,
+  }
+
+  #[derive(Deserialize)]
+  struct ChunkChoice<'a> {
+      #[serde(borrow)]
+      delta: ChunkDelta<'a>,
+  }
+
+  #[derive(Deserialize, Default)]
+  struct ChunkDelta<'a> {
+      #[serde(borrow)]
+      content: Option<Cow<'a, str>>, // 👈 Borrows directly from incoming network buffer!
+  }
+  ```
+  When streaming AI responses at 80 tokens per second, creating 80 new heap `String`s every second causes memory churn. With `#[serde(borrow)]`, Rust points `Cow<'a, str>` directly to the network buffer received by Tokio—allocating **0 bytes** of extra heap memory!
 - 🔄 **If you know other languages:** In Python or Go, parsing JSON allocates new strings in memory for every key and value. Rust allows "borrowing" directly from the raw incoming buffer, saving CPU and RAM.
 - 📖 **The Rust Book Reference:** [Chapter 10.3: Validating References with Lifetimes](https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html)
 
-#### 2. Clone-on-Write (`std::borrow::Cow<'a, str>`)
+#### 2. Clone-on-Write in Action (`std::borrow::Cow<'a, str>`)
 - 💡 **Simple Analogy:** Reading a library book with transparent sticky notes. You read the original text for free (borrowed). Only if you need to rewrite or reformat a sentence do you photocopy that page and write on your copy (owned/cloned).
-- 🔍 **How it works:** If text needs no changes, `Cow::Borrowed` uses the original slice. If it requires trimming or edits, `Cow::Owned` lazily creates a new `String`.
+- 🔍 **Real Code in `srz` ([src/main.rs](file:///Users/myoo/Documents/Repo/srz/src/main.rs#L164-L171)):**
+  ```rust
+  let content = if render::is_html_path(output_path) {
+      // 1. User wants HTML: Allocate a brand-new styled HTML document string
+      std::borrow::Cow::Owned(render::render_html_document(&outcome.title, &outcome.summary))
+  } else {
+      // 2. User wants Markdown: Borrow the existing summary with ZERO allocations!
+      std::borrow::Cow::Borrowed(outcome.summary.as_str())
+  };
+
+  srz::fs_util::write_private_file(output_path, content.as_bytes())?;
+  ```
+  If a user saves a 20,000-word summary as Markdown, `srz` does not duplicate a single byte. `Cow::Borrowed` wraps the existing slice. Both branches implement `Deref`, so `content.as_bytes()` works seamlessly without caring whether the data is owned or borrowed!
 - 📖 **The Rust Book Reference:** [Chapter 4.3: The Slice Type](https://doc.rust-lang.org/book/ch04-03-slices.html) and [Chapter 8.2: Strings](https://doc.rust-lang.org/book/ch08-02-strings.html)
 
 #### 3. Higher-Order Functions & Closures (`FnMut`)
@@ -190,16 +244,68 @@ Saves summaries on disk so you don't have to re-summarize the same article twice
 
 #### 1. Lifetimes in Structs (`NewSummaryRecord<'a>`)
 - 💡 **Simple Analogy:** A visitor security badge that expires at 5:00 PM when your host leaves the office. The badge guarantees you cannot roam the building after your host has gone home.
-- 🔍 **How it works:** The `'a` annotation ensures the record cannot outlive the strings it borrows, preventing "dangling pointers" (looking at memory that has already been erased).
+- 🔍 **Real Code in `srz` ([src/storage/db.rs](file:///Users/myoo/Documents/Repo/srz/src/storage/db.rs#L11-L24) and [src/main.rs](file:///Users/myoo/Documents/Repo/srz/src/main.rs#L217-L231)):**
+  ```rust
+  // In src/storage/db.rs
+  pub struct NewSummaryRecord<'a> {
+      pub target_type: &'a str,
+      pub title: &'a str,
+      pub author: Option<&'a str>,
+      pub url: Option<&'a str>,
+      pub style: &'a str,
+      pub model: &'a str,
+      pub word_count: usize,
+      pub summary: &'a str, // 👈 Borrows reference instead of cloning a 50KB string!
+      // ...
+  }
+  ```
+  ```rust
+  // In src/main.rs
+  let record = NewSummaryRecord {
+      target_type: outcome.target_type,
+      title: &outcome.title,
+      author: outcome.author.as_deref(),
+      url: outcome.url.as_deref(),
+      style: args.style.as_str(),
+      model: &args.model,
+      word_count: outcome.word_count,
+      // ...
+      summary: &outcome.summary, // 👈 Pure zero-copy loan
+  };
+  let _ = db.record_summary(&record);
+  ```
+  Why not make `summary: String`? If a summary is 50KB long, having `String` fields forces Rust to duplicate all 50,000 characters on the heap just to insert it into DuckDB. By annotating the struct with `'a`, `NewSummaryRecord` borrows existing strings in memory. The Rust compiler guarantees at compile time that the record cannot outlive the strings it borrows, preventing dangling pointers with **zero allocations**.
+- 🔄 **If you know other languages:** In C++, storing raw pointers (`const char*`) in a struct is risky because if the original string is freed, you get a segfault. In Go or Python, structs hold pointers with garbage collection overhead. Rust gives you raw pointer performance with compile-time memory safety.
 - 📖 **The Rust Book Reference:** [Chapter 10.3: Lifetime Annotations in Struct Definitions](https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html#lifetime-annotations-in-struct-definitions)
 
 #### 2. The Closure Loan Pattern (`with_db`)
-- 💡 **Simple Analogy:** A safe deposit box at a bank. The vault manager unlocks the door for you, lets you store your envelope, and locks the heavy door behind you the moment you leave.
-- 🔍 **How it works:**
+- 💡 **Simple Analogy:** A safe deposit box at a bank. The vault manager unlocks the door for you, lends you access to your box, waits until you are done with your transaction, and locks the heavy vault door behind you the moment you leave.
+- 🔍 **Real Code in `srz` ([src/commands/mod.rs](file:///Users/myoo/Documents/Repo/srz/src/commands/mod.rs#L47-L54) and [src/main.rs](file:///Users/myoo/Documents/Repo/srz/src/main.rs#L64-L72)):**
   ```rust
-  pub fn with_db(f: impl FnOnce(&Database) -> Result<()>) -> Result<()>
+  // In src/commands/mod.rs
+  pub fn with_db(f: impl FnOnce(&Database) -> Result<()>) -> Result<()> {
+      if let Some(db) = open_db_or_warn() {
+          f(&db)?; // 👈 Lends temporary borrowed reference &db to caller closure
+      } else {
+          Ui::error("DuckDB database unavailable.");
+      }
+      Ok(())
+  }
   ```
-  Instead of each command opening and closing database connections manually, `with_db` handles connection setup, lends the database safely, and cleans it up.
+  ```rust
+  // In src/main.rs
+  ResolvedAction::History { limit } => {
+      return with_db(|db| commands::handle_history(db, limit, args.json));
+  }
+  ResolvedAction::Stats => {
+      return with_db(|db| commands::handle_stats(db, args.json));
+  }
+  ResolvedAction::Find { query } => {
+      return with_db(|db| commands::handle_find(db, query, &cache, args.json));
+  }
+  ```
+  Instead of each command manually opening connections, checking for missing databases, handling locks, and remembering to close connections, `with_db` acts as an RAII loan manager. `impl FnOnce(&Database)` means: "Give me any closure that accepts a borrowed `&Database` once." When the closure returns, `db` is dropped and the DuckDB connection is cleanly closed.
+- 🔄 **If you know other languages:** This is Rust's idiomatic replacement for Python's `with open(...) as f:` context managers or Java's `try-with-resources`. Rather than adding special language syntax, Rust achieves this cleanly using higher-order closures and borrowing.
 - 📖 **The Rust Book Reference:** [Chapter 13.1: Closures](https://doc.rust-lang.org/book/ch13-01-closures.html) and [Chapter 15.3: The `Drop` Trait](https://doc.rust-lang.org/book/ch15-03-drop.html)
 
 ---
