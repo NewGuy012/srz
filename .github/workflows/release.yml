@@ -269,9 +269,23 @@ jobs:
           sudo apt-get install -y pkg-config libssl-dev build-essential cmake
 
       - name: Publish to Crates.io
-        run: cargo publish --token ${{ secrets.CRATES_IO_TOKEN }}
         env:
-          CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: |
+          if cargo publish 2>&1 | tee publish.log; then
+            echo "Successfully published to crates.io!"
+          else
+            if grep -iq "already exists on crates.io" publish.log; then
+              echo "::notice::srz@${{ needs.verify-version.outputs.clean_version }} is already published on crates.io. Skipping publish step."
+              rm -f publish.log
+              exit 0
+            else
+              echo "::error::cargo publish failed with an unexpected error."
+              rm -f publish.log
+              exit 1
+            fi
+          fi
+          rm -f publish.log
 
       - name: Show sccache stats
         if: always()

@@ -141,6 +141,7 @@ if git ls-remote --tags origin "${TAG}" 2>/dev/null | grep -q "${TAG}"; then
     git push --delete origin "${TAG}"
   elif [ "${AUTO_YES}" != "true" ]; then
     echo "Warning: Remote tag '${TAG}' already exists on origin (likely from a previous failed release)."
+    echo "Note: Crates.io packages are immutable. If '${TAG}' was already published, retagging will not update crates.io (bump patch/minor instead)."
     read -r -p "Delete and re-tag '${TAG}' on origin to retrigger release? [y/N]: " CONFIRM_REMOTE_RETAG
     if [ "${CONFIRM_REMOTE_RETAG}" = "y" ] || [ "${CONFIRM_REMOTE_RETAG}" = "Y" ]; then
       git push --delete origin "${TAG}"
