@@ -1,71 +1,149 @@
 # Quick Start
 
-`srz` connects to any local OpenAI-compatible inference server. 
-
-### Prerequisites
-
-Ensure a local LLM runner is active:
-* **Ollama**: `ollama run mistral` (listens on `http://localhost:11434/v1`)
-* **llama.cpp**: `./llama-server -m model.gguf --port 8080`
-* **LM Studio**: Start Local Server (listens on `http://localhost:1234/v1`)
-* **vLLM**: `vllm serve model --port 8000`
+`srz` connects to any OpenAI API-compliant LLM server. While cloud provider APIs are supported, running a **local LLM is strongly preferred** for complete privacy, zero subscription fees, and offline capability.
 
 ---
 
-## Basic Usage Examples
+## 1. LLM Backend Setup
 
-### 1. Summarize a Webpage
-Pass any HTTP/HTTPS URL directly as the target:
+### Recommended Local Backends (Default Port `9931`)
+
+`srz` connects by default to `http://localhost:9931/v1`, requiring zero configuration for official desktop runners:
+
+* **macOS**: Install [Llama-macOS](https://github.com/ggml-org/Llama-macOS). Launch the application, load any GGUF model, and `srz` connects immediately.
+* **Windows**: Install [Llama-Windows](https://github.com/ggml-org/Llama-Windows). Launch the application, load a model, and start summarizing.
+* **Linux**: Build or run [llama.cpp](https://github.com/ggml-org/llama.cpp):
+  ```bash
+  # Start llama-server on port 9931 for zero configuration:
+  llama-server -m model.gguf --port 9931
+
+  # Or on default port 8080:
+  llama-server -m model.gguf --port 8080
+  export OPENAI_BASE_URL="http://localhost:8080/v1"
+  ```
+
+### Other Local & Cloud Backends
+
+* **Ollama**: `ollama run mistral` (connects on port `11434`):
+  ```bash
+  export OPENAI_BASE_URL="http://localhost:11434/v1" OPENAI_MODEL="mistral"
+  ```
+* **LM Studio**: Start Local Server on port `1234`:
+  ```bash
+  export OPENAI_BASE_URL="http://localhost:1234/v1"
+  ```
+* **Cloud Providers (OpenAI, Anthropic, Google, Groq)**:
+  ```bash
+  export OPENAI_BASE_URL="https://api.openai.com/v1" OPENAI_MODEL="gpt-4o-mini" OPENAI_API_KEY="sk-..."
+  ```
+
+### Verify Connectivity
+
+Test your connection and inspect available models:
+
 ```bash
-srz https://en.wikipedia.org/wiki/Information_theory
+# Check connectivity, cache health, and database integrity
+srz doctor
+
+# List models reported by the backend
+srz models
 ```
 
-### 2. Summarize a YouTube Video
-Extract and synthesize summaries from YouTube video closed captions:
+---
+
+## 2. Basic Usage Examples
+
+### Summarize a Webpage or Article
+Pass any URL directly. `srz` extracts clean text using Mozilla Readability, stripping ads and sidebars:
+
 ```bash
-srz https://www.youtube.com/watch?v=dQw4w9WgXcQ
+srz "https://en.wikipedia.org/wiki/Rust_(programming_language)"
 ```
 
-### 3. Summarize a Local PDF or Document
-Pass a path to a PDF, markdown, or plain text file:
+### Summarize a YouTube Video
+Extract and synthesize closed-caption transcripts from YouTube URLs:
+
 ```bash
-srz path/to/document.pdf
-srz notes.md
+srz "https://youtu.be/5C_HPTJg5ek"
 ```
 
-### 4. Summarize Standard Input
-Pipe command output or stream text directly into `srz`:
+### Summarize a Local PDF or Document
+Pass a path to a `.pdf`, `.html`, `.md`, or `.txt` file:
+
 ```bash
-cat large_log.txt | srz -
-curl -sSL https://example.com | srz -
+srz assets/document.pdf
 ```
 
-### 5. Summarize a Book
-`srz` automatically queries Open Library and Wikipedia to enrich book synopses:
+### Summarize Unix Standard Input
+Pipe terminal command output, logs, or git diffs directly into `srz`:
+
 ```bash
-srz "Dune"
-srz "Neuromancer" --author "William Gibson"
+git diff | srz -
+cat server.log | srz -
 ```
 
-### 6. Live News Feeds
-Aggregate and summarize top news articles on any topic:
+### Summarize a Book by Title
+`srz` queries Open Library and Wikipedia to enrich book metadata and synopses before summarizing:
+
 ```bash
-srz news "artificial intelligence"
-srz news "fusion energy" --time 7d
+srz "The Rust Programming Language" --open
 ```
 
-### 7. Interactive Terminal Explorer
-Launch the full-screen terminal dashboard to explore reading history, search summaries, or copy text:
+### Summarize Live News Feeds
+Aggregate and synthesize top news stories from Google News RSS:
+
+```bash
+# Recent news on a topic (past 24 hours by default)
+srz news "Rust language updates"
+
+# Filter by recency (day, week, month, all)
+srz news "artificial intelligence" -t week
+```
+
+---
+
+## 3. Interactive Grounded Q&A (`srz ask`)
+
+Ask targeted questions or start an interactive chat session grounded directly in document text:
+
+```bash
+# Ask a question about your most recently summarized item
+srz ask "What are the main findings?"
+
+# Ask a question about a specific document or file
+srz ask assets/document.pdf "What are the primary conclusions?"
+
+# Launch an interactive multi-turn chat REPL
+srz ask -i
+
+# Inspect and resume saved chat sessions from DuckDB
+srz ask --chats
+srz ask --resume 1
+srz ask --show-chat 1
+```
+
+---
+
+## 4. Terminal Explorer & Offline Library Search
+
+### Full-Screen Ratatui Terminal Dashboard (`srz browse`)
+Explore your reading history, filter items by category, copy summaries to clipboard, or read in fullscreen:
+
 ```bash
 srz browse
 ```
 
-### 8. Grounded Document Q&A
-Ask direct questions grounded on any source:
+### Fast Offline BM25 Search (`srz find`)
+Search through past summaries stored in DuckDB without network access:
+
 ```bash
-srz ask report.pdf "What are the key revenue metrics?"
+srz find "memory safety"
 ```
-Or start an interactive multi-turn chat conversation:
+
+### Analytics & Maintenance
 ```bash
-srz ask report.pdf
+srz history        # View recent reads and word counts
+srz stats          # Reading streak, time saved, and model token speeds
+srz cache size     # View disk usage
+srz cache prune    # Evict items older than 14 days
 ```

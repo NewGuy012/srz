@@ -13,6 +13,8 @@
 - 📚 **Books**
 - 📰 **Live news digests & universal RSS/Atom feeds**
 
+> 📖 **Documentation**: Visit the [**srz Documentation Site**](https://newguy012.github.io/srz/) for full guides, tutorials, and command references.
+
 
 ## Highlights
 
@@ -154,7 +156,7 @@ Run `srz --help` to see all available subcommands and flags.
 - [**3 Summary Presets**](docs/OVERVIEW.md#2-key-cli-features--commands)
 - [**Offline BM25 Library Search**](docs/OVERVIEW.md#2-key-cli-features--commands)
 
-> For all additional features, architectural diagrams, lifecycle execution sequences, and in-depth subsystem specs, see [**`OVERVIEW.md`**](docs/OVERVIEW.md).
+> For full guides and tutorials, visit the [**Documentation Website**](https://newguy012.github.io/srz/). For architectural diagrams, lifecycle execution sequences, and in-depth subsystem specs, see [**`OVERVIEW.md`**](docs/OVERVIEW.md).
 
 
 ## Configuring Your LLM Backend
@@ -218,9 +220,11 @@ srz "The Rust Programming Language" --profile openai # Cloud profile
 ```
 
 
-## Architecture & Modules
+## Documentation & Architecture
 
-See [`OVERVIEW.md`](docs/OVERVIEW.md) for detailed Mermaid architecture diagrams and execution sequences.
+- 🌐 [**Documentation Website**](https://newguy012.github.io/srz/): Comprehensive mdBook site covering installation, quick start, command reference, and configuration.
+- 🏗️ [**Architecture Overview (`OVERVIEW.md`)**](docs/OVERVIEW.md): Detailed Mermaid architecture diagrams, execution sequence flows, storage schemas, and subsystem specifications.
+- 🦀 [**Rust Learning Guide (`RUST_LEARNING_GUIDE.md`)**](docs/RUST_LEARNING_GUIDE.md): Hands-on case study exploring Rust systems programming concepts and patterns using real `srz` code.
 
 
 ## Running Tests & Static Analysis

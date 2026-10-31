@@ -1,5 +1,7 @@
 # `srz` Architectural Overview
 
+> 📖 **Online Documentation**: Visit the official documentation website at [**https://newguy012.github.io/srz/**](https://newguy012.github.io/srz/) for tutorials, guides, and complete CLI command references.
+
 `srz` (Summarize) is a high-performance, modular Rust CLI tool for extracting and synthesizing structured summaries from **webpages**, **YouTube video transcripts**, **PDF documents & local files**, **Unix stdin streams**, **books**, and **live news digests** using local OpenAI-compliant LLMs (such as llama.cpp, Ollama, LM Studio, or vLLM).
 
 
@@ -288,3 +290,10 @@ src/
 | **System** | [`src/system/text_util.rs`](../src/system/text_util.rs) | `system::text_util` | High-performance HTML entity decoding (`html-escape`), ASCII case-insensitive search (`find_ascii_case_insensitive`, `contains_ascii_case_insensitive`), single-pass `format_hex`, and zero-copy string utilities. |
 | | [`src/system/fs_util.rs`](../src/system/fs_util.rs) | `system::fs_util` | Platform filesystem utilities and private directory/file permissions (`0700`/`0600`). |
 | | [`src/system/upgrade.rs`](../src/system/upgrade.rs) | `system::upgrade` | In-place self-updater: target detection, GitHub release queries, bounded archive extraction (`read_bounded_binary`), SHA256 verification, and atomic swap. |
+
+
+## 7. Documentation & Resources
+
+- 🌐 [**srz Documentation Website**](https://newguy012.github.io/srz/): The official static documentation site (mdBook) covering installation options, quickstart tutorials, configuration profiles, and full command references.
+- 🦀 [**Rust Learning Guide**](RUST_LEARNING_GUIDE.md): Architectural deep-dive and systems programming concepts using `srz` as a case study.
+- 🛡️ [**Security Audit**](SECURITY_AUDIT.md): Security analysis, memory safety guarantees, and threat mitigations.

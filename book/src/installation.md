@@ -4,38 +4,23 @@
 
 ---
 
-## 1. Homebrew (macOS & Linux)
+## 1. Quick Install (One-Line Script)
 
-The easiest method on macOS (Apple Silicon) and Linux is via the official Homebrew tap:
-
-```bash
-brew tap NewGuy012/tap
-brew install srz
-```
-
-To update in the future:
-```bash
-brew update && brew upgrade srz
-```
-
----
-
-## 2. Automated One-Line Install Script
-
-### macOS & Linux (curl + sh)
+### macOS & Linux
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NewGuy012/srz/master/scripts/install.sh | sh
+curl -LsSf https://raw.githubusercontent.com/NewGuy012/srz/master/scripts/install.sh | sh
 ```
 
 By default, the binary is installed to `~/.local/bin/srz`. You can customize the install directory:
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NewGuy012/srz/master/scripts/install.sh | INSTALL_DIR=/usr/local/bin sh
+curl -LsSf https://raw.githubusercontent.com/NewGuy012/srz/master/scripts/install.sh | INSTALL_DIR=/usr/local/bin sh
 ```
 
 ### Windows (PowerShell)
 
-Run the following in PowerShell (as Administrator or regular user):
+Run the following in PowerShell:
 
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/NewGuy012/srz/master/scripts/install.ps1 | iex"
@@ -45,40 +30,96 @@ The script installs `srz.exe` to `$env:USERPROFILE\.local\bin` and automatically
 
 ---
 
-## 3. Install via Cargo (crates.io)
+## 2. Homebrew (macOS & Linux)
 
-If you have the Rust toolchain installed:
+The easiest package manager installation on macOS (Apple Silicon) and Linux is via the official tap:
 
 ```bash
-cargo install srz
+brew install NewGuy012/tap/srz
 ```
+
+To update in the future:
+
+```bash
+brew update && brew upgrade srz
+```
+
+---
+
+## 3. Build from Source (Cargo)
+
+If you have Rust and Cargo installed:
+
+```bash
+# Install latest release from crates.io
+cargo install srz
+
+# Or clone and build from local source
+git clone https://github.com/NewGuy012/srz.git
+cd srz
+cargo install --path .
+```
+
+*Note: Intel Macs (x86_64) should use Cargo source installation.*
 
 ---
 
 ## 4. Prebuilt Binaries (GitHub Releases)
 
-Download precompiled, cryptographically attested binaries from the [GitHub Releases Page](https://github.com/NewGuy012/srz/releases):
+Download precompiled binaries and checksums directly from the [GitHub Releases Page](https://github.com/NewGuy012/srz/releases):
 
-* **macOS (Apple Silicon)**: `srz-v*-aarch64-apple-darwin.tar.gz`
-* **Linux (x86_64)**: `srz-v*-x86_64-unknown-linux-gnu.tar.gz`
-* **Linux (ARM64)**: `srz-v*-aarch64-unknown-linux-gnu.tar.gz`
-* **Windows (x64)**: `srz-v*-x86_64-pc-windows-msvc.zip`
+| Platform | Architecture | Archive |
+| :--- | :--- | :--- |
+| **macOS** | Apple Silicon (`aarch64`) | `srz-v*-aarch64-apple-darwin.tar.gz` |
+| **Linux** | 64-bit x86 (`x86_64`) | `srz-v*-x86_64-unknown-linux-gnu.tar.gz` |
+| **Linux** | ARM64 (`aarch64`) | `srz-v*-aarch64-unknown-linux-gnu.tar.gz` |
+| **Windows** | 64-bit x86 (`x86_64`) | `srz-v*-x86_64-pc-windows-msvc.zip` |
 
 ### Verifying SLSA Provenance
 
-You can verify that the downloaded binary was compiled directly inside the official GitHub Actions runner using the GitHub CLI:
+Every release includes SLSA Build Level 3 cryptographic provenance. You can verify that binaries were compiled directly inside the official GitHub Actions runner using the GitHub CLI:
 
 ```bash
-gh attestation verify srz-v0.5.0-x86_64-unknown-linux-gnu.tar.gz --repo NewGuy012/srz
+gh attestation verify srz-v0.6.1-aarch64-apple-darwin.tar.gz --repo NewGuy012/srz
 ```
 
 ---
 
-## 5. In-Place Self Upgrades
+## 5. In-Place Self Upgrades (`srz upgrade`)
 
-Once installed, `srz` can upgrade itself to the latest release in place:
+Once installed, `srz` can inspect GitHub Releases, verify SHA-256 checksums, and atomically replace the binary in place:
 
 ```bash
+# Check if an update is available without installing
+srz upgrade --check
+
+# Upgrade to the latest release
 srz upgrade
+
+# Force reinstall or target a specific version
+srz upgrade --force
+srz upgrade --version 0.6.1
 ```
-*Checks GitHub Releases, validates SHA-256 checksums, and atomically replaces the binary.*
+
+---
+
+## 6. Shell Completions (`srz completions`)
+
+Generate automatic command-line completions for your active shell:
+
+```bash
+# Bash (add to ~/.bashrc)
+eval "$(srz completions bash)"
+
+# Zsh (add to ~/.zshrc)
+eval "$(srz completions zsh)"
+
+# Fish (add to ~/.config/fish/config.fish)
+srz completions fish | source
+
+# PowerShell
+srz completions powershell | Out-String | Invoke-Expression
+
+# Elvish
+eval (srz completions elvish)
+```
