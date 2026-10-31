@@ -148,11 +148,11 @@ Run `srz --help` to see all available subcommands and flags.
 
 ## Features
 
-- [**Universal Ingestion**](docs/OVERVIEW.md#1-key-cli-features--commands)
-- [**Interactive Q&A (`srz ask`)**](docs/OVERVIEW.md#1-key-cli-features--commands)
-- [**TUI Dashboard (`srz browse`)**](docs/OVERVIEW.md#1-key-cli-features--commands)
-- [**3 Summary Presets**](docs/OVERVIEW.md#1-key-cli-features--commands)
-- [**Offline BM25 Library Search**](docs/OVERVIEW.md#1-key-cli-features--commands)
+- [**Universal Ingestion**](docs/OVERVIEW.md#2-key-cli-features--commands)
+- [**Interactive Q&A (`srz ask`)**](docs/OVERVIEW.md#2-key-cli-features--commands)
+- [**TUI Dashboard (`srz browse`)**](docs/OVERVIEW.md#2-key-cli-features--commands)
+- [**3 Summary Presets**](docs/OVERVIEW.md#2-key-cli-features--commands)
+- [**Offline BM25 Library Search**](docs/OVERVIEW.md#2-key-cli-features--commands)
 
 > For all additional features, architectural diagrams, lifecycle execution sequences, and in-depth subsystem specs, see [**`OVERVIEW.md`**](docs/OVERVIEW.md).
 
