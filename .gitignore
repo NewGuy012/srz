@@ -13,5 +13,3 @@ config.toml
 *.duckdb*
 *.db
 
-# Local security audits
-docs/SECURITY_AUDIT.md
