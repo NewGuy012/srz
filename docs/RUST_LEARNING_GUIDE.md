@@ -256,6 +256,27 @@ In this tutorial, you will build a standalone, working Rust CLI tool from scratc
 
 ---
 
+### 🗺️ High-Level Project Overview: What You Are Building
+
+Here is the visual roadmap of data flow through `mini-srz`:
+
+```mermaid
+flowchart TD
+    User(["Terminal User<br/><code>cargo run -- &lt;URL&gt; [--model NAME]</code>"]) --> ParseStep["1. Parse Arguments<br/><code>Config::from_args(env::args())</code><br/><i>(Standard Iterator & Match Guards)</i>"]
+
+    ParseStep --> FetchStep["2. Fetch Webpage<br/><code>fetch_page_text(url)</code><br/><i>(reqwest async non-blocking GET)</i>"]
+
+    FetchStep --> CleanStep["3. Strip HTML Tags<br/><code>strip_html_tags(html)</code><br/><i>(Pure Rust enum HtmlState machine)</i>"]
+
+    CleanStep --> SliceStep["4. Truncate Safely<br/><code>truncate_to_char_limit(text, max_chars)</code><br/><i>(char_indices zero-copy &str)</i>"]
+
+    SliceStep --> LLMStep["5. Summarize via AI<br/><code>summarize_with_llm(base_url, model, text)</code><br/><i>(serde JSON POST with borrowed lifetimes)</i>"]
+
+    LLMStep --> Output(["Terminal Display<br/><i>Clean, formatted bullet-point summary</i>"])
+```
+
+---
+
 ### 🎯 The Educational Goal: Maximum Concepts, Minimum Packages
 
 Rather than relying on heavy third-party frameworks for CLI parsing (`clap`), HTML DOM parsing (`scraper`), and error handling (`anyhow`), we keep external dependencies to the **absolute bare minimum** (just an async HTTP client and JSON serializer).
@@ -324,6 +345,17 @@ serde_json = "1.0"
 ### Step 3: CLI Parsing with `std::env::args()` and Match Guards
 
 Instead of pulling in a 50,000-line external CLI crate, we model our configuration with a `struct` and parse arguments directly using Rust's standard iterator methods:
+
+#### How the Argument Token Stream Works:
+```
+User command: mini-srz https://example.com --model llama3 --max-chars 5000
+
+Token Stream (args: impl Iterator<Item = String>):
+  [0] "mini-srz"             --> Skipped by args.next() (executable name)
+  [1] "https://example.com"  --> Match guard (no '-' prefix): url = Some(...)
+  [2] "--model"              --> Matched flag: consumes next token [3] "llama3"
+  [4] "--max-chars"          --> Matched flag: consumes next token [5] "5000"
+```
 
 ```rust
 struct Config {
@@ -404,7 +436,33 @@ impl Config {
 
 ### Step 4: HTML Stripping with a Pure Rust State Machine
 
-Webpages contain HTML tags (`<p>`, `<div>`) and JavaScript/CSS blocks (`<script>`, `<style>`). We can strip them cleanly in pure Rust using an `enum` state machine:
+Webpages contain HTML tags (`<p>`, `<div>`) and JavaScript/CSS blocks (`<script>`, `<style>`). We can strip them cleanly in pure Rust using an `enum` state machine.
+
+#### State Machine Flow:
+```mermaid
+stateDiagram-v2
+    [*] --> Text: Start scanning characters
+    Text --> InsideTag: Read '<'
+    InsideTag --> InsideScriptOrStyle: Tag is <script> or <style>
+    InsideTag --> Text: Read '>' (Normal tag or newline)
+    InsideScriptOrStyle --> Text: Read '</script>' or '</style>'
+    Text --> Text: Keep visible text characters
+```
+
+#### Sample Transformation:
+```html
+<!-- Input HTML: -->
+<article>
+  <h1>Rust in 2026</h1>
+  <p>Rust is <b>safe</b> and fast.</p>
+  <script>analytics.track();</script>
+</article>
+
+<!-- Output Text: -->
+Rust in 2026
+
+Rust is safe and fast.
+```
 
 ```rust
 enum HtmlState {
@@ -481,6 +539,19 @@ fn strip_html_tags(html: &str) -> String {
 
 In Rust, strings are stored as **UTF-8 bytes**. If you slice raw bytes (`&text[..5000]`), your program will panic if index 5000 splits a multi-byte character (like an emoji or foreign letter) in half!
 
+#### Visualizing UTF-8 Memory Layout vs. Byte Slicing:
+```
+Text: "Hi 🦀" (4 characters, 7 bytes total in memory)
+
+Character:   'H'      'i'      ' '     🦀 (Ferris the Crab emoji)
+Byte Index:   0        1        2       3     4     5     6
+Byte Value:  [72]    [105]     [32]    [240, 159, 166, 128]
+
+❌ text[..5]                --> CRASH: Byte 5 is in the middle of 🦀!
+✅ char_indices().nth(3)    --> byte 3: "Hi "
+✅ char_indices().nth(4)    --> byte 7: "Hi 🦀" (safe, zero-copy slice!)
+```
+
 Here is the safe way to truncate text in Rust without memory allocations:
 
 ```rust
@@ -502,6 +573,23 @@ fn truncate_to_char_limit(text: &str, max_chars: usize) -> &str {
 ---
 
 ### Step 6: Calling the Local LLM with Lifetimes & Zero-Copy
+
+#### API Request/Response Flow:
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant CLI as mini-srz (Client)
+    participant LLM as Local LLM (Ollama / LM Studio)
+
+    User->>CLI: Run with webpage URL
+    CLI->>CLI: Fetch HTML & strip tags into clean text
+    CLI->>LLM: POST /v1/chat/completions (ChatRequest JSON)
+    Note over CLI,LLM: Borrowed strings (&'a str) - zero memory copies
+    LLM-->>CLI: 200 OK (ChatResponse JSON)
+    CLI->>CLI: Extract choices[0].message.content via Option
+    CLI->>User: Display summary in terminal
+```
 
 Define the request and response shapes matching OpenAI's `/v1/chat/completions` API:
 
@@ -911,6 +999,21 @@ async fn main() {
    ```bash
    cargo run -- https://en.wikipedia.org/wiki/Rust_(programming_language) --model llama3
    ```
+
+#### Sample Terminal Output:
+```text
+🌐 Scraping: https://en.wikipedia.org/wiki/Rust_(programming_language)
+📄 Extracted 42,108 characters of text.
+🤖 Generating summary with model 'llama3'...
+
+==================================================
+SUMMARY
+==================================================
+• Core Philosophy: Rust is a multi-paradigm, systems language emphasizing performance, type safety, and memory safety without a garbage collector.
+• Memory Safety: Employs an ownership system with compile-time borrow checking, eliminating data races, dangling pointers, and buffer overflows.
+• Tooling Ecosystem: Bundled with Cargo for package management, automated builds, testing, and dependency resolution.
+• Adoption: Extensively utilized in production by Google (Android/Chromium), Microsoft (Windows kernel), Amazon (AWS), and the Linux kernel.
+```
 
 ---
 
