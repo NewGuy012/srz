@@ -22,6 +22,20 @@ All notable changes to `srz` are documented in this file.
 
 ---
 
+## v0.6.1
+
+### Summary
+
+> Updates core dependencies to their latest major releases (`feed-rs` v3, `dom_smoothie` v0.19, `tiktoken-rs` v0.12, `rustyline` v19, `quick-xml` v0.42), modernizes CI crates.io release workflows, and improves development tooling.
+
+### Changes
+- **Dependency Upgrades**: Upgraded parsing and ingestion libraries (`feed-rs` 3, `dom_smoothie` 0.19, `tiktoken-rs` 0.12, `rustyline` 19, `quick-xml` 0.42, and `html-escape` 0.3) for improved feed compatibility, token budgeting, and terminal prompt ergonomics.
+- **CI / Crates.io Release Hardening**: Modernized Cargo token configuration to `CARGO_REGISTRY_TOKEN` and added idempotent crates.io publishing to ensure reliable automated releases and retry resilience.
+- **Release Automation**: Updated `./scripts/release.sh` to default to patch version increments (`0.6.0` -> `0.6.1`).
+- **Developer Experience**: Added standard Git pre-commit hooks and format-on-save configuration enforcing `cargo fmt` across all staged Rust sources.
+
+---
+
 ## v0.6.0
 
 ### Summary
