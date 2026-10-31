@@ -22,6 +22,20 @@ All notable changes to `srz` are documented in this file.
 
 ---
 
+## v0.6.2
+
+### Summary
+
+> Expands project documentation with the official mdBook static website, brand logo assets, and architectural and learning guides.
+
+### Changes
+- **Documentation Website**: Launched official mdBook documentation site at `https://newguy012.github.io/srz/` with complete CLI guides and tutorials.
+- **Book Refresh & Logo**: Synchronized all `book/src` documentation with current CLI features, updated configuration schemas, and added the official logo banner to the landing page.
+- **Rust Guide & Security Audit**: Added `RUST_LEARNING_GUIDE.md` systems architecture case study and `SECURITY_AUDIT.md`.
+- **README & Overview References**: Integrated doc site links across `README.md` and `docs/OVERVIEW.md`.
+
+---
+
 ## v0.6.1
 
 ### Summary
