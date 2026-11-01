@@ -90,7 +90,27 @@ pub fn write_private_file(path: &Path, contents: impl AsRef<[u8]>) -> std::io::R
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
     use super::*;
+
+    #[test]
+    fn test_non_empty_env_path() {
+        assert_eq!(non_empty_env_path("SRZ_NON_EXISTENT_VAR_XYZ"), None);
+    }
+
+    #[test]
+    fn test_create_and_write_private_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("subdir");
+        create_private_dir_all(&dir).unwrap();
+        assert!(dir.is_dir());
+
+        let file_path = dir.join("test_write.txt");
+        write_private_file(&file_path, b"test private content").unwrap();
+
+        let read_back = fs::read(&file_path).unwrap();
+        assert_eq!(read_back, b"test private content");
+    }
 
     #[cfg(unix)]
     #[test]

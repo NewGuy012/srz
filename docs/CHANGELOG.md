@@ -30,6 +30,7 @@ All notable changes to `srz` are documented in this file.
 
 ### Changes
 - **Dependency Resolution**: Removed `rust-version` constraint to allow Cargo's 2024 resolver to freely select the latest SemVer-compatible releases (including `uuid` v1.29.0) without holding packages back or emitting MSRV warnings.
+- **Cross-Platform CI & Clippy Fixes**: Resolved target-specific unused import warnings in `system::hardware` and `system::fs_util` across Linux and Windows environments, adding cross-platform test coverage.
 
 ---
 
