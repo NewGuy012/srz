@@ -2,32 +2,31 @@
 
 `srz` reads its persistent settings from `~/.config/srz/config.toml` (or `$XDG_CONFIG_HOME/srz/config.toml` on Linux, `%APPDATA%\srz\config.toml` / `$env:APPDATA\srz\config.toml` on Windows).
 
-You can generate a starter configuration file at any time using:
+You can generate a starter configuration file tailored to your machine's hardware at any time using:
 
 ```bash
 srz config init
 ```
 
-> 💡 **Tip**: Run `srz doctor` in your terminal to inspect your machine's physical RAM and get an immediate recommendation for the best `model` name and `context_window` setting.
+> 💡 **Tip**: When run, `srz config init` automatically detects your physical RAM and chip architecture, setting the recommended `model` and `context_window` out of the box. You can also run `srz recommend` at any time to inspect your hardware specs and launch commands.
 
 ---
 
-## Example `config.toml`
+## Example Hardware-Tailored `config.toml`
 
 ```toml
 # srz (Summarize) configuration file
 # Default path: ~/.config/srz/config.toml
+# Tailored for host: Apple M-Series (24.0 GB RAM / 24–36 GB Tier)
 
 # Default local LLM endpoint (e.g. Llama-macOS, Llama-Windows, llama.cpp, Ollama)
 base_url = "http://localhost:9931/v1"
 model = "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
+context_window = 65536
 api_key = ""
 
 # Default summary style: concise (default), detailed, bullets
 style = "concise"
-
-# Optional context window override (tokens; auto-detected from server if omitted)
-# context_window = 32768
 
 # Maximum completion tokens (thinking + summary tokens)
 max_tokens = 8192
@@ -35,11 +34,11 @@ max_tokens = 8192
 # Auto-open generated HTML view in your browser (default: false)
 open = false
 
+# Parallel chunk concurrency for map-reduce
+concurrency = 1
+
 # Stream tokens live to stdout (default: false)
 stream = false
-
-# Concurrency limit for parallel map-reduce document chunking
-concurrency = 1
 
 # Storage budget and retention policies
 [cache]
@@ -56,18 +55,20 @@ base_url = "https://api.openai.com/v1"
 model = "gpt-4o-mini"
 api_key = "sk-..."
 
-# Local fast model profile (e.g. Ollama)
+# Quick mode: Fast concise summaries for news and short articles
 [profiles.fast]
-base_url = "http://localhost:11434/v1"
-model = "qwen2.5:3b"
+base_url = "http://localhost:9931/v1"
+model = "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
 style = "concise"
+context_window = 8192
 
-# Local deep reasoning profile
+# Deep research / book mode: Full synthesis with maximum context window
 [profiles.deep]
-base_url = "http://localhost:11434/v1"
-model = "deepseek-r1:14b"
+base_url = "http://localhost:9931/v1"
+model = "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
 style = "detailed"
-max_tokens = 16384
+context_window = 65536
+max_tokens = 8192
 
 # Scripting profile with spinners disabled and cache bypassed
 [profiles.quiet]

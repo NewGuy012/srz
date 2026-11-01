@@ -37,12 +37,15 @@
   export OPENAI_BASE_URL="https://api.openai.com/v1" OPENAI_MODEL="gpt-4o-mini" OPENAI_API_KEY="sk-..."
   ```
 
-### Verify Connectivity
+### Verify Connectivity & Recommendations
 
-Test your connection and inspect available models:
+Get an instant recommendation for your hardware and test connection health:
 
 ```bash
-# Check connectivity, cache health, and database integrity
+# Instant model and context window recommendation
+srz recommend
+
+# Full connectivity, cache health, and database diagnostics
 srz doctor
 
 # List models reported by the backend
@@ -55,33 +58,50 @@ srz models
 
 Before running your first summary, you can easily determine which model and context window to select based on your computer's RAM.
 
-### 1-Click Auto-Advisor: `srz doctor`
+### 1-Command Auto-Advisor: `srz recommend`
 
-Run `srz doctor` to inspect your host hardware and receive a customized model, context length, and launch command:
+Run `srz recommend` to inspect your host hardware and receive a customized model, context length, and ready launch commands for both `llama.cpp` and `Ollama`:
 
 ```bash
-srz doctor
+srz recommend
 ```
 
 ```text
-=== srz System & LLM Health Diagnostics ===
+=== srz Recommended Model & Context Length ===
 
-Hardware Profile & Recommendations:
-  • Host Device: Apple M5 Pro (24.0 GB RAM / 24–36 GB Tier (High-End Pro / Max Laptop))
-  • Recommended Family: Google Gemma 4 (High fidelity Q8_0, laptop battery & memory optimized)
-  • Recommended Model: ggml-org/gemma-4-E4B-it-GGUF:Q8_0 (Q8_0)
-  • Recommended Context: 65536 tokens
-  • Recommended Command: llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 65536 --port 9931
+Host Machine:
+  • Device: Apple M5 Pro
+  • Memory: 24.0 GB RAM (24–36 GB Tier (High-End Pro / Max Laptop))
+
+Recommended Local LLM Setup:
+  • Family:  Google Gemma 4 (High-fidelity Q8_0, laptop battery & memory optimized)
+  • Model:   ggml-org/gemma-4-E4B-it-GGUF:Q8_0 (Q8_0)
+  • Context: 65536 tokens (~8.5 GB total)
+
+Ready-to-Run Launch Commands:
+  • llama.cpp / Llama-macOS / Llama-Windows (default port 9931):
+      llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 65536 --port 9931
+  • Ollama:
+      ollama run gemma2:9b --ctx-size 65536
+
+Summary Synthesis Speed:
+  💡 Fast 1-Pass Summaries: Documents up to ~45k tokens (~183 pages) synthesize in a single pass.
+     Larger documents automatically use parallel map-reduce chunking without OOM crashes.
 ```
 
 ### Hardware Tier Reference Matrix
 
-| Host Memory | Typical Laptops / Devices | Recommended Model | Quantization | Context Window (`n_ctx`) | Approximate RAM Usage | Ready Launch Command |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **8 GB RAM** | MacBook Air 8GB, Standard Laptops | `gemma-4-E4B-it` | **`Q8_0`** | **8,192** (8k) | ~5.0 GB total | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 8192 --port 9931` |
-| **16 GB RAM** | MacBook Pro/Air 16GB, Standard PC Laptops | `gemma-4-E4B-it` | **`Q8_0`** | **32,768** (32k) | ~6.5 GB total | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 32768 --port 9931` |
-| **24–36 GB RAM** | MacBook Pro M Pro / Max, 32GB PCs | `gemma-4-E4B-it` | **`Q8_0`** | **65,536** (64k) | ~8.5 GB total | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 65536 --port 9931` |
-| **64+ GB RAM** | MacBook Pro M Max, Mac Studio, Workstations | `gemma-4-26B-it` | **`Q8_0`** | **131,072** (128k) | ~28–32 GB total | `llama-server -m gemma-4-26B-it-Q8_0.gguf -c 131072 --port 9931` |
+| Host Memory | Typical Devices | Recommended Model | Quantization | Context Window (`n_ctx`) | Approximate RAM Usage | llama.cpp Launch Command | Ollama Launch Command |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **8 GB RAM** | MacBook Air 8GB, Thin-and-light Laptops | `gemma-4-E4B-it` | **`Q8_0`** | **8,192** (8k) | ~5.0 GB total | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 8192 --port 9931` | `ollama run gemma2:9b --ctx-size 8192` |
+| **16 GB RAM** | MacBook Pro/Air 16GB, Standard PC Laptops | `gemma-4-E4B-it` | **`Q8_0`** | **32,768** (32k) | ~6.5 GB total | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 32768 --port 9931` | `ollama run gemma2:9b --ctx-size 32768` |
+| **24–36 GB RAM** | MacBook Pro M Pro / Max, 32GB PCs | `gemma-4-E4B-it` | **`Q8_0`** | **65,536** (64k) | ~8.5 GB total | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 65536 --port 9931` | `ollama run gemma2:9b --ctx-size 65536` |
+| **64+ GB RAM** | MacBook Pro M Max, Mac Studio, Workstations | `gemma-4-26B-it` | **`Q8_0`** | **131,072** (128k) | ~28–32 GB total | `llama-server -m gemma-4-26B-it-Q8_0.gguf -c 131072 --port 9931` | `ollama run gemma2:27b --ctx-size 131072` |
+
+### Single-Pass vs. Map-Reduce Chunking
+
+- **1-Pass Mode**: When document token count $\le \sim 70\%$ of the configured server context window (`n_ctx`), `srz` synthesizes the document in one pass with complete cross-chapter coherence.
+- **Chunking Mode**: When documents exceed this threshold (e.g. 200+ page books or large document bundles on small context servers), `srz` automatically partitions the text into token-budgeted chunks, summarizes them in parallel up to the server's slot capacity (`total_slots`), and executes a final reduction pass.
 
 ### Why We Recommend Google Gemma 4 (`Q8_0`) for Laptops
 

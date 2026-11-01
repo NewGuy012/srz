@@ -101,6 +101,7 @@ flowchart TD
 | | `srz config <init\|show\|path>` | Manages and inspects the local configuration file. |
 | | `srz cache <dir\|size\|clean\|prune>` | Cache inspection, TTL/LRU pruning (`--older-than`, `--max-size`), and safe clean (`--reset-db`). |
 | | `srz models` | Lists available models reported by the local LLM backend. |
+| | `srz recommend` | Recommends optimal model, context window, and ready launch commands for host hardware. |
 | | `srz doctor` | Tests backend reachability, latency, cache health, and database integrity. |
 | | `srz upgrade [--check\|--force]` | Safe, in-place binary self-updater with SHA-256 integrity verification. |
 | | `srz completions <SHELL>` | Generates autocomplete scripts for bash, zsh, fish, powershell, and elvish. |
@@ -110,33 +111,54 @@ flowchart TD
 
 To make choosing a local model effortless before running any summarization, `srz` includes automated hardware profiling and an advisory matrix.
 
-### One-Command Auto-Advisor: `srz doctor`
+### One-Command Auto-Advisor: `srz recommend` & `srz doctor`
 
-You can run `srz doctor` at any time to automatically inspect your host hardware and receive an optimal configuration:
+You can run `srz recommend` at any time for an instant, focused advisory card, or `srz doctor` for full system diagnostics:
 
 ```bash
+# Instant hardware & model recommendation card
+srz recommend
+
+# Or comprehensive system, network, database & cache audit
 srz doctor
 ```
 
 ```text
-=== srz System & LLM Health Diagnostics ===
+=== srz Recommended Model & Context Length ===
 
-Hardware Profile & Recommendations:
-  • Host Device: Apple M-Series (24.0 GB RAM / 24–36 GB Tier (High-End Pro / Max Laptop))
-  • Recommended Family: Google Gemma 4 (High fidelity Q8_0, laptop battery & memory optimized)
-  • Recommended Model: ggml-org/gemma-4-E4B-it-GGUF:Q8_0 (Q8_0)
-  • Recommended Context: 65536 tokens
-  • Recommended Command: llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 65536 --port 9931
+Host Machine:
+  • Device: Apple M5 Pro
+  • Memory: 24.0 GB RAM (24–36 GB Tier (High-End Pro / Max Laptop))
+
+Recommended Local LLM Setup:
+  • Family:  Google Gemma 4 (High-fidelity Q8_0, laptop battery & memory optimized)
+  • Model:   ggml-org/gemma-4-E4B-it-GGUF:Q8_0 (Q8_0)
+  • Context: 65536 tokens (~8.5 GB total)
+
+Ready-to-Run Launch Commands:
+  • llama.cpp / Llama-macOS / Llama-Windows (default port 9931):
+      llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 65536 --port 9931
+  • Ollama:
+      ollama run gemma2:9b --ctx-size 65536
+
+Summary Synthesis Speed:
+  💡 Fast 1-Pass Summaries: Documents up to ~45k tokens (~183 pages) synthesize in a single pass.
+     Larger documents automatically use parallel map-reduce chunking without OOM crashes.
 ```
 
 ### Hardware Tier Reference Matrix
 
-| Host RAM Tier | Typical Systems | Recommended Model | Precision | Context Window (`n_ctx`) | Total RAM Footprint | Recommended Launch Command |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **8 GB RAM** | M1/M2/M3 Air, Base 8GB Laptops | `gemma-4-E4B-it` | **`Q8_0`** | **8,192** (8k) | ~5.0 GB total | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 8192 --port 9931` |
-| **16 GB RAM** | M-series 16GB, Standard PC Laptops | `gemma-4-E4B-it` | **`Q8_0`** | **32,768** (32k) | ~6.5 GB total | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 32768 --port 9931` |
-| **24–36 GB RAM** | M Pro / Max (24–36GB), 32GB PCs | `gemma-4-E4B-it` | **`Q8_0`** | **65,536** (64k) | ~8.5 GB total | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 65536 --port 9931` |
-| **64+ GB RAM** | M Max / Studio (64GB+), Workstations | `gemma-4-26B-it` | **`Q8_0`** | **131,072** (128k) | ~28–32 GB total | `llama-server -m gemma-4-26B-it-Q8_0.gguf -c 131072 --port 9931` |
+| Host RAM Tier | Typical Systems | Recommended Model | Precision | Context Window (`n_ctx`) | Total RAM Footprint | llama.cpp Launch Command | Ollama Launch Command |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **8 GB RAM** | M1/M2/M3 Air, Base 8GB Laptops | `gemma-4-E4B-it` | **`Q8_0`** | **8,192** (8k) | ~5.0 GB total | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 8192 --port 9931` | `ollama run gemma2:9b --ctx-size 8192` |
+| **16 GB RAM** | M-series 16GB, Standard PC Laptops | `gemma-4-E4B-it` | **`Q8_0`** | **32,768** (32k) | ~6.5 GB total | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 32768 --port 9931` | `ollama run gemma2:9b --ctx-size 32768` |
+| **24–36 GB RAM** | M Pro / Max (24–36GB), 32GB PCs | `gemma-4-E4B-it` | **`Q8_0`** | **65,536** (64k) | ~8.5 GB total | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 65536 --port 9931` | `ollama run gemma2:9b --ctx-size 65536` |
+| **64+ GB RAM** | M Max / Studio (64GB+), Workstations | `gemma-4-26B-it` | **`Q8_0`** | **131,072** (128k) | ~28–32 GB total | `llama-server -m gemma-4-26B-it-Q8_0.gguf -c 131072 --port 9931` | `ollama run gemma2:27b --ctx-size 131072` |
+
+### Single-Pass Synthesis vs. Map-Reduce Chunking
+
+- **1-Pass Mode (Optimal)**: When document token count $\le \sim 70\%$ of server context window (`n_ctx`), `srz` synthesizes the entire document in one LLM call. This preserves narrative continuity and produces the highest-fidelity structured summary.
+- **Map-Reduce Mode (Automatic)**: When a document exceeds the single-pass limit (e.g. a 300-page book or 100-page PDF on an 8k context server), `srz` dynamically partitions content into overlapping token windows sized by [`DynamicBudget`](file:///Users/myoo/Documents/Repo/srz/src/engine/budget.rs), summarizes chunks concurrently up to the server's detected slot limit (`total_slots`), and performs a final reduction pass.
 
 ### Why Google Gemma 4 (`Q8_0`) on Laptops?
 

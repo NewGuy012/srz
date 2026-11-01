@@ -184,33 +184,39 @@ srz config <SUBCOMMAND>
 
 * `srz config path`: Display path to `config.toml` and report whether it exists.
 * `srz config show`: Print currently active configuration settings.
-* `srz config init`: Generate a starter `~/.config/srz/config.toml` file with documented options.
+* `srz config init`: Generate a starter `~/.config/srz/config.toml` file tailored to your host RAM, CPU, and recommended context window.
 
 ---
 
-## 9. Diagnostics (`srz doctor` & `srz models`)
+## 9. Diagnostics & Recommendations (`srz recommend`, `srz doctor`, `srz models`)
 
 ```bash
-# Diagnose host hardware, LLM context window & slots, endpoint latency, DuckDB integrity, cache health, and pager setup
+# Instant hardware & model recommendation card with ready launch commands
+srz recommend
+srz recommend --json
+
+# Comprehensive diagnostic audit (hardware, LLM latency, n_ctx, DuckDB, cache, pager)
 srz doctor
 
 # List available models reported by the connected backend
 srz models
 ```
 
-### Hardware & LLM Advisor in `srz doctor`
-Running `srz doctor` automatically profiles host memory and queries server properties:
+### Hardware & LLM Advisor in `srz recommend` & `srz doctor`
+Running `srz recommend` or `srz doctor` automatically profiles host memory and suggests the optimal local configuration:
 * **Host Hardware Profile**: Displays detected host RAM (e.g. 24 GB RAM, `Tier32GB`) and CPU architecture.
 * **Hardware Steering Advisor**: Recommends high-fidelity Gemma 4 models (e.g., `ggml-org/gemma-4-E4B-it-GGUF:Q8_0` or `26B-A4B-it:Q8_0`) with the optimal context window for your RAM.
-* **Server Capabilities**: Probes server `n_ctx` (context length) and `total_slots` (concurrency capacity) from `llama.cpp` (`/props`) or `Ollama` (`/api/show`).
+* **Multi-Runner Commands**: Ready-to-copy launch commands for both `llama-server` and `Ollama`.
+* **Single-Pass Synthesis Ceiling**: Displays the token threshold (~70% of context window) before map-reduce chunking kicks in.
+* **Server Capabilities (`srz doctor`)**: Probes server `n_ctx` (context length) and `total_slots` (concurrency capacity) from `llama.cpp` (`/props`) or `Ollama` (`/api/show`).
 * **Sub-Optimal Context Alerts**: Warns if server context window is configured below 8,192 tokens or concurrency slots are bottlenecked.
 
-| Host Memory | Recommended Model | Precision | Context Window (`n_ctx`) | Total RAM Footprint | Launch Command |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **8 GB RAM** | `gemma-4-E4B-it` | `Q8_0` | **8,192** (8k) | ~5.0 GB | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 8192 --port 9931` |
-| **16 GB RAM** | `gemma-4-E4B-it` | `Q8_0` | **32,768** (32k) | ~6.5 GB | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 32768 --port 9931` |
-| **24–36 GB RAM** | `gemma-4-E4B-it` | `Q8_0` | **65,536** (64k) | ~8.5 GB | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 65536 --port 9931` |
-| **64+ GB RAM** | `gemma-4-26B-it` | `Q8_0` | **131,072** (128k) | ~28–32 GB | `llama-server -m gemma-4-26B-it-Q8_0.gguf -c 131072 --port 9931` |
+| Host Memory | Recommended Model | Precision | Context Window (`n_ctx`) | Total RAM Footprint | llama.cpp Launch Command | Ollama Launch Command |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **8 GB RAM** | `gemma-4-E4B-it` | `Q8_0` | **8,192** (8k) | ~5.0 GB | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 8192 --port 9931` | `ollama run gemma2:9b --ctx-size 8192` |
+| **16 GB RAM** | `gemma-4-E4B-it` | `Q8_0` | **32,768** (32k) | ~6.5 GB | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 32768 --port 9931` | `ollama run gemma2:9b --ctx-size 32768` |
+| **24–36 GB RAM** | `gemma-4-E4B-it` | `Q8_0` | **65,536** (64k) | ~8.5 GB | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 65536 --port 9931` | `ollama run gemma2:9b --ctx-size 65536` |
+| **64+ GB RAM** | `gemma-4-26B-it` | `Q8_0` | **131,072** (128k) | ~28–32 GB | `llama-server -m gemma-4-26B-it-Q8_0.gguf -c 131072 --port 9931` | `ollama run gemma2:27b --ctx-size 131072` |
 
 ---
 

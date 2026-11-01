@@ -29,6 +29,9 @@ All notable changes to `srz` are documented in this file.
 > Introduces zero-worry dynamic token sizing, backend server capability discovery, server-native `/tokenize` integration, high-fidelity Gemma 4 laptop hardware steering, and non-intrusive advisor hints.
 
 ### Changes
+- **Instant Hardware Advisor (`srz recommend`)**: Added a dedicated lightweight command (supporting `--json` mode) that instantly inspects host RAM tier and outputs recommended Gemma 4 `Q8_0` model, optimal context window, RAM footprint, single-pass synthesis thresholds, and ready launch commands for both `llama.cpp` and `Ollama`.
+- **Hardware-Tailored Config Generation**: Upgraded `srz config init` to auto-detect host physical memory and CPU architecture, generating a `config.toml` pre-populated with optimal model and context window settings.
+- **Connection Error Pre-Flight Guidance**: Enhanced LLM unreachable error handling to automatically suggest the exact hardware-recommended launch command and `srz recommend` quick start.
 - **Zero-Worry Dynamic Sizing (`DynamicBudget`)**: Automatically detects server context window (`n_ctx`) and slot concurrency (`total_slots`), mathematically sizing prompt budgets, chunk overlaps, and completion headroom to eliminate context overflows and OOM errors.
 - **Server-Native Tokenization (`POST /tokenize`)**: Queries native `/tokenize` endpoints (in `llama.cpp`, `Ollama`, and `vLLM`) for exact 0% tokenizer drift across code and multilingual text, gracefully falling back to `tiktoken-rs`.
 - **DuckDB Capability Caching with Invalidation**: Caches probed server operational parameters in `cache.duckdb` (`cache_server_capabilities`) for sub-millisecond startup, automatically invalidating whenever a model change or server restart is detected.

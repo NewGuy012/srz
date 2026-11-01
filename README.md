@@ -110,11 +110,11 @@ cargo install --path .
 ## Usage
 
 ### 0. Recommend Model & Context Length for Your Hardware
-Before summarizing, run `srz doctor` to inspect your host RAM/CPU and get the recommended model, optimal context window, and exact launch command:
+Before summarizing, run `srz recommend` (or `srz doctor`) to instantly inspect your host RAM/CPU and get the recommended model, optimal context window, and exact launch commands:
 ```bash
-srz doctor
+srz recommend
 ```
-> 💡 **One-Click Decision**: Auto-detects whether your device has 8GB, 16GB, 24–36GB, or 64GB+ unified memory, steers towards high-fidelity Google Gemma 4 (`Q8_0`), selects the optimal context length (8k, 32k, 64k, or 128k), and prints the ready-to-run startup command!
+> 💡 **One-Command Decision**: Auto-detects whether your device has 8GB, 16GB, 24–36GB, or 64GB+ unified memory, steers towards high-fidelity Google Gemma 4 (`Q8_0`), selects the optimal context length (8k, 32k, 64k, or 128k), and prints ready-to-run startup commands for llama.cpp and Ollama!
 
 ### Summarize
 ```bash
@@ -153,6 +153,7 @@ srz cache prune --max-size 500MB # Enforce size limit
 srz cache clean                  # Clean cache files
 srz cache clean --reset-db       # Full database reset
 srz doctor                       # Backend diagnostics
+srz recommend                    # Model & hardware advisor
 ```
 
 Run `srz --help` to see all available subcommands and flags.
@@ -174,12 +175,12 @@ Run `srz --help` to see all available subcommands and flags.
 `srz` connects to any OpenAI-compatible API. Local inference is preferred for privacy and zero cost, but cloud providers are fully supported.
 
 > 💡 **Not sure which model or context length to choose?**
-> Run `srz doctor` in your terminal. It instantly detects your machine's physical RAM, recommends the best high-fidelity Google Gemma 4 model (`Q8_0`), selects the optimal context length, and outputs the exact command to launch it!
+> Run `srz recommend` in your terminal. It instantly detects your machine's physical RAM, recommends the best high-fidelity Google Gemma 4 model (`Q8_0`), selects the optimal context length, and outputs ready launch commands for both `llama.cpp` and `Ollama`!
 
 ### Local LLMs (Preferred)
 
 - **macOS & Windows (Default)**: Install [Llama-macOS](https://github.com/ggml-org/Llama-macOS) (macOS) or [Llama-Windows](https://github.com/ggml-org/Llama-Windows) (Windows). Launch the app and load a model—`srz` connects automatically to `http://localhost:9931/v1` with zero setup.
-- **Linux**: Build or install [llama.cpp](https://github.com/ggml-org/llama.cpp) and launch `llama-server`:
+- **Linux & llama.cpp**: Build or install [llama.cpp](https://github.com/ggml-org/llama.cpp) and launch `llama-server`:
   ```bash
   # Start llama-server on port 9931 with recommended Gemma 4 Q8_0 model:
   llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 32768 --port 9931
@@ -188,7 +189,12 @@ Run `srz --help` to see all available subcommands and flags.
   llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 32768 --port 8080
   export OPENAI_BASE_URL="http://localhost:8080/v1"
   ```
-- **Hardware & Context Diagnostics**: Run `srz doctor` to inspect your host hardware profile, detected server context length (`n_ctx`), native tokenizer status, and recommended launch commands.
+- **Ollama**: Run with explicit context window size (Ollama defaults to only 2048 tokens unless specified):
+  ```bash
+  OLLAMA_NUM_PARALLEL=1 ollama run gemma2:9b --ctx-size 32768
+  export OPENAI_BASE_URL="http://localhost:11434/v1" OPENAI_MODEL="gemma2:9b"
+  ```
+- **Hardware & Context Recommendations**: Run `srz recommend` for a fast 1-second advisory card, or `srz doctor` for full diagnostics including network latency, DuckDB integrity, and server context probing (`n_ctx`).
 - **Manual Context Override**: Override auto-detected context length on the fly via `--context-window <NUM>` (or `context_window` in `config.toml`).
 
 ### Cloud Providers (Optional)
@@ -202,14 +208,15 @@ export OPENAI_BASE_URL="https://api.openai.com/v1" OPENAI_MODEL="gpt-4o-mini" OP
 srz "1984" --base-url "https://api.openai.com/v1" --model "gpt-4o-mini" --api-key "sk-..."
 ```
 
-### Profile Switching (`~/.config/srz/config.toml`)
+### Hardware-Tailored Configuration (`srz config init`)
 
-Run `srz config init` to generate a starter config, then configure named profiles:
+Run `srz config init` to generate a `~/.config/srz/config.toml` file pre-tailored to your computer's RAM, optimal model, and context window:
 
 ```toml
-# Default local model
+# Default local model tailored for your hardware
 base_url = "http://localhost:9931/v1"
 model = "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
+context_window = 32768
 
 # Storage limits and retention policies
 [cache]
