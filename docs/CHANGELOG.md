@@ -22,6 +22,17 @@ All notable changes to `srz` are documented in this file.
 
 ---
 
+## v0.7.1
+
+### Summary
+
+> Removes the `rust-version` constraint from `Cargo.toml`, allowing Cargo's resolver to select the latest compatible dependencies without MSRV fallbacks or warnings.
+
+### Changes
+- **Dependency Resolution**: Removed `rust-version` constraint to allow Cargo's 2024 resolver to freely select the latest SemVer-compatible releases (including `uuid` v1.29.0) without holding packages back or emitting MSRV warnings.
+
+---
+
 ## v0.7.0
 
 ### Summary
