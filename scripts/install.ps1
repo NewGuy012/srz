@@ -8,14 +8,20 @@ $Repo = "NewGuy012/srz"
 $Target = "x86_64-pc-windows-msvc"
 $InstallDir = if ($env:INSTALL_DIR) { $env:INSTALL_DIR } else { Join-Path $env:USERPROFILE ".local\bin" }
 
-# Ensure TLS 1.2 is active for web downloads
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+# Ensure TLS 1.2 is enabled without disabling newer protocols like TLS 1.3
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+
+# Architecture check
+if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") {
+    Write-Host "Notice: Detected Windows ARM64; installing x86_64 binary via Windows Prism emulation." -ForegroundColor Cyan
+} elseif ($env:PROCESSOR_ARCHITECTURE -eq "x86" -and -not $env:PROCESSOR_ARCHITEW6432) {
+    throw "32-bit Windows is not supported with prebuilt binaries. Please install from source using 'cargo install srz'."
+}
 
 # Determine download URL
 if ($env:VERSION) {
     if ($env:VERSION -notmatch '^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$') {
-        Write-Error "Invalid version format '$($env:VERSION)'. Must match semver (e.g. '0.4.0' or 'v0.4.0')."
-        exit 1
+        throw "Invalid version format '$($env:VERSION)'. Must match semver (e.g. '0.4.0' or 'v0.4.0')."
     }
     $Tag = if ($env:VERSION.StartsWith("v")) { $env:VERSION } else { "v$($env:VERSION)" }
     $ArchiveName = "srz-$Tag-$Target.zip"
@@ -30,6 +36,9 @@ Write-Host "Installing srz for $Target..." -ForegroundColor Cyan
 $TempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("srz-install-" + [System.Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
 
+$prevProgress = $ProgressPreference
+$ProgressPreference = 'SilentlyContinue'
+
 try {
     $ZipPath = Join-Path $TempDir $ArchiveName
     Invoke-WebRequest -Uri $DownloadUrl -OutFile $ZipPath -UseBasicParsing
@@ -41,7 +50,7 @@ try {
         Invoke-WebRequest -Uri $ShaUrl -OutFile $ShaPath -UseBasicParsing
         $ShaContent = (Get-Content -Path $ShaPath -Raw).Trim()
         $ExpectedHash = ($ShaContent -split '\s+')[0]
-        if (-not [string]::IsNullOrWhiteSpace($ExpectedHash)) {
+        if ($ExpectedHash -match '^[0-9a-fA-F]{64}$') {
             Write-Host "Verifying SHA256 checksum..." -ForegroundColor Cyan
             $ComputedHash = (Get-FileHash -Path $ZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
             if ($ComputedHash -ne $ExpectedHash.ToLowerInvariant()) {
@@ -49,7 +58,7 @@ try {
             }
             Write-Host "✔ Checksum verified successfully." -ForegroundColor Green
         } else {
-            throw "SHA256 checksum file was empty."
+            throw "Checksum file does not contain a valid 64-character SHA256 hash."
         }
     } catch {
         if ($env:FORCE -eq "1") {
@@ -61,14 +70,30 @@ try {
 
     Expand-Archive -Path $ZipPath -DestinationPath $TempDir -Force
 
+    $ExeSource = Join-Path $TempDir "srz.exe"
+    if (-not (Test-Path -Path $ExeSource)) {
+        throw "srz.exe was not found in the extracted archive."
+    }
+
     if (-not (Test-Path -Path $InstallDir)) {
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     }
 
-    $ExeSource = Join-Path $TempDir "srz.exe"
     $ExeDest = Join-Path $InstallDir "srz.exe"
 
-    Copy-Item -Path $ExeSource -Destination $ExeDest -Force
+    # Handle active process replacement (rename locked binary on Windows)
+    if (Test-Path -Path $ExeDest) {
+        try {
+            Copy-Item -Path $ExeSource -Destination $ExeDest -Force
+        } catch {
+            $OldBackup = Join-Path $InstallDir ("srz.old." + [System.Guid]::NewGuid().ToString("N") + ".exe")
+            Move-Item -Path $ExeDest -Destination $OldBackup -Force
+            Copy-Item -Path $ExeSource -Destination $ExeDest -Force
+            Remove-Item -Path $OldBackup -Force -ErrorAction SilentlyContinue
+        }
+    } else {
+        Copy-Item -Path $ExeSource -Destination $ExeDest -Force
+    }
 
     Write-Host "✔ Successfully installed srz to $ExeDest" -ForegroundColor Green
 
@@ -76,13 +101,25 @@ try {
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
     if ($null -eq $UserPath) { $UserPath = "" }
 
-    $PathEntries = $UserPath -split ';' | Where-Object { $_ -ne "" }
-    if ($PathEntries -notcontains $InstallDir) {
-        $NewUserPath = if ($UserPath -eq "") { $InstallDir } else { "$UserPath;$InstallDir" }
+    $NormalizedInstallDir = $InstallDir.TrimEnd('\')
+    $PathEntries = $UserPath -split ';' | Where-Object { $_ -ne "" } | ForEach-Object { $_.TrimEnd('\') }
+
+    if ($PathEntries -notcontains $NormalizedInstallDir) {
+        $NewUserPath = if ($UserPath -eq "") { $NormalizedInstallDir } else { "$UserPath;$NormalizedInstallDir" }
         [Environment]::SetEnvironmentVariable("Path", $NewUserPath, "User")
-        $env:Path = "$env:Path;$InstallDir"
-        Write-Host "✔ Added $InstallDir to your User PATH." -ForegroundColor Green
+        $env:Path = "$env:Path;$NormalizedInstallDir"
+        Write-Host "✔ Added $NormalizedInstallDir to your User PATH." -ForegroundColor Green
         Write-Host "Restart your terminal if 'srz' is not recognized immediately." -ForegroundColor Yellow
+
+        # Broadcast WM_SETTINGCHANGE to notify running Explorer and terminal sessions
+        Add-Type -Namespace Win32 -Name NativeMethods -MemberDefinition @"
+[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+"@ -ErrorAction SilentlyContinue
+        try {
+            $result = [UIntPtr]::Zero
+            [Win32.NativeMethods]::SendMessageTimeout([IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, "Environment", 2, 5000, [ref]$result) | Out-Null
+        } catch {}
     }
 }
 catch {
@@ -90,6 +127,7 @@ catch {
     exit 1
 }
 finally {
+    $ProgressPreference = $prevProgress
     if (Test-Path -Path $TempDir) {
         Remove-Item -Path $TempDir -Recurse -Force -ErrorAction SilentlyContinue
     }
