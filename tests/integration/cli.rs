@@ -798,6 +798,10 @@ fn test_readme_management_and_maintenance_resolution() {
     let cmd19 = Cli::parse_from(["srz", "doctor"]);
     assert_eq!(cmd19.resolve_action().unwrap(), ResolvedAction::Doctor);
 
+    // Recommend
+    let cmd_rec = Cli::parse_from(["srz", "recommend"]);
+    assert_eq!(cmd_rec.resolve_action().unwrap(), ResolvedAction::Recommend);
+
     // Models
     let cmd_models = Cli::parse_from(["srz", "models"]);
     assert_eq!(cmd_models.resolve_action().unwrap(), ResolvedAction::Models);

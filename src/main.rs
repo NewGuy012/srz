@@ -78,6 +78,10 @@ async fn main() -> Result<()> {
                 .await?;
             return Ok(());
         }
+        ResolvedAction::Recommend => {
+            commands::handle_recommend(args.json)?;
+            return Ok(());
+        }
         ResolvedAction::Index => {
             return with_db(|db| commands::handle_index(db, &cache, args.open));
         }

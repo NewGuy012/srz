@@ -237,6 +237,8 @@ pub enum Commands {
     Models,
     /// Diagnose system health, LLM connectivity, database, and cache
     Doctor,
+    /// Recommend optimal model, context window, and ready launch commands for your machine
+    Recommend,
     /// Generate and view the standalone HTML library dashboard
     Index,
     /// Launch the interactive terminal UI library explorer
@@ -361,6 +363,7 @@ pub enum ResolvedAction<'a> {
     },
     Models,
     Doctor,
+    Recommend,
     Index,
     Browse,
     Ask {
@@ -419,6 +422,7 @@ impl Cli {
                 }),
                 Commands::Models => Ok(ResolvedAction::Models),
                 Commands::Doctor => Ok(ResolvedAction::Doctor),
+                Commands::Recommend => Ok(ResolvedAction::Recommend),
                 Commands::Index => Ok(ResolvedAction::Index),
                 Commands::Browse => Ok(ResolvedAction::Browse),
                 Commands::Ask {

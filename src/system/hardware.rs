@@ -47,6 +47,8 @@ pub struct HardwareProfile {
     pub recommended_quant: &'static str,
     pub recommended_context: usize,
     pub recommended_launch_command: String,
+    pub ollama_launch_command: String,
+    pub ram_footprint: &'static str,
 }
 
 impl HardwareProfile {
@@ -61,36 +63,55 @@ impl HardwareProfile {
         let total_memory_gb = total_memory_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
         let tier = HardwareTier::from_bytes(total_memory_bytes);
 
-        let (recommended_model, recommended_quant, recommended_context, model_file) = match tier {
+        let (
+            recommended_model,
+            recommended_quant,
+            recommended_context,
+            model_file,
+            ollama_model,
+            ram_footprint,
+        ) = match tier {
             HardwareTier::Tier8GB => (
                 "ggml-org/gemma-4-E4B-it-GGUF:Q8_0",
                 "Q8_0",
                 8_192,
                 "gemma-4-E4B-it-Q8_0.gguf",
+                "gemma2:9b",
+                "~5.0 GB total",
             ),
             HardwareTier::Tier16GB => (
                 "ggml-org/gemma-4-E4B-it-GGUF:Q8_0",
                 "Q8_0",
                 32_768,
                 "gemma-4-E4B-it-Q8_0.gguf",
+                "gemma2:9b",
+                "~6.5 GB total",
             ),
             HardwareTier::Tier32GB => (
                 "ggml-org/gemma-4-E4B-it-GGUF:Q8_0",
                 "Q8_0",
                 65_536,
                 "gemma-4-E4B-it-Q8_0.gguf",
+                "gemma2:9b",
+                "~8.5 GB total",
             ),
             HardwareTier::Tier64GBPlus => (
                 "ggml-org/gemma-4-26B-it-GGUF:Q8_0",
                 "Q8_0",
                 131_072,
                 "gemma-4-26B-it-Q8_0.gguf",
+                "gemma2:27b",
+                "~28–32 GB total",
             ),
         };
 
         let recommended_launch_command = format!(
             "llama-server -m {} -c {} --port 9931",
             model_file, recommended_context
+        );
+        let ollama_launch_command = format!(
+            "ollama run {} --ctx-size {}",
+            ollama_model, recommended_context
         );
 
         Self {
@@ -102,7 +123,14 @@ impl HardwareProfile {
             recommended_quant,
             recommended_context,
             recommended_launch_command,
+            ollama_launch_command,
+            ram_footprint,
         }
+    }
+
+    /// Returns the approximate single-pass token ceiling (~70% of context window) before chunking kicks in.
+    pub fn one_pass_token_ceiling(&self) -> usize {
+        self.recommended_context * 7 / 10
     }
 }
 
@@ -219,8 +247,15 @@ mod tests {
         assert_eq!(profile.tier, HardwareTier::Tier16GB);
         assert_eq!(profile.recommended_quant, "Q8_0");
         assert_eq!(profile.recommended_context, 32_768);
+        assert_eq!(profile.ram_footprint, "~6.5 GB total");
         assert!(profile.recommended_launch_command.contains("-c 32768"));
         assert!(profile.recommended_launch_command.contains("gemma-4-E4B"));
+        assert!(
+            profile
+                .ollama_launch_command
+                .contains("ollama run gemma2:9b --ctx-size 32768")
+        );
+        assert_eq!(profile.one_pass_token_ceiling(), 32_768 * 7 / 10);
     }
 
     #[test]

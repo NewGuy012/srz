@@ -120,6 +120,8 @@ pub async fn handle_doctor(
                 "recommended_quant": hw.recommended_quant,
                 "recommended_context": hw.recommended_context,
                 "recommended_launch_command": hw.recommended_launch_command,
+                "ollama_launch_command": hw.ollama_launch_command,
+                "ram_footprint": hw.ram_footprint,
             },
             "llm": {
                 "endpoint": args.base_url,
@@ -176,8 +178,12 @@ pub async fn handle_doctor(
         "  • Recommended Model: {} ({})",
         hw.recommended_model, hw.recommended_quant
     );
-    println!("  • Recommended Context: {} tokens", hw.recommended_context);
+    println!(
+        "  • Recommended Context: {} tokens ({})",
+        hw.recommended_context, hw.ram_footprint
+    );
     println!("  • Recommended Command: {}", hw.recommended_launch_command);
+    println!("  • Ollama Command:      {}", hw.ollama_launch_command);
     println!();
 
     // Print LLM status
@@ -295,6 +301,88 @@ pub async fn handle_doctor(
     if let Some(p) = &args.profile {
         println!("  • Active profile: {}", p);
     }
+    println!();
+
+    Ok(())
+}
+
+/// Handles the `srz recommend` subcommand, outputting recommended model, context window,
+/// and ready launch commands based on detected host memory and hardware architecture.
+pub fn handle_recommend(as_json: bool) -> Result<()> {
+    let hw = crate::system::hardware::HardwareProfile::detect();
+    let one_pass_tokens = hw.one_pass_token_ceiling();
+    let one_pass_pages = (one_pass_tokens / 250).max(1);
+
+    if as_json {
+        let report = serde_json::json!({
+            "hardware": {
+                "device": hw.chip_name,
+                "total_memory_bytes": hw.total_memory_bytes,
+                "total_memory_gb": hw.total_memory_gb,
+                "tier": hw.tier.display_name(),
+            },
+            "recommendations": {
+                "family": "Google Gemma 4",
+                "model": hw.recommended_model,
+                "quantization": hw.recommended_quant,
+                "context_window": hw.recommended_context,
+                "ram_footprint": hw.ram_footprint,
+                "one_pass_token_ceiling": one_pass_tokens,
+            },
+            "launch_commands": {
+                "llama_server": hw.recommended_launch_command,
+                "ollama": hw.ollama_launch_command,
+            }
+        });
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+
+    Ui::header("srz Recommended Model & Context Length");
+
+    println!("Host Machine:");
+    println!("  • Device: {}", hw.chip_name);
+    println!(
+        "  • Memory: {:.1} GB RAM ({})",
+        hw.total_memory_gb,
+        hw.tier.display_name()
+    );
+    println!();
+
+    println!("Recommended Local LLM Setup:");
+    println!("  • Family:  Google Gemma 4 (High-fidelity Q8_0, laptop battery & memory optimized)");
+    println!(
+        "  • Model:   {} ({})",
+        hw.recommended_model, hw.recommended_quant
+    );
+    println!(
+        "  • Context: {} tokens ({})",
+        hw.recommended_context, hw.ram_footprint
+    );
+    println!();
+
+    println!("Ready-to-Run Launch Commands:");
+    println!("  • llama.cpp / Llama-macOS / Llama-Windows (default port 9931):");
+    println!("      {}", hw.recommended_launch_command);
+    println!("  • Ollama:");
+    println!("      {}", hw.ollama_launch_command);
+    println!();
+
+    println!("Summary Synthesis Speed:");
+    println!(
+        "  💡 Fast 1-Pass Summaries: Documents up to ~{}k tokens (~{} pages) synthesize in a single pass.",
+        one_pass_tokens / 1000,
+        one_pass_pages
+    );
+    println!(
+        "     Larger documents automatically use parallel map-reduce chunking without OOM crashes."
+    );
+    println!();
+
+    println!("Next Steps:");
+    println!("  1. Start your local LLM runner using one of the commands above.");
+    println!("  2. Run `srz config init` to generate a config tailored to your machine.");
+    println!("  3. Summarize any target: srz \"<URL, file, or book>\"");
     println!();
 
     Ok(())

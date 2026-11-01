@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 pub use ask::handle_ask;
-pub use diagnostics::{handle_doctor, handle_models};
+pub use diagnostics::{handle_doctor, handle_models, handle_recommend};
 pub use library::{
     handle_find, handle_history, handle_index, handle_stats, update_index_dashboard,
 };
