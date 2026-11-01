@@ -105,7 +105,7 @@ async fn main() -> Result<()> {
         Ui::info("Cache bypassed (`--no-cache`). Forcing fresh fetch and generation.");
     }
 
-    let llm = commands::init_llm_or_exit(&args);
+    let llm = commands::init_llm_with_capabilities_or_exit(&args, Some(&cache)).await;
 
     let scraper = match WebScraper::new() {
         Ok(s) => s,
@@ -209,6 +209,14 @@ async fn main() -> Result<()> {
                 {
                     Ui::warn(&format!("Could not open browser: {}", err));
                 }
+            }
+
+            if !args.json
+                && !args.plain
+                && !args.quiet
+                && let Some(hint) = &outcome.hint
+            {
+                println!("\n\x1b[2m{}\x1b[0m", hint);
             }
 
             // Record newly generated summaries in DuckDB history & library (lazily opened)

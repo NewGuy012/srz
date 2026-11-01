@@ -72,6 +72,7 @@ pub async fn handle_doctor(
     let mut model_found = false;
     let mut available_models = Vec::new();
     let mut endpoint_err = None;
+    let mut server_caps = None;
 
     if let Ok(llm) = &llm_init {
         let start = std::time::Instant::now();
@@ -81,12 +82,16 @@ pub async fn handle_doctor(
                 latency_ms = Some(start.elapsed().as_millis() as u64);
                 available_models = models.iter().map(|m| m.id.clone()).collect();
                 model_found = available_models.contains(&args.model);
+                server_caps = Some(llm.probe_server_capabilities().await);
             }
             Err(e) => {
                 endpoint_err = Some(e.to_string());
             }
         }
     }
+
+    // 2. Hardware profile detection
+    let hw = crate::system::hardware::HardwareProfile::detect();
 
     // 2. DuckDB database check
     let db_path = Database::default_path();
@@ -105,6 +110,17 @@ pub async fn handle_doctor(
 
     if as_json {
         let report = serde_json::json!({
+            "hardware": {
+                "device": hw.chip_name,
+                "total_memory_bytes": hw.total_memory_bytes,
+                "total_memory_gb": hw.total_memory_gb,
+                "tier": hw.tier.display_name(),
+                "recommended_family": "Gemma 4",
+                "recommended_model": hw.recommended_model,
+                "recommended_quant": hw.recommended_quant,
+                "recommended_context": hw.recommended_context,
+                "recommended_launch_command": hw.recommended_launch_command,
+            },
             "llm": {
                 "endpoint": args.base_url,
                 "reachable": endpoint_ok,
@@ -112,6 +128,7 @@ pub async fn handle_doctor(
                 "configured_model": args.model,
                 "model_available": model_found,
                 "available_models": available_models,
+                "capabilities": server_caps,
                 "error": endpoint_err,
             },
             "database": {
@@ -144,6 +161,25 @@ pub async fn handle_doctor(
 
     Ui::header("srz System & LLM Health Diagnostics");
 
+    // Print Hardware Profile & Steering
+    println!("Hardware Profile & Recommendations:");
+    println!(
+        "  • Host Device: {} ({:.1} GB RAM / {})",
+        hw.chip_name,
+        hw.total_memory_gb,
+        hw.tier.display_name()
+    );
+    println!(
+        "  • Recommended Family: Google Gemma 4 (High fidelity Q8_0, laptop battery & memory optimized)"
+    );
+    println!(
+        "  • Recommended Model: {} ({})",
+        hw.recommended_model, hw.recommended_quant
+    );
+    println!("  • Recommended Context: {} tokens", hw.recommended_context);
+    println!("  • Recommended Command: {}", hw.recommended_launch_command);
+    println!();
+
     // Print LLM status
     println!("LLM Backend:");
     if endpoint_ok {
@@ -170,6 +206,32 @@ pub async fn handle_doctor(
                 println!(
                     "    Available models on backend: {}",
                     safe_models.join(", ")
+                );
+            }
+        }
+        if let Some(caps) = &server_caps {
+            println!("  ✓ Context Window (n_ctx): {} tokens", caps.n_ctx);
+            println!(
+                "  ✓ Server Concurrency (total_slots): {} slot(s)",
+                caps.total_slots
+            );
+            println!(
+                "  ✓ Native Tokenizer: {}",
+                if caps.supports_tokenize {
+                    "Supported (POST /tokenize enabled, 0% token drift)"
+                } else {
+                    "Fallback (tiktoken-rs)"
+                }
+            );
+            println!("  ✓ Backend Kind: {}", caps.backend_kind);
+            if caps.n_ctx >= hw.recommended_context {
+                println!(
+                    "  ✓ Optimization Status: EXCELLENT (Fully optimized for single-pass summaries)"
+                );
+            } else {
+                println!(
+                    "  ! Optimization Status: SUBOPTIMAL (Server context is {} vs {} recommended for your machine; run: {})",
+                    caps.n_ctx, hw.recommended_context, hw.recommended_launch_command
                 );
             }
         }

@@ -19,6 +19,7 @@ pub struct ProfileConfig {
     pub open: Option<bool>,
     pub concurrency: Option<usize>,
     pub stream: Option<bool>,
+    pub context_window: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

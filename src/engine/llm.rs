@@ -1,5 +1,6 @@
 use crate::chunker::TextChunker;
 use crate::cli::SummaryStyle;
+use crate::engine::budget::{DynamicBudget, ServerCapabilities};
 use crate::ui::Ui;
 use anyhow::{Context, Result};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
@@ -92,6 +93,7 @@ pub struct LlmOutput {
     pub content: String,
     pub truncated: bool,
     pub warning: Option<String>,
+    pub hint: Option<String>,
     pub streamed_to_stdout: bool,
     pub prompt_tokens: Option<u32>,
     pub completion_tokens: Option<u32>,
@@ -131,6 +133,8 @@ pub struct LlmClient {
     model: String,
     max_tokens: u32,
     concurrency: usize,
+    context_window_override: Option<usize>,
+    capabilities: Option<ServerCapabilities>,
 }
 
 struct SseStreamState {
@@ -345,13 +349,49 @@ impl LlmClient {
             model: model.to_string(),
             max_tokens,
             concurrency: 1,
+            context_window_override: None,
+            capabilities: None,
         })
     }
 
     pub fn from_cli(args: &crate::cli::Cli) -> Result<Self> {
         Ok(
             Self::new(&args.base_url, &args.model, &args.api_key, args.max_tokens)?
-                .with_concurrency(args.concurrency),
+                .with_concurrency(args.concurrency)
+                .with_context_window(args.context_window),
+        )
+    }
+
+    pub fn with_context_window(mut self, cw: Option<usize>) -> Self {
+        self.context_window_override = cw;
+        self
+    }
+
+    pub fn with_capabilities(mut self, caps: ServerCapabilities) -> Self {
+        self.capabilities = Some(caps);
+        self
+    }
+
+    pub fn capabilities(&self) -> Option<&ServerCapabilities> {
+        self.capabilities.as_ref()
+    }
+
+    /// Derives dynamic token budgeting parameters from the server's detected context window and slots.
+    pub fn budget(&self) -> DynamicBudget {
+        let n_ctx = self
+            .context_window_override
+            .or_else(|| self.capabilities.as_ref().map(|c| c.n_ctx))
+            .unwrap_or(32_768);
+        let total_slots = self
+            .capabilities
+            .as_ref()
+            .map(|c| c.total_slots)
+            .unwrap_or(1);
+        DynamicBudget::new(
+            n_ctx,
+            total_slots,
+            Some(self.max_tokens),
+            (self.concurrency > 1).then_some(self.concurrency),
         )
     }
 
@@ -366,6 +406,212 @@ impl LlmClient {
 
     pub fn model(&self) -> &str {
         &self.model
+    }
+
+    async fn send_root_request(
+        &self,
+        path: &str,
+        build_req: impl Fn(&reqwest::Client, String) -> reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response, reqwest::Error> {
+        let base_clean = self.base_url.trim_end_matches('/');
+        let primary_root = base_clean.strip_suffix("/v1").unwrap_or(base_clean);
+        let mut response = build_req(&self.client, format!("{}{}", primary_root, path))
+            .send()
+            .await;
+
+        if response.is_err()
+            && let Some(alt_base) = &self.fallback_base_url
+        {
+            let alt_clean = alt_base.trim_end_matches('/');
+            let alt_root = alt_clean.strip_suffix("/v1").unwrap_or(alt_clean);
+            if let Ok(alt_resp) = build_req(&self.client, format!("{}{}", alt_root, path))
+                .send()
+                .await
+            {
+                response = Ok(alt_resp);
+            }
+        }
+        response
+    }
+
+    /// Extracts operational capabilities from the backend server (context window, total slots, native tokenizer).
+    pub async fn probe_server_capabilities(&self) -> ServerCapabilities {
+        let mut caps = ServerCapabilities {
+            endpoint: self.base_url.clone(),
+            model_id: self.model.clone(),
+            n_ctx: self.context_window_override.unwrap_or(32_768),
+            total_slots: 1,
+            supports_tokenize: false,
+            tokenize_endpoint: None,
+            backend_kind: "default".to_string(),
+        };
+
+        // 1. Try llama.cpp GET /props
+        if let Ok(resp) = self
+            .send_root_request("/props", |c, u| {
+                c.get(u).timeout(Duration::from_millis(1500))
+            })
+            .await
+            && resp.status().is_success()
+            && let Ok(json) = resp.json::<serde_json::Value>().await
+        {
+            caps.backend_kind = "llama.cpp".to_string();
+            if let Some(n_ctx) = json
+                .pointer("/default_generation_settings/n_ctx")
+                .and_then(|v| v.as_u64())
+            {
+                caps.n_ctx = n_ctx as usize;
+            }
+            if let Some(slots) = json.get("total_slots").and_then(|v| v.as_u64()) {
+                caps.total_slots = slots as usize;
+            }
+
+            // Probe POST /tokenize on llama.cpp
+            if let Ok(tok_resp) = self
+                .send_root_request("/tokenize", |c, u| {
+                    c.post(u)
+                        .json(&serde_json::json!({ "content": "test" }))
+                        .timeout(Duration::from_millis(1500))
+                })
+                .await
+                && tok_resp.status().is_success()
+            {
+                caps.supports_tokenize = true;
+                caps.tokenize_endpoint = Some("/tokenize".to_string());
+            }
+
+            return caps;
+        }
+
+        // 2. Try Ollama POST /api/show
+        if let Ok(resp) = self
+            .send_root_request("/api/show", |c, u| {
+                c.post(u)
+                    .json(&serde_json::json!({ "name": &self.model }))
+                    .timeout(Duration::from_millis(1500))
+            })
+            .await
+            && resp.status().is_success()
+            && let Ok(json) = resp.json::<serde_json::Value>().await
+        {
+            caps.backend_kind = "ollama".to_string();
+            if let Some(ctx) = json
+                .pointer("/model_info/context_length")
+                .and_then(|v| v.as_u64())
+            {
+                caps.n_ctx = ctx as usize;
+            } else if let Some(params_str) = json.get("parameters").and_then(|v| v.as_str()) {
+                for line in params_str.lines() {
+                    if let Some(rest) = line.strip_prefix("num_ctx")
+                        && let Ok(parsed) = rest.trim().parse::<usize>()
+                    {
+                        caps.n_ctx = parsed;
+                        break;
+                    }
+                }
+            }
+
+            // Probe POST /api/tokenize on Ollama
+            if let Ok(tok_resp) = self
+                .send_root_request("/api/tokenize", |c, u| {
+                    c.post(u)
+                        .json(&serde_json::json!({ "model": &self.model, "prompt": "test" }))
+                        .timeout(Duration::from_millis(1500))
+                })
+                .await
+                && tok_resp.status().is_success()
+            {
+                caps.supports_tokenize = true;
+                caps.tokenize_endpoint = Some("/api/tokenize".to_string());
+            }
+
+            return caps;
+        }
+
+        // 3. Fallback: query models list
+        if let Ok(models) = self.list_models().await {
+            caps.backend_kind = "openai-compatible".to_string();
+            if let Ok(tok_resp) = self
+                .send_root_request("/tokenize", |c, u| {
+                    c.post(u)
+                        .json(&serde_json::json!({ "content": "test" }))
+                        .timeout(Duration::from_millis(1500))
+                })
+                .await
+                && tok_resp.status().is_success()
+            {
+                caps.supports_tokenize = true;
+                caps.tokenize_endpoint = Some("/tokenize".to_string());
+            }
+            if !models.is_empty() {
+                return caps;
+            }
+        }
+
+        caps
+    }
+
+    /// Initializes server capabilities using DuckDB caching, invalidating automatically when model changes.
+    pub async fn init_with_capabilities(mut self, cache: Option<&crate::cache::Cache>) -> Self {
+        if let Some(c) = cache
+            && let Some(cached) = c.get_server_capabilities(&self.base_url, &self.model)
+        {
+            self.capabilities = Some(cached);
+            return self;
+        }
+
+        let caps = self.probe_server_capabilities().await;
+        if let Some(c) = cache {
+            c.set_server_capabilities(&caps);
+        }
+        self.capabilities = Some(caps);
+        self
+    }
+
+    /// Queries the server's native tokenization endpoint if supported, returning exact token count (0% drift).
+    pub async fn tokenize_text(&self, text: &str) -> Option<usize> {
+        let caps = self.capabilities.as_ref()?;
+        if !caps.supports_tokenize {
+            return None;
+        }
+        let tok_endpoint = caps.tokenize_endpoint.as_ref()?;
+        let path = if tok_endpoint.contains("/api/tokenize") {
+            "/api/tokenize"
+        } else {
+            "/tokenize"
+        };
+
+        let is_ollama = caps.backend_kind == "ollama";
+        let body = if is_ollama {
+            serde_json::json!({
+                "model": &self.model,
+                "prompt": text,
+            })
+        } else {
+            serde_json::json!({
+                "content": text,
+            })
+        };
+
+        let resp = self
+            .send_root_request(path, |c, u| {
+                c.post(u).json(&body).timeout(Duration::from_secs(3))
+            })
+            .await
+            .ok()?;
+
+        if !resp.status().is_success() {
+            return None;
+        }
+
+        let json: serde_json::Value = resp.json().await.ok()?;
+        if let Some(tokens) = json.get("tokens").and_then(|t| t.as_array()) {
+            return Some(tokens.len());
+        }
+        if let Some(count) = json.get("count").and_then(|c| c.as_u64()) {
+            return Some(count as usize);
+        }
+        None
     }
 
     /// Sends a request to `{base_url}{path}`, automatically retrying against `127.0.0.1`
@@ -495,6 +741,7 @@ impl LlmClient {
             content: choice.message.content.trim().to_string(),
             truncated,
             warning,
+            hint: None,
             streamed_to_stdout: false,
             prompt_tokens,
             completion_tokens,
@@ -601,6 +848,7 @@ impl LlmClient {
             content: state.content_buf,
             truncated: state.truncated,
             warning,
+            hint: None,
             streamed_to_stdout,
             prompt_tokens,
             completion_tokens,
@@ -690,24 +938,35 @@ impl LlmClient {
             .map(|s| format!("Source: {}\n", crate::ui::sanitize_title(s)))
             .unwrap_or_default();
 
-        // Fast path: In BPE, 1 token is at least 1 byte, so if content.len() <= MAX_CONTEXT_WORDS,
-        // it cannot exceed MAX_CONTEXT_TOKENS (16,000) or MAX_CONTEXT_WORDS (12,000).
-        let needs_chunking = if content.len() <= MAX_CONTEXT_WORDS {
-            false
+        let budget = self.budget();
+
+        // 1. Fast path: In BPE, 1 token is at least 1 byte, so if content.len() <= budget.single_pass_threshold,
+        // it cannot exceed the single-pass limit.
+        let (needs_chunking, doc_tokens) = if content.len() <= budget.single_pass_threshold {
+            (false, None)
         } else {
-            let word_count = known_word_count.unwrap_or_else(|| content.split_whitespace().count());
-            word_count > MAX_CONTEXT_WORDS
-                || TextChunker::count_tokens(content) > MAX_CONTEXT_TOKENS
+            let tokens = match self.tokenize_text(content).await {
+                Some(t) => t,
+                None => {
+                    let wc = known_word_count.unwrap_or_else(|| content.split_whitespace().count());
+                    if wc > (budget.single_pass_threshold * 3 / 4) {
+                        TextChunker::count_tokens(content)
+                    } else {
+                        wc
+                    }
+                }
+            };
+            (tokens > budget.single_pass_threshold, Some(tokens))
         };
 
-        // If the document exceeds MAX_CONTEXT_TOKENS (or legacy MAX_CONTEXT_WORDS), chunk and map-reduce
+        // If the document exceeds single_pass_threshold, chunk and map-reduce
         if needs_chunking {
             let chunks =
-                TextChunker::chunk_by_tokens(content, CHUNK_MAX_TOKENS, CHUNK_OVERLAP_TOKENS);
+                TextChunker::chunk_by_tokens(content, budget.chunk_tokens, budget.chunk_overlap);
             if chunks.len() > 1 {
                 let map_reduce_start = std::time::Instant::now();
                 let chunks_len = chunks.len();
-                let effective_concurrency = self.concurrency.max(1);
+                let effective_concurrency = budget.concurrency.max(1);
                 let client_arc = std::sync::Arc::new(self.clone());
                 let semaphore =
                     std::sync::Arc::new(tokio::sync::Semaphore::new(effective_concurrency));
@@ -797,6 +1056,23 @@ impl LlmClient {
                 final_out.duration_ms = total_duration_ms;
                 final_out.tokens_per_second =
                     compute_tokens_per_second(Some(total_completion_tokens), wall_elapsed);
+
+                let hardware = crate::system::hardware::HardwareProfile::detect();
+                let doc_token_count =
+                    doc_tokens.unwrap_or_else(|| TextChunker::count_tokens(content));
+                if chunks_len > 1
+                    && budget.n_ctx < hardware.recommended_context
+                    && doc_token_count <= (hardware.recommended_context * 7 / 10)
+                {
+                    final_out.hint = Some(format!(
+                        "💡 Tip: Ingested ~{}k tokens. Server context (n_ctx={}) required {} chunks. For faster 1-pass summaries: {}",
+                        (doc_token_count + 500) / 1000,
+                        budget.n_ctx,
+                        chunks_len,
+                        hardware.recommended_launch_command
+                    ));
+                }
+
                 return Ok(final_out);
             }
         }
@@ -842,8 +1118,12 @@ impl LlmClient {
         let author_line = format_author_line(safe_author.as_deref());
         let safe_source_url = crate::ui::sanitize_title(source_url);
 
-        let untrusted_block =
-            format_untrusted_section("reference_context", web_context, Some(MAX_CONTEXT_WORDS));
+        let budget = self.budget();
+        let untrusted_block = format_untrusted_section(
+            "reference_context",
+            web_context,
+            Some(budget.single_pass_threshold),
+        );
 
         let system_prompt = "You are a literary analyst and scholar. \
             You provide thorough, objective, and deeply insightful book summaries grounded in the provided reference materials. \
@@ -925,8 +1205,12 @@ impl LlmClient {
     ) -> Result<LlmOutput> {
         let safe_topic = crate::ui::sanitize_title(topic);
         let safe_timeframe = crate::ui::sanitize_title(timeframe_label);
-        let untrusted_block =
-            format_untrusted_section("news_articles", articles_digest, Some(MAX_CONTEXT_WORDS));
+        let budget = self.budget();
+        let untrusted_block = format_untrusted_section(
+            "news_articles",
+            articles_digest,
+            Some(budget.single_pass_threshold),
+        );
 
         let system_prompt = "You are a professional news editor and intelligence analyst. \
             Your goal is to synthesize the latest news coverage from multiple articles into a comprehensive, \

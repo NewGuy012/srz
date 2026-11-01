@@ -32,6 +32,15 @@ pub fn init_llm_or_exit(args: &Cli) -> crate::llm::LlmClient {
     }
 }
 
+/// Initializes an `LlmClient` and discovers server capabilities (with DuckDB caching & model-change invalidation).
+pub async fn init_llm_with_capabilities_or_exit(
+    args: &Cli,
+    cache: Option<&crate::cache::Cache>,
+) -> crate::llm::LlmClient {
+    let llm = init_llm_or_exit(args);
+    llm.init_with_capabilities(cache).await
+}
+
 /// Safely opens the DuckDB database, issuing a UI warning on failure.
 pub fn open_db_or_warn() -> Option<Database> {
     match Database::open_default() {

@@ -26,6 +26,7 @@ pub struct SummaryOutcome {
     pub duration_ms: u64,
     pub tokens_per_second: Option<f64>,
     pub cached: bool,
+    pub hint: Option<String>,
 }
 
 impl SummaryOutcome {
@@ -53,6 +54,7 @@ impl SummaryOutcome {
             duration_ms: output.duration_ms,
             tokens_per_second: output.tokens_per_second,
             cached: false,
+            hint: output.hint,
         }
     }
 
@@ -75,6 +77,7 @@ impl SummaryOutcome {
             duration_ms: 0,
             tokens_per_second: None,
             cached: true,
+            hint: None,
         }
     }
 }

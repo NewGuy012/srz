@@ -181,3 +181,32 @@ auto_prune = false
     assert_eq!(policy.views_ttl, Duration::from_secs(5 * 86400));
     assert_eq!(policy.auto_prune_interval, Duration::MAX);
 }
+
+#[test]
+fn test_context_window_cli_and_config_merge() {
+    let toml_str = r#"
+context_window = 32768
+
+[profiles.huge]
+context_window = 65536
+"#;
+    let config: Config = toml::from_str(toml_str).unwrap();
+    assert_eq!(config.context_window, Some(32768));
+    assert_eq!(
+        config.profiles.get("huge").unwrap().context_window,
+        Some(65536)
+    );
+
+    // 1. Profile overrides root config
+    let matches = Cli::command().get_matches_from(["srz", "The Hobbit", "--profile", "huge"]);
+    let mut args = Cli::from_arg_matches(&matches).unwrap();
+    args.apply_config(&config, Some(&matches));
+    assert_eq!(args.context_window, Some(65536));
+
+    // 2. CLI flag overrides config
+    let cli_matches =
+        Cli::command().get_matches_from(["srz", "The Hobbit", "--context-window", "16384"]);
+    let mut cli_args = Cli::from_arg_matches(&cli_matches).unwrap();
+    cli_args.apply_config(&config, Some(&cli_matches));
+    assert_eq!(cli_args.context_window, Some(16384));
+}

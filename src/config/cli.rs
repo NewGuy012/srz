@@ -130,6 +130,10 @@ pub struct Cli {
     #[arg(long, global = true, default_value_t = 8192)]
     pub max_tokens: u32,
 
+    /// Override context window size in tokens (auto-detected from server by default)
+    #[arg(long = "context-window", global = true)]
+    pub context_window: Option<usize>,
+
     /// Bypass local cache and force fresh web scraping and LLM summarization
     #[arg(long, global = true)]
     pub no_cache: bool,
@@ -541,6 +545,16 @@ impl Cli {
             };
         }
 
+        macro_rules! apply_opt_field {
+            ($field:ident) => {
+                if !was_provided(stringify!($field))
+                    && let Some(val) = profile.and_then(|p| p.$field).or_else(|| config.$field)
+                {
+                    self.$field = Some(val);
+                }
+            };
+        }
+
         apply_field!(base_url);
         apply_field!(model);
         apply_field!(api_key);
@@ -552,6 +566,7 @@ impl Cli {
         apply_field!(open);
         apply_field!(concurrency);
         apply_field!(stream);
+        apply_opt_field!(context_window);
     }
 }
 
