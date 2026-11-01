@@ -126,8 +126,8 @@ pub struct Cli {
     #[arg(long, global = true, value_enum, default_value = "concise")]
     pub style: SummaryStyle,
 
-    /// Maximum tokens to generate (configured via config.toml; default: 8192)
-    #[arg(skip = 8192_u32)]
+    /// Maximum tokens to generate (configured via CLI or config.toml; default: 8192)
+    #[arg(long, global = true, default_value_t = 8192)]
     pub max_tokens: u32,
 
     /// Bypass local cache and force fresh web scraping and LLM summarization
@@ -162,8 +162,8 @@ pub struct Cli {
     #[arg(short = 'b', long, global = true)]
     pub open: bool,
 
-    /// Concurrency limit for parallel map-reduce document chunking (configured via config.toml)
-    #[arg(skip = 1_usize)]
+    /// Concurrency limit for parallel map-reduce document chunking (configured via CLI or config.toml; default: 1)
+    #[arg(long, global = true, default_value_t = 1)]
     pub concurrency: usize,
 
     /// Stream LLM output tokens live to stdout as they are generated (default: false)

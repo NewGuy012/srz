@@ -705,10 +705,12 @@ impl LlmClient {
             let chunks =
                 TextChunker::chunk_by_tokens(content, CHUNK_MAX_TOKENS, CHUNK_OVERLAP_TOKENS);
             if chunks.len() > 1 {
+                let map_reduce_start = std::time::Instant::now();
                 let chunks_len = chunks.len();
+                let effective_concurrency = self.concurrency.max(1);
                 let client_arc = std::sync::Arc::new(self.clone());
                 let semaphore =
-                    std::sync::Arc::new(tokio::sync::Semaphore::new(self.concurrency.max(1)));
+                    std::sync::Arc::new(tokio::sync::Semaphore::new(effective_concurrency));
                 let shared_title: std::sync::Arc<str> = safe_title.clone().into();
                 let mut handles = Vec::with_capacity(chunks_len);
 
@@ -749,7 +751,6 @@ impl LlmClient {
                 let mut section_summaries = Vec::with_capacity(chunks_len);
                 let mut total_prompt_tokens: u32 = 0;
                 let mut total_completion_tokens: u32 = 0;
-                let mut total_duration_ms: u64 = 0;
 
                 for handle in handles {
                     let part = handle
@@ -757,7 +758,6 @@ impl LlmClient {
                         .context("Parallel chunk summarization task panicked")??;
                     total_prompt_tokens += part.prompt_tokens.unwrap_or(0);
                     total_completion_tokens += part.completion_tokens.unwrap_or(0);
-                    total_duration_ms += part.duration_ms;
                     section_summaries.push(part.content);
                 }
 
@@ -785,7 +785,8 @@ impl LlmClient {
 
                 total_prompt_tokens += final_out.prompt_tokens.unwrap_or(0);
                 total_completion_tokens += final_out.completion_tokens.unwrap_or(0);
-                total_duration_ms += final_out.duration_ms;
+                let wall_elapsed = map_reduce_start.elapsed();
+                let total_duration_ms = wall_elapsed.as_millis() as u64;
 
                 if total_prompt_tokens > 0 {
                     final_out.prompt_tokens = Some(total_prompt_tokens);
@@ -794,10 +795,8 @@ impl LlmClient {
                     final_out.completion_tokens = Some(total_completion_tokens);
                 }
                 final_out.duration_ms = total_duration_ms;
-                final_out.tokens_per_second = compute_tokens_per_second(
-                    Some(total_completion_tokens),
-                    Duration::from_millis(total_duration_ms),
-                );
+                final_out.tokens_per_second =
+                    compute_tokens_per_second(Some(total_completion_tokens), wall_elapsed);
                 return Ok(final_out);
             }
         }
@@ -1059,14 +1058,19 @@ pub fn truncate_words_preserving_lines(text: &str, max_words: usize) -> Cow<'_, 
 }
 
 /// Wraps untrusted source text inside XML tags (`<tag>...</tag>`), escaping closing tag delimiters
-/// and optionally bounding word count while preserving line breaks.
+/// and enforcing both word and BPE token limits while preserving line breaks.
 pub fn format_untrusted_section(tag: &str, content: &str, max_words: Option<usize>) -> String {
-    let bounded = match max_words {
+    let word_bounded = match max_words {
         Some(limit) => truncate_words_preserving_lines(content, limit),
         None => Cow::Borrowed(content),
     };
+    let token_bounded = if max_words.is_some() {
+        TextChunker::truncate_by_tokens(&word_bounded, MAX_CONTEXT_TOKENS)
+    } else {
+        Cow::Borrowed(word_bounded.as_ref())
+    };
     let closing_tag = format!("</{}>", tag);
     let escaped_closing = format!("&lt;/{tag}&gt;");
-    let safe_content = escape_closing_tag(&bounded, &closing_tag, &escaped_closing);
+    let safe_content = escape_closing_tag(&token_bounded, &closing_tag, &escaped_closing);
     format!("<{tag}>\n{safe_content}\n</{tag}>")
 }

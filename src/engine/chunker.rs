@@ -14,6 +14,27 @@ impl TextChunker {
         BPE.encode_with_special_tokens(text).len()
     }
 
+    /// Truncates `text` so its BPE token count does not exceed `max_tokens`, preserving paragraph
+    /// boundaries when possible and returning a zero-copy `Cow::Borrowed` slice when under budget.
+    pub fn truncate_by_tokens(text: &str, max_tokens: usize) -> Cow<'_, str> {
+        if max_tokens == 0 {
+            return Cow::Borrowed("[Context trimmed for token budget]");
+        }
+        // Fast path: 1 token is at least 1 byte in cl100k_base.
+        if text.len() <= max_tokens {
+            return Cow::Borrowed(text);
+        }
+        let tokens = BPE.encode_with_special_tokens(text);
+        if tokens.len() <= max_tokens {
+            return Cow::Borrowed(text);
+        }
+        if let Ok(decoded) = BPE.decode(&tokens[..max_tokens]) {
+            let trimmed = decoded.trim_end();
+            return Cow::Owned(format!("{trimmed}\n\n[Context trimmed for token budget]"));
+        }
+        Cow::Borrowed(text)
+    }
+
     /// Splits text into chunks of roughly `max_tokens` with `overlap_tokens` overlap,
     /// using accurate BPE token counts while preserving paragraph boundaries and zero-copy slices.
     pub fn chunk_by_tokens<'a>(
@@ -156,5 +177,18 @@ mod tests {
         assert_eq!(chunks.len(), 2);
         assert!(matches!(chunks[0], Cow::Borrowed(_)));
         assert!(matches!(chunks[1], Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn test_truncate_by_tokens() {
+        let short = "Short text under budget.";
+        let res = TextChunker::truncate_by_tokens(short, 50);
+        assert!(matches!(res, Cow::Borrowed(_)));
+        assert_eq!(res, short);
+
+        let long = "token ".repeat(200);
+        let truncated = TextChunker::truncate_by_tokens(&long, 30);
+        assert!(truncated.ends_with("[Context trimmed for token budget]"));
+        assert!(TextChunker::count_tokens(&truncated) <= 45);
     }
 }

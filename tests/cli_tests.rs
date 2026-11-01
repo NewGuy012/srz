@@ -172,9 +172,18 @@ fn test_auto_detect_book_with_global_flags() {
 
 #[test]
 fn test_book_subcommand_flags() {
-    let cli = Cli::parse_from(["srz", "book", "Dune"]);
+    let cli = Cli::parse_from([
+        "srz",
+        "book",
+        "Dune",
+        "--max-tokens",
+        "4096",
+        "--concurrency",
+        "4",
+    ]);
 
-    assert_eq!(cli.max_tokens, 8192);
+    assert_eq!(cli.max_tokens, 4096);
+    assert_eq!(cli.concurrency, 4);
 
     match cli.resolve_action().unwrap() {
         ResolvedAction::Book { title } => {
