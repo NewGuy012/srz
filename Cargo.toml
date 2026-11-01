@@ -2,15 +2,20 @@
 name = "srz"
 version = "0.6.2"
 edition = "2024"
+rust-version = "1.85.0"
+authors = ["Moses Yoo"]
 description = "Fast, modular CLI to summarize webpages, documents, books, and live news using local LLMs"
 license = "BSD-3-Clause"
 repository = "https://github.com/NewGuy012/srz"
 homepage = "https://github.com/NewGuy012/srz"
+documentation = "https://newguy012.github.io/srz/"
 readme = "README.md"
 keywords = ["llm", "summarizer", "cli", "news", "ai"]
 categories = ["command-line-utilities", "text-processing"]
 include = [
     "src/**/*",
+    "tests/**/*",
+    "assets/document.pdf",
     "Cargo.toml",
     "README.md",
     "LICENSE",
@@ -50,8 +55,13 @@ pulldown-cmark = "0.13"
 open = "5"
 rustyline = "19"
 
+[lints.clippy]
+all = "warn"
+dbg_macro = "warn"
+todo = "warn"
+
 [profile.release]
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 strip = true
 panic = "abort"
