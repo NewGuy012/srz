@@ -55,6 +55,9 @@ pulldown-cmark = "0.13"
 open = "5"
 rustyline = "19"
 
+[dev-dependencies]
+tempfile = "3"
+
 [lints.clippy]
 all = "warn"
 dbg_macro = "warn"

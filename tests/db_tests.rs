@@ -279,21 +279,8 @@ fn test_database_reset() {
 
 #[test]
 fn test_database_file_open_and_reopen() {
-    let db_path = std::env::temp_dir().join(format!(
-        "srz_test_db_reopen_{}.duckdb",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let _cleanup = CleanFile(&db_path);
-
-    struct CleanFile<'a>(&'a std::path::Path);
-    impl<'a> Drop for CleanFile<'a> {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(self.0);
-        }
-    }
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("reopen.duckdb");
 
     // First open initializes schema
     {

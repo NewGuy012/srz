@@ -109,15 +109,8 @@ fn test_markdown_to_styled_html_rendering() {
     assert!(escaped_quote.contains("It's a test") || escaped_quote.contains("It&#39;s a test"));
 
     // Verify ensure_view_files skips rewrite when force_write is false and files exist
-    let tmp_dir = std::env::temp_dir().join(format!(
-        "srz_test_views_reuse_{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let _ = fs::remove_dir_all(&tmp_dir);
+    let tmp = tempfile::tempdir().unwrap();
+    let tmp_dir = tmp.path().to_path_buf();
     let rendered = ensure_view_files(&tmp_dir, "Dune", "Initial summary", true).unwrap();
     assert_eq!(
         fs::read_to_string(&rendered.md_path).unwrap(),
@@ -137,7 +130,6 @@ fn test_markdown_to_styled_html_rendering() {
         fs::read_to_string(&overwritten.md_path).unwrap(),
         "Updated summary"
     );
-    let _ = fs::remove_dir_all(&tmp_dir);
 }
 
 #[test]
@@ -221,20 +213,12 @@ fn test_render_index_html() {
     assert!(html.contains("data-type=\"book\""));
     assert!(html.contains("data-type=\"web\""));
 
-    let tmp_dir = std::env::temp_dir().join(format!(
-        "srz_test_index_dashboard_{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let _ = fs::remove_dir_all(&tmp_dir);
+    let tmp = tempfile::tempdir().unwrap();
+    let tmp_dir = tmp.path().to_path_buf();
     let index_file = ensure_index_file(&tmp_dir, &stats, &entries).unwrap();
     assert!(index_file.exists());
     let written = fs::read_to_string(&index_file).unwrap();
     assert_eq!(written, html);
-    let _ = fs::remove_dir_all(&tmp_dir);
 }
 
 #[test]

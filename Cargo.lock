@@ -3797,6 +3797,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "tar",
+ "tempfile",
  "termimad",
  "tiktoken-rs",
  "tokio",

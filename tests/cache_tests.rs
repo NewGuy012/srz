@@ -2,22 +2,19 @@ use srz::cache::{Cache, SetBookSummaryParams};
 use srz::cli::SummaryStyle;
 use srz::scraper::ScrapedPage;
 use srz::search::{BookMetadata, SearchResult};
-use std::env;
 use std::fs;
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-fn temp_test_dir(label: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    env::temp_dir().join(format!("srz_test_{}_{}", label, nanos))
+fn temp_test_dir(label: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix(&format!("srz_test_{}_", label))
+        .tempdir()
+        .expect("Failed to create temporary directory")
 }
 
 #[test]
 fn test_page_cache_roundtrip() {
-    let dir = temp_test_dir("page");
+    let tmp = temp_test_dir("page");
+    let dir = tmp.path().to_path_buf();
     let cache = Cache::with_dir(dir.clone(), true);
 
     let page = ScrapedPage {
@@ -35,13 +32,12 @@ fn test_page_cache_roundtrip() {
         .expect("Should hit cache");
     assert_eq!(loaded.title.as_deref(), Some("Example"));
     assert_eq!(loaded.word_count, 3);
-
-    let _ = fs::remove_dir_all(dir);
 }
 
 #[test]
 fn test_search_results_cache_is_case_insensitive() {
-    let dir = temp_test_dir("search");
+    let tmp = temp_test_dir("search");
+    let dir = tmp.path().to_path_buf();
     let cache = Cache::with_dir(dir.clone(), true);
 
     let results = vec![SearchResult::new(
@@ -57,13 +53,12 @@ fn test_search_results_cache_is_case_insensitive() {
         .expect("Should hit case-insensitive search cache");
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].title, "Dune (Wikipedia)");
-
-    let _ = fs::remove_dir_all(dir);
 }
 
 #[test]
 fn test_disabled_cache_bypasses_reads() {
-    let dir = temp_test_dir("disabled");
+    let tmp = temp_test_dir("disabled");
+    let dir = tmp.path().to_path_buf();
     let cache_enabled = Cache::with_dir(dir.clone(), true);
     let cache_disabled = Cache::with_dir(dir.clone(), false);
 
@@ -87,13 +82,12 @@ fn test_disabled_cache_bypasses_reads() {
         .get_book_summary("Dune", None, SummaryStyle::Detailed, "gemma-4", false)
         .expect("Should hit cache");
     assert_eq!(hit.word_count, 420);
-
-    let _ = fs::remove_dir_all(dir);
 }
 
 #[test]
 fn test_cache_stats_and_clean() {
-    let dir = temp_test_dir("stats_clean");
+    let tmp = temp_test_dir("stats_clean");
+    let dir = tmp.path().to_path_buf();
     let cache = Cache::with_dir(dir.clone(), true);
 
     assert_eq!(cache.stats().total_files, 0);
@@ -126,10 +120,10 @@ fn test_cache_stats_and_clean() {
     assert_eq!(removed.total_files, 2);
     assert_eq!(cache.stats().total_files, 0);
 }
-
 #[test]
 fn test_book_metadata_cache_roundtrip() {
-    let dir = temp_test_dir("metadata");
+    let tmp = temp_test_dir("metadata");
+    let dir = tmp.path().to_path_buf();
     let cache = Cache::with_dir(dir.clone(), true);
 
     assert!(cache.get_book_metadata("The Hobbit", None).is_none());
@@ -145,8 +139,6 @@ fn test_book_metadata_cache_roundtrip() {
         .get_book_metadata("  the hobbit ", None)
         .expect("Should hit metadata cache");
     assert_eq!(loaded, meta);
-
-    let _ = fs::remove_dir_all(dir);
 }
 
 #[cfg(unix)]
@@ -154,7 +146,8 @@ fn test_book_metadata_cache_roundtrip() {
 fn test_cache_file_permissions() {
     use std::os::unix::fs::PermissionsExt;
 
-    let dir = temp_test_dir("perms");
+    let tmp = temp_test_dir("perms");
+    let dir = tmp.path().to_path_buf();
     let cache = Cache::with_dir(dir.clone(), true);
 
     let page = ScrapedPage {
@@ -174,15 +167,14 @@ fn test_cache_file_permissions() {
 
     // Ensure no redundant legacy JSON files were written to pages/
     assert!(!dir.join("pages").exists());
-
-    let _ = fs::remove_dir_all(dir);
 }
 
 #[cfg(unix)]
 #[test]
 fn test_write_private_file_permissions() {
     use std::os::unix::fs::PermissionsExt;
-    let dir = temp_test_dir("private_write");
+    let tmp = temp_test_dir("private_write");
+    let dir = tmp.path().to_path_buf();
     fs::create_dir_all(&dir).unwrap();
     let file_path = dir.join("test.txt");
 
@@ -190,8 +182,6 @@ fn test_write_private_file_permissions() {
 
     let meta = fs::metadata(&file_path).unwrap();
     assert_eq!(meta.permissions().mode() & 0o777, 0o600);
-
-    let _ = fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -234,7 +224,8 @@ fn test_cache_ttl_expiration() {
     use std::thread;
     use std::time::Duration;
 
-    let dir = temp_test_dir("ttl");
+    let tmp = temp_test_dir("ttl");
+    let dir = tmp.path().to_path_buf();
     let mut cache = Cache::with_dir(dir.clone(), true);
     cache.policy_mut().pages_ttl = Duration::from_millis(300);
 
@@ -254,8 +245,6 @@ fn test_cache_ttl_expiration() {
 
     // Entry should have expired and returned None
     assert!(cache.get_page("https://expiring.com").is_none());
-
-    let _ = fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -264,7 +253,8 @@ fn test_cache_prune_by_age() {
     use std::thread;
     use std::time::Duration;
 
-    let dir = temp_test_dir("prune_age");
+    let tmp = temp_test_dir("prune_age");
+    let dir = tmp.path().to_path_buf();
     let cache = Cache::with_dir(dir.clone(), true);
 
     let page = ScrapedPage {
@@ -290,8 +280,6 @@ fn test_cache_prune_by_age() {
     assert_eq!(stats.files_removed, 1);
     assert!(stats.bytes_reclaimed > 0);
     assert_eq!(cache.stats().pages, 0);
-
-    let _ = fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -300,7 +288,8 @@ fn test_cache_prune_by_max_size_lru() {
     use std::thread;
     use std::time::Duration;
 
-    let dir = temp_test_dir("prune_size");
+    let tmp = temp_test_dir("prune_size");
+    let dir = tmp.path().to_path_buf();
     let cache = Cache::with_dir(dir.clone(), true);
 
     for i in 0..5 {
@@ -332,15 +321,14 @@ fn test_cache_prune_by_max_size_lru() {
     // Oldest entry must be evicted from cache.duckdb, newest must remain
     assert!(cache.get_page("https://example.com/0").is_none());
     assert!(cache.get_page("https://example.com/4").is_some());
-
-    let _ = fs::remove_dir_all(dir);
 }
 
 #[test]
 fn test_cache_opportunistic_auto_prune() {
     use std::time::Duration;
 
-    let dir = temp_test_dir("auto_prune");
+    let tmp = temp_test_dir("auto_prune");
+    let dir = tmp.path().to_path_buf();
     let mut cache = Cache::with_dir(dir.clone(), true);
     cache.policy_mut().auto_prune_interval = Duration::from_secs(60);
 
@@ -360,13 +348,12 @@ fn test_cache_opportunistic_auto_prune() {
     // Immediate second call should skip because interval hasn't elapsed
     let skipped = cache.maybe_auto_prune();
     assert!(skipped.is_none());
-
-    let _ = fs::remove_dir_all(dir);
 }
 
 #[test]
 fn test_cache_sha256_hash_keys() {
-    let dir = temp_test_dir("sha256");
+    let tmp = temp_test_dir("sha256");
+    let dir = tmp.path().to_path_buf();
     let cache = Cache::with_dir(dir.clone(), true);
 
     let page = ScrapedPage {
@@ -386,8 +373,6 @@ fn test_cache_sha256_hash_keys() {
         .unwrap();
     assert_eq!(key.len(), 64);
     assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
-
-    let _ = fs::remove_dir_all(dir);
 }
 
 #[cfg(unix)]
@@ -395,7 +380,8 @@ fn test_cache_sha256_hash_keys() {
 fn test_fs_util_rejects_symlinks() {
     use std::os::unix::fs::symlink;
 
-    let dir = temp_test_dir("symlink_test");
+    let tmp = temp_test_dir("symlink_test");
+    let dir = tmp.path().to_path_buf();
     fs::create_dir_all(&dir).unwrap();
 
     let target = dir.join("real_target.txt");
@@ -421,13 +407,12 @@ fn test_fs_util_rejects_symlinks() {
         dir_res.err().unwrap().kind(),
         std::io::ErrorKind::InvalidInput
     );
-
-    let _ = fs::remove_dir_all(dir);
 }
 
 #[test]
 fn test_cache_duckdb_consolidation() {
-    let dir = temp_test_dir("duckdb_cache");
+    let tmp = temp_test_dir("duckdb_cache");
+    let dir = tmp.path().to_path_buf();
     let cache = Cache::with_dir(dir.clone(), true);
 
     let page = ScrapedPage {
@@ -486,6 +471,4 @@ fn test_cache_duckdb_consolidation() {
     // Clean should clear the cache
     cache.clean().unwrap();
     assert!(cache.get_page("https://duckdb-cached.com").is_none());
-
-    let _ = fs::remove_dir_all(dir);
 }
