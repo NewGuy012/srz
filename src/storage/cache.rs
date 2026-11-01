@@ -1,4 +1,5 @@
 use crate::cli::SummaryStyle;
+use crate::engine::ServerCapabilities;
 use crate::fs_util::{
     create_private_dir_all, non_empty_env_path, open_private_file_for_write, write_private_file,
 };
@@ -324,7 +325,30 @@ impl Cache {
                              data TEXT NOT NULL,
                              cached_at TIMESTAMP NOT NULL DEFAULT current_timestamp
                          );
-                         ALTER TABLE cache_summaries ADD COLUMN IF NOT EXISTS data TEXT;",
+                         ALTER TABLE cache_summaries ADD COLUMN IF NOT EXISTS data TEXT;
+                         CREATE TABLE IF NOT EXISTS cache_server_capabilities (
+                             endpoint VARCHAR PRIMARY KEY,
+                             model_id VARCHAR NOT NULL,
+                             n_ctx UBIGINT NOT NULL,
+                             total_slots UINTEGER NOT NULL DEFAULT 1,
+                             supports_tokenize BOOLEAN NOT NULL DEFAULT FALSE,
+                             tokenize_endpoint VARCHAR,
+                             backend_kind VARCHAR NOT NULL,
+                             cached_ms BIGINT NOT NULL DEFAULT 0
+                         );",
+                    );
+                } else {
+                    let _ = conn.execute_batch(
+                        "CREATE TABLE IF NOT EXISTS cache_server_capabilities (
+                             endpoint VARCHAR PRIMARY KEY,
+                             model_id VARCHAR NOT NULL,
+                             n_ctx UBIGINT NOT NULL,
+                             total_slots UINTEGER NOT NULL DEFAULT 1,
+                             supports_tokenize BOOLEAN NOT NULL DEFAULT FALSE,
+                             tokenize_endpoint VARCHAR,
+                             backend_kind VARCHAR NOT NULL,
+                             cached_ms BIGINT NOT NULL DEFAULT 0
+                         );",
                     );
                 }
                 *guard = Some(conn);
@@ -1069,6 +1093,93 @@ impl Cache {
                 word_count: params.word_count,
             },
         );
+    }
+
+    // --- Server Capabilities Cache ---
+
+    pub fn get_server_capabilities(
+        &self,
+        endpoint: &str,
+        current_model_id: &str,
+    ) -> Option<ServerCapabilities> {
+        if !self.enabled {
+            return None;
+        }
+
+        if let Some(guard) = self.get_or_init_db()
+            && let Some(conn) = guard.as_ref()
+        {
+            let now_ms = now_epoch_ms();
+            let max_age_ms = 86_400_000; // 24 hours
+
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT endpoint, model_id, n_ctx, total_slots, supports_tokenize, tokenize_endpoint, backend_kind, cached_ms
+                 FROM cache_server_capabilities
+                 WHERE endpoint = ?",
+            ) && let Ok(mut rows) = stmt.query(params![endpoint])
+                && let Some(row) = rows.next().ok().flatten()
+            {
+                let ep: String = row.get(0).unwrap_or_default();
+                let model: String = row.get(1).unwrap_or_default();
+                let n_ctx: usize = row.get::<_, u64>(2).unwrap_or(16384) as usize;
+                let total_slots: usize = row.get::<_, u32>(3).unwrap_or(1) as usize;
+                let supports_tokenize: bool = row.get(4).unwrap_or(false);
+                let tokenize_endpoint: Option<String> = row.get(5).ok();
+                let backend_kind: String = row.get(6).unwrap_or_default();
+                let cached_ms: i64 = row.get(7).unwrap_or(0);
+
+                // Invalidation trigger: if the model changed or entry is older than 24h, invalidate
+                if model != current_model_id || (now_ms - cached_ms) > max_age_ms {
+                    let _ = conn.execute(
+                        "DELETE FROM cache_server_capabilities WHERE endpoint = ?",
+                        params![endpoint],
+                    );
+                    return None;
+                }
+
+                return Some(ServerCapabilities {
+                    endpoint: ep,
+                    model_id: model,
+                    n_ctx,
+                    total_slots,
+                    supports_tokenize,
+                    tokenize_endpoint,
+                    backend_kind,
+                });
+            }
+        }
+        None
+    }
+
+    pub fn set_server_capabilities(&self, caps: &ServerCapabilities) {
+        if !self.enabled {
+            return;
+        }
+
+        if let Some(guard) = self.get_or_init_db()
+            && let Some(conn) = guard.as_ref()
+        {
+            let now_ms = now_epoch_ms();
+            let _ = conn.execute(
+                "DELETE FROM cache_server_capabilities WHERE endpoint = ?",
+                params![&caps.endpoint],
+            );
+            let _ = conn.execute(
+                "INSERT INTO cache_server_capabilities
+                 (endpoint, model_id, n_ctx, total_slots, supports_tokenize, tokenize_endpoint, backend_kind, cached_ms)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    &caps.endpoint,
+                    &caps.model_id,
+                    caps.n_ctx as u64,
+                    caps.total_slots as u32,
+                    caps.supports_tokenize,
+                    &caps.tokenize_endpoint,
+                    &caps.backend_kind,
+                    now_ms,
+                ],
+            );
+        }
     }
 
     #[doc(hidden)]

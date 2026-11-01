@@ -425,3 +425,44 @@ fn test_cache_duckdb_consolidation() {
     cache.clean().unwrap();
     assert!(cache.get_page("https://duckdb-cached.com").is_none());
 }
+
+#[test]
+fn test_cache_server_capabilities_model_change_invalidation() {
+    let tmp = temp_test_dir("server_caps");
+    let dir = tmp.path().to_path_buf();
+    let cache = Cache::with_dir(dir.clone(), true);
+
+    let caps1 = srz::engine::ServerCapabilities {
+        endpoint: "http://localhost:9931".to_string(),
+        model_id: "ggml-org/gemma-4-E4B-it-GGUF:Q8_0".to_string(),
+        n_ctx: 32768,
+        total_slots: 4,
+        supports_tokenize: true,
+        tokenize_endpoint: Some("http://localhost:9931/tokenize".to_string()),
+        backend_kind: "llama.cpp".to_string(),
+    };
+
+    cache.set_server_capabilities(&caps1);
+
+    // 1. Same model -> Cache hit!
+    let cached =
+        cache.get_server_capabilities("http://localhost:9931", "ggml-org/gemma-4-E4B-it-GGUF:Q8_0");
+    assert!(cached.is_some());
+    let hit = cached.unwrap();
+    assert_eq!(hit.n_ctx, 32768);
+    assert_eq!(hit.total_slots, 4);
+    assert!(hit.supports_tokenize);
+    assert_eq!(hit.backend_kind, "llama.cpp");
+
+    // 2. Different model loaded -> Cache miss / invalidation!
+    let invalidated = cache.get_server_capabilities("http://localhost:9931", "different-model-id");
+    assert!(
+        invalidated.is_none(),
+        "Changing models must invalidate the cached capabilities"
+    );
+
+    // 3. Re-querying old model now returns None because it was purged
+    let purged =
+        cache.get_server_capabilities("http://localhost:9931", "ggml-org/gemma-4-E4B-it-GGUF:Q8_0");
+    assert!(purged.is_none());
+}
