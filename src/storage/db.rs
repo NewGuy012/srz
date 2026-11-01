@@ -1002,6 +1002,7 @@ fn map_search_result_row(
 /// Extracts a surrounding text excerpt (~200 characters) around the first match of `query`
 /// without allocating a lowercase copy of `text`.
 /// Uses UTF-8 character boundaries to prevent indexing panics on multi-byte characters.
+#[allow(clippy::incompatible_msrv)]
 fn extract_snippet(text: &str, query: &str, terms: &[String]) -> String {
     let match_pos = crate::search::find_ascii_case_insensitive(text, query).or_else(|| {
         for term in terms {
