@@ -106,7 +106,7 @@ fn test_markdown_to_styled_html_rendering() {
 
     let escaped_quote = render_html_document("O'Reilly", "It's a test");
     assert!(escaped_quote.contains("O&#39;Reilly"));
-    assert!(escaped_quote.contains("It's a test") || escaped_quote.contains("It&#39;s a test"));
+    assert!(escaped_quote.contains("<p>It's a test</p>"));
 
     // Verify ensure_view_files skips rewrite when force_write is false and files exist
     let tmp = tempfile::tempdir().unwrap();
@@ -268,26 +268,20 @@ fn test_sample_pdf_generation_and_extraction() {
     );
     assert!(page.content.contains("Universal Ingestion"));
     assert!(page.word_count >= 50);
-
-    // Also persist document.pdf in assets/ folder so CLI examples in README work out-of-the-box
-    let doc_path = std::path::Path::new("assets/document.pdf");
-    if !doc_path.exists() {
-        std::fs::write(doc_path, &bytes).expect("Failed to write assets/document.pdf");
-    }
 }
 
 #[test]
 fn test_assets_document_pdf_cli_access_and_extraction() {
     use srz::sources::pdf::PdfExtractor;
 
-    let path = std::path::Path::new("assets/document.pdf");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/document.pdf");
     assert!(
         path.exists(),
         "assets/document.pdf must exist for CLI access and tests"
     );
 
     // Test low-level PdfExtractor
-    let page = PdfExtractor::extract_file(path).expect("Failed to extract assets/document.pdf");
+    let page = PdfExtractor::extract_file(&path).expect("Failed to extract assets/document.pdf");
     assert!(page.content.contains("THE HISTORY OF RUST"));
     assert!(page.content.contains("Ownership & Borrowing"));
     assert!(page.content.contains("Graydon Hoare"));
@@ -296,7 +290,7 @@ fn test_assets_document_pdf_cli_access_and_extraction() {
 
     // Test high-level CLI DocumentLoader used by `srz assets/document.pdf` and `srz ask assets/document.pdf`
     let scraper = srz::scraper::WebScraper::new().unwrap();
-    let doc = srz::sources::DocumentLoader::load_file(path, &scraper)
+    let doc = srz::sources::DocumentLoader::load_file(&path, &scraper)
         .expect("CLI DocumentLoader failed to access assets/document.pdf");
     assert!(doc.word_count >= 100);
     assert!(doc.content.contains("THE HISTORY OF RUST"));
@@ -307,7 +301,8 @@ fn test_assets_document_pdf_cli_access_and_extraction() {
 fn test_pdf_crlf_line_ending_recovery() {
     use srz::sources::pdf::PdfExtractor;
 
-    let original_bytes = std::fs::read("assets/document.pdf").unwrap();
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/document.pdf");
+    let original_bytes = std::fs::read(&path).unwrap();
     // Simulate Windows Git CRLF conversion
     let mut crlf_bytes = Vec::new();
     for &b in &original_bytes {

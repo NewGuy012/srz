@@ -71,11 +71,8 @@ fn test_shared_http_client_initialization() {
     let searcher = srz::search::BookSearcher::with_client(scraper.client().clone());
     let news = srz::news::GoogleNewsClient::with_client(scraper.client().clone());
 
-    // Verify all clients share the underlying HTTP connection pool
-    let client_ref: *const reqwest::Client = scraper.client();
-    assert!(!client_ref.is_null());
-    let searcher_ref: *const reqwest::Client = searcher.client();
-    assert!(!searcher_ref.is_null());
-    let news_ref: *const reqwest::Client = news.client();
-    assert!(!news_ref.is_null());
+    // Verify all clients can build valid requests using the shared client configuration
+    assert!(scraper.client().get("https://example.com").build().is_ok());
+    assert!(searcher.client().get("https://example.com").build().is_ok());
+    assert!(news.client().get("https://example.com").build().is_ok());
 }
