@@ -89,8 +89,8 @@ cat server.log | srz -
 srz "The Rust Programming Language" --open
 ```
 
-### Summarize Live News Feeds
-Aggregate and synthesize top news stories from Google News RSS:
+### Summarize Live News & RSS Feeds
+Aggregate and synthesize news stories from Google News RSS or summarize direct syndication feeds:
 
 ```bash
 # Recent news on a topic (past 24 hours by default)
@@ -98,13 +98,16 @@ srz news "Rust language updates"
 
 # Filter by recency (day, week, month, all)
 srz news "artificial intelligence" -t week
+
+# Or summarize any RSS, Atom, or JSON feed directly
+srz "https://blog.rust-lang.org/feed.xml"
 ```
 
 ---
 
 ## 3. Interactive Grounded Q&A (`srz ask`)
 
-Ask targeted questions or start an interactive chat session grounded directly in document text:
+Ask targeted questions or start an interactive chat session grounded directly in document text (persisted to DuckDB):
 
 ```bash
 # Ask a question about your most recently summarized item
@@ -113,7 +116,7 @@ srz ask "What are the main findings?"
 # Ask a question about a specific document or file
 srz ask assets/document.pdf "What are the primary conclusions?"
 
-# Launch an interactive multi-turn chat REPL
+# Launch an interactive multi-turn chat REPL (type 'exit' or Ctrl+D to quit)
 srz ask -i
 
 # Inspect and resume saved chat sessions from DuckDB
