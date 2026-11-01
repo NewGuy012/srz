@@ -827,3 +827,32 @@ fn test_file_like_detection_and_document_pdf() {
         _ => panic!("Expected File action for document.pdf"),
     }
 }
+
+#[test]
+fn test_feed_url_detection_and_routing() {
+    use srz::cli::is_feed_url;
+
+    assert!(is_feed_url("https://blog.rust-lang.org/feed.xml"));
+    assert!(is_feed_url("https://example.com/rss.xml"));
+    assert!(is_feed_url("https://example.com/atom.xml"));
+    assert!(is_feed_url("https://example.com/feed"));
+    assert!(is_feed_url("https://example.com/rss"));
+    assert!(is_feed_url("https://example.com/feed.json"));
+    assert!(is_feed_url("https://news.google.com/rss/search?q=rust"));
+    assert!(is_feed_url("https://example.com/articles?format=rss"));
+
+    assert!(!is_feed_url("https://example.com/article"));
+    assert!(!is_feed_url(
+        "https://en.wikipedia.org/wiki/Rust_(programming_language)"
+    ));
+
+    let feed_cli = Cli::parse_from(["srz", "https://blog.rust-lang.org/feed.xml"]);
+    assert_eq!(
+        feed_cli.resolve_action().unwrap(),
+        ResolvedAction::News {
+            topic: "https://blog.rust-lang.org/feed.xml".to_string(),
+            timeframe: NewsTimeframe::All,
+            limit: 5,
+        }
+    );
+}

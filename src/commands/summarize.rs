@@ -222,6 +222,19 @@ pub async fn handle_web(
     cache: &Cache,
     args: &Cli,
 ) -> Result<SummaryOutcome> {
+    if crate::cli::is_feed_url(url) {
+        return handle_news(
+            url,
+            crate::cli::NewsTimeframe::All,
+            5,
+            scraper,
+            llm,
+            cache,
+            args,
+        )
+        .await;
+    }
+
     let is_youtube = crate::sources::youtube::extract_youtube_video_id(url);
     let is_pdf = url.split('?').next().unwrap_or(url).ends_with(".pdf");
     let target_type = if is_youtube.is_some() {
@@ -342,20 +355,29 @@ pub async fn handle_news(
     limit: usize,
     scraper: &WebScraper,
     llm: &LlmClient,
+    cache: &Cache,
     args: &Cli,
 ) -> Result<SummaryOutcome> {
     let news_client = crate::news::GoogleNewsClient::with_client(scraper.client().clone());
+    let is_direct_feed = topic.starts_with("http://") || topic.starts_with("https://");
 
-    Ui::info(&format!(
-        "Searching Google News for '{}' ({}, max articles: {})...",
-        topic,
-        timeframe.display_label(),
-        limit
-    ));
+    if is_direct_feed {
+        Ui::info(&format!(
+            "Fetching syndication feed '{}' (max articles: {})...",
+            topic, limit
+        ));
+    } else {
+        Ui::info(&format!(
+            "Searching Google News for '{}' ({}, max articles: {})...",
+            topic,
+            timeframe.display_label(),
+            limit
+        ));
+    }
 
     let pb = Ui::spinner("Fetching and reading news articles...");
     let sources = match news_client
-        .collect_news_articles(topic, timeframe, limit, scraper)
+        .collect_news_articles_with_cache(topic, timeframe, limit, scraper, Some(cache))
         .await
     {
         Ok(sources) => {
@@ -399,10 +421,14 @@ pub async fn handle_news(
     let title_display = format!("News: {}", topic);
     let mode = args.stream_mode(&title_display);
     let author_str = format!("{} news sources", sources.len());
-    let search_url = format!(
-        "https://news.google.com/search?q={}",
-        urlencoding::encode(topic)
-    );
+    let search_url = if is_direct_feed {
+        topic.to_string()
+    } else {
+        format!(
+            "https://news.google.com/search?q={}",
+            urlencoding::encode(topic)
+        )
+    };
 
     let output = llm
         .summarize_news_digest(topic, timeframe.display_label(), &digest, args.style, mode)

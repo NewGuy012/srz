@@ -35,33 +35,40 @@ impl GoogleNewsClient {
         &self.client
     }
 
-    /// Queries Google News RSS for the given topic and recency timeframe.
+    /// Queries Google News RSS for a topic/timeframe, or fetches a direct RSS/Atom/JSON feed URL.
     pub async fn fetch_feed(
         &self,
         topic: &str,
         timeframe: NewsTimeframe,
         limit: usize,
     ) -> Result<Vec<NewsArticleItem>> {
-        let suffix = timeframe.as_google_query_suffix();
-        let query = if suffix.is_empty() || topic.contains("when:") {
-            topic.trim().to_string()
+        let trimmed = topic.trim();
+        let endpoint = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+            trimmed.to_string()
         } else {
-            format!("{} {}", topic.trim(), suffix)
+            let suffix = timeframe.as_google_query_suffix();
+            let query = if suffix.is_empty() || trimmed.contains("when:") {
+                trimmed.to_string()
+            } else {
+                format!("{} {}", trimmed, suffix)
+            };
+
+            format!(
+                "https://news.google.com/rss/search?q={}&hl=en-US&gl=US&ceid=US:en",
+                urlencoding::encode(&query)
+            )
         };
 
-        let endpoint = format!(
-            "https://news.google.com/rss/search?q={}&hl=en-US&gl=US&ceid=US:en",
-            urlencoding::encode(&query)
-        );
-
-        let resp =
-            self.client.get(&endpoint).send().await.with_context(|| {
-                format!("Failed to fetch Google News RSS feed from {}", endpoint)
-            })?;
+        let resp = self
+            .client
+            .get(&endpoint)
+            .send()
+            .await
+            .with_context(|| format!("Failed to fetch syndication feed from {}", endpoint))?;
 
         if !resp.status().is_success() {
             anyhow::bail!(
-                "Google News RSS returned HTTP status {}: {}",
+                "Syndication feed returned HTTP status {}: {}",
                 resp.status(),
                 endpoint
             );
@@ -118,7 +125,7 @@ impl GoogleNewsClient {
         parse_batchexecute_destination_url(&rpc_text)
     }
 
-    /// Fetches and normalizes top news articles concurrently.
+    /// Fetches and normalizes top news articles concurrently with bounded concurrency.
     pub async fn collect_news_articles(
         &self,
         topic: &str,
@@ -126,24 +133,68 @@ impl GoogleNewsClient {
         limit: usize,
         scraper: &WebScraper,
     ) -> Result<Vec<NewsDigestSource>> {
+        self.collect_news_articles_with_cache(topic, timeframe, limit, scraper, None)
+            .await
+    }
+
+    /// Fetches and normalizes top news articles concurrently, consulting and populating `cache` when provided.
+    pub async fn collect_news_articles_with_cache(
+        &self,
+        topic: &str,
+        timeframe: NewsTimeframe,
+        limit: usize,
+        scraper: &WebScraper,
+        cache: Option<&crate::cache::Cache>,
+    ) -> Result<Vec<NewsDigestSource>> {
+        const MAX_CONCURRENT_NEWS_SCRAPES: usize = 6;
+
         // Fetch up to 2x limit (or at least limit + 2) candidates to buffer against paywalls/dead links
         let fetch_limit = (limit * 2).max(limit + 2);
         let feed_items = self.fetch_feed(topic, timeframe, fetch_limit).await?;
         if feed_items.is_empty() {
             anyhow::bail!(
-                "No recent news found on Google News for topic '{}' ({}).",
+                "No recent articles found in feed for '{}' ({}).",
                 topic,
                 timeframe.display_label()
             );
         }
 
+        let mut sources = Vec::new();
+        let mut uncached_items = Vec::new();
+
+        for item in feed_items {
+            if extract_article_id(&item.google_link).is_none()
+                && let Some(c) = cache
+                && let Some(page) = c.get_page(&item.google_link)
+                && page.word_count > 60
+            {
+                sources.push(NewsDigestSource {
+                    title: page.title.unwrap_or(item.title),
+                    source_name: item.source_name.unwrap_or_else(|| "Source".to_string()),
+                    url: item.google_link,
+                    pub_date: item.pub_date,
+                    content: page.content,
+                    word_count: page.word_count,
+                });
+                if sources.len() >= limit {
+                    return Ok(sources);
+                }
+                continue;
+            }
+            uncached_items.push(item);
+        }
+
+        let semaphore =
+            std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_NEWS_SCRAPES));
         let mut join_set = tokio::task::JoinSet::new();
 
-        // Resolve destination URLs and scrape articles concurrently
-        for item in feed_items {
+        // Resolve destination URLs and scrape articles with bounded concurrency
+        for item in uncached_items {
             let client = self.clone();
             let scraper_cloned = scraper.clone();
+            let sem = semaphore.clone();
             join_set.spawn(async move {
+                let _permit = sem.acquire().await.ok()?;
                 let direct_url = match client.resolve_article_url(&item.google_link).await {
                     Some(u) => u,
                     None => item.google_link.clone(),
@@ -167,9 +218,19 @@ impl GoogleNewsClient {
             });
         }
 
-        let mut sources = Vec::new();
         while let Some(res) = join_set.join_next().await {
             if let Ok(Some(source)) = res {
+                if let Some(c) = cache {
+                    c.set_page(
+                        &source.url,
+                        &ScrapedPage {
+                            url: source.url.clone(),
+                            title: Some(source.title.clone()),
+                            content: source.content.clone(),
+                            word_count: source.word_count,
+                        },
+                    );
+                }
                 sources.push(source);
                 if sources.len() >= limit {
                     join_set.abort_all();
@@ -180,7 +241,7 @@ impl GoogleNewsClient {
 
         if sources.is_empty() {
             anyhow::bail!(
-                "Found news headlines for '{}', but none of the article pages could be scraped.",
+                "Found headlines for '{}', but none of the article pages could be scraped.",
                 topic
             );
         }

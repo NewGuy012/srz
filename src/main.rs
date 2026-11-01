@@ -153,7 +153,7 @@ async fn main() -> Result<()> {
             topic,
             timeframe,
             limit,
-        } => commands::handle_news(&topic, timeframe, limit, &scraper, &llm, &args).await,
+        } => commands::handle_news(&topic, timeframe, limit, &scraper, &llm, &cache, &args).await,
         _ => unreachable!(),
     };
 
