@@ -37,17 +37,23 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Make install.sh executable
         run: chmod +x scripts/install.sh
 
-      - name: Test direct execution (install.sh)
+      - name: Test versioned direct execution (install.sh)
         run: |
           mkdir -p "${RUNNER_TEMP}/bin_direct"
           INSTALL_DIR="${RUNNER_TEMP}/bin_direct" VERSION="v0.4.0" ./scripts/install.sh
           "${RUNNER_TEMP}/bin_direct/srz" --version
           "${RUNNER_TEMP}/bin_direct/srz" --help
+
+      - name: Test default unversioned execution (latest release)
+        run: |
+          mkdir -p "${RUNNER_TEMP}/bin_latest"
+          INSTALL_DIR="${RUNNER_TEMP}/bin_latest" ./scripts/install.sh
+          "${RUNNER_TEMP}/bin_latest/srz" --version
 
       - name: Test piped execution (cat install.sh | sh)
         run: |
@@ -70,9 +76,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
-      - name: Test direct execution (install.ps1)
+      - name: Test versioned direct execution (install.ps1)
         shell: pwsh
         run: |
           $InstallDir = Join-Path $env:RUNNER_TEMP "bin_direct"
@@ -89,6 +95,40 @@ jobs:
 
           & $ExePath --version
           & $ExePath --help
+
+      - name: Test default unversioned execution (latest release)
+        shell: pwsh
+        run: |
+          $InstallDir = Join-Path $env:RUNNER_TEMP "bin_latest"
+          New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+          $env:INSTALL_DIR = $InstallDir
+          Remove-Item env:\VERSION -ErrorAction SilentlyContinue
+
+          .\scripts\install.ps1
+
+          $ExePath = Join-Path $InstallDir "srz.exe"
+          if (-not (Test-Path $ExePath)) {
+            throw "srz.exe was not found in $InstallDir after latest installation."
+          }
+
+          & $ExePath --version
+
+      - name: Test piped execution (Get-Content install.ps1 | iex)
+        shell: pwsh
+        run: |
+          $InstallDir = Join-Path $env:RUNNER_TEMP "bin_pipe"
+          New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+          $env:INSTALL_DIR = $InstallDir
+          $env:VERSION = "v0.4.0"
+
+          Get-Content .\scripts\install.ps1 -Raw | Invoke-Expression
+
+          $ExePath = Join-Path $InstallDir "srz.exe"
+          if (-not (Test-Path $ExePath)) {
+            throw "srz.exe was not found in $InstallDir after piped installation."
+          }
+
+          & $ExePath --version
 
       - name: Test invalid semver validation
         shell: pwsh
