@@ -19,6 +19,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub struct CachedSummary {
     pub title: String,
     pub summary: String,
+    #[serde(default)]
+    pub word_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -30,12 +32,14 @@ pub struct SetBookSummaryParams<'a> {
     pub no_search: bool,
     pub display_title: &'a str,
     pub summary: &'a str,
+    pub word_count: usize,
 }
 
 #[derive(Serialize)]
 struct CachedSummaryRef<'a> {
     title: &'a str,
     summary: &'a str,
+    word_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -286,6 +290,8 @@ impl Cache {
         let mut guard = self.db_conn.lock().ok()?;
         if guard.is_none() {
             let db_path = self.base_dir.join("cache.duckdb");
+            let already_exists =
+                db_path.exists() && fs::metadata(&db_path).map(|m| m.len() > 0).unwrap_or(false);
             if let Some(parent) = db_path.parent() {
                 let _ = create_private_dir_all(parent);
             }
@@ -293,29 +299,34 @@ impl Cache {
                 if db_path.exists() {
                     crate::fs_util::set_private_file_perms(&db_path);
                 }
-                let _ = conn.execute_batch(
-                    "SET autoinstall_known_extensions = false;
-                     SET autoload_known_extensions = false;
-                     CREATE TABLE IF NOT EXISTS cache_pages (
-                         cache_key VARCHAR PRIMARY KEY,
-                         url VARCHAR NOT NULL,
-                         title VARCHAR,
-                         content TEXT NOT NULL,
-                         word_count UINTEGER NOT NULL,
-                         cached_at TIMESTAMP NOT NULL DEFAULT current_timestamp
-                     );
-                     CREATE TABLE IF NOT EXISTS cache_search (
-                         cache_key VARCHAR PRIMARY KEY,
-                         data TEXT NOT NULL,
-                         cached_at TIMESTAMP NOT NULL DEFAULT current_timestamp
-                     );
-                     CREATE TABLE IF NOT EXISTS cache_summaries (
-                         cache_key VARCHAR PRIMARY KEY,
-                         data TEXT NOT NULL,
-                         cached_at TIMESTAMP NOT NULL DEFAULT current_timestamp
-                     );
-                     ALTER TABLE cache_summaries ADD COLUMN IF NOT EXISTS data TEXT;",
-                );
+                let _ = conn.execute_batch(crate::db::DUCKDB_SECURITY_LOCKDOWN);
+                let schema_ready = already_exists
+                    && conn
+                        .execute("SELECT 1 FROM cache_pages LIMIT 0", [])
+                        .is_ok();
+                if !schema_ready {
+                    let _ = conn.execute_batch(
+                        "CREATE TABLE IF NOT EXISTS cache_pages (
+                             cache_key VARCHAR PRIMARY KEY,
+                             url VARCHAR NOT NULL,
+                             title VARCHAR,
+                             content TEXT NOT NULL,
+                             word_count UINTEGER NOT NULL,
+                             cached_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+                         );
+                         CREATE TABLE IF NOT EXISTS cache_search (
+                             cache_key VARCHAR PRIMARY KEY,
+                             data TEXT NOT NULL,
+                             cached_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+                         );
+                         CREATE TABLE IF NOT EXISTS cache_summaries (
+                             cache_key VARCHAR PRIMARY KEY,
+                             data TEXT NOT NULL,
+                             cached_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+                         );
+                         ALTER TABLE cache_summaries ADD COLUMN IF NOT EXISTS data TEXT;",
+                    );
+                }
                 *guard = Some(conn);
             }
         }
@@ -355,10 +366,46 @@ impl Cache {
 
     /// Computes entry counts and total disk usage across all cache namespaces.
     pub fn stats(&self) -> CacheStats {
-        let (pages, pages_bytes) = Self::namespace_stats(&self.base_dir.join("pages"));
-        let (searches, search_bytes) = Self::namespace_stats(&self.base_dir.join("search"));
-        let (summaries, summary_bytes) = Self::namespace_stats(&self.base_dir.join("summaries"));
+        let (mut pages, mut pages_bytes) = Self::namespace_stats(&self.base_dir.join("pages"));
+        let (mut searches, mut search_bytes) = Self::namespace_stats(&self.base_dir.join("search"));
+        let (mut summaries, mut summary_bytes) =
+            Self::namespace_stats(&self.base_dir.join("summaries"));
         let (views, views_bytes) = Self::namespace_stats(&self.base_dir.join("views"));
+
+        if self.base_dir.join("cache.duckdb").exists()
+            && let Some(guard) = self.get_or_init_db()
+            && let Some(conn) = guard.as_ref()
+        {
+            if let Ok((cnt, bytes)) = conn.query_row(
+                "SELECT count(*)::BIGINT, coalesce(sum(strlen(url) + coalesce(strlen(title), 0) + strlen(content) + 32), 0)::BIGINT FROM cache_pages",
+                [],
+                |r| Ok((r.get::<_, i64>(0)? as usize, r.get::<_, i64>(1)?.max(0) as u64)),
+            ) {
+                pages += cnt;
+                pages_bytes += bytes;
+            }
+            if let Ok((cnt, bytes)) = conn.query_row(
+                "SELECT count(*)::BIGINT, coalesce(sum(strlen(data)), 0)::BIGINT FROM cache_search",
+                [],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)? as usize,
+                        r.get::<_, i64>(1)?.max(0) as u64,
+                    ))
+                },
+            ) {
+                searches += cnt;
+                search_bytes += bytes;
+            }
+            if let Ok((cnt, bytes)) = conn.query_row(
+                "SELECT count(*)::BIGINT, coalesce(sum(strlen(data)), 0)::BIGINT FROM cache_summaries",
+                [],
+                |r| Ok((r.get::<_, i64>(0)? as usize, r.get::<_, i64>(1)?.max(0) as u64)),
+            ) {
+                summaries += cnt;
+                summary_bytes += bytes;
+            }
+        }
 
         CacheStats {
             pages,
@@ -373,7 +420,8 @@ impl Cache {
     /// Removes all cached files in pages, search, summaries, and views, returning stats of what was cleared.
     pub fn clean(&self) -> std::io::Result<CacheStats> {
         let current = self.stats();
-        if let Some(guard) = self.get_or_init_db()
+        if self.base_dir.join("cache.duckdb").exists()
+            && let Some(guard) = self.get_or_init_db()
             && let Some(conn) = guard.as_ref()
         {
             let _ = conn.execute_batch(
@@ -406,44 +454,101 @@ impl Cache {
             None => CacheNamespace::all().to_vec(),
         };
 
-        if let Some(guard) = self.get_or_init_db()
+        let mut files_removed = 0;
+        let mut bytes_reclaimed = 0u64;
+
+        let should_run_size_eviction = options.max_bytes.is_some()
+            || (options.older_than.is_none() && options.namespace.is_none());
+
+        enum EvictTarget {
+            DbRow {
+                table: &'static str,
+                cache_key: String,
+            },
+            DiskFile(PathBuf),
+        }
+
+        struct SurvivingEntry {
+            target: EvictTarget,
+            len: u64,
+            timestamp_ms: i64,
+        }
+
+        let mut surviving_entries = Vec::new();
+        let mut total_size = 0u64;
+
+        // Pass 1a: Prune DuckDB cache entries by TTL & collect surviving DB rows for LRU size eviction
+        if self.base_dir.join("cache.duckdb").exists()
+            && let Some(guard) = self.get_or_init_db()
             && let Some(conn) = guard.as_ref()
         {
             let now_ms = now_epoch_ms();
 
             for ns in &namespaces {
                 let Some(table) = ns.db_table() else { continue };
+                let size_expr = if table == "cache_pages" {
+                    "strlen(url) + coalesce(strlen(title), 0) + strlen(content) + 32"
+                } else {
+                    "strlen(data)"
+                };
+
                 let ttl = match options.older_than {
                     Some(dur) => dur,
                     None => ns.ttl(&self.policy),
                 };
                 if ttl != Duration::MAX {
                     let cutoff_ms = now_ms.saturating_sub(ttl.as_millis() as i64);
-                    let sql = format!(
-                        "DELETE FROM {} WHERE epoch_ms(cached_at)::BIGINT < ?",
-                        table
+                    let stats_sql = format!(
+                        "SELECT count(*)::BIGINT, coalesce(sum({size_expr}), 0)::BIGINT
+                         FROM {table}
+                         WHERE epoch_ms(cached_at)::BIGINT < ?"
                     );
-                    let _ = conn.execute(&sql, params![cutoff_ms]);
+                    if let Ok((expired_cnt, expired_bytes)) =
+                        conn.query_row(&stats_sql, params![cutoff_ms], |r| {
+                            Ok((
+                                r.get::<_, i64>(0)? as usize,
+                                r.get::<_, i64>(1)?.max(0) as u64,
+                            ))
+                        })
+                        && expired_cnt > 0
+                    {
+                        let del_sql =
+                            format!("DELETE FROM {table} WHERE epoch_ms(cached_at)::BIGINT < ?");
+                        if conn.execute(&del_sql, params![cutoff_ms]).is_ok() {
+                            files_removed += expired_cnt;
+                            bytes_reclaimed += expired_bytes;
+                        }
+                    }
+                }
+
+                if should_run_size_eviction {
+                    let list_sql = format!(
+                        "SELECT cache_key, ({size_expr})::BIGINT, epoch_ms(cached_at)::BIGINT
+                         FROM {table}"
+                    );
+                    if let Ok(mut stmt) = conn.prepare(&list_sql)
+                        && let Ok(rows) = stmt.query_map([], |r| {
+                            Ok((
+                                r.get::<_, String>(0)?,
+                                r.get::<_, i64>(1)?.max(0) as u64,
+                                r.get::<_, i64>(2)?,
+                            ))
+                        })
+                    {
+                        for (cache_key, len, timestamp_ms) in rows.flatten() {
+                            total_size += len;
+                            surviving_entries.push(SurvivingEntry {
+                                target: EvictTarget::DbRow { table, cache_key },
+                                len,
+                                timestamp_ms,
+                            });
+                        }
+                    }
                 }
             }
         }
 
-        let mut files_removed = 0;
-        let mut bytes_reclaimed = 0;
-
-        let should_run_size_eviction = options.max_bytes.is_some()
-            || (options.older_than.is_none() && options.namespace.is_none());
-
-        struct FileInfo {
-            path: PathBuf,
-            len: u64,
-            mtime: SystemTime,
-        }
-
-        let mut surviving_files = Vec::new();
-        let mut total_size = 0u64;
-
-        // Pass 1: Prune by expiration / TTL while tracking surviving files for size eviction
+        // Pass 1b: Prune filesystem files (views/ and any legacy JSON files) by TTL
         for ns in &namespaces {
             let dir = self.base_dir.join(ns.as_str());
             let Ok(entries) = fs::read_dir(&dir) else {
@@ -474,18 +579,26 @@ impl Cache {
                             bytes_reclaimed += len;
                         }
                     } else if should_run_size_eviction {
+                        let timestamp_ms = mtime
+                            .duration_since(UNIX_EPOCH)
+                            .map(|d| d.as_millis() as i64)
+                            .unwrap_or(0);
                         total_size += len;
-                        surviving_files.push(FileInfo { path, len, mtime });
+                        surviving_entries.push(SurvivingEntry {
+                            target: EvictTarget::DiskFile(path),
+                            len,
+                            timestamp_ms,
+                        });
                     }
                 }
             }
         }
 
-        // Pass 2: Prune by total size (LRU eviction based on mtime) in-memory
+        // Pass 2: Prune by total size (LRU eviction based on timestamp) across DB & disk
         if should_run_size_eviction {
             let max_budget = options.max_bytes.unwrap_or(self.policy.max_bytes);
             if max_budget < u64::MAX && total_size > max_budget {
-                surviving_files.sort_by_key(|f| f.mtime);
+                surviving_entries.sort_by_key(|e| e.timestamp_ms);
 
                 let target_size = if options.max_bytes.is_some() {
                     max_budget
@@ -493,14 +606,28 @@ impl Cache {
                     ((max_budget as f64) * 0.85) as u64
                 };
 
-                for file in surviving_files {
+                let db_guard = self.get_or_init_db();
+                let db_conn = db_guard.as_ref().and_then(|g| g.as_ref());
+
+                for entry in surviving_entries {
                     if total_size <= target_size {
                         break;
                     }
-                    if fs::remove_file(&file.path).is_ok() {
+                    let removed = match entry.target {
+                        EvictTarget::DbRow { table, cache_key } => {
+                            if let Some(conn) = db_conn {
+                                let sql = format!("DELETE FROM {table} WHERE cache_key = ?");
+                                conn.execute(&sql, params![cache_key]).is_ok()
+                            } else {
+                                false
+                            }
+                        }
+                        EvictTarget::DiskFile(path) => fs::remove_file(&path).is_ok(),
+                    };
+                    if removed {
                         files_removed += 1;
-                        bytes_reclaimed += file.len;
-                        total_size = total_size.saturating_sub(file.len);
+                        bytes_reclaimed += entry.len;
+                        total_size = total_size.saturating_sub(entry.len);
                     }
                 }
             }
@@ -689,7 +816,7 @@ impl Cache {
             return;
         }
 
-        // Save into DuckDB cache
+        // Save into consolidated DuckDB cache (sole write target when available)
         if let Some(guard) = self.get_or_init_db()
             && let Some(conn) = guard.as_ref()
         {
@@ -706,11 +833,13 @@ impl Cache {
                      VALUES (?, ?, current_timestamp)",
                     tbl
                 );
-                let _ = conn.execute(&sql, params![key_hash, json_str]);
+                if conn.execute(&sql, params![key_hash, json_str]).is_ok() {
+                    return;
+                }
             }
         }
 
-        // Also write private file
+        // Fallback to private disk file only if DuckDB is unavailable
         self.write_disk_entry(namespace, key_hash, value);
     }
 
@@ -777,18 +906,21 @@ impl Cache {
             return;
         }
 
-        // 1. Save into DuckDB cache
+        // 1. Save into consolidated DuckDB cache (sole write target when available)
         if let Some(guard) = self.get_or_init_db()
             && let Some(conn) = guard.as_ref()
+            && conn
+                .execute(
+                    "INSERT OR REPLACE INTO cache_pages (cache_key, url, title, content, word_count, cached_at)
+                     VALUES (?, ?, ?, ?, ?, current_timestamp)",
+                    params![&key, &page.url, &page.title, &page.content, page.word_count as u32],
+                )
+                .is_ok()
         {
-            let _ = conn.execute(
-                "INSERT OR REPLACE INTO cache_pages (cache_key, url, title, content, word_count, cached_at)
-                 VALUES (?, ?, ?, ?, ?, current_timestamp)",
-                params![&key, &page.url, &page.title, &page.content, page.word_count as u32],
-            );
+            return;
         }
 
-        // 2. Write private file
+        // 2. Fallback to private disk file only if DuckDB is unavailable
         self.write_disk_entry("pages", &key, page);
     }
 
@@ -883,8 +1015,28 @@ impl Cache {
         title: &str,
         summary: &str,
     ) {
+        self.set_web_summary_with_words(url, style, model, title, summary, 0);
+    }
+
+    pub fn set_web_summary_with_words(
+        &self,
+        url: &str,
+        style: SummaryStyle,
+        model: &str,
+        title: &str,
+        summary: &str,
+        word_count: usize,
+    ) {
         let key = Self::summary_key("web", url, None, style, model, false);
-        self.write_entry("summaries", &key, &CachedSummaryRef { title, summary });
+        self.write_entry(
+            "summaries",
+            &key,
+            &CachedSummaryRef {
+                title,
+                summary,
+                word_count,
+            },
+        );
     }
 
     pub fn get_book_summary(
@@ -914,6 +1066,7 @@ impl Cache {
             &CachedSummaryRef {
                 title: params.display_title,
                 summary: params.summary,
+                word_count: params.word_count,
             },
         );
     }

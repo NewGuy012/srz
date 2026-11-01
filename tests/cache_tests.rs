@@ -75,6 +75,7 @@ fn test_disabled_cache_bypasses_reads() {
         no_search: false,
         display_title: "\"Dune\"",
         summary: "Great sci-fi novel.",
+        word_count: 420,
     });
 
     assert!(
@@ -82,11 +83,10 @@ fn test_disabled_cache_bypasses_reads() {
             .get_book_summary("Dune", None, SummaryStyle::Detailed, "gemma-4", false)
             .is_none()
     );
-    assert!(
-        cache_enabled
-            .get_book_summary("Dune", None, SummaryStyle::Detailed, "gemma-4", false)
-            .is_some()
-    );
+    let hit = cache_enabled
+        .get_book_summary("Dune", None, SummaryStyle::Detailed, "gemma-4", false)
+        .expect("Should hit cache");
+    assert_eq!(hit.word_count, 420);
 
     let _ = fs::remove_dir_all(dir);
 }
@@ -113,6 +113,7 @@ fn test_cache_stats_and_clean() {
         no_search: false,
         display_title: "\"Dune\"",
         summary: "Summary text",
+        word_count: 100,
     });
 
     let stats = cache.stats();
@@ -164,16 +165,15 @@ fn test_cache_file_permissions() {
     };
     cache.set_page("https://secure.example.com", &page);
 
-    // Verify directory has 0700 permissions
-    let pages_dir = dir.join("pages");
-    let dir_meta = fs::metadata(&pages_dir).unwrap();
+    // Verify root cache directory has 0700 permissions and cache.duckdb has 0600 permissions
+    let dir_meta = fs::metadata(&dir).unwrap();
     assert_eq!(dir_meta.permissions().mode() & 0o777, 0o700);
 
-    // Verify cache entry file has 0600 permissions
-    let entries = fs::read_dir(&pages_dir).unwrap().collect::<Vec<_>>();
-    assert_eq!(entries.len(), 1);
-    let file_meta = entries[0].as_ref().unwrap().metadata().unwrap();
-    assert_eq!(file_meta.permissions().mode() & 0o777, 0o600);
+    let db_meta = fs::metadata(dir.join("cache.duckdb")).unwrap();
+    assert_eq!(db_meta.permissions().mode() & 0o777, 0o600);
+
+    // Ensure no redundant legacy JSON files were written to pages/
+    assert!(!dir.join("pages").exists());
 
     let _ = fs::remove_dir_all(dir);
 }
@@ -329,6 +329,9 @@ fn test_cache_prune_by_max_size_lru() {
     assert!(prune_stats.files_removed > 0);
     assert!(cache.stats().total_bytes <= 2500);
     assert!(cache.stats().total_bytes < original_bytes);
+    // Oldest entry must be evicted from cache.duckdb, newest must remain
+    assert!(cache.get_page("https://example.com/0").is_none());
+    assert!(cache.get_page("https://example.com/4").is_some());
 
     let _ = fs::remove_dir_all(dir);
 }
@@ -374,18 +377,15 @@ fn test_cache_sha256_hash_keys() {
     };
     cache.set_page("https://secure-hash.example.com", &page);
 
-    // Read pages directory and verify the key filename is 64 hex characters (SHA-256)
-    let pages_dir = dir.join("pages");
-    let mut files = fs::read_dir(pages_dir).unwrap();
-    let entry = files.next().unwrap().unwrap();
-    let stem = entry
-        .path()
-        .file_stem()
-        .unwrap()
-        .to_string_lossy()
-        .to_string();
-    assert_eq!(stem.len(), 64);
-    assert!(stem.chars().all(|c| c.is_ascii_hexdigit()));
+    // Query cache_pages in cache.duckdb and verify the key is 64 hex characters (SHA-256)
+    let conn = duckdb::Connection::open(dir.join("cache.duckdb")).unwrap();
+    let key: String = conn
+        .query_row("SELECT cache_key FROM cache_pages LIMIT 1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(key.len(), 64);
+    assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
 
     let _ = fs::remove_dir_all(dir);
 }

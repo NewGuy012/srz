@@ -68,7 +68,7 @@ impl SummaryOutcome {
             url,
             target_type,
             summary: cached.summary,
-            word_count: 0,
+            word_count: cached.word_count,
             streamed_to_stdout: false,
             prompt_tokens: None,
             completion_tokens: None,
@@ -316,12 +316,13 @@ pub async fn handle_web(
         .await?;
 
     if !output.truncated {
-        cache.set_web_summary(
+        cache.set_web_summary_with_words(
             url,
             args.style,
             &args.model,
             &title_display,
             &output.content,
+            page.word_count,
         );
     }
 
@@ -458,6 +459,7 @@ pub async fn handle_book(
             no_search: false,
             display_title: &book_display,
             summary: &output.content,
+            word_count,
         });
     }
 

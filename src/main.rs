@@ -48,7 +48,6 @@ async fn main() -> Result<()> {
     if let Some(ref cache_cfg) = config.cache {
         cache.set_policy(cache_cfg.to_policy());
     }
-    cache.maybe_auto_prune();
 
     // Handle immediate utility subcommands without initializing scraping, LLM HTTP clients,
     // or opening DuckDB unless the subcommand actually requires database access.
@@ -99,6 +98,8 @@ async fn main() -> Result<()> {
         }
         _ => {}
     }
+
+    cache.maybe_auto_prune();
 
     if args.no_cache {
         Ui::info("Cache bypassed (`--no-cache`). Forcing fresh fetch and generation.");

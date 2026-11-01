@@ -228,6 +228,10 @@ impl Database {
         self.conn
             .execute("SELECT 1 FROM history LIMIT 0", [])
             .is_ok()
+            && self
+                .conn
+                .execute("SELECT target_type FROM library LIMIT 0", [])
+                .is_err()
     }
 
     fn init_schema(&self) -> Result<()> {
@@ -250,16 +254,16 @@ impl Database {
                  created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
              );
 
-             CREATE SEQUENCE IF NOT EXISTS library_id_seq;
              CREATE TABLE IF NOT EXISTS library (
-                 id INTEGER DEFAULT nextval('library_id_seq') PRIMARY KEY,
-                 target_type VARCHAR NOT NULL,
-                 title VARCHAR NOT NULL,
-                 author VARCHAR,
-                 url VARCHAR,
-                 summary TEXT NOT NULL,
-                 created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+                 id INTEGER PRIMARY KEY,
+                 summary TEXT NOT NULL
              );
+             ALTER TABLE library DROP COLUMN IF EXISTS target_type;
+             ALTER TABLE library DROP COLUMN IF EXISTS title;
+             ALTER TABLE library DROP COLUMN IF EXISTS author;
+             ALTER TABLE library DROP COLUMN IF EXISTS url;
+             ALTER TABLE library DROP COLUMN IF EXISTS created_at;
+             DROP SEQUENCE IF EXISTS library_id_seq;
 
              CREATE TABLE IF NOT EXISTS library_terms (
                  doc_id INTEGER NOT NULL,
@@ -304,7 +308,10 @@ impl Database {
 
         if unindexed_count > 0 {
             let mut stmt = self.conn.prepare(
-                "SELECT l.id, l.title, l.summary FROM library l WHERE NOT EXISTS (SELECT 1 FROM library_terms lt WHERE lt.doc_id = l.id)"
+                "SELECT l.id, h.title, l.summary
+                 FROM library l
+                 JOIN history h ON l.id = h.id
+                 WHERE NOT EXISTS (SELECT 1 FROM library_terms lt WHERE lt.doc_id = l.id)",
             )?;
             let items: Vec<(i64, String, String)> = stmt
                 .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
@@ -385,21 +392,15 @@ impl Database {
             )
             .context("Failed to record entry in DuckDB history table")?;
 
+            let doc_id: i64 =
+                conn.query_row("SELECT currval('history_id_seq')", [], |r| r.get(0))?;
+
             conn.execute(
-                "INSERT INTO library (id, target_type, title, author, url, summary)
-                 VALUES (currval('history_id_seq'), ?, ?, ?, ?, ?)",
-                params![
-                    record.target_type,
-                    record.title,
-                    record.author,
-                    record.url,
-                    record.summary,
-                ],
+                "INSERT INTO library (id, summary) VALUES (?, ?)",
+                params![doc_id, record.summary],
             )
             .context("Failed to record entry in DuckDB library table")?;
 
-            let doc_id: i64 =
-                conn.query_row("SELECT currval('history_id_seq')", [], |r| r.get(0))?;
             insert_doc_terms(conn, doc_id, record.title, record.summary)?;
 
             Ok(())
@@ -426,6 +427,25 @@ impl Database {
         let mut stmt = self.conn.prepare(SELECT_LIBRARY_ITEMS_SQL)?;
         let rows = stmt.query_map([], map_library_item_row)?;
         rows.collect::<duckdb::Result<Vec<_>>>().map_err(Into::into)
+    }
+
+    /// Fetches a specific library item by its ID.
+    pub fn get_library_item_by_id(&self, id: i64) -> Result<Option<LibraryItem>> {
+        let sql = "SELECT l.id, h.target_type, h.title, h.author, h.url, l.summary,
+                          h.style, h.model, h.word_count, h.prompt_tokens, h.completion_tokens,
+                          h.duration_ms, h.tokens_per_second,
+                          strftime(h.created_at, '%Y-%m-%d %H:%M')
+                   FROM library l
+                   JOIN history h ON l.id = h.id
+                   WHERE l.id = ?
+                   LIMIT 1";
+        let mut stmt = self.conn.prepare(sql)?;
+        let mut rows = stmt.query_map(params![id], map_library_item_row)?;
+        if let Some(row) = rows.next() {
+            Ok(Some(row?))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Fetches the single most recently generated summary item from the library.
@@ -774,11 +794,12 @@ impl Database {
                      GROUP BY mt.doc_id
                  )
                  SELECT
-                     l.id, l.target_type, l.title, l.author, l.url, l.summary,
-                     strftime(l.created_at, '%Y-%m-%d %H:%M'),
+                     l.id, h.target_type, h.title, h.author, h.url, l.summary,
+                     strftime(h.created_at, '%Y-%m-%d %H:%M'),
                      sd.bm25_score
                  FROM scored_docs sd
                  JOIN library l ON sd.doc_id = l.id
+                 JOIN history h ON l.id = h.id
                  ORDER BY sd.bm25_score DESC, l.id DESC
                  LIMIT 15"
             );
@@ -803,13 +824,14 @@ impl Database {
         // Fallback / complement with substring ILIKE matching if fewer than 15 results
         if results.len() < 15 {
             let mut stmt = self.conn.prepare(
-                "SELECT id, target_type, title, author, url, summary,
-                        strftime(created_at, '%Y-%m-%d %H:%M')
-                 FROM library
-                 WHERE summary ILIKE '%' || ? || '%'
-                    OR title ILIKE '%' || ? || '%'
-                    OR coalesce(author, '') ILIKE '%' || ? || '%'
-                 ORDER BY id DESC
+                "SELECT l.id, h.target_type, h.title, h.author, h.url, l.summary,
+                        strftime(h.created_at, '%Y-%m-%d %H:%M')
+                 FROM library l
+                 JOIN history h ON l.id = h.id
+                 WHERE l.summary ILIKE '%' || ? || '%'
+                    OR h.title ILIKE '%' || ? || '%'
+                    OR coalesce(h.author, '') ILIKE '%' || ? || '%'
+                 ORDER BY l.id DESC
                  LIMIT 15",
             )?;
 
@@ -904,13 +926,13 @@ const SELECT_HISTORY_SQL: &str = "SELECT id, target_type, title, author, url, st
      ORDER BY id DESC";
 
 const SELECT_LIBRARY_ITEMS_SQL: &str =
-    "SELECT l.id, l.target_type, l.title, l.author, l.url, l.summary,
+    "SELECT l.id, h.target_type, h.title, h.author, h.url, l.summary,
             coalesce(h.style, 'concise'), coalesce(h.model, 'unknown'),
             coalesce(h.word_count, 0), h.prompt_tokens, h.completion_tokens,
             coalesce(h.duration_ms, 0), h.tokens_per_second,
-            strftime(l.created_at, '%Y-%m-%d %H:%M')
+            strftime(h.created_at, '%Y-%m-%d %H:%M')
      FROM library l
-     LEFT JOIN history h ON l.id = h.id
+     JOIN history h ON l.id = h.id
      ORDER BY l.id DESC";
 
 fn map_library_item_row(row: &duckdb::Row<'_>) -> duckdb::Result<LibraryItem> {
