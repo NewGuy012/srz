@@ -80,7 +80,8 @@ flowchart TD
 | | `srz news "<topic\|feed_url>" [-t week]` | Aggregates and summarizes top stories from Google News RSS or any RSS/Atom/JSON feed URL. |
 | **Styling & Output** | `--style <PRESET>` | 3 summary formats: `concise` (default), `bullets`, `detailed`. |
 | | `--max-tokens <NUM>` | Sets the maximum completion tokens to generate (default: `8192`). |
-| | `--concurrency <NUM>` | Sets parallel map-reduce chunking concurrency (default: `1`). |
+| | `--context-window <NUM>` | Overrides auto-detected server context window in tokens (e.g. `32768`). |
+| | `--concurrency <NUM>` | Sets parallel map-reduce chunking concurrency (default: autoscaled to server slots). |
 | | `--open` (`-b`) | Opens the summary in a distraction-free HTML reader with light/dark mode. |
 | | `--plain` | Outputs raw Markdown without terminal colors or automatic paging. |
 | | `--paging <auto\|always\|never>` | Controls terminal output pager (`never` disables paging). |
@@ -204,11 +205,15 @@ graph LR
 ### Performance & Memory Efficiency
 
 #### LLM Processing & Context Management
-- **Exact BPE Token Budgeting**: Replaces rough word-counting heuristics with OpenAI's `cl100k_base` BPE tokenizer (`tiktoken-rs`), precisely calculating token counts (`TextChunker::count_tokens`), chunk boundaries (`chunk_by_tokens`), and token-safe prompt truncation (`truncate_by_tokens`) across summarization, book grounding, news briefings, and Q&A.
-- **Question-Aware Q&A Context Selection**: For extra-long documents (`> 16k` tokens) in `srz ask`, `select_relevant_context` ranks document chunks by query term overlap so answers are grounded on relevant later chapters rather than blindly truncating at the context boundary.
-- **Parallel Map-Reduce**: Large documents (> 12,000 words / > 16,000 tokens) are automatically split along paragraph boundaries and summarized concurrently across threads (`--concurrency`), sharing immutable metadata (`Arc<str>`) and recording accurate wall-clock elapsed telemetry.
+- **Zero-Worry Dynamic Token Budgeting (`DynamicBudget`)**: Dynamically queries backend server capabilities (`GET /props` in llama.cpp, `POST /api/show` in Ollama, or `GET /v1/models` in vLLM) to extract the active context window (`n_ctx`) and concurrency capacity (`total_slots`), mathematically sizing prompt budgets, chunk overlaps, and completion headroom without user intervention or OOM crashes.
+- **Server-Native Tokenization (`/tokenize`, Solution 1)**: Probes and uses the server's native `/tokenize` endpoint (0% tokenizer drift across multilingual text and code) while seamlessly falling back to OpenAI's `cl100k_base` BPE tokenizer (`tiktoken-rs`).
+- **Persistent Capability Caching with Model-Change Invalidation**: Caches probed server operational parameters in `cache.duckdb` (`cache_server_capabilities`) for sub-millisecond startup, automatically invalidating and re-probing whenever a model change or server restart is detected.
+- **Laptop Hardware Steering (Gemma 4 Q8_0)**: Automatically inspects host unified memory and chip characteristics without `unsafe` code (`sysctl` on macOS, `/proc/meminfo` on Linux), steering users towards battery-efficient, high-fidelity Google Gemma 4 `Q8_0` setups with optimal context sizing.
+- **Autoscaled Map-Reduce Concurrency**: Automatically scales parallel chunk workers to the server's detected slot capacity (`total_slots`), completing map-reduce passes up to $4\times$ faster out-of-the-box.
+- **Question-Aware Q&A Context Selection**: For long documents in `srz ask`, `select_relevant_context_with_budget` ranks document chunks by query term overlap within a dynamic token budget, paired with token-budgeted sliding conversational history.
 - **Zero-Copy SSE Streaming**: Server-Sent Events (SSE) stream tokens directly from network byte buffers into borrowed string slices (`Cow<str>`), batching terminal flushes per packet to eliminate redundant string allocations and terminal redraw flicker.
 - **Fast-Path Budget Checks**: Unified chunking in `TextChunker` uses an $O(1)$ byte-length check to instantly pass documents that already fit within token limits, completely bypassing tokenizer passes on shorter texts.
+- **Subtle Terminal Advisor & Doctor Audit**: Emits a non-intrusive 1-line terminal footer hint when execution was constrained by sub-optimal server context, and provides a full hardware optimization panel in `srz doctor`.
 
 #### High-Speed Ingestion & Parsing
 - **High-Fidelity Readability Extraction**: Web articles are parsed via Mozilla's Readability algorithm (`dom_smoothie`), scoring DOM container density to strip navigation headers, sidebars, ad trackers, and cookie notices before prompting the LLM.
@@ -276,7 +281,8 @@ src/
 | | [`src/commands/diagnostics.rs`](../src/commands/diagnostics.rs) | `commands::diagnostics` | Handlers for `doctor`, `models`, and `config` verification. |
 | **Configuration** | [`src/config/cli.rs`](../src/config/cli.rs) | `config::cli` | `clap` CLI parser, `SummaryStyle` presets, `NewsTimeframe`, `--max-tokens` and `--concurrency` flags, paging flags, chat session flags, and zero-allocation target auto-detection (`is_feed_url`, `is_news_query`, `clean_news_query`, `is_probable_question`). |
 | | [`src/config/file.rs`](../src/config/file.rs) | `config::file` | `config.toml` file loading, named profile switching, and starter template generation. |
-| **Engine** | [`src/engine/llm.rs`](../src/engine/llm.rs) | `engine::llm` | Zero-copy SSE client (`complete_chat` / `SseStreamState`), wall-clock token rate tracking via `compute_tokens_per_second`, `send_with_fallback` IPv4 retry, BPE-bounded XML delimiter escaping (`format_untrusted_section`, `escape_closing_tag`), and map-reduce synthesis. |
+| **Engine** | [`src/engine/llm.rs`](../src/engine/llm.rs) | `engine::llm` | Zero-copy SSE client (`complete_chat` / `SseStreamState`), server capability discovery (`probe_server_capabilities`), native `/tokenize` queries, wall-clock token rate tracking, and dynamic map-reduce synthesis. |
+| | [`src/engine/budget.rs`](../src/engine/budget.rs) | `engine::budget` | Dynamic token budgeting math (`DynamicBudget`) and server capability descriptors (`ServerCapabilities`) autoscaling prompt chunks and slot concurrency. |
 | | [`src/engine/chunker.rs`](../src/engine/chunker.rs) | `engine::chunker` | Accurate BPE token budgeting (`tiktoken-rs` `cl100k_base`), token counting (`count_tokens`), token-safe truncation (`truncate_by_tokens`), $O(1)$ fast-path budget checks, and unified zero-copy `Cow` paragraph chunking (`chunk_with_metric`) for long documents (> 16k tokens). |
 | **Sources** | [`src/sources/document.rs`](../src/sources/document.rs) | `sources::document` | Unified local document ingestion (`DocumentLoader`): shared file validation (`validate_file`, 20 MB cap), PDF extraction, HTML/Markdown normalization, and title fallbacks. |
 | | [`src/sources/scraper.rs`](../src/sources/scraper.rs) | `sources::scraper` | HTTP client (10 MB cap), streaming body readers (`read_response_bytes_limited`, `read_response_text_limited`), Mozilla Readability DOM content extraction (`dom_smoothie`) with zero-copy fallback, and text cleaning. |
@@ -290,7 +296,8 @@ src/
 | | [`src/ui/printer.rs`](../src/ui/printer.rs) | `ui::printer` | Cached `LazyLock<MadSkin>` terminal Markdown styling and automatic `$PAGER` / `less -RFX` integration. |
 | | [`src/ui/tui.rs`](../src/ui/tui.rs) | `ui::tui` | Interactive `ratatui` + `crossterm` terminal UI library explorer (`srz browse`) with event-driven redraws and pre-indexed live search. |
 | | [`src/ui/render.rs`](../src/ui/render.rs) | `ui::render` | GitHub Flavored Markdown-to-HTML converter (`pulldown-cmark`), zero-allocation `escape_html_cow` card formatting, CSS styling, index dashboard, unified `target_icon`/`target_badge`, slugify, and cross-platform browser opening (`open`). |
-| **System** | [`src/system/text_util.rs`](../src/system/text_util.rs) | `system::text_util` | High-performance HTML entity decoding (`html-escape`), ASCII case-insensitive search (`find_ascii_case_insensitive`, `contains_ascii_case_insensitive`), single-pass `format_hex`, and zero-copy string utilities. |
+| **System** | [`src/system/hardware.rs`](../src/system/hardware.rs) | `system::hardware` | Safe host RAM and chip hardware profiling (`sysctl`/`/proc/meminfo`), tier mapping, and Gemma 4 Q8_0 laptop steering. |
+| | [`src/system/text_util.rs`](../src/system/text_util.rs) | `system::text_util` | High-performance HTML entity decoding (`html-escape`), ASCII case-insensitive search (`find_ascii_case_insensitive`, `contains_ascii_case_insensitive`), single-pass `format_hex`, and zero-copy string utilities. |
 | | [`src/system/fs_util.rs`](../src/system/fs_util.rs) | `system::fs_util` | Platform filesystem utilities and private directory/file permissions (`0700`/`0600`). |
 | | [`src/system/upgrade.rs`](../src/system/upgrade.rs) | `system::upgrade` | In-place self-updater: target detection, GitHub release queries, bounded archive extraction (`read_bounded_binary`), SHA256 verification, and atomic swap. |
 

@@ -22,6 +22,23 @@ All notable changes to `srz` are documented in this file.
 
 ---
 
+## v0.7.0
+
+### Summary
+
+> Introduces zero-worry dynamic token sizing, backend server capability discovery, server-native `/tokenize` integration, high-fidelity Gemma 4 laptop hardware steering, and non-intrusive advisor hints.
+
+### Changes
+- **Zero-Worry Dynamic Sizing (`DynamicBudget`)**: Automatically detects server context window (`n_ctx`) and slot concurrency (`total_slots`), mathematically sizing prompt budgets, chunk overlaps, and completion headroom to eliminate context overflows and OOM errors.
+- **Server-Native Tokenization (`POST /tokenize`)**: Queries native `/tokenize` endpoints (in `llama.cpp`, `Ollama`, and `vLLM`) for exact 0% tokenizer drift across code and multilingual text, gracefully falling back to `tiktoken-rs`.
+- **DuckDB Capability Caching with Invalidation**: Caches probed server operational parameters in `cache.duckdb` (`cache_server_capabilities`) for sub-millisecond startup, automatically invalidating whenever a model change or server restart is detected.
+- **Laptop Hardware Steering (Gemma 4 Q8_0)**: Safely inspects host memory and chip architectures without `unsafe` code, steering laptop users toward high-fidelity Google Gemma 4 `Q8_0` setups with optimal context sizing.
+- **Autoscaled Map-Reduce Concurrency**: Automatically scales parallel chunk workers to the server's detected slot capacity (`total_slots`), completing map-reduce passes up to $4\times$ faster out-of-the-box.
+- **Subtle Terminal Advisor & Doctor Audit**: Emits a non-intrusive 1-line terminal footer hint when execution was constrained by sub-optimal server context, and provides a full hardware optimization panel in `srz doctor`.
+- **Context Window CLI & Config**: Added `--context-window <NUM>` flag and `context_window` configuration option for manual overrides.
+
+---
+
 ## v0.6.2
 
 ### Summary

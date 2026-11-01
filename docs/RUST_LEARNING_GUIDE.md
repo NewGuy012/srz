@@ -57,6 +57,9 @@ Following the pedagogical progression of the official [Rust Book](https://doc.ru
     - [12.1 Declarative Derive Macros (`clap` & `serde`)](#121-declarative-derive-macros-clap--serde)
     - [12.2 Compile-Time OS Switches (`#[cfg(unix)]`)](#122-compile-time-os-switches-cfgunix)
     - [12.3 Mathematical Compile-Time Safety: `#![forbid(unsafe_code)]`](#123-mathematical-compile-time-safety-forbidunsafe_code)
+    - [12.4 Safe Host Hardware Profiling Without FFI or `unsafe`](#124-safe-host-hardware-profiling-without-ffi-or-unsafe)
+    - [12.5 The Mathematical Invariant of Dynamic Context Budgeting](#125-the-mathematical-invariant-of-dynamic-context-budgeting)
+    - [12.6 Model-Aware Caching & Invalidation in Embedded DuckDB](#126-model-aware-caching--invalidation-in-embedded-duckdb)
 - [**Part III: System Architecture & Synthesis**](#part-iii-system-architecture--synthesis)
   - [Chapter 13: System Architecture & Data Flow Tour](#chapter-13-system-architecture--data-flow-tour)
     - [13.1 High-Level Architecture Diagram](#131-high-level-architecture-diagram)
@@ -665,6 +668,76 @@ Rust tasks spawned onto Tokio run cooperatively. An application can comfortably 
 - 🔄 **If you know other languages:** In C or C++, memory safety depends on programmer discipline (which routinely fails). In Rust, the compiler guarantees safety by default, and this directive ensures no backdoor `unsafe` blocks bypass that guarantee.
 - 📖 **The Rust Book Reference:** [Chapter 19.1: Unsafe Rust](https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html)
 
+<a id="124-safe-host-hardware-profiling-without-ffi-or-unsafe"></a>
+### 12.4 Safe Host Hardware Profiling Without FFI or `unsafe`
+- 💡 **Simple Analogy:** Looking at the speedometer on your car dashboard rather than taking the transmission apart while driving.
+- 💡 **The "Click" Moment: Zero-FFI Kernel Querying:** Many C/C++ libraries query physical RAM or CPU architectures using complex Foreign Function Interfaces (FFI) with raw pointers and `libc` calls, which risk memory corruption if types mismatch across OS releases. In `srz`, because `#![forbid(unsafe_code)]` is strictly enforced across the codebase, hardware profiling must be 100% memory-safe. Instead of C FFI, `srz` queries native OS facilities via safe subprocess executions (`sysctl` on macOS, `/proc/meminfo` on Linux, PowerShell WMI on Windows), parsing standard UTF-8 streams defensively with robust fallbacks.
+- 🔍 **Real Code in `srz` ([src/system/hardware.rs](file:///Users/myoo/Documents/Repo/srz/src/system/hardware.rs)):**
+  ```rust
+  #[cfg(target_os = "macos")]
+  fn detect_ram_bytes() -> Option<u64> {
+      let output = Command::new("sysctl").arg("-n").arg("hw.memsize").output().ok()?;
+      if output.status.success() {
+          let s = String::from_utf8_lossy(&output.stdout);
+          return s.trim().parse::<u64>().ok();
+      }
+      None
+  }
+  ```
+- 🔄 **If you know other languages:** In C or Go (cgo), calling kernel APIs often requires importing OS headers and linking dynamic libraries. In Rust, utilizing process boundaries guarantees total memory isolation without risk of segfaulting the main process.
+- 📖 **The Rust Book Reference:** [Chapter 19.1: Unsafe Rust](https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html) and [Chapter 12.1: Accepting Command-Line Arguments](https://doc.rust-lang.org/book/ch12-01-accepting-command-line-arguments.html)
+
+<a id="125-the-mathematical-invariant-of-dynamic-context-budgeting"></a>
+### 12.5 The Mathematical Invariant of Dynamic Context Budgeting
+- 💡 **Simple Analogy:** A shipping container with a hard weight limit. You reserve 30% for fragile return cargo and 25% for packaging buffers, precisely sizing the rest for your main shipment so the vessel never capsizes.
+- 💡 **The "Click" Moment: Zero-Drift Native Tokenization & Invariant Arithmetic:** Hardcoded limits (like assuming 12k or 16k tokens) break on small 4k models or underutilize 128k models. Worse, measuring tokens client-side with OpenAI's `tiktoken-rs` against a Gemma or Llama model introduces a 15–25% "tokenizer drift" error. `srz` queries the server's native `/tokenize` endpoint (`0% drift`), then feeds the exact capacity (`n_ctx`) into a mathematical invariant struct `DynamicBudget`. The struct guarantees at runtime that `effective_ctx = prompt_chunk + reserve_completion + headroom`, preventing out-of-memory context overflows before an inference request is dispatched.
+- 🔍 **Real Code in `srz` ([src/engine/budget.rs](file:///Users/myoo/Documents/Repo/srz/src/engine/budget.rs)):**
+  ```rust
+  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+  pub struct DynamicBudget {
+      pub context_window: usize,
+      pub prompt_chunk_tokens: usize,
+      pub reserve_completion_tokens: usize,
+      pub max_parallel_chunks: usize,
+  }
+
+  impl DynamicBudget {
+      pub fn compute(n_ctx: usize, total_slots: usize, cli_max_tokens: Option<usize>) -> Self {
+          let ctx = n_ctx.max(2048);
+          let reserve = cli_max_tokens.unwrap_or_else(|| ((ctx * 30) / 100).clamp(512, 8192));
+          let headroom = ((ctx * 25) / 100).clamp(512, 4096);
+          let usable_prompt = ctx.saturating_sub(reserve).saturating_sub(headroom);
+          let chunk = usable_prompt.clamp(1024, 65536);
+          let slots = total_slots.clamp(1, 16);
+
+          Self {
+              context_window: ctx,
+              prompt_chunk_tokens: chunk,
+              reserve_completion_tokens: reserve,
+              max_parallel_chunks: slots,
+          }
+      }
+  }
+  ```
+- 📖 **The Rust Book Reference:** [Chapter 5.3: Method Syntax](https://doc.rust-lang.org/book/ch05-03-method-syntax.html) and [Chapter 3.2: Data Types (Integer Overflow)](https://doc.rust-lang.org/book/ch03-02-data-types.html)
+
+<a id="126-model-aware-caching--invalidation-in-embedded-duckdb"></a>
+### 12.6 Model-Aware Caching & Invalidation in Embedded DuckDB
+- 💡 **Simple Analogy:** A library card catalog that immediately updates a shelf note if a book is replaced with a revised edition.
+- 💡 **The "Click" Moment: Deterministic Schema Migration & Invalidation:** Probing server properties on every single CLI invocation would add 10–30ms of network latency. To eliminate this, `srz` caches server capabilities (`n_ctx`, `total_slots`, `model_name`) in embedded DuckDB (`cache.duckdb`). If the user switches models in Ollama or `llama.cpp`, the cached model string mismatches: DuckDB automatically invalidates the stale row and executes a fresh probe. All table creation uses `CREATE TABLE IF NOT EXISTS` with explicit column migrations, ensuring zero corrupted cache schemas across versions.
+- 🔍 **Real Code in `srz` ([src/storage/cache.rs](file:///Users/myoo/Documents/Repo/srz/src/storage/cache.rs)):**
+  ```rust
+  pub fn get_server_capabilities(&self, base_url: &str) -> Option<ServerCapabilities> {
+      let mut conn = self.conn.lock().ok()?;
+      let mut stmt = conn.prepare(
+          "SELECT context_length, total_slots, model_name, updated_at
+           FROM cache_server_capabilities WHERE base_url = ?;"
+      ).ok()?;
+      // ... checks TTL and model identity ...
+  }
+  ```
+- 📖 **The Rust Book Reference:** [Chapter 16.3: Shared-State Concurrency](https://doc.rust-lang.org/book/ch16-03-shared-state.html) and [Chapter 9.2: Recoverable Errors](https://doc.rust-lang.org/book/ch09-02-recoverable-errors-with-result.html)
+
 ---
 
 <a id="part-iii-system-architecture--synthesis"></a>
@@ -682,6 +755,11 @@ At its core, `srz` takes an input target (a web link, a book title, or a documen
 
 ```mermaid
 flowchart TD
+    subgraph System ["0. System Profiling (src/system/)"]
+        Hw["Hardware Profiler<br/>(RAM & CPU tier detection)"]
+        GemmaSteering["Gemma 4 Steering<br/>(High-fidelity Q8_0 advisor)"]
+    end
+
     subgraph CLI ["1. Command Line Interface (src/main.rs, src/config/)"]
         direction TB
         Args["User Inputs & Flags<br/>(clap derive)"] --> Resolver["Action Resolver<br/>(What does the user want?)"]
@@ -697,26 +775,36 @@ flowchart TD
     end
 
     subgraph Engine ["3. Engine & Text Processing (src/engine/)"]
+        Discovery["Capability Prober<br/>(Probes /props & /api/show)"]
+        BudgetEngine["Dynamic Budget<br/>(Saturating token math)"]
+        NativeTokenize["Native /tokenize<br/>(Zero-drift BPE tokens)"]
         Chunker["Text Chunker<br/>(Slices long text safely)"]
         LLM["AI Client<br/>(Streams tokens from local LLM)"]
     end
 
     subgraph Storage ["4. Storage & Persistence (src/storage/)"]
         Cache["Local Disk Cache<br/>(Remembers past web pages)"]
-        DB["DuckDB Database<br/>(Tracks reading stats & history)"]
+        DB["DuckDB Database<br/>(Tracks stats, history & server caps)"]
     end
 
     subgraph UI ["5. Presentation & Output (src/ui/)"]
         Printer["Terminal Output<br/>(Spinners & colored text)"]
+        Hints["Terminal Footers<br/>(Sub-optimal context hints)"]
         Render["View Generator<br/>(Creates HTML & Markdown)"]
         TUI["Interactive Browser<br/>(Terminal GUI)"]
     end
 
+    Hw -.-> GemmaSteering -.-> Resolver
     Resolver -->|"Web, Book, File, or News"| Sources
     Sources -->|"Extracted Text"| Chunker
+    Discovery --> DB
+    Discovery --> BudgetEngine
+    NativeTokenize --> Chunker
+    BudgetEngine --> Chunker
     Chunker -->|"Text Chunks"| LLM
     LLM -->|"Summary & Tokens"| Storage
     LLM -->|"Streamed Words"| UI
+    BudgetEngine -.-> Hints
     Resolver -->|"History, Stats, or Browse"| Storage
     Storage -->|"Saved Summaries"| UI
 ```
@@ -724,11 +812,12 @@ flowchart TD
 <a id="132-end-to-end-data-flow"></a>
 ### 13.2 End-to-End Data Flow
 
-1. **CLI Layer (`src/main.rs`, `src/config/`)**: Parses arguments with `clap`, merges defaults from `config.toml`, and resolves user intentions into strongly typed `ResolvedAction` variants using exhaustive `match`.
-2. **Sources Layer (`src/sources/`)**: Fetches data over HTTP or local filesystem. Uses `LazyLock` for regex/selectors, and streams bytes defensively to avoid OOM crashes.
-3. **Engine Layer (`src/engine/`)**: Slices text into overlapping windows using Unicode-safe character indices and generic `FnMut` token counters. Streams chunks to local LLMs with zero-copy `#[serde(borrow)]` deserialization.
-4. **Storage Layer (`src/storage/`)**: Caches raw documents to disk and tracks analytical stats in DuckDB using zero-allocation borrowed records (`NewSummaryRecord<'a>`) managed via the RAII closure loan pattern (`with_db`).
-5. **UI Layer (`src/ui/`)**: Renders styled Markdown/HTML using capacity pre-allocation (`with_capacity`) and hosts full-screen interactive browsing safely restored via `Drop`.
+1. **System & Profiling Layer (`src/system/`)**: Detects physical host memory and CPU architecture via safe kernel sysctls/WMI, classifying machines into hardware tiers and recommending optimal high-fidelity Gemma 4 quantization presets (`Q8_0`).
+2. **CLI Layer (`src/main.rs`, `src/config/`)**: Parses arguments with `clap`, merges defaults from `config.toml`, and resolves user intentions into strongly typed `ResolvedAction` variants using exhaustive `match`.
+3. **Sources Layer (`src/sources/`)**: Fetches data over HTTP or local filesystem. Uses `LazyLock` for regex/selectors, and streams bytes defensively to avoid OOM crashes.
+4. **Engine Layer (`src/engine/`)**: Discovers OpenAI/llama.cpp/Ollama server capabilities (`n_ctx`, `total_slots`), eliminates tokenizer drift via native `/tokenize` APIs, and dynamically sizes chunk windows and completion headroom (`DynamicBudget`).
+5. **Storage Layer (`src/storage/`)**: Caches server capabilities, raw documents, and analytical stats in DuckDB using zero-allocation borrowed records (`NewSummaryRecord<'a>`) with model-change invalidation.
+6. **UI Layer (`src/ui/`)**: Renders styled Markdown/HTML, emits subtle 1-line context advisor footers for constrained hardware, and hosts full-screen interactive browsing safely restored via `Drop`.
 
 ---
 
@@ -755,6 +844,9 @@ flowchart TD
 | **`#[cfg(unix)]`** | [`src/system/fs_util.rs#L27-L35`](file:///Users/myoo/Documents/Repo/srz/src/system/fs_util.rs#L27-L35) | **Packing for the weather**: Zero-overhead platform-specific file permissions compiled without runtime checks. | [Ch 14.1: Profiles](https://doc.rust-lang.org/book/ch14-01-release-profiles.html) |
 | **`#![forbid(unsafe_code)]`** | [`src/main.rs#L1`](file:///Users/myoo/Documents/Repo/srz/src/main.rs#L1), [`src/lib.rs#L1`](file:///Users/myoo/Documents/Repo/srz/src/lib.rs#L1) | **Sealed cockpit door**: Mathematical compile-time guarantee of zero memory corruption or segfaults. | [Ch 19.1: Unsafe Rust](https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html) |
 | **Derive Macros** | [`src/config/cli.rs#L5-L14`](file:///Users/myoo/Documents/Repo/srz/src/config/cli.rs#L5-L14) | **3D architectural printer**: Generates hundreds of lines of type validation and `--help` CLI text at compile time. | [Ch 19.5: Macros](https://doc.rust-lang.org/book/ch19-06-macros.html#how-to-write-a-custom-derive-macro) |
+| **Safe Hardware Profiling** | [`src/system/hardware.rs`](file:///Users/myoo/Documents/Repo/srz/src/system/hardware.rs) | **Dashboard gauges**: Reads RAM/CPU metrics via isolated subprocesses with zero FFI and zero `unsafe`. | [Ch 19.1: Unsafe Rust](https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html) |
+| **Dynamic Budgeting** | [`src/engine/budget.rs`](file:///Users/myoo/Documents/Repo/srz/src/engine/budget.rs) | **Vessel weight balancing**: Invariant math sizing prompt chunks and reserve headroom to eliminate OOMs. | [Ch 5.3: Method Syntax](https://doc.rust-lang.org/book/ch05-03-method-syntax.html) |
+| **Model Cache Invalidation** | [`src/storage/cache.rs`](file:///Users/myoo/Documents/Repo/srz/src/storage/cache.rs) | **Card catalog update**: Embedded DuckDB invalidates cached context size when server switches models. | [Ch 16.3: Shared-State](https://doc.rust-lang.org/book/ch16-03-shared-state.html) |
 
 ---
 

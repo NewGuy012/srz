@@ -24,6 +24,9 @@ api_key = ""
 # Default summary style: concise (default), detailed, bullets
 style = "concise"
 
+# Optional context window override (tokens; auto-detected from server if omitted)
+# context_window = 32768
+
 # Maximum completion tokens (thinking + summary tokens)
 max_tokens = 8192
 
@@ -94,7 +97,7 @@ srz "https://news.ycombinator.com" --profile fast
 
 When resolving runtime settings, `srz` applies the following priority (highest to lowest):
 
-1. **Explicit CLI flags** (e.g. `--model`, `--base-url`, `--style`, `--stream`).
+1. **Explicit CLI flags** (e.g. `--model`, `--base-url`, `--style`, `--stream`, `--context-window`).
 2. **Profile settings** selected via `--profile <NAME>` in `config.toml`.
 3. **Environment variables** (`OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_API_KEY`).
 4. **Root settings** defined in `config.toml`.

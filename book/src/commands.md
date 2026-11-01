@@ -34,6 +34,7 @@ srz <TARGET> [FLAGS]
 | `--api-key <KEY>` | | OpenAI API key (optional for local LLMs). |
 | `--profile <NAME>` | | Load a named configuration profile from `~/.config/srz/config.toml`. |
 | `--config <PATH>` | | Custom configuration file path (defaults to `~/.config/srz/config.toml`). |
+| `--context-window <N>` | | Override server context window size in tokens (e.g. 8192-131072; auto-detected if omitted). |
 | `--max-tokens <N>` | | Maximum tokens to generate (thinking + summary tokens; default: 8192). |
 | `--concurrency <N>` | | Max concurrent worker tasks during map-reduce document chunking (default: 1). |
 | `--open` | `-b` | Automatically open the rendered HTML summary in your default web browser. |
@@ -190,12 +191,19 @@ srz config <SUBCOMMAND>
 ## 9. Diagnostics (`srz doctor` & `srz models`)
 
 ```bash
-# Diagnose LLM endpoint latency, DuckDB integrity, cache health, and pager setup
+# Diagnose host hardware, LLM context window & slots, endpoint latency, DuckDB integrity, cache health, and pager setup
 srz doctor
 
 # List available models reported by the connected backend
 srz models
 ```
+
+### Hardware & LLM Advisor in `srz doctor`
+Running `srz doctor` automatically profiles host memory and queries server properties:
+* **Host Hardware Profile**: Displays detected host RAM (e.g. 24 GB RAM, `Tier32GB`) and CPU architecture.
+* **Hardware Steering Advisor**: Recommends high-fidelity Gemma 4 models (e.g., `ggml-org/gemma-4-E4B-it-GGUF:Q8_0` or `26B-A4B-it:Q8_0`) with the optimal context window for your RAM.
+* **Server Capabilities**: Probes server `n_ctx` (context length) and `total_slots` (concurrency capacity) from `llama.cpp` (`/props`) or `Ollama` (`/api/show`).
+* **Sub-Optimal Context Alerts**: Warns if server context window is configured below 8,192 tokens or concurrency slots are bottlenecked.
 
 ---
 

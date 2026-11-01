@@ -52,12 +52,15 @@ flowchart LR
 
 - 🔒 **100% Local & Private**: Runs on your device with zero fees and no API keys.
 - 🎯 **3 Summary Presets**: Choose concise, bulleted, or detailed summaries.
+- ⚡ **Zero-Worry Dynamic Sizing**: Automatically probes server context (`n_ctx`) and concurrency slots to size chunks and eliminate OOM crashes.
+- 💻 **Laptop Hardware Optimization**: Steers towards high-fidelity Google Gemma 4 (`Q8_0`) models matched to your machine's unified memory.
+- 🎯 **Exact Server Tokenization**: Queries the local LLM's native `/tokenize` endpoint for 0% tokenizer drift across code and multilingual text.
 - 📰 **Google News Feeds**: Summarize top stories and search topics by default.
 - ⚡ **Terminal Paging**: Clean CLI output with auto-paging for long summaries.
-- 💬 **Interactive Q&A**: Chat and ask questions about any document or read.
+- 💬 **Interactive Q&A**: Chat and ask questions about any document or read with token-budgeted memory.
 - 🖥️ **Terminal Dashboard**: Browse, search, filter, and read past summaries.
 - 🔍 **Fast Offline Search**: Find past summaries instantly without internet.
-- 🗄️ **Local Smart Cache**: Saves past reads locally for instant offline review.
+- 🗄️ **Local Smart Cache**: Saves past reads and server capabilities locally for instant offline review.
 - 📖 **Clean Reader Views**: Distraction-free HTML and Markdown with dark mode.
 
 
@@ -168,14 +171,15 @@ Run `srz --help` to see all available subcommands and flags.
 - **macOS & Windows (Default)**: Install [Llama-macOS](https://github.com/ggml-org/Llama-macOS) (macOS) or [Llama-Windows](https://github.com/ggml-org/Llama-Windows) (Windows). Launch the app and load a model—`srz` connects automatically to `http://localhost:9931/v1` with zero setup.
 - **Linux**: Build or install [llama.cpp](https://github.com/ggml-org/llama.cpp) and launch `llama-server`:
   ```bash
-  # Start llama-server on port 9931 for zero configuration:
-  llama-server -m model.gguf --port 9931
+  # Start llama-server on port 9931 with recommended Gemma 4 Q8_0 model:
+  llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 32768 --port 9931
 
   # Or on default port 8080:
-  llama-server -m model.gguf --port 8080
+  llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 32768 --port 8080
   export OPENAI_BASE_URL="http://localhost:8080/v1"
   ```
-- **Diagnostics**: Run `srz doctor` to test server latency and `srz models` to list loaded models.
+- **Hardware & Context Diagnostics**: Run `srz doctor` to inspect your host hardware profile, detected server context length (`n_ctx`), native tokenizer status, and recommended launch commands.
+- **Manual Context Override**: Override auto-detected context length on the fly via `--context-window <NUM>` (or `context_window` in `config.toml`).
 
 ### Cloud Providers (Optional)
 

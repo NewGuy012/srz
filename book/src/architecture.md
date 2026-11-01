@@ -12,11 +12,11 @@ The repository is organized into cohesive modules within `src/`:
 src/
 ├── commands/     # CLI subcommand workflows and action dispatchers (ask, browse, cache...)
 ├── config/       # CLI argument parsing, flags, and config file profiles
-├── engine/       # LLM streaming client, prompt framing, and BPE token chunking
+├── engine/       # LLM streaming client, server discovery, dynamic budget, and /tokenize
 ├── sources/      # Content ingestion: web scraping, book search, YouTube, and news RSS
-├── storage/      # Local disk caching and embedded DuckDB analytics
-├── system/       # Filesystem security helpers, text utilities, and in-place self-updater
-├── ui/           # Terminal console formatting, spinners, and HTML reader views
+├── storage/      # Local disk caching, DuckDB server capability caching, and analytics
+├── system/       # Hardware profiling, Gemma steering, filesystem security, and self-updater
+├── ui/           # Terminal console formatting, spinners, footers, and HTML reader views
 ├── lib.rs        # Library crate root and backwards-compatible module exports
 └── main.rs       # Binary entry point and CLI orchestration
 ```
@@ -40,14 +40,16 @@ flowchart TD
         Router -->|"browse / tui"| TuiFlow["Ratatui TUI Dashboard"]
     end
 
-    subgraph Grounding["2. Grounding & Token Budgeting"]
-        YTFlow --> Chunker{"Tokens > 16k?"}
+    subgraph Grounding["2. Grounding & Dynamic Token Budgeting"]
+        Probe["Server Discovery (/props, /api/show)"] --> BudgetEngine["DynamicBudget (n_ctx, slots)"]
+        Tokenize["Native /tokenize (Zero-Drift)"] --> Chunker{"Tokens > Prompt Chunk?"}
+        YTFlow --> Chunker
         WebFlow --> Chunker
         PDFFlow --> Chunker
         FileFlow --> Chunker
         BookFlow --> Chunker
         AskFlow --> MultiTurn["Multi-Turn Chat / Q&A Prompt Framing"]
-        Chunker -->|"Yes"| MapReduce["Parallel Map-Reduce Chunk Summaries (tiktoken-rs)"]
+        Chunker -->|"Yes"| MapReduce["Parallel Map-Reduce Chunk Summaries (Dynamic Slots)"]
         Chunker -->|"No"| SinglePass["Direct Single Pass"]
         NewsFlow --> NewsDigest["News Digest Briefing Synthesis"]
     end
@@ -62,6 +64,7 @@ flowchart TD
     subgraph Presentation["4. Presentation & Storage"]
         SSE --> TermMarkdown["Rich Terminal Markdown (Termimad)"]
         TermMarkdown --> Pager["System Pager ($PAGER / less -RFX)"]
+        TermMarkdown --> Footer["Sub-optimal Context Hints (1-Line Footer)"]
         SSE --> CacheStore[("Consolidated Cache (cache.duckdb)")]
         SSE --> DuckDBStore[("Embedded DuckDB (srz.duckdb)")]
         CacheStore --> Views["Rendered HTML & MD Reader Views"]
@@ -81,6 +84,7 @@ graph LR
             CP["cache_pages (7d TTL, 30d YouTube/PDF)"]
             CS["cache_search (14d TTL)"]
             CM["cache_summaries (90d TTL / persistent)"]
+            CC["cache_server_capabilities (24h TTL, model-change invalidation)"]
         end
         subgraph ViewsDir["Rendered Reader Views"]
             V["views/"] --- V_desc["HTML5 reader & Markdown view files (14d TTL)"]
@@ -102,6 +106,7 @@ graph LR
 | **`cache_pages`** | **7 days** | SQL TTL expiration / LRU | Scraped DOM and clean text; YouTube & PDFs retain for 30 days. |
 | **`cache_search`** | **14 days** | SQL TTL expiration / LRU | Open Library metadata and search candidates. |
 | **`cache_summaries`** | **90 days** | LRU past max budget | Deterministic for `(target, model, style)` to save inference tokens. |
+| **`cache_server_capabilities`** | **24 hours** | TTL / Model change | Server `n_ctx`, `total_slots`, and detected model identity. |
 | **`views/`** | **14 days** | TTL expiration / LRU | Ephemeral reader views; lazily regenerated when opened. |
 | **Total Cache Budget** | **500 MB** (configurable) | LRU eviction by size & `mtime` | Evicts oldest entries across caches down to 85% headroom. |
 | **Library DuckDB (`srz.duckdb`)** | **Permanent (Not a cache)** | Explicit `--reset-db` only | Preserved across `srz cache clean`; contains reading history, habits, BM25 index, and chats. |
@@ -131,3 +136,27 @@ When executing `srz find <QUERY>`, `srz` computes relevance scores offline acros
 * **Terminal Escape & Trojan Source Defense**: Document titles and streaming outputs are stripped of ANSI escape sequences, C1 control characters, and Unicode Bidirectional (BiDi) override codepoints to prevent terminal spoofing.
 * **Resource Ceilings**: Strict bounded limits prevent memory exhaustion: 10 MB for web responses and stdin, 20 MB for local files, and 50 MB for update binaries.
 * **Cryptographically Verified Upgrades**: `srz upgrade` verifies SHA-256 checksums and SLSA provenance attestations before replacing binaries.
+
+---
+
+## 6. Hardware-Aware Inference & Zero-Drift Tokenization
+
+To eliminate context length guesswork and prevent Out-of-Memory context truncation, `srz` incorporates intelligent host and server profiling:
+
+### Hardware Profiling & Gemma 4 Steering
+* **Safe Kernel Probing**: Auto-detects physical host RAM and CPU architecture across macOS (`sysctl -n hw.memsize`), Linux (`/proc/meminfo`), and Windows (PowerShell WMI) without external C FFI dependencies.
+* **Hardware Tiers**:
+  * **8 GB RAM**: Recommends `gemma-4-E4B-it:Q8_0` (8k context window).
+  * **16 GB RAM**: Recommends `gemma-4-E4B-it:Q8_0` (32k context window).
+  * **32 GB RAM**: Recommends `gemma-4-26B-A4B-it:Q8_0` (64k context window).
+  * **64+ GB RAM**: Recommends `gemma-4-26B-A4B-it:Q8_0` (128k context window).
+* **High-Fidelity Default**: Steers towards high-precision `Q8_0` quantization rather than lossy `Q4_K_M` to preserve nuance, logical cohesion, and reasoning fidelity during synthesis.
+
+### Zero-Drift Server-Native Tokenization
+* **Eliminating Drift**: Third-party BPE tokenizers (e.g. OpenAI's `cl100k_base`) drift by 15–25% when measuring tokens intended for Google Gemma or Meta Llama models.
+* **Direct Server Querying**: `srz` queries the server's native `/tokenize` endpoint (`llama.cpp /tokenize` or `Ollama /api/tokenize`), falling back to `tiktoken-rs` only when the server endpoint is unavailable.
+
+### Dynamic Context Budgeting (`DynamicBudget`)
+* **Mathematical Invariants**: Dynamically calculates prompt chunks (~45% of `n_ctx`), reserve completion tokens (~30%, capped at 8k), and safety headroom (~25%), ensuring prompt + completion never exceeds physical server context capacity.
+* **Slot-Aware Concurrency**: Probes server worker slots (`total_slots`) to scale parallel map-reduce chunk summarization without congesting the inference queue.
+* **Sub-Optimal Context Footers**: When long documents exceed single-pass context limits on small models, `srz` attaches a non-intrusive 1-line terminal footer advising the user on optimal model context settings for the ingested document.
