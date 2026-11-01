@@ -522,4 +522,23 @@ mod tests {
         assert_eq!(find_ascii_case_insensitive("Short", "LongerPattern"), None);
         assert_eq!(find_ascii_case_insensitive("abc", ""), Some(0));
     }
+
+    #[test]
+    fn test_google_news_url_extraction() {
+        let url = "https://news.google.com/rss/articles/CBMiWmh0dHBzOi8vd3d3LnNpdGVwb2ludC5jb20vamF2YXNjcmlwdC1uZXdzLw?oc=5";
+        assert_eq!(
+            extract_article_id(url),
+            Some("CBMiWmh0dHBzOi8vd3d3LnNpdGVwb2ludC5jb20vamF2YXNjcmlwdC1uZXdzLw")
+        );
+
+        let html = r#"<div data-n-a-sg="ABC123xyz" data-n-a-ts="1714200000"></div>"#;
+        assert_eq!(extract_attr_value(html, "data-n-a-sg="), Some("ABC123xyz"));
+        assert_eq!(extract_attr_value(html, "data-n-a-ts="), Some("1714200000"));
+
+        let rpc_text = ")]}'\n\n[[\"wrb.fr\",\"Fbv4je\",\"[\\\"garturlreq\\\",\\\"https://www.sitepoint.com/javascript-news/\\\"]\"]]";
+        assert_eq!(
+            parse_batchexecute_destination_url(rpc_text),
+            Some("https://www.sitepoint.com/javascript-news/".to_string())
+        );
+    }
 }

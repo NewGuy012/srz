@@ -465,27 +465,6 @@ fn test_news_query_helpers() {
 }
 
 #[test]
-fn test_google_news_url_extraction() {
-    use srz::news::{extract_article_id, extract_attr_value, parse_batchexecute_destination_url};
-
-    let url = "https://news.google.com/rss/articles/CBMiWmh0dHBzOi8vd3d3LnNpdGVwb2ludC5jb20vamF2YXNjcmlwdC1uZXdzLw?oc=5";
-    assert_eq!(
-        extract_article_id(url),
-        Some("CBMiWmh0dHBzOi8vd3d3LnNpdGVwb2ludC5jb20vamF2YXNjcmlwdC1uZXdzLw")
-    );
-
-    let html = r#"<div data-n-a-sg="ABC123xyz" data-n-a-ts="1714200000"></div>"#;
-    assert_eq!(extract_attr_value(html, "data-n-a-sg="), Some("ABC123xyz"));
-    assert_eq!(extract_attr_value(html, "data-n-a-ts="), Some("1714200000"));
-
-    let rpc_text = ")]}'\n\n[[\"wrb.fr\",\"Fbv4je\",\"[\\\"garturlreq\\\",\\\"https://www.sitepoint.com/javascript-news/\\\"]\"]]";
-    assert_eq!(
-        parse_batchexecute_destination_url(rpc_text),
-        Some("https://www.sitepoint.com/javascript-news/".to_string())
-    );
-}
-
-#[test]
 fn test_stream_flag_and_mode_defaults() {
     use srz::llm::StreamMode;
 
@@ -564,7 +543,7 @@ fn test_upgrade_subcommand_flags() {
 }
 
 #[test]
-fn test_readme_usage_examples_cli_resolution() {
+fn test_readme_web_and_news_resolution() {
     // 1. Webpage
     let cmd1 = Cli::parse_from([
         "srz",
@@ -586,7 +565,21 @@ fn test_readme_usage_examples_cli_resolution() {
         }
     );
 
-    // 3. Local PDF document (auto-detected as file via is_file_like even if missing)
+    // 3. News digest
+    let cmd5 = Cli::parse_from(["srz", "news", "Rust language updates", "-t", "week"]);
+    assert_eq!(
+        cmd5.resolve_action().unwrap(),
+        ResolvedAction::News {
+            topic: "Rust language updates".to_string(),
+            timeframe: NewsTimeframe::Week,
+            limit: 5,
+        }
+    );
+}
+
+#[test]
+fn test_readme_file_and_stdin_resolution() {
+    // Local PDF document (auto-detected as file via is_file_like even if missing)
     let cmd3 = Cli::parse_from(["srz", "assets/document.pdf"]);
     assert_eq!(
         cmd3.resolve_action().unwrap(),
@@ -602,7 +595,14 @@ fn test_readme_usage_examples_cli_resolution() {
         }
     );
 
-    // 4. Book synopsis with bullets and browser open
+    // Unix stdin stream
+    let cmd6 = Cli::parse_from(["srz", "-"]);
+    assert_eq!(cmd6.resolve_action().unwrap(), ResolvedAction::Stdin);
+}
+
+#[test]
+fn test_readme_book_and_profile_resolution() {
+    // Book synopsis with bullets and browser open
     let cmd4 = Cli::parse_from([
         "srz",
         "The Rust Programming Language",
@@ -617,158 +617,6 @@ fn test_readme_usage_examples_cli_resolution() {
         ResolvedAction::Book {
             title: "The Rust Programming Language",
         }
-    );
-
-    // 5. News digest
-    let cmd5 = Cli::parse_from(["srz", "news", "Rust language updates", "-t", "week"]);
-    assert_eq!(
-        cmd5.resolve_action().unwrap(),
-        ResolvedAction::News {
-            topic: "Rust language updates".to_string(),
-            timeframe: NewsTimeframe::Week,
-            limit: 5,
-        }
-    );
-
-    // 6. Unix stdin stream
-    let cmd6 = Cli::parse_from(["srz", "-"]);
-    assert_eq!(cmd6.resolve_action().unwrap(), ResolvedAction::Stdin);
-
-    // 7. Ask based on latest read
-    let cmd7 = Cli::parse_from(["srz", "ask", "What are the main findings?"]);
-    assert_eq!(
-        cmd7.resolve_action().unwrap(),
-        ResolvedAction::Ask {
-            target: None,
-            question: Some("What are the main findings?".to_string()),
-            interactive: false,
-            list_chats: false,
-            resume: None,
-            show_chat: None,
-            delete_chat: None,
-        }
-    );
-
-    // 8. Ask based on specific document
-    let cmd8 = Cli::parse_from(["srz", "ask", "assets/document.pdf", "Key takeaways?"]);
-    assert_eq!(
-        cmd8.resolve_action().unwrap(),
-        ResolvedAction::Ask {
-            target: Some("assets/document.pdf".to_string()),
-            question: Some("Key takeaways?".to_string()),
-            interactive: false,
-            list_chats: false,
-            resume: None,
-            show_chat: None,
-            delete_chat: None,
-        }
-    );
-    let cmd8_raw = Cli::parse_from(["srz", "ask", "document.pdf", "Key takeaways?"]);
-    assert_eq!(
-        cmd8_raw.resolve_action().unwrap(),
-        ResolvedAction::Ask {
-            target: Some("document.pdf".to_string()),
-            question: Some("Key takeaways?".to_string()),
-            interactive: false,
-            list_chats: false,
-            resume: None,
-            show_chat: None,
-            delete_chat: None,
-        }
-    );
-
-    // 9. Interactive chat
-    let cmd9 = Cli::parse_from(["srz", "ask", "-i"]);
-    assert_eq!(
-        cmd9.resolve_action().unwrap(),
-        ResolvedAction::Ask {
-            target: None,
-            question: None,
-            interactive: true,
-            list_chats: false,
-            resume: None,
-            show_chat: None,
-            delete_chat: None,
-        }
-    );
-
-    // 10. TUI browse
-    let cmd10 = Cli::parse_from(["srz", "browse"]);
-    assert_eq!(cmd10.resolve_action().unwrap(), ResolvedAction::Browse);
-
-    // 11. Find in library
-    let cmd11 = Cli::parse_from(["srz", "find", "keyword"]);
-    assert_eq!(
-        cmd11.resolve_action().unwrap(),
-        ResolvedAction::Find { query: "keyword" }
-    );
-
-    // 12. History (default limit)
-    let cmd12 = Cli::parse_from(["srz", "history"]);
-    assert_eq!(
-        cmd12.resolve_action().unwrap(),
-        ResolvedAction::History { limit: 10 }
-    );
-
-    // 13. Stats
-    let cmd13 = Cli::parse_from(["srz", "stats"]);
-    assert_eq!(cmd13.resolve_action().unwrap(), ResolvedAction::Stats);
-
-    // 14. Cache size
-    let cmd14 = Cli::parse_from(["srz", "cache", "size"]);
-    assert_eq!(
-        cmd14.resolve_action().unwrap(),
-        ResolvedAction::Cache(CacheCommand::Size)
-    );
-
-    // 15. Cache prune by age
-    let cmd15 = Cli::parse_from(["srz", "cache", "prune", "--older-than", "14d"]);
-    assert_eq!(
-        cmd15.resolve_action().unwrap(),
-        ResolvedAction::Cache(CacheCommand::Prune {
-            older_than: Some("14d".to_string()),
-            max_size: None,
-        })
-    );
-
-    // 16. Cache prune by max size
-    let cmd16 = Cli::parse_from(["srz", "cache", "prune", "--max-size", "500MB"]);
-    assert_eq!(
-        cmd16.resolve_action().unwrap(),
-        ResolvedAction::Cache(CacheCommand::Prune {
-            older_than: None,
-            max_size: Some("500MB".to_string()),
-        })
-    );
-
-    // 17. Cache clean
-    let cmd17 = Cli::parse_from(["srz", "cache", "clean"]);
-    assert_eq!(
-        cmd17.resolve_action().unwrap(),
-        ResolvedAction::Cache(CacheCommand::Clean { reset_db: false })
-    );
-
-    // 18. Cache clean reset db
-    let cmd18 = Cli::parse_from(["srz", "cache", "clean", "--reset-db"]);
-    assert_eq!(
-        cmd18.resolve_action().unwrap(),
-        ResolvedAction::Cache(CacheCommand::Clean { reset_db: true })
-    );
-
-    // 19. Doctor
-    let cmd19 = Cli::parse_from(["srz", "doctor"]);
-    assert_eq!(cmd19.resolve_action().unwrap(), ResolvedAction::Doctor);
-
-    // Additional README examples:
-    // srz models
-    let cmd_models = Cli::parse_from(["srz", "models"]);
-    assert_eq!(cmd_models.resolve_action().unwrap(), ResolvedAction::Models);
-
-    // srz config init
-    let cmd_cfg_init = Cli::parse_from(["srz", "config", "init"]);
-    assert_eq!(
-        cmd_cfg_init.resolve_action().unwrap(),
-        ResolvedAction::Config(srz::cli::ConfigSubcommand::Init)
     );
 
     // srz "The Rust Programming Language"
@@ -803,8 +651,150 @@ fn test_readme_usage_examples_cli_resolution() {
     assert_eq!(cmd_cloud.base_url, "https://api.openai.com/v1");
     assert_eq!(cmd_cloud.model, "gpt-4o-mini");
     assert_eq!(cmd_cloud.api_key, "sk-test");
+}
 
-    // srz index
+#[test]
+fn test_readme_ask_and_chat_resolution() {
+    // Ask based on latest read
+    let cmd7 = Cli::parse_from(["srz", "ask", "What are the main findings?"]);
+    assert_eq!(
+        cmd7.resolve_action().unwrap(),
+        ResolvedAction::Ask {
+            target: None,
+            question: Some("What are the main findings?".to_string()),
+            interactive: false,
+            list_chats: false,
+            resume: None,
+            show_chat: None,
+            delete_chat: None,
+        }
+    );
+
+    // Ask based on specific document
+    let cmd8 = Cli::parse_from(["srz", "ask", "assets/document.pdf", "Key takeaways?"]);
+    assert_eq!(
+        cmd8.resolve_action().unwrap(),
+        ResolvedAction::Ask {
+            target: Some("assets/document.pdf".to_string()),
+            question: Some("Key takeaways?".to_string()),
+            interactive: false,
+            list_chats: false,
+            resume: None,
+            show_chat: None,
+            delete_chat: None,
+        }
+    );
+    let cmd8_raw = Cli::parse_from(["srz", "ask", "document.pdf", "Key takeaways?"]);
+    assert_eq!(
+        cmd8_raw.resolve_action().unwrap(),
+        ResolvedAction::Ask {
+            target: Some("document.pdf".to_string()),
+            question: Some("Key takeaways?".to_string()),
+            interactive: false,
+            list_chats: false,
+            resume: None,
+            show_chat: None,
+            delete_chat: None,
+        }
+    );
+
+    // Interactive chat
+    let cmd9 = Cli::parse_from(["srz", "ask", "-i"]);
+    assert_eq!(
+        cmd9.resolve_action().unwrap(),
+        ResolvedAction::Ask {
+            target: None,
+            question: None,
+            interactive: true,
+            list_chats: false,
+            resume: None,
+            show_chat: None,
+            delete_chat: None,
+        }
+    );
+}
+
+#[test]
+fn test_readme_management_and_maintenance_resolution() {
+    // TUI browse
+    let cmd10 = Cli::parse_from(["srz", "browse"]);
+    assert_eq!(cmd10.resolve_action().unwrap(), ResolvedAction::Browse);
+
+    // Find in library
+    let cmd11 = Cli::parse_from(["srz", "find", "keyword"]);
+    assert_eq!(
+        cmd11.resolve_action().unwrap(),
+        ResolvedAction::Find { query: "keyword" }
+    );
+
+    // History (default limit)
+    let cmd12 = Cli::parse_from(["srz", "history"]);
+    assert_eq!(
+        cmd12.resolve_action().unwrap(),
+        ResolvedAction::History { limit: 10 }
+    );
+
+    // Stats
+    let cmd13 = Cli::parse_from(["srz", "stats"]);
+    assert_eq!(cmd13.resolve_action().unwrap(), ResolvedAction::Stats);
+
+    // Cache size
+    let cmd14 = Cli::parse_from(["srz", "cache", "size"]);
+    assert_eq!(
+        cmd14.resolve_action().unwrap(),
+        ResolvedAction::Cache(CacheCommand::Size)
+    );
+
+    // Cache prune by age
+    let cmd15 = Cli::parse_from(["srz", "cache", "prune", "--older-than", "14d"]);
+    assert_eq!(
+        cmd15.resolve_action().unwrap(),
+        ResolvedAction::Cache(CacheCommand::Prune {
+            older_than: Some("14d".to_string()),
+            max_size: None,
+        })
+    );
+
+    // Cache prune by max size
+    let cmd16 = Cli::parse_from(["srz", "cache", "prune", "--max-size", "500MB"]);
+    assert_eq!(
+        cmd16.resolve_action().unwrap(),
+        ResolvedAction::Cache(CacheCommand::Prune {
+            older_than: None,
+            max_size: Some("500MB".to_string()),
+        })
+    );
+
+    // Cache clean
+    let cmd17 = Cli::parse_from(["srz", "cache", "clean"]);
+    assert_eq!(
+        cmd17.resolve_action().unwrap(),
+        ResolvedAction::Cache(CacheCommand::Clean { reset_db: false })
+    );
+
+    // Cache clean reset db
+    let cmd18 = Cli::parse_from(["srz", "cache", "clean", "--reset-db"]);
+    assert_eq!(
+        cmd18.resolve_action().unwrap(),
+        ResolvedAction::Cache(CacheCommand::Clean { reset_db: true })
+    );
+
+    // Doctor
+    let cmd19 = Cli::parse_from(["srz", "doctor"]);
+    assert_eq!(cmd19.resolve_action().unwrap(), ResolvedAction::Doctor);
+
+    // Models
+    let cmd_models = Cli::parse_from(["srz", "models"]);
+    assert_eq!(cmd_models.resolve_action().unwrap(), ResolvedAction::Models);
+
+    // Config init
+    let cmd_cfg_init = Cli::parse_from(["srz", "config", "init"]);
+    assert_eq!(
+        cmd_cfg_init.resolve_action().unwrap(),
+        ResolvedAction::Config(srz::cli::ConfigSubcommand::Init)
+    );
+
+    // Index
     let cmd_index = Cli::parse_from(["srz", "index"]);
     assert_eq!(cmd_index.resolve_action().unwrap(), ResolvedAction::Index);
 }

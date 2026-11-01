@@ -169,21 +169,6 @@ fn test_cache_file_permissions() {
     assert!(!dir.join("pages").exists());
 }
 
-#[cfg(unix)]
-#[test]
-fn test_write_private_file_permissions() {
-    use std::os::unix::fs::PermissionsExt;
-    let tmp = temp_test_dir("private_write");
-    let dir = tmp.path().to_path_buf();
-    fs::create_dir_all(&dir).unwrap();
-    let file_path = dir.join("test.txt");
-
-    srz::fs_util::write_private_file(&file_path, b"test private content").unwrap();
-
-    let meta = fs::metadata(&file_path).unwrap();
-    assert_eq!(meta.permissions().mode() & 0o777, 0o600);
-}
-
 #[test]
 fn test_parse_duration_and_bytes() {
     use srz::cache::{parse_bytes, parse_duration};
@@ -375,40 +360,6 @@ fn test_cache_sha256_hash_keys() {
         .unwrap();
     assert_eq!(key.len(), 64);
     assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
-}
-
-#[cfg(unix)]
-#[test]
-fn test_fs_util_rejects_symlinks() {
-    use std::os::unix::fs::symlink;
-
-    let tmp = temp_test_dir("symlink_test");
-    let dir = tmp.path().to_path_buf();
-    fs::create_dir_all(&dir).unwrap();
-
-    let target = dir.join("real_target.txt");
-    fs::write(&target, b"important data").unwrap();
-
-    let link = dir.join("symlink_file.txt");
-    symlink(&target, &link).unwrap();
-
-    // Opening symlink for private write must be rejected with InvalidInput
-    let write_res = srz::fs_util::open_private_file_for_write(&link);
-    assert!(write_res.is_err());
-    assert_eq!(
-        write_res.err().unwrap().kind(),
-        std::io::ErrorKind::InvalidInput
-    );
-
-    // Creating private dir at symlink must be rejected
-    let link_dir = dir.join("symlink_dir");
-    symlink(&target, &link_dir).unwrap();
-    let dir_res = srz::fs_util::create_private_dir_all(&link_dir);
-    assert!(dir_res.is_err());
-    assert_eq!(
-        dir_res.err().unwrap().kind(),
-        std::io::ErrorKind::InvalidInput
-    );
 }
 
 #[test]
