@@ -431,3 +431,54 @@ fn test_database_chat_sessions_lifecycle() {
     let empty_list = db.get_chat_sessions(10).unwrap();
     assert!(empty_list.is_empty());
 }
+
+#[test]
+fn test_tokenize_terms_edge_cases() {
+    use srz::db::tokenize_terms;
+
+    assert_eq!(tokenize_terms(""), Vec::<String>::new());
+    assert_eq!(tokenize_terms("   \t\n  "), Vec::<String>::new());
+    assert_eq!(tokenize_terms("!@#$%^&*()+=~`"), Vec::<String>::new());
+    assert_eq!(
+        tokenize_terms("Rust-2024_edition & AI 🤖"),
+        vec!["rust-2024_edition".to_string(), "ai".to_string()]
+    );
+    assert_eq!(
+        tokenize_terms("--flag_name--"),
+        vec!["flag_name".to_string()]
+    );
+}
+
+#[test]
+fn test_database_search_special_characters_and_sql_injection() {
+    let db = Database::open_in_memory().unwrap();
+
+    let record = NewSummaryRecord {
+        target_type: "book",
+        title: "Security Handbook",
+        author: Some("Alice"),
+        url: None,
+        style: "concise",
+        model: "gemma-4",
+        word_count: 500,
+        prompt_tokens: None,
+        completion_tokens: None,
+        duration_ms: 100,
+        tokens_per_second: None,
+        summary: "Discussion of SQL injection vulnerabilities and escaping techniques.",
+    };
+    db.record_summary(&record).unwrap();
+
+    // SQL injection attempt string must not cause SQL syntax error
+    let res = db.search("'; DROP TABLE library; --").unwrap();
+    assert!(res.is_empty());
+
+    // Table still exists and can be searched normally
+    let normal_hits = db.search("vulnerabilities").unwrap();
+    assert_eq!(normal_hits.len(), 1);
+    assert_eq!(normal_hits[0].title, "Security Handbook");
+
+    // Pure wildcard/punctuation queries
+    assert!(db.search("% * _ ?").unwrap().is_empty());
+    assert!(db.search("").unwrap().is_empty());
+}

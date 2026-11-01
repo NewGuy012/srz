@@ -165,3 +165,67 @@ impl Config {
 "#
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_template_is_valid_toml() {
+        let template = Config::default_template();
+        // Commented-out template parses as empty default config
+        let cfg: Config =
+            toml::from_str(template).expect("default template must parse as valid TOML");
+        assert!(cfg.base_url.is_none());
+        assert!(cfg.model.is_none());
+
+        // Uncommenting settings lines produces a valid parsed active config
+        let uncommented = template
+            .lines()
+            .map(|l| {
+                let trimmed = l.trim_start();
+                if let Some(rest) = trimmed.strip_prefix('#') {
+                    let candidate = rest.trim();
+                    if candidate.contains('=') || candidate.starts_with('[') {
+                        return candidate;
+                    }
+                }
+                l
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let parsed_active: Config =
+            toml::from_str(&uncommented).expect("Uncommented template must be valid TOML");
+        assert_eq!(
+            parsed_active.base_url.as_deref(),
+            Some("http://localhost:9931/v1")
+        );
+        assert_eq!(parsed_active.profiles.len(), 2);
+    }
+
+    #[test]
+    fn test_load_from_path_lifecycle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("config.toml");
+
+        // Missing file returns error
+        assert!(Config::load_from_path(&config_path).is_err());
+
+        // Valid file loads correctly
+        let valid_toml = r#"
+            base_url = "http://localhost:11434/v1"
+            model = "llama3:8b"
+        "#;
+        fs::write(&config_path, valid_toml).unwrap();
+        let loaded = Config::load_from_path(&config_path).expect("Should load valid config");
+        assert_eq!(
+            loaded.base_url.as_deref(),
+            Some("http://localhost:11434/v1")
+        );
+        assert_eq!(loaded.model.as_deref(), Some("llama3:8b"));
+
+        // Malformed TOML returns error
+        fs::write(&config_path, "not a [valid toml").unwrap();
+        assert!(Config::load_from_path(&config_path).is_err());
+    }
+}

@@ -221,6 +221,21 @@ fn test_missing_target_returns_error() {
 }
 
 #[test]
+fn test_cli_syntax_validation_errors() {
+    // Unknown flag should fail CLI parsing
+    assert!(Cli::try_parse_from(["srz", "--unknown-flag-xyz"]).is_err());
+
+    // Invalid style option should fail CLI parsing
+    assert!(Cli::try_parse_from(["srz", "Dune", "--style", "super-long"]).is_err());
+
+    // Invalid paging option should fail CLI parsing
+    assert!(Cli::try_parse_from(["srz", "Dune", "--paging", "sometimes"]).is_err());
+
+    // Invalid shell completion name
+    assert!(Cli::try_parse_from(["srz", "completions", "unknown_shell"]).is_err());
+}
+
+#[test]
 fn test_ask_subcommand_resolution() {
     use srz::cli::is_probable_question;
 
