@@ -72,13 +72,15 @@ flowchart TD
 
 | Category | Command / Flag | Description |
 | :--- | :--- | :--- |
-| **Ingestion** | `srz <URL>` | Summarizes articles, blogs, documentation, or online PDFs. |
+| **Ingestion** | `srz <URL>` | Summarizes articles, blogs, documentation, RSS/Atom/JSON feeds, or online PDFs. |
 | | `srz <YOUTUBE_URL>` | Extracts timed-text transcripts and chapters from YouTube videos. |
 | | `srz "Book Title"` | Resolves synopses from Wikipedia and Open Library by title alone. |
 | | `srz <FILE>` | Ingests local `.pdf`, `.html`, `.md`, or `.txt` documents (20 MB ceiling). |
 | | `cat ... \| srz -` | Reads piped command outputs, logs, or `git diff` streams (10 MB ceiling). |
-| | `srz news "topic" [-t week]` | Aggregates and summarizes top stories from Google News RSS. |
+| | `srz news "<topic\|feed_url>" [-t week]` | Aggregates and summarizes top stories from Google News RSS or any RSS/Atom/JSON feed URL. |
 | **Styling & Output** | `--style <PRESET>` | 3 summary formats: `concise` (default), `bullets`, `detailed`. |
+| | `--max-tokens <NUM>` | Sets the maximum completion tokens to generate (default: `8192`). |
+| | `--concurrency <NUM>` | Sets parallel map-reduce chunking concurrency (default: `1`). |
 | | `--open` (`-b`) | Opens the summary in a distraction-free HTML reader with light/dark mode. |
 | | `--plain` | Outputs raw Markdown without terminal colors or automatic paging. |
 | | `--paging <auto\|always\|never>` | Controls terminal output pager (`never` disables paging). |
@@ -116,10 +118,10 @@ sequenceDiagram
     participant LLM as LlmClient (SseStreamState)
     participant DB as DuckDB (Lazy Init)
 
-    User->>CLI: srz book "The Hobbit"
+    User->>CLI: srz "The Hobbit"
     CLI->>Cache: Check summary cache (kind, title, style, model)
-    alt Cache Hit (DuckDB Not Opened)
-        Cache-->>CLI: Return cached summary
+    alt Cache Hit (srz.duckdb Not Opened)
+        Cache-->>CLI: Return cached summary (with preserved word count)
         CLI->>Cache: Ensure existing HTML/MD view files (skip re-render)
         CLI->>User: Print summary & clickable file:// links immediately
     else Cache Miss
@@ -161,8 +163,8 @@ graph LR
         end
         subgraph LibraryDB["Analytics, Search & Sessions (srz.duckdb)"]
             D["srz.duckdb"]
-            D --> T1["Table: history (telemetry, words, tokens, latency)"]
-            D --> T2["Table: library (titles, URLs, full text)"]
+            D --> T1["Table: history (metadata, telemetry, words, tokens, latency)"]
+            D --> T2["Table: library (normalized id & full summary text)"]
             D --> T3["Table: library_terms (BM25 inverted index & title boosting)"]
             D --> T4["Table: chat_sessions & chat_messages (multi-turn history)"]
         end
@@ -173,13 +175,13 @@ graph LR
 
 | Namespace / Asset | Retention Policy (TTL) | Eviction Trigger | Notes |
 | :--- | :--- | :--- | :--- |
-| **`cache_pages` (in `cache.duckdb`)** | **7 days** | SQL TTL expiration / LRU | Scraped DOM and clean text; YouTube & PDFs retain for 30 days. Transparent fallback to legacy `pages/`. |
-| **`cache_search` (in `cache.duckdb`)** | **14 days** | SQL TTL expiration / LRU | Open Library metadata and DDG candidates. Transparent fallback to legacy `search/`. |
-| **`cache_summaries` (in `cache.duckdb`)** | **90 days** | LRU past max budget | Deterministic for `(target, model, style)`. Longest TTL to save inference tokens. Fallback to `summaries/`. |
+| **`cache_pages` (in `cache.duckdb`)** | **7 days** | SQL TTL expiration / LRU | Scraped DOM, feed articles, and clean text; YouTube & PDFs retain for 30 days. Read-only fallback to legacy `pages/`. |
+| **`cache_search` (in `cache.duckdb`)** | **14 days** | SQL TTL expiration / LRU | Open Library metadata and DDG candidates. Read-only fallback to legacy `search/`. |
+| **`cache_summaries` (in `cache.duckdb`)** | **90 days** | LRU past max budget | Deterministic for `(target, model, style)` with preserved `word_count`. Read-only fallback to `summaries/`. |
 | **`views/`** | **14 days** | TTL expiration / LRU | Ephemeral reader views; lazily regenerated via `srz browse` or `srz index`. |
-| **Total Cache Budget** | **500 MB** (configurable) | LRU eviction by size & `mtime` | Evicts oldest entries across caches down to 85% headroom. |
-| **Auto-Prune Schedule** | **Opportunistic (24h)** | Daily CLI invocation check | Throttled via `~/.cache/srz/.last_prune` (sub-millisecond overhead). |
-| **Library DuckDB (`srz.duckdb`)** | **Permanent (Not a cache)** | Explicit `--reset-db` only | Preserved across `srz cache clean`; contains reading history, habits, BM25 index, and chats. |
+| **Total Cache Budget** | **500 MB** (configurable) | Unified SQL + disk LRU eviction | Evicts oldest entries across `cache.duckdb` tables and `views/` down to 85% headroom. |
+| **Auto-Prune Schedule** | **Opportunistic (24h)** | Deferred past fast-exit commands | Throttled via `~/.cache/srz/.last_prune` (sub-millisecond overhead). |
+| **Library DuckDB (`srz.duckdb`)** | **Permanent (Not a cache)** | Explicit `--reset-db` only | Preserved across `srz cache clean`; normalized `history` + `library` schema, BM25 index, and chats. |
 
 
 ## 5. Performance, Security & Architectural Optimizations
@@ -202,24 +204,25 @@ graph LR
 ### Performance & Memory Efficiency
 
 #### LLM Processing & Context Management
-- **Exact BPE Token Budgeting**: Replaces rough word-counting heuristics with OpenAI's `cl100k_base` BPE tokenizer (`tiktoken-rs`), precisely calculating token counts (`TextChunker::count_tokens`) and boundaries (`chunk_by_tokens`) so long prompts stay strictly within model context limits.
-- **Parallel Map-Reduce**: Large documents (> 12,000 words) are automatically split along paragraph boundaries and summarized concurrently across threads, sharing immutable metadata (`Arc<str>`) and consolidating token metrics.
+- **Exact BPE Token Budgeting**: Replaces rough word-counting heuristics with OpenAI's `cl100k_base` BPE tokenizer (`tiktoken-rs`), precisely calculating token counts (`TextChunker::count_tokens`), chunk boundaries (`chunk_by_tokens`), and token-safe prompt truncation (`truncate_by_tokens`) across summarization, book grounding, news briefings, and Q&A.
+- **Question-Aware Q&A Context Selection**: For extra-long documents (`> 16k` tokens) in `srz ask`, `select_relevant_context` ranks document chunks by query term overlap so answers are grounded on relevant later chapters rather than blindly truncating at the context boundary.
+- **Parallel Map-Reduce**: Large documents (> 12,000 words / > 16,000 tokens) are automatically split along paragraph boundaries and summarized concurrently across threads (`--concurrency`), sharing immutable metadata (`Arc<str>`) and recording accurate wall-clock elapsed telemetry.
 - **Zero-Copy SSE Streaming**: Server-Sent Events (SSE) stream tokens directly from network byte buffers into borrowed string slices (`Cow<str>`), batching terminal flushes per packet to eliminate redundant string allocations and terminal redraw flicker.
 - **Fast-Path Budget Checks**: Unified chunking in `TextChunker` uses an $O(1)$ byte-length check to instantly pass documents that already fit within token limits, completely bypassing tokenizer passes on shorter texts.
 
 #### High-Speed Ingestion & Parsing
 - **High-Fidelity Readability Extraction**: Web articles are parsed via Mozilla's Readability algorithm (`dom_smoothie`), scoring DOM container density to strip navigation headers, sidebars, ad trackers, and cookie notices before prompting the LLM.
-- **Universal Syndication Feeds**: Multi-format feed parsing (`feed-rs`) seamlessly normalizes Google News, RSS 0.9/1.0/2.0, Atom, and JSON feeds into clean article lists with zero regex fragility.
+- **Universal Syndication Feeds**: Multi-format feed parsing (`feed-rs`) and automatic feed URL detection (`is_feed_url`) seamlessly normalize Google News queries and direct RSS 0.9/1.0/2.0, Atom, and JSON feed URLs into clean article lists with zero regex fragility.
 - **Single-Pass PDF Extraction**: `PdfExtractor` parses the in-memory document once for both text layer extraction and document trailer metadata lookup via `pdf-extract`.
 - **Streaming XML Parsing**: YouTube timed-text caption ingestion (`quick-xml`) uses a pull-parser event reader to stream captions without loading full XML trees into memory.
-- **Early-Abort Concurrent Scraping**: Parallel news fetching uses `tokio::task::JoinSet` with `abort_all()` to immediately terminate remaining background network requests as soon as the target article count is reached.
+- **Bounded & Cached Concurrent Scraping**: Parallel news fetching (`collect_news_articles_with_cache`) bounds concurrent HTTP/RPC tasks via `tokio::sync::Semaphore`, caches scraped article pages in `cache_pages`, and uses `tokio::task::JoinSet::abort_all()` to immediately terminate remaining background requests once the target article count is reached.
 - **HTTP Connection Pool Sharing & Byte Limits**: A single shared HTTP client reuses keep-alive connections across metadata lookups, search queries, and scraping, enforcing strict byte limits (10 MB cap) to avoid unbuffered memory spikes.
 
 #### Database, Caching & Instant Search
-- **Consolidated DuckDB Cache**: Stores web pages, search metadata, and LLM summaries in a single embedded `cache.duckdb` instead of thousands of disk files—eliminating inode exhaustion and enabling sub-millisecond lookups and instantaneous SQL timestamp TTL eviction via `epoch_ms(cached_at)::BIGINT`.
-- **Lazy Database Initialization**: The analytics database (`srz.duckdb`) is initialized lazily only when recording a new summary or running stats. Cache hits and shell completions launch instantly with zero database startup latency.
+- **Consolidated Single-Write DuckDB Cache**: Stores web pages, search metadata, and LLM summaries directly in a single embedded `cache.duckdb` without dual-writing `.json` files—eliminating inode exhaustion and enabling sub-millisecond lookups, SQL byte-size accounting (`strlen`), and instantaneous SQL timestamp TTL eviction via `epoch_ms(cached_at)::BIGINT`.
+- **Lazy Database Initialization & Normalized Schema**: Both `cache.duckdb` and `srz.duckdb` skip schema DDL when already initialized and defer auto-pruning past fast-exit CLI subcommands. In `srz.duckdb`, `library` is normalized (`(id, summary)`) and joined against `history` to eliminate duplicate metadata columns.
 - **Offline BM25 Full-Text Relevance**: Pure SQL Robertson-Sparck Jones BM25 search ranking runs directly inside DuckDB without external extensions, featuring $2.5\times$ title weight boosting, document length normalization ($k_1=1.2, b=0.75$), and pre-tokenized query vectors for rapid snippet extraction.
-- **Single-Pass Cache Pruning & In-Memory LRU**: `Cache::prune` collects surviving file metadata during the initial expiration pass, computing LRU size-based eviction entirely in memory without redundant filesystem rescans.
+- **Unified SQL + Disk LRU Pruning**: `Cache::prune` collects surviving database rows and view file metadata in a single pass, executing LRU size-based eviction across both `cache.duckdb` tables and `views/` files.
 - **Transactional Database Safety**: ACID database transactions guarantee complete atomicity and rollback safety across library records and chat histories.
 
 #### UI & Terminal Rendering
@@ -237,7 +240,7 @@ graph LR
 - **Strict Local Isolation & Symlink Hardening**: Cache, configuration, and database files are created with owner-only Unix permissions (`0700` directories, `0600` files created atomically via `O_CREAT | O_EXCL` and `mode(0o600)`). Filesystem operations reject pre-planted symlink paths to prevent unauthorized directory traversal.
 - **Prompt Injection Defense & Unified Framing**: Untrusted source content is strictly quarantined inside tagged XML blocks (`<source_document>`) via centralized framing, with automated case-insensitive escaping of delimiter tags (`escape_closing_tag`).
 - **Terminal Escape Sequence & BiDi Sanitization**: Document titles, scraped metadata, and LLM streaming outputs are stripped of ANSI escape sequences, C1 control characters, and Unicode Bidirectional (BiDi) override codepoints (preventing Trojan Source spoofing and clipboard hijacking).
-- **Bounded Resource Limits & Client Timeouts**: Strict safety ceilings prevent denial-of-service from oversized inputs: 10 MB for web responses and stdin, 20 MB for local files, 50 MB for updates, paired with 5-second connection and 60-second request timeouts.
+- **Bounded Resource Limits & Client Timeouts**: Strict safety ceilings prevent denial-of-service from oversized inputs: 10 MB for web responses and stdin, 20 MB for local files, 50 MB for updates, paired with 5-second connection, 30-second scraping, and 300-second LLM streaming timeouts.
 - **Media Scraper & SSRF Defense**: YouTube video ingestion strictly validates host authority against official domains (`youtube.com`, `youtu.be`) and pins caption downloads to HTTPS `api/timedtext` endpoints to prevent Server-Side Request Forgery against internal networks.
 - **Content Security Policy (CSP)**: Generated HTML reader views enforce strict CSP headers blocking external network calls and inline script execution.
 - **Cryptographically Verified Upgrades**: `srz upgrade` and install scripts enforce mandatory SHA-256 cryptographic checksum validation and semver regex checks before executing binaries.
@@ -267,22 +270,22 @@ src/
 | :--- | :--- | :--- | :--- |
 | **Entry Points** | [`src/main.rs`](../src/main.rs) | `main` | Entry point, CLI lifecycle, profile loading, and subcommand dispatch. |
 | | [`src/lib.rs`](../src/lib.rs) | `lib` | Root library interface and backward-compatible module re-exports. |
-| **Commands** | [`src/commands/summarize.rs`](../src/commands/summarize.rs) | `commands::summarize` | Workflows for web articles, YouTube videos, books, local documents, stdin streams, news digests, and unified page caching (`fetch_or_cache_page_with`). |
-| | [`src/commands/ask.rs`](../src/commands/ask.rs) | `commands::ask` | Grounded question answering, interactive multi-turn chat REPL (`srz ask`) with in-line editing and history navigation (`rustyline`), DuckDB session persistence (`--chats`, `--resume`, `--show-chat`, `--delete-chat`), sliding conversational history, and prompt injection defense. |
+| **Commands** | [`src/commands/summarize.rs`](../src/commands/summarize.rs) | `commands::summarize` | Workflows for web articles, YouTube videos, books, local documents, stdin streams, news/syndication feed digests, and unified page caching (`fetch_or_cache_page_with`). |
+| | [`src/commands/ask.rs`](../src/commands/ask.rs) | `commands::ask` | Grounded question answering, question-aware chunk retrieval (`select_relevant_context`), full library summary fallback, interactive multi-turn chat REPL (`srz ask`) with `rustyline`, DuckDB session persistence (`--chats`, `--resume`, `--show-chat`, `--delete-chat`), sliding conversational history, and prompt injection defense. |
 | | [`src/commands/library.rs`](../src/commands/library.rs) | `commands::library` | Handlers for `history`, `stats` (reading habit telemetry, time saved, P50/P95 model throughput), `find` (BM25 relevance scoring), `index`, and `cache` subcommands. |
 | | [`src/commands/diagnostics.rs`](../src/commands/diagnostics.rs) | `commands::diagnostics` | Handlers for `doctor`, `models`, and `config` verification. |
-| **Configuration** | [`src/config/cli.rs`](../src/config/cli.rs) | `config::cli` | `clap` CLI parser, `SummaryStyle` presets, `NewsTimeframe`, paging flags, chat session flags, and zero-allocation target auto-detection (`is_news_query`, `clean_news_query`, `is_probable_question`). |
+| **Configuration** | [`src/config/cli.rs`](../src/config/cli.rs) | `config::cli` | `clap` CLI parser, `SummaryStyle` presets, `NewsTimeframe`, `--max-tokens` and `--concurrency` flags, paging flags, chat session flags, and zero-allocation target auto-detection (`is_feed_url`, `is_news_query`, `clean_news_query`, `is_probable_question`). |
 | | [`src/config/file.rs`](../src/config/file.rs) | `config::file` | `config.toml` file loading, named profile switching, and starter template generation. |
-| **Engine** | [`src/engine/llm.rs`](../src/engine/llm.rs) | `engine::llm` | Zero-copy SSE client (`complete_chat` / `SseStreamState`), deduplicated token rate tracking via `compute_tokens_per_second`, `send_with_fallback` IPv4 retry, zero-copy XML delimiter escaping (`escape_closing_tag`), and map-reduce synthesis. |
-| | [`src/engine/chunker.rs`](../src/engine/chunker.rs) | `engine::chunker` | Accurate BPE token budgeting (`tiktoken-rs` `cl100k_base`), token counting (`count_tokens`), $O(1)$ fast-path budget checks, and unified zero-copy `Cow` paragraph chunking (`chunk_with_metric`) for long documents (> 16k tokens). |
+| **Engine** | [`src/engine/llm.rs`](../src/engine/llm.rs) | `engine::llm` | Zero-copy SSE client (`complete_chat` / `SseStreamState`), wall-clock token rate tracking via `compute_tokens_per_second`, `send_with_fallback` IPv4 retry, BPE-bounded XML delimiter escaping (`format_untrusted_section`, `escape_closing_tag`), and map-reduce synthesis. |
+| | [`src/engine/chunker.rs`](../src/engine/chunker.rs) | `engine::chunker` | Accurate BPE token budgeting (`tiktoken-rs` `cl100k_base`), token counting (`count_tokens`), token-safe truncation (`truncate_by_tokens`), $O(1)$ fast-path budget checks, and unified zero-copy `Cow` paragraph chunking (`chunk_with_metric`) for long documents (> 16k tokens). |
 | **Sources** | [`src/sources/document.rs`](../src/sources/document.rs) | `sources::document` | Unified local document ingestion (`DocumentLoader`): shared file validation (`validate_file`, 20 MB cap), PDF extraction, HTML/Markdown normalization, and title fallbacks. |
 | | [`src/sources/scraper.rs`](../src/sources/scraper.rs) | `sources::scraper` | HTTP client (10 MB cap), streaming body readers (`read_response_bytes_limited`, `read_response_text_limited`), Mozilla Readability DOM content extraction (`dom_smoothie`) with zero-copy fallback, and text cleaning. |
 | | [`src/sources/pdf.rs`](../src/sources/pdf.rs) | `sources::pdf` | Single-pass pure-Rust PDF `Document` parsing, text layer & `Info` trailer metadata extraction, and scanned-PDF detection via `pdf-extract`. |
 | | [`src/sources/youtube.rs`](../src/sources/youtube.rs) | `sources::youtube` | Zero-allocation YouTube video ID extraction, Innertube player client iteration, timed-text XML/JSON3 caption resolution via streaming `quick-xml`, HTML entity decoding via `html-escape`, and chapter cue grouping via `TimedTranscriptBuilder`. |
 | | [`src/sources/search.rs`](../src/sources/search.rs) | `sources::search` | Open Library metadata, Wikipedia OpenSearch/fulltext, DDG search, and candidate scoring. |
-| | [`src/sources/news.rs`](../src/sources/news.rs) | `sources::news` | Universal syndication feed client (`feed-rs` for RSS 0.9/1.0/2.0, Atom, and JSON feeds), Google News query resolution, bounded `batchexecute` RPC redirect decoding, and concurrent article fetching. |
-| **Storage** | [`src/storage/cache.rs`](../src/storage/cache.rs) | `storage::cache` | Consolidated DuckDB cache storage (`cache.duckdb`) for pages, search metadata, and LLM summaries with dedicated disk fallback routines (`read_disk_entry`, `write_disk_entry`), single-pass metadata collection in `prune()`, atomic transactions, and SQL-powered TTL pruning. |
-| | [`src/storage/db.rs`](../src/storage/db.rs) | `storage::db` | Embedded DuckDB database (`srz.duckdb`) for reading history, rich habit/model telemetry, inverted index BM25 search ranking (`library_terms`), pre-tokenized snippet extraction, centralized security lockdown pragmas, and persistent multi-turn chat sessions (`chat_sessions`, `chat_messages`). |
+| | [`src/sources/news.rs`](../src/sources/news.rs) | `sources::news` | Universal syndication feed client (`feed-rs` for direct RSS 0.9/1.0/2.0, Atom, and JSON feed URLs + Google News queries), bounded `batchexecute` RPC redirect decoding, semaphore-bounded concurrent article fetching, and page caching (`collect_news_articles_with_cache`). |
+| **Storage** | [`src/storage/cache.rs`](../src/storage/cache.rs) | `storage::cache` | Consolidated single-write DuckDB cache storage (`cache.duckdb`) for pages, search metadata, and LLM summaries (with preserved `word_count`), read-only legacy disk fallback (`read_disk_entry`), and unified SQL + disk TTL/LRU pruning (`prune`). |
+| | [`src/storage/db.rs`](../src/storage/db.rs) | `storage::db` | Embedded DuckDB database (`srz.duckdb`) with normalized `history` + `library` schema, rich habit/model telemetry, inverted index BM25 search ranking (`library_terms`), pre-tokenized snippet extraction, centralized security lockdown pragmas, and persistent multi-turn chat sessions (`chat_sessions`, `chat_messages`). |
 | **UI & Render** | [`src/ui/terminal.rs`](../src/ui/terminal.rs) | `ui::terminal` | CLI progress spinners (`indicatif`), colored text formatting, and terminal escape/control character sanitization (`sanitize_terminal_text`, `sanitize_title`). |
 | | [`src/ui/printer.rs`](../src/ui/printer.rs) | `ui::printer` | Cached `LazyLock<MadSkin>` terminal Markdown styling and automatic `$PAGER` / `less -RFX` integration. |
 | | [`src/ui/tui.rs`](../src/ui/tui.rs) | `ui::tui` | Interactive `ratatui` + `crossterm` terminal UI library explorer (`srz browse`) with event-driven redraws and pre-indexed live search. |

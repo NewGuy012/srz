@@ -150,11 +150,11 @@ Run `srz --help` to see all available subcommands and flags.
 
 ## Features
 
-- [**Universal Ingestion**](docs/OVERVIEW.md#2-key-cli-features--commands)
+- [**Universal Ingestion**](docs/OVERVIEW.md#1-high-level-architecture)
 - [**Interactive Q&A (`srz ask`)**](docs/OVERVIEW.md#2-key-cli-features--commands)
-- [**TUI Dashboard (`srz browse`)**](docs/OVERVIEW.md#2-key-cli-features--commands)
+- [**TUI Dashboard (`srz browse`)**](docs/OVERVIEW.md#ui--terminal-rendering)
 - [**3 Summary Presets**](docs/OVERVIEW.md#2-key-cli-features--commands)
-- [**Offline BM25 Library Search**](docs/OVERVIEW.md#2-key-cli-features--commands)
+- [**Offline BM25 Library Search**](docs/OVERVIEW.md#database-caching--instant-search)
 
 > For full guides and tutorials, visit the [**Documentation Website**](https://newguy012.github.io/srz/). For architectural diagrams, lifecycle execution sequences, and in-depth subsystem specs, see [**`OVERVIEW.md`**](docs/OVERVIEW.md).
 
@@ -230,7 +230,7 @@ srz "The Rust Programming Language" --profile openai # Cloud profile
 ## Running Tests & Static Analysis
 
 ```bash
-# Run full automated test suite (119 tests)
+# Run full automated test suite (120 tests)
 cargo test
 
 # Strict static analysis (warnings denied)
