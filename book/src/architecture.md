@@ -30,11 +30,12 @@ flowchart TD
     subgraph Inputs["1. Input Ingestion & Routing"]
         CLI["CLI Args / Env / config.toml"] --> Router{"Router / Auto-Detect"}
         Router -->|"YouTube URL"| YTFlow["YouTube Timed-Text Client (quick-xml)"]
+        Router -->|"Feed URL (.rss/.atom)"| NewsFlow["Universal Feed Parser (feed-rs)"]
         Router -->|"Web URL"| WebFlow["Web Scraper (dom_smoothie Readability)"]
         Router -->|"PDF File (.pdf)"| PDFFlow["Pure-Rust PDF Extractor (pdf-extract)"]
         Router -->|"Local Path or Stdin (-)"| FileFlow["File / Stdin Reader"]
         Router -->|"Book Title"| BookFlow["Book Resolver (Open Library + Wikipedia)"]
-        Router -->|"News Query or RSS"| NewsFlow["Universal Feed Parser (feed-rs)"]
+        Router -->|"News Query (news ...)"| NewsFlow
         Router -->|"ask [TARGET] [Q]"| AskFlow["Grounded Q&A Handler"]
         Router -->|"browse / tui"| TuiFlow["Ratatui TUI Dashboard"]
     end
@@ -86,8 +87,8 @@ graph LR
         end
         subgraph LibraryDB["Analytics, Search & Sessions (srz.duckdb)"]
             D["srz.duckdb"]
-            D --> T1["Table: history (telemetry, words, tokens, latency)"]
-            D --> T2["Table: library (titles, URLs, full text)"]
+            D --> T1["Table: history (metadata, telemetry, words, tokens, latency)"]
+            D --> T2["Table: library (id FK, full summary text)"]
             D --> T3["Table: library_terms (BM25 inverted index & title boosting)"]
             D --> T4["Table: chat_sessions & chat_messages (multi-turn history)"]
         end
@@ -111,7 +112,9 @@ graph LR
 
 When executing `srz find <QUERY>`, `srz` computes relevance scores offline across the library using the Robertson-Sparck Jones BM25 formula:
 
-$$\text{Score}(D, Q) = \sum_{t \in Q} \text{IDF}(t) \cdot \frac{f(t, D) \cdot (k_1 + 1)}{f(t, D) + k_1 \cdot \left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}$$
+\[
+\text{Score}(D, Q) = \sum_{t \in Q} \text{IDF}(t) \cdot \frac{f(t, D) \cdot (k_1 + 1)}{f(t, D) + k_1 \cdot \left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}
+\]
 
 * **$2.5\times$ Title Weighting**: Terms matching document titles receive $2.5\times$ the weight of terms matching summary bodies.
 * **Tuned Parameters**: Term frequency saturation $k_1 = 1.2$, document length normalization $b = 0.75$.

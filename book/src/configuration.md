@@ -1,6 +1,6 @@
 # Configuration
 
-`srz` reads its persistent settings from `~/.config/srz/config.toml` (or `$XDG_CONFIG_HOME/srz/config.toml` on Linux, `%APPDATA%\srz\config.toml` on Windows).
+`srz` reads its persistent settings from `~/.config/srz/config.toml` (or `$XDG_CONFIG_HOME/srz/config.toml` on Linux, `%APPDATA%\srz\config.toml` / `$env:APPDATA\srz\config.toml` on Windows).
 
 You can generate a starter configuration file at any time using:
 
@@ -63,6 +63,12 @@ base_url = "http://localhost:11434/v1"
 model = "deepseek-r1:14b"
 style = "detailed"
 max_tokens = 16384
+
+# Scripting profile with spinners disabled and cache bypassed
+[profiles.quiet]
+base_url = "http://localhost:9931/v1"
+quiet = true
+no_cache = true
 ```
 
 ---

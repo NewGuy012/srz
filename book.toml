@@ -13,6 +13,7 @@ git-repository-url = "https://github.com/NewGuy012/srz"
 edit-url-template = "https://github.com/NewGuy012/srz/edit/master/book/src/{path}"
 site-url = "/srz/"
 favicon-svg = "assets/logo.svg"
+mathjax-support = true
 preferred-dark-theme = "coal"
 default-theme = "coal"
 
