@@ -350,6 +350,8 @@ fn test_cache_sha256_hash_keys() {
         word_count: 4,
     };
     cache.set_page("https://secure-hash.example.com", &page);
+    // Explicitly drop cache to release DuckDB file locks before direct inspection (required on Windows)
+    drop(cache);
 
     // Query cache_pages in cache.duckdb and verify the key is 64 hex characters (SHA-256)
     let conn = duckdb::Connection::open(dir.join("cache.duckdb")).unwrap();
