@@ -221,13 +221,12 @@ fn test_parse_duration_and_bytes() {
 
 #[test]
 fn test_cache_ttl_expiration() {
-    use std::thread;
     use std::time::Duration;
 
     let tmp = temp_test_dir("ttl");
     let dir = tmp.path().to_path_buf();
     let mut cache = Cache::with_dir(dir.clone(), true);
-    cache.policy_mut().pages_ttl = Duration::from_millis(300);
+    cache.policy_mut().pages_ttl = Duration::from_secs(60);
 
     let page = ScrapedPage {
         url: "https://expiring.com".to_string(),
@@ -240,8 +239,8 @@ fn test_cache_ttl_expiration() {
     // Immediate read should hit
     assert!(cache.get_page("https://expiring.com").is_some());
 
-    // Wait past expiration
-    thread::sleep(Duration::from_millis(350));
+    // Deterministically backdate the entry past the 60s TTL without sleeping
+    cache.update_cached_at_for_test("cache_pages", "url = 'https://expiring.com'", 120);
 
     // Entry should have expired and returned None
     assert!(cache.get_page("https://expiring.com").is_none());
@@ -250,7 +249,6 @@ fn test_cache_ttl_expiration() {
 #[test]
 fn test_cache_prune_by_age() {
     use srz::cache::{CacheNamespace, PruneOptions};
-    use std::thread;
     use std::time::Duration;
 
     let tmp = temp_test_dir("prune_age");
@@ -266,12 +264,13 @@ fn test_cache_prune_by_age() {
     cache.set_page("https://prune-test.com", &page);
     assert_eq!(cache.stats().pages, 1);
 
-    thread::sleep(Duration::from_millis(40));
+    // Deterministically backdate the entry by 2 days without sleeping
+    cache.update_cached_at_for_test("cache_pages", "url = 'https://prune-test.com'", 2 * 86400);
 
-    // Pruning with older_than 20ms should prune the entry
+    // Pruning with older_than 1 day should prune the entry
     let stats = cache
         .prune(PruneOptions {
-            older_than: Some(Duration::from_millis(20)),
+            older_than: Some(Duration::from_secs(86400)),
             max_bytes: None,
             namespace: Some(CacheNamespace::Pages),
         })
@@ -285,8 +284,6 @@ fn test_cache_prune_by_age() {
 #[test]
 fn test_cache_prune_by_max_size_lru() {
     use srz::cache::PruneOptions;
-    use std::thread;
-    use std::time::Duration;
 
     let tmp = temp_test_dir("prune_size");
     let dir = tmp.path().to_path_buf();
@@ -300,11 +297,16 @@ fn test_cache_prune_by_max_size_lru() {
             word_count: 100,
         };
         cache.set_page(&format!("https://example.com/{}", i), &page);
-        thread::sleep(Duration::from_millis(15));
     }
 
     assert_eq!(cache.stats().pages, 5);
     let original_bytes = cache.stats().total_bytes;
+
+    // Deterministically set LRU order: page 0 is oldest, page 4 is newest
+    for i in 0..5 {
+        let where_clause = format!("url = 'https://example.com/{}'", i);
+        cache.update_cached_at_for_test("cache_pages", &where_clause, (4 - i) * 600);
+    }
 
     // Prune so total cache doesn't exceed 2500 bytes (should evict oldest)
     let prune_stats = cache

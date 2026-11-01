@@ -1070,4 +1070,17 @@ impl Cache {
             },
         );
     }
+
+    #[doc(hidden)]
+    pub fn update_cached_at_for_test(&self, table: &str, where_clause: &str, delta_secs: i64) {
+        if let Some(guard) = self.get_or_init_db()
+            && let Some(conn) = guard.as_ref()
+        {
+            let sql = format!(
+                "UPDATE {} SET cached_at = cached_at - INTERVAL {} SECOND WHERE {}",
+                table, delta_secs, where_clause
+            );
+            let _ = conn.execute(&sql, []);
+        }
+    }
 }
