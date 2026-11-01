@@ -129,7 +129,7 @@ async fn main() -> Result<()> {
             show_chat,
             delete_chat,
         } => {
-            commands::handle_ask(
+            if let Err(err) = commands::handle_ask(
                 target,
                 question,
                 interactive,
@@ -142,7 +142,11 @@ async fn main() -> Result<()> {
                 &cache,
                 &args,
             )
-            .await?;
+            .await
+            {
+                print_execution_error(&err);
+                std::process::exit(1);
+            }
             return Ok(());
         }
         ResolvedAction::Web { url } => {
@@ -246,10 +250,37 @@ async fn main() -> Result<()> {
             }
         }
         Err(err) => {
-            Ui::error(&format!("Summarization failed: {:#}", err));
+            print_execution_error(&err);
             std::process::exit(1);
         }
     }
 
     Ok(())
+}
+
+fn print_execution_error(err: &anyhow::Error) {
+    let err_msg = format!("{:#}", err);
+    Ui::error(&format!("Summarization failed: {}", err_msg));
+
+    let is_connection_error = err_msg.contains("Failed to communicate with LLM endpoint")
+        || err_msg.contains("Failed to reach LLM endpoint")
+        || err_msg.contains("connection closed")
+        || err_msg.contains("Connection refused")
+        || err_msg.contains("connection error")
+        || err_msg.contains("error trying to connect")
+        || err_msg.contains("is listening on port 9931");
+
+    if is_connection_error {
+        let hw = srz::system::hardware::HardwareProfile::detect();
+        println!();
+        Ui::info("💡 Quick Start: Your local LLM backend is not reachable.");
+        Ui::info(&format!(
+            "Based on your machine ({:.1} GB RAM detected), start your server with:",
+            hw.total_memory_gb
+        ));
+        println!("  \x1b[1;32m{}\x1b[0m", hw.recommended_launch_command);
+        Ui::info(
+            "Or run `srz recommend` to view alternative models, Ollama commands, and profiles.\n",
+        );
+    }
 }

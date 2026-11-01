@@ -118,52 +118,78 @@ impl Config {
         }
     }
 
-    /// Generates a starter `config.toml` template string.
-    pub fn default_template() -> &'static str {
-        r#"# srz (Summarize) configuration file
+    /// Generates a starter `config.toml` template string tailored for the detected hardware.
+    pub fn template_for_hardware(hw: &crate::system::hardware::HardwareProfile) -> String {
+        format!(
+            r#"# srz (Summarize) configuration file
 # Default path: ~/.config/srz/config.toml
+# Tailored for host: {} ({:.1} GB RAM / {})
 
-# Default local LLM endpoint (e.g. llama.cpp, Ollama, LM Studio, vLLM)
-# base_url = "http://localhost:9931/v1"
-# model = "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
-# api_key = ""
+# Default local LLM endpoint (e.g. Llama-macOS, Llama-Windows, llama.cpp, Ollama)
+base_url = "http://localhost:9931/v1"
+model = "{}"
+context_window = {}
+api_key = ""
 
-# Default summary style (concise, detailed, bullets)
-# style = "concise"
+# Default summary style: concise (default), detailed, bullets
+style = "concise"
 
 # Maximum completion tokens (thinking + summary tokens)
-# max_tokens = 8192
+max_tokens = 8192
 
-# Auto-open generated HTML view in browser
-# open = false
+# Auto-open generated HTML view in your browser (default: false)
+open = false
 
 # Parallel chunk concurrency for map-reduce
-# concurrency = 1
+concurrency = 1
 
 # Stream tokens live to stdout (default: false)
-# stream = false
+stream = false
 
-# Cache retention policy and storage budget
-# [cache]
-# max_size_mb = 500
-# pages_ttl_days = 7
-# search_ttl_days = 14
-# summaries_ttl_days = 90
-# views_ttl_days = 14
-# auto_prune = true
+# Storage budget and retention policies
+[cache]
+max_size_mb = 500         # Disk budget (LRU eviction past threshold)
+pages_ttl_days = 7        # Scraped web content & news TTL
+search_ttl_days = 14      # Book metadata & search candidates TTL
+summaries_ttl_days = 90   # Generated LLM outputs TTL
+views_ttl_days = 14       # Rendered HTML/MD reader views TTL
+auto_prune = true         # Opportunistic background cleanup
 
-# Named profiles (switch with `srz --profile <name> ...`)
-# [profiles.fast]
-# base_url = "http://localhost:11434/v1"
-# model = "qwen2.5:3b"
-# style = "concise"
+# Cloud profile (e.g. OpenAI or Anthropic)
+[profiles.openai]
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
+api_key = "sk-..."
 
-# [profiles.deep]
-# base_url = "http://localhost:11434/v1"
-# model = "deepseek-r1:14b"
-# style = "detailed"
-# max_tokens = 16384
-"#
+# Quick mode: Fast concise summaries for news and short articles
+[profiles.fast]
+base_url = "http://localhost:9931/v1"
+model = "{}"
+style = "concise"
+context_window = 8192
+
+# Deep research / book mode: Full synthesis with maximum context window
+[profiles.deep]
+base_url = "http://localhost:9931/v1"
+model = "{}"
+style = "detailed"
+context_window = {}
+max_tokens = 8192
+"#,
+            hw.chip_name,
+            hw.total_memory_gb,
+            hw.tier.display_name(),
+            hw.recommended_model,
+            hw.recommended_context,
+            hw.recommended_model,
+            hw.recommended_model,
+            hw.recommended_context,
+        )
+    }
+
+    /// Generates a starter `config.toml` template string using detected host hardware.
+    pub fn default_template() -> String {
+        Self::template_for_hardware(&crate::system::hardware::HardwareProfile::detect())
     }
 }
 
@@ -174,34 +200,16 @@ mod tests {
     #[test]
     fn test_default_template_is_valid_toml() {
         let template = Config::default_template();
-        // Commented-out template parses as empty default config
         let cfg: Config =
-            toml::from_str(template).expect("default template must parse as valid TOML");
-        assert!(cfg.base_url.is_none());
-        assert!(cfg.model.is_none());
-
-        // Uncommenting settings lines produces a valid parsed active config
-        let uncommented = template
-            .lines()
-            .map(|l| {
-                let trimmed = l.trim_start();
-                if let Some(rest) = trimmed.strip_prefix('#') {
-                    let candidate = rest.trim();
-                    if candidate.contains('=') || candidate.starts_with('[') {
-                        return candidate;
-                    }
-                }
-                l
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let parsed_active: Config =
-            toml::from_str(&uncommented).expect("Uncommented template must be valid TOML");
-        assert_eq!(
-            parsed_active.base_url.as_deref(),
-            Some("http://localhost:9931/v1")
-        );
-        assert_eq!(parsed_active.profiles.len(), 2);
+            toml::from_str(&template).expect("default template must parse as valid TOML");
+        assert_eq!(cfg.base_url.as_deref(), Some("http://localhost:9931/v1"));
+        assert!(cfg.model.is_some());
+        assert!(cfg.context_window.is_some());
+        assert_eq!(cfg.style, Some(SummaryStyle::Concise));
+        assert_eq!(cfg.max_tokens, Some(8192));
+        assert!(cfg.profiles.contains_key("openai"));
+        assert!(cfg.profiles.contains_key("fast"));
+        assert!(cfg.profiles.contains_key("deep"));
     }
 
     #[test]

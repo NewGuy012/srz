@@ -644,7 +644,7 @@ impl LlmClient {
 
         let resp = response.with_context(|| {
             format!(
-                "Failed to reach LLM endpoint at '{}'. Ensure your local LLM server is running.",
+                "Failed to reach LLM endpoint at '{}'. Ensure your local LLM server is running (run `srz recommend` for setup).",
                 models_url
             )
         })?;
@@ -681,7 +681,7 @@ impl LlmClient {
                 pb.finish_and_clear();
                 anyhow::bail!(
                     "Failed to communicate with LLM endpoint at '{}': {}. \
-                     Please verify your llama.cpp app is open and listening on port 9931.",
+                     Please verify your LLM backend is running. (Run `srz recommend` for ready-to-run startup commands).",
                     endpoint,
                     err
                 );

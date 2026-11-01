@@ -180,14 +180,25 @@ pub fn handle_config(
                     "Config file already exists at {}",
                     default_path.display()
                 ));
+                Ui::info(
+                    "Tip: Run `srz recommend` to view the optimal model and context for your machine.",
+                );
             } else {
                 if let Some(parent) = default_path.parent() {
                     crate::fs_util::create_private_dir_all(parent)?;
                 }
-                crate::fs_util::write_private_file(&default_path, Config::default_template())?;
+                let hw = crate::system::hardware::HardwareProfile::detect();
+                let template = Config::template_for_hardware(&hw);
+                crate::fs_util::write_private_file(&default_path, template.as_bytes())?;
                 Ui::success(&format!(
-                    "Initialized config file template at {}",
+                    "Initialized config file tailored for your hardware ({:.1} GB RAM, {}k context) at {}",
+                    hw.total_memory_gb,
+                    hw.recommended_context / 1024,
                     default_path.display()
+                ));
+                Ui::info(&format!(
+                    "Ready launch command: {}",
+                    hw.recommended_launch_command
                 ));
             }
         }
