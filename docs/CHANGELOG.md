@@ -26,11 +26,11 @@ All notable changes to `srz` are documented in this file.
 
 ### Summary
 
-> Removes the `rust-version` constraint from `Cargo.toml`, allowing Cargo's resolver to select the latest compatible dependencies without MSRV fallbacks or warnings.
+> Fixes cross-platform compiler and Clippy warnings on Linux and Windows targets, and removes the `rust-version` constraint to allow Cargo to freely resolve the latest dependencies.
 
 ### Changes
-- **Dependency Resolution**: Removed `rust-version` constraint to allow Cargo's 2024 resolver to freely select the latest SemVer-compatible releases (including `uuid` v1.29.0) without holding packages back or emitting MSRV warnings.
-- **Cross-Platform CI & Clippy Fixes**: Resolved target-specific unused import warnings in `system::hardware` and `system::fs_util` across Linux and Windows environments, adding cross-platform test coverage.
+- **Cross-Platform Compatibility & Clippy Fixes**: Resolved target-specific unused import warnings under `-D warnings` on Linux (`std::process::Command` in `hardware.rs`) and Windows (`super::*` in `fs_util.rs`), expanding cross-platform unit test coverage.
+- **Dependency Resolution**: Removed the explicit `rust-version` constraint from `Cargo.toml` to allow Cargo's 2024 resolver to freely select the latest SemVer-compatible releases (including `uuid` v1.29.0) without holding packages back or emitting MSRV warnings.
 
 ---
 
