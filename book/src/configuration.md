@@ -8,6 +8,8 @@ You can generate a starter configuration file at any time using:
 srz config init
 ```
 
+> 💡 **Tip**: Run `srz doctor` in your terminal to inspect your machine's physical RAM and get an immediate recommendation for the best `model` name and `context_window` setting.
+
 ---
 
 ## Example `config.toml`

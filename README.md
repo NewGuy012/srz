@@ -109,6 +109,13 @@ cargo install --path .
 
 ## Usage
 
+### 0. Recommend Model & Context Length for Your Hardware
+Before summarizing, run `srz doctor` to inspect your host RAM/CPU and get the recommended model, optimal context window, and exact launch command:
+```bash
+srz doctor
+```
+> 💡 **One-Click Decision**: Auto-detects whether your device has 8GB, 16GB, 24–36GB, or 64GB+ unified memory, steers towards high-fidelity Google Gemma 4 (`Q8_0`), selects the optimal context length (8k, 32k, 64k, or 128k), and prints the ready-to-run startup command!
+
 ### Summarize
 ```bash
 srz "https://en.wikipedia.org/wiki/Rust_(programming_language)" # Article
@@ -165,6 +172,9 @@ Run `srz --help` to see all available subcommands and flags.
 ## Configuring Your LLM Backend
 
 `srz` connects to any OpenAI-compatible API. Local inference is preferred for privacy and zero cost, but cloud providers are fully supported.
+
+> 💡 **Not sure which model or context length to choose?**
+> Run `srz doctor` in your terminal. It instantly detects your machine's physical RAM, recommends the best high-fidelity Google Gemma 4 model (`Q8_0`), selects the optimal context length, and outputs the exact command to launch it!
 
 ### Local LLMs (Preferred)
 

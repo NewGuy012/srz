@@ -51,7 +51,48 @@ srz models
 
 ---
 
-## 2. Basic Usage Examples
+## 2. Recommended Models & Context Length by Hardware
+
+Before running your first summary, you can easily determine which model and context window to select based on your computer's RAM.
+
+### 1-Click Auto-Advisor: `srz doctor`
+
+Run `srz doctor` to inspect your host hardware and receive a customized model, context length, and launch command:
+
+```bash
+srz doctor
+```
+
+```text
+=== srz System & LLM Health Diagnostics ===
+
+Hardware Profile & Recommendations:
+  • Host Device: Apple M5 Pro (24.0 GB RAM / 24–36 GB Tier (High-End Pro / Max Laptop))
+  • Recommended Family: Google Gemma 4 (High fidelity Q8_0, laptop battery & memory optimized)
+  • Recommended Model: ggml-org/gemma-4-E4B-it-GGUF:Q8_0 (Q8_0)
+  • Recommended Context: 65536 tokens
+  • Recommended Command: llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 65536 --port 9931
+```
+
+### Hardware Tier Reference Matrix
+
+| Host Memory | Typical Laptops / Devices | Recommended Model | Quantization | Context Window (`n_ctx`) | Approximate RAM Usage | Ready Launch Command |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **8 GB RAM** | MacBook Air 8GB, Standard Laptops | `gemma-4-E4B-it` | **`Q8_0`** | **8,192** (8k) | ~5.0 GB total | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 8192 --port 9931` |
+| **16 GB RAM** | MacBook Pro/Air 16GB, Standard PC Laptops | `gemma-4-E4B-it` | **`Q8_0`** | **32,768** (32k) | ~6.5 GB total | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 32768 --port 9931` |
+| **24–36 GB RAM** | MacBook Pro M Pro / Max, 32GB PCs | `gemma-4-E4B-it` | **`Q8_0`** | **65,536** (64k) | ~8.5 GB total | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 65536 --port 9931` |
+| **64+ GB RAM** | MacBook Pro M Max, Mac Studio, Workstations | `gemma-4-26B-it` | **`Q8_0`** | **131,072** (128k) | ~28–32 GB total | `llama-server -m gemma-4-26B-it-Q8_0.gguf -c 131072 --port 9931` |
+
+### Why We Recommend Google Gemma 4 (`Q8_0`) for Laptops
+
+* **Battery & Compute Efficiency**: Gemma 4 is built for exceptional inference speed per watt, making it optimal for laptop battery life.
+* **High-Fidelity `Q8_0` Precision**: Heavy 4-bit quantizations (`Q4_K_M`) degrade summarization nuance and can cause hallucinations in complex documents. `Q8_0` maintains near-lossless reasoning fidelity while comfortably fitting into unified memory.
+* **Context Scaling Without Degraded Quality**: Gemma 4 supports up to 128k context windows natively.
+* **Zero-Drift Native Tokenization**: `srz` queries the server's native `/tokenize` endpoint, completely eliminating tokenizer drift between client chunking and server execution.
+
+---
+
+## 3. Basic Usage Examples
 
 ### Summarize a Webpage or Article
 Pass any URL directly. `srz` extracts clean text using Mozilla Readability, stripping ads and sidebars:

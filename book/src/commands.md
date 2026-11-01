@@ -205,6 +205,13 @@ Running `srz doctor` automatically profiles host memory and queries server prope
 * **Server Capabilities**: Probes server `n_ctx` (context length) and `total_slots` (concurrency capacity) from `llama.cpp` (`/props`) or `Ollama` (`/api/show`).
 * **Sub-Optimal Context Alerts**: Warns if server context window is configured below 8,192 tokens or concurrency slots are bottlenecked.
 
+| Host Memory | Recommended Model | Precision | Context Window (`n_ctx`) | Total RAM Footprint | Launch Command |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **8 GB RAM** | `gemma-4-E4B-it` | `Q8_0` | **8,192** (8k) | ~5.0 GB | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 8192 --port 9931` |
+| **16 GB RAM** | `gemma-4-E4B-it` | `Q8_0` | **32,768** (32k) | ~6.5 GB | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 32768 --port 9931` |
+| **24–36 GB RAM** | `gemma-4-E4B-it` | `Q8_0` | **65,536** (64k) | ~8.5 GB | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 65536 --port 9931` |
+| **64+ GB RAM** | `gemma-4-26B-it` | `Q8_0` | **131,072** (128k) | ~28–32 GB | `llama-server -m gemma-4-26B-it-Q8_0.gguf -c 131072 --port 9931` |
+
 ---
 
 ## 10. Self Updates & Shell Completions

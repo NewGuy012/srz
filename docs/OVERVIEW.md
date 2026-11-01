@@ -106,7 +106,47 @@ flowchart TD
 | | `srz completions <SHELL>` | Generates autocomplete scripts for bash, zsh, fish, powershell, and elvish. |
 
 
-## 3. Request & Execution Sequence
+## 3. Recommended Models & Context Length by Hardware
+
+To make choosing a local model effortless before running any summarization, `srz` includes automated hardware profiling and an advisory matrix.
+
+### One-Command Auto-Advisor: `srz doctor`
+
+You can run `srz doctor` at any time to automatically inspect your host hardware and receive an optimal configuration:
+
+```bash
+srz doctor
+```
+
+```text
+=== srz System & LLM Health Diagnostics ===
+
+Hardware Profile & Recommendations:
+  • Host Device: Apple M-Series (24.0 GB RAM / 24–36 GB Tier (High-End Pro / Max Laptop))
+  • Recommended Family: Google Gemma 4 (High fidelity Q8_0, laptop battery & memory optimized)
+  • Recommended Model: ggml-org/gemma-4-E4B-it-GGUF:Q8_0 (Q8_0)
+  • Recommended Context: 65536 tokens
+  • Recommended Command: llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 65536 --port 9931
+```
+
+### Hardware Tier Reference Matrix
+
+| Host RAM Tier | Typical Systems | Recommended Model | Precision | Context Window (`n_ctx`) | Total RAM Footprint | Recommended Launch Command |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **8 GB RAM** | M1/M2/M3 Air, Base 8GB Laptops | `gemma-4-E4B-it` | **`Q8_0`** | **8,192** (8k) | ~5.0 GB total | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 8192 --port 9931` |
+| **16 GB RAM** | M-series 16GB, Standard PC Laptops | `gemma-4-E4B-it` | **`Q8_0`** | **32,768** (32k) | ~6.5 GB total | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 32768 --port 9931` |
+| **24–36 GB RAM** | M Pro / Max (24–36GB), 32GB PCs | `gemma-4-E4B-it` | **`Q8_0`** | **65,536** (64k) | ~8.5 GB total | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 65536 --port 9931` |
+| **64+ GB RAM** | M Max / Studio (64GB+), Workstations | `gemma-4-26B-it` | **`Q8_0`** | **131,072** (128k) | ~28–32 GB total | `llama-server -m gemma-4-26B-it-Q8_0.gguf -c 131072 --port 9931` |
+
+### Why Google Gemma 4 (`Q8_0`) on Laptops?
+
+1. **State-of-the-Art Reasoning Density**: Google's Gemma 4 models offer exceptional summarization accuracy, structured output coherence, and instruction-following per parameter, outperforming earlier generation 7B/8B models while drawing less power.
+2. **High-Fidelity `Q8_0` Quantization**: Unlike aggressive 4-bit quantizations (`Q4_K_M`) which introduce loss of nuance, logical drift, and hallucination during long-form synthesis, 8-bit `Q8_0` preserves near FP16 precision with minimal memory overhead.
+3. **Deep Context Scaling**: Gemma 4 natively supports up to 128k context windows without positional degradation.
+4. **Zero-Drift Tokenizer**: `srz` queries the server's `/tokenize` endpoint directly, ensuring 0% token count discrepancies between client chunking and server KV cache limits.
+
+
+## 4. Request & Execution Sequence
 
 ```mermaid
 sequenceDiagram
@@ -147,7 +187,7 @@ sequenceDiagram
 ```
 
 
-## 4. Storage & Cache Architecture
+## 5. Storage & Cache Architecture
 
 All state is isolated under `~/.cache/srz/` (or `$XDG_CACHE_HOME/srz/`), unified via `Cache::default_cache_dir()`, enforced with `0700`/`0600` owner-only Unix permissions, completely bypassable via `--no-cache`, and safely maintainable via `srz cache`:
 
@@ -185,7 +225,7 @@ graph LR
 | **Library DuckDB (`srz.duckdb`)** | **Permanent (Not a cache)** | Explicit `--reset-db` only | Preserved across `srz cache clean`; normalized `history` + `library` schema, BM25 index, and chats. |
 
 
-## 5. Performance, Security & Architectural Optimizations
+## 6. Performance, Security & Architectural Optimizations
 
 `srz` is engineered from the ground up for instantaneous responsiveness, low memory overhead, and absolute local privacy.
 
