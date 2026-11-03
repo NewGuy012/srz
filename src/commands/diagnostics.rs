@@ -110,19 +110,7 @@ pub async fn handle_doctor(
 
     if as_json {
         let report = serde_json::json!({
-            "hardware": {
-                "device": hw.chip_name,
-                "total_memory_bytes": hw.total_memory_bytes,
-                "total_memory_gb": hw.total_memory_gb,
-                "tier": hw.tier.display_name(),
-                "recommended_family": "Gemma 4",
-                "recommended_model": hw.recommended_model,
-                "recommended_quant": hw.recommended_quant,
-                "recommended_context": hw.recommended_context,
-                "recommended_launch_command": hw.recommended_launch_command,
-                "ollama_launch_command": hw.ollama_launch_command,
-                "ram_footprint": hw.ram_footprint,
-            },
+            "hardware": hw.to_json_value(),
             "llm": {
                 "endpoint": args.base_url,
                 "reachable": endpoint_ok,
@@ -175,14 +163,21 @@ pub async fn handle_doctor(
         "  • Recommended Family: Google Gemma 4 (High fidelity Q8_0, laptop battery & memory optimized)"
     );
     println!(
-        "  • Recommended Model: {} ({})",
-        hw.recommended_model, hw.recommended_quant
+        "  • Recommended Model: {} [{} {}]",
+        hw.recommended_model, hw.recommended_size, hw.recommended_quant
     );
     println!(
-        "  • Recommended Context: {} tokens ({})",
-        hw.recommended_context, hw.ram_footprint
+        "  • Recommended Context: {} ({} tokens, {})",
+        hw.recommended_context_display, hw.recommended_context, hw.ram_footprint
     );
-    println!("  • Recommended Command: {}", hw.recommended_launch_command);
+    println!(
+        "  • Llama GUI Setup:     Select {} | {} | {} | {} in Llama app",
+        hw.recommended_model,
+        hw.recommended_size,
+        hw.recommended_quant,
+        hw.recommended_context_display
+    );
+    println!("  • llama.cpp Command:   {}", hw.recommended_launch_command);
     println!("  • Ollama Command:      {}", hw.ollama_launch_command);
     println!();
 
@@ -216,7 +211,11 @@ pub async fn handle_doctor(
             }
         }
         if let Some(caps) = &server_caps {
-            println!("  ✓ Context Window (n_ctx): {} tokens", caps.n_ctx);
+            let ctx_label = crate::system::hardware::format_context_tokens(caps.n_ctx);
+            println!(
+                "  ✓ Context Window (n_ctx): {} tokens ({})",
+                caps.n_ctx, ctx_label
+            );
             println!(
                 "  ✓ Server Concurrency (total_slots): {} slot(s)",
                 caps.total_slots
@@ -236,8 +235,13 @@ pub async fn handle_doctor(
                 );
             } else {
                 println!(
-                    "  ! Optimization Status: SUBOPTIMAL (Server context is {} vs {} recommended for your machine; run: {})",
-                    caps.n_ctx, hw.recommended_context, hw.recommended_launch_command
+                    "  ! Optimization Status: SUBOPTIMAL (Server context is {} [{}] vs {} [{}] recommended for your machine; set {} in Llama GUI or run: {})",
+                    caps.n_ctx,
+                    ctx_label,
+                    hw.recommended_context,
+                    hw.recommended_context_display,
+                    hw.recommended_context_display,
+                    hw.recommended_launch_command
                 );
             }
         }
@@ -306,6 +310,15 @@ pub async fn handle_doctor(
     Ok(())
 }
 
+fn print_host_device_info(hw: &crate::system::hardware::HardwareProfile) {
+    println!("  • Device: {}", hw.chip_name);
+    println!(
+        "  • Memory: {:.1} GB RAM ({})",
+        hw.total_memory_gb,
+        hw.tier.display_name()
+    );
+}
+
 /// Handles the `srz recommend` subcommand, outputting recommended model, context window,
 /// and ready launch commands based on detected host memory and hardware architecture.
 pub fn handle_recommend(as_json: bool) -> Result<()> {
@@ -324,12 +337,15 @@ pub fn handle_recommend(as_json: bool) -> Result<()> {
             "recommendations": {
                 "family": "Google Gemma 4",
                 "model": hw.recommended_model,
+                "size": hw.recommended_size,
                 "quantization": hw.recommended_quant,
                 "context_window": hw.recommended_context,
+                "context_display": hw.recommended_context_display,
                 "ram_footprint": hw.ram_footprint,
                 "one_pass_token_ceiling": one_pass_tokens,
             },
             "launch_commands": {
+                "llama_gui": format!("In Llama GUI, select: {}", hw.llama_gui_selection()),
                 "llama_server": hw.recommended_launch_command,
                 "ollama": hw.ollama_launch_command,
             }
@@ -341,28 +357,26 @@ pub fn handle_recommend(as_json: bool) -> Result<()> {
     Ui::header("srz Recommended Model & Context Length");
 
     println!("Host Machine:");
-    println!("  • Device: {}", hw.chip_name);
+    print_host_device_info(&hw);
+    println!();
+
+    println!("Recommended Local LLM Setup (Llama GUI / llama.cpp):");
+    println!("  • Model:   {}", hw.recommended_model);
+    println!("  • Size:    {}", hw.recommended_size);
+    println!("  • Quant:   {}", hw.recommended_quant);
     println!(
-        "  • Memory: {:.1} GB RAM ({})",
-        hw.total_memory_gb,
-        hw.tier.display_name()
+        "  • Context: {} ({} tokens, {})",
+        hw.recommended_context_display, hw.recommended_context, hw.ram_footprint
     );
     println!();
 
-    println!("Recommended Local LLM Setup:");
-    println!("  • Family:  Google Gemma 4 (High-fidelity Q8_0, laptop battery & memory optimized)");
+    println!("How to Load in Your Runner:");
+    println!("  • Llama GUI (Llama-macOS / Llama-Windows - localhost:9931):");
     println!(
-        "  • Model:   {} ({})",
-        hw.recommended_model, hw.recommended_quant
+        "      Open Llama GUI and select/download:\n      {}",
+        hw.llama_gui_selection()
     );
-    println!(
-        "  • Context: {} tokens ({})",
-        hw.recommended_context, hw.ram_footprint
-    );
-    println!();
-
-    println!("Ready-to-Run Launch Commands:");
-    println!("  • llama.cpp / Llama-macOS / Llama-Windows (default port 9931):");
+    println!("  • llama.cpp CLI (headless llama-server):");
     println!("      {}", hw.recommended_launch_command);
     println!("  • Ollama:");
     println!("      {}", hw.ollama_launch_command);
@@ -380,7 +394,10 @@ pub fn handle_recommend(as_json: bool) -> Result<()> {
     println!();
 
     println!("Next Steps:");
-    println!("  1. Start your local LLM runner using one of the commands above.");
+    println!(
+        "  1. In Llama GUI, select {} ({}), or start your local LLM using a command above.",
+        hw.recommended_model, hw.recommended_context_display
+    );
     println!("  2. Run `srz config init` to generate a config tailored to your machine.");
     println!("  3. Summarize any target: srz \"<URL, file, or book>\"");
     println!();

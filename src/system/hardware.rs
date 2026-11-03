@@ -45,8 +45,10 @@ pub struct HardwareProfile {
     pub chip_name: String,
     pub tier: HardwareTier,
     pub recommended_model: &'static str,
+    pub recommended_size: &'static str,
     pub recommended_quant: &'static str,
     pub recommended_context: usize,
+    pub recommended_context_display: &'static str,
     pub recommended_launch_command: String,
     pub ollama_launch_command: String,
     pub ram_footprint: &'static str,
@@ -66,41 +68,51 @@ impl HardwareProfile {
 
         let (
             recommended_model,
+            recommended_size,
             recommended_quant,
             recommended_context,
+            recommended_context_display,
             model_file,
             ollama_model,
             ram_footprint,
         ) = match tier {
             HardwareTier::Tier8GB => (
-                "ggml-org/gemma-4-E4B-it-GGUF:Q8_0",
+                "gemma-4",
+                "E4B",
                 "Q8_0",
                 8_192,
+                "8k ctx",
                 "gemma-4-E4B-it-Q8_0.gguf",
                 "gemma2:9b",
                 "~5.0 GB total",
             ),
             HardwareTier::Tier16GB => (
-                "ggml-org/gemma-4-E4B-it-GGUF:Q8_0",
+                "gemma-4",
+                "E4B",
                 "Q8_0",
                 32_768,
+                "32k ctx",
                 "gemma-4-E4B-it-Q8_0.gguf",
                 "gemma2:9b",
                 "~6.5 GB total",
             ),
             HardwareTier::Tier32GB => (
-                "ggml-org/gemma-4-E4B-it-GGUF:Q8_0",
+                "gemma-4",
+                "E4B",
                 "Q8_0",
                 65_536,
+                "64k ctx",
                 "gemma-4-E4B-it-Q8_0.gguf",
                 "gemma2:9b",
                 "~8.5 GB total",
             ),
             HardwareTier::Tier64GBPlus => (
-                "ggml-org/gemma-4-26B-it-GGUF:Q8_0",
+                "gemma-4",
+                "26B-A4B",
                 "Q8_0",
                 131_072,
-                "gemma-4-26B-it-Q8_0.gguf",
+                "128k ctx",
+                "gemma-4-26B-A4B-it-Q8_0.gguf",
                 "gemma2:27b",
                 "~28–32 GB total",
             ),
@@ -121,17 +133,74 @@ impl HardwareProfile {
             chip_name,
             tier,
             recommended_model,
+            recommended_size,
             recommended_quant,
             recommended_context,
+            recommended_context_display,
             recommended_launch_command,
             ollama_launch_command,
             ram_footprint,
         }
     }
 
+    /// Formatted selection string matching the simplified naming in Llama GUI (e.g. `gemma-4 | E4B | Q8_0 | 32k ctx`).
+    pub fn llama_gui_selection(&self) -> String {
+        format!(
+            "{}  |  {}  |  {}  |  {}",
+            self.recommended_model,
+            self.recommended_size,
+            self.recommended_quant,
+            self.recommended_context_display
+        )
+    }
+
+    /// Formatted badge string matching Llama GUI (e.g. `gemma-4 [E4B] [Q8_0] (32k ctx)`).
+    pub fn llama_gui_badge_summary(&self) -> String {
+        format!(
+            "{} [{}] [{}] ({})",
+            self.recommended_model,
+            self.recommended_size,
+            self.recommended_quant,
+            self.recommended_context_display
+        )
+    }
+
     /// Returns the approximate single-pass token ceiling (~70% of context window) before chunking kicks in.
     pub fn one_pass_token_ceiling(&self) -> usize {
         self.recommended_context * 7 / 10
+    }
+
+    /// Serializes the hardware profile into a structured JSON representation for diagnostics and recommendations.
+    pub fn to_json_value(&self) -> serde_json::Value {
+        serde_json::json!({
+            "device": self.chip_name,
+            "total_memory_bytes": self.total_memory_bytes,
+            "total_memory_gb": self.total_memory_gb,
+            "tier": self.tier.display_name(),
+            "recommended_family": "Gemma 4",
+            "recommended_model": self.recommended_model,
+            "recommended_size": self.recommended_size,
+            "recommended_quant": self.recommended_quant,
+            "recommended_context": self.recommended_context,
+            "recommended_context_display": self.recommended_context_display,
+            "recommended_launch_command": self.recommended_launch_command,
+            "ollama_launch_command": self.ollama_launch_command,
+            "ram_footprint": self.ram_footprint,
+            "one_pass_token_ceiling": self.one_pass_token_ceiling(),
+            "llama_gui_selection": self.llama_gui_selection(),
+        })
+    }
+}
+
+/// Formats a raw token context window (e.g. 32768) into a simplified label (e.g. "32k ctx")
+/// matching the Llama GUI display convention.
+pub fn format_context_tokens(tokens: usize) -> String {
+    if tokens >= 1024 && tokens.is_multiple_of(1024) {
+        format!("{}k ctx", tokens / 1024)
+    } else if tokens >= 1000 {
+        format!("{}k ctx", tokens / 1000)
+    } else {
+        format!("{} ctx", tokens)
     }
 }
 
@@ -246,8 +315,11 @@ mod tests {
     fn test_profile_from_specs() {
         let profile = HardwareProfile::from_specs(16 * 1024 * 1024 * 1024, "Apple M3".to_string());
         assert_eq!(profile.tier, HardwareTier::Tier16GB);
+        assert_eq!(profile.recommended_model, "gemma-4");
+        assert_eq!(profile.recommended_size, "E4B");
         assert_eq!(profile.recommended_quant, "Q8_0");
         assert_eq!(profile.recommended_context, 32_768);
+        assert_eq!(profile.recommended_context_display, "32k ctx");
         assert_eq!(profile.ram_footprint, "~6.5 GB total");
         assert!(profile.recommended_launch_command.contains("-c 32768"));
         assert!(profile.recommended_launch_command.contains("gemma-4-E4B"));
@@ -257,6 +329,41 @@ mod tests {
                 .contains("ollama run gemma2:9b --ctx-size 32768")
         );
         assert_eq!(profile.one_pass_token_ceiling(), 32_768 * 7 / 10);
+        assert_eq!(
+            profile.llama_gui_selection(),
+            "gemma-4  |  E4B  |  Q8_0  |  32k ctx"
+        );
+        assert_eq!(
+            profile.llama_gui_badge_summary(),
+            "gemma-4 [E4B] [Q8_0] (32k ctx)"
+        );
+    }
+
+    #[test]
+    fn test_profile_64gb_specs() {
+        let profile =
+            HardwareProfile::from_specs(64 * 1024 * 1024 * 1024, "Apple M3 Max".to_string());
+        assert_eq!(profile.tier, HardwareTier::Tier64GBPlus);
+        assert_eq!(profile.recommended_model, "gemma-4");
+        assert_eq!(profile.recommended_size, "26B-A4B");
+        assert_eq!(profile.recommended_quant, "Q8_0");
+        assert_eq!(profile.recommended_context, 131_072);
+        assert_eq!(profile.recommended_context_display, "128k ctx");
+        assert!(profile.recommended_launch_command.contains("26B-A4B"));
+        assert_eq!(
+            profile.llama_gui_selection(),
+            "gemma-4  |  26B-A4B  |  Q8_0  |  128k ctx"
+        );
+    }
+
+    #[test]
+    fn test_format_context_tokens() {
+        assert_eq!(format_context_tokens(8192), "8k ctx");
+        assert_eq!(format_context_tokens(32768), "32k ctx");
+        assert_eq!(format_context_tokens(65536), "64k ctx");
+        assert_eq!(format_context_tokens(131072), "128k ctx");
+        assert_eq!(format_context_tokens(4000), "4k ctx");
+        assert_eq!(format_context_tokens(512), "512 ctx");
     }
 
     #[test]

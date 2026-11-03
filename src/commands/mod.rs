@@ -191,13 +191,15 @@ pub fn handle_config(
                 let template = Config::template_for_hardware(&hw);
                 crate::fs_util::write_private_file(&default_path, template.as_bytes())?;
                 Ui::success(&format!(
-                    "Initialized config file tailored for your hardware ({:.1} GB RAM, {}k context) at {}",
+                    "Initialized config file tailored for your hardware ({:.1} GB RAM, {}) at {}",
                     hw.total_memory_gb,
-                    hw.recommended_context / 1024,
+                    hw.recommended_context_display,
                     default_path.display()
                 ));
                 Ui::info(&format!(
-                    "Ready launch command: {}",
+                    "Llama GUI: select {} ({}) | CLI: {}",
+                    hw.recommended_model,
+                    hw.recommended_context_display,
                     hw.recommended_launch_command
                 ));
             }

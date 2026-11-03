@@ -124,8 +124,10 @@ impl Config {
             r#"# srz (Summarize) configuration file
 # Default path: ~/.config/srz/config.toml
 # Tailored for host: {} ({:.1} GB RAM / {})
+# Recommended local setup: {}
 
-# Default local LLM endpoint (e.g. Llama-macOS, Llama-Windows, llama.cpp, Ollama)
+# Default local LLM endpoint (Llama-macOS, Llama-Windows, llama.cpp, Ollama)
+# Connects automatically with Llama GUI running on localhost:9931
 base_url = "http://localhost:9931/v1"
 model = "{}"
 context_window = {}
@@ -179,6 +181,7 @@ max_tokens = 8192
             hw.chip_name,
             hw.total_memory_gb,
             hw.tier.display_name(),
+            hw.llama_gui_selection(),
             hw.recommended_model,
             hw.recommended_context,
             hw.recommended_model,

@@ -275,10 +275,15 @@ fn print_execution_error(err: &anyhow::Error) {
         println!();
         Ui::info("💡 Quick Start: Your local LLM backend is not reachable.");
         Ui::info(&format!(
-            "Based on your machine ({:.1} GB RAM detected), start your server with:",
+            "Based on your machine ({:.1} GB RAM detected):",
             hw.total_memory_gb
         ));
-        println!("  \x1b[1;32m{}\x1b[0m", hw.recommended_launch_command);
+        Ui::info(&format!(
+            "  • In Llama GUI (localhost:9931): Load {} ({})",
+            hw.recommended_model, hw.recommended_context_display
+        ));
+        Ui::info("  • Or start llama-server CLI:");
+        println!("    \x1b[1;32m{}\x1b[0m", hw.recommended_launch_command);
         Ui::info(
             "Or run `srz recommend` to view alternative models, Ollama commands, and profiles.\n",
         );
