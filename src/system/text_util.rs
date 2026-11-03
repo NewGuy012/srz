@@ -26,6 +26,21 @@ pub fn contains_ascii_case_insensitive(haystack: &str, lowercase_needle: &str) -
     lowercase_needle.is_empty() || find_ascii_case_insensitive(haystack, lowercase_needle).is_some()
 }
 
+/// Zero-allocation case-insensitive ASCII suffix check (`lowercase_suffix` must already be lowercase ASCII).
+pub fn ends_with_ascii_case_insensitive(haystack: &str, lowercase_suffix: &str) -> bool {
+    let h_bytes = haystack.as_bytes();
+    let s_bytes = lowercase_suffix.as_bytes();
+    if h_bytes.len() < s_bytes.len() {
+        return false;
+    }
+    h_bytes[h_bytes.len() - s_bytes.len()..].eq_ignore_ascii_case(s_bytes)
+}
+
+/// Returns `true` if the string starts with `"http://"` or `"https://"`.
+pub fn is_http_url(s: &str) -> bool {
+    s.starts_with("http://") || s.starts_with("https://")
+}
+
 /// Formats a byte slice into a lowercase hexadecimal string in a single allocation.
 pub fn format_hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
@@ -64,6 +79,19 @@ mod tests {
         assert_eq!(find_ascii_case_insensitive("Hello", "xyz"), None);
         assert!(contains_ascii_case_insensitive("Hello World", "world"));
         assert!(!contains_ascii_case_insensitive("Hello World", "xyz"));
+        assert!(ends_with_ascii_case_insensitive("test.RSS", ".rss"));
+        assert!(ends_with_ascii_case_insensitive("test.rss", ".RSS"));
+        assert!(!ends_with_ascii_case_insensitive("test.xml", ".rss"));
+        assert!(!ends_with_ascii_case_insensitive("rss", ".rss"));
+    }
+
+    #[test]
+    fn test_is_http_url() {
+        assert!(is_http_url("http://example.com"));
+        assert!(is_http_url("https://example.com/feed"));
+        assert!(!is_http_url("ftp://example.com"));
+        assert!(!is_http_url("example.com"));
+        assert!(!is_http_url("/path/to/file"));
     }
 
     #[test]

@@ -81,7 +81,7 @@ pub struct ParsedPlayerData {
 /// Checks if a URL is a YouTube video link and returns its 11-character video ID.
 pub fn extract_youtube_video_id(url: &str) -> Option<&str> {
     let trimmed = url.trim();
-    if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+    if !crate::system::text_util::is_http_url(trimmed) {
         return None;
     }
 

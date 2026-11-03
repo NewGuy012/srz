@@ -484,7 +484,7 @@ impl Cli {
             let trimmed = target.trim();
             if trimmed == "-" {
                 Ok(ResolvedAction::Stdin)
-            } else if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+            } else if crate::system::text_util::is_http_url(trimmed) {
                 if is_feed_url(trimmed) {
                     Ok(ResolvedAction::News {
                         topic: trimmed.to_string(),
@@ -575,7 +575,7 @@ impl Cli {
 }
 
 pub fn is_file_like(s: &str) -> bool {
-    if s.starts_with("http://") || s.starts_with("https://") {
+    if crate::system::text_util::is_http_url(s) {
         return false;
     }
     let path = std::path::Path::new(s);
@@ -592,11 +592,12 @@ pub fn is_file_like(s: &str) -> bool {
         return true;
     }
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        let lower = ext.to_ascii_lowercase();
-        matches!(
-            lower.as_str(),
-            "pdf" | "md" | "markdown" | "txt" | "text" | "html" | "htm" | "epub" | "json"
-        )
+        const FILE_LIKE_EXTS: &[&str] = &[
+            "pdf", "md", "markdown", "txt", "text", "html", "htm", "epub", "json",
+        ];
+        FILE_LIKE_EXTS
+            .iter()
+            .any(|&target| ext.eq_ignore_ascii_case(target))
     } else {
         false
     }
@@ -605,7 +606,7 @@ pub fn is_file_like(s: &str) -> bool {
 /// Returns `true` if `url` is an HTTP(S) syndication feed URL (RSS, Atom, or JSON Feed).
 pub fn is_feed_url(url: &str) -> bool {
     let trimmed = url.trim();
-    if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+    if !crate::system::text_util::is_http_url(trimmed) {
         return false;
     }
     let without_fragment = trimmed.split('#').next().unwrap_or(trimmed);
@@ -613,27 +614,30 @@ pub fn is_feed_url(url: &str) -> bool {
         Some((p, q)) => (p, Some(q)),
         None => (without_fragment, None),
     };
-    let lower_path = path_part.trim_end_matches('/').to_ascii_lowercase();
-    if lower_path.ends_with(".rss")
-        || lower_path.ends_with(".atom")
-        || lower_path.ends_with("/rss")
-        || lower_path.ends_with("/feed")
-        || lower_path.ends_with("/atom")
-        || lower_path.ends_with("/feed.xml")
-        || lower_path.ends_with("/rss.xml")
-        || lower_path.ends_with("/atom.xml")
-        || lower_path.ends_with("/index.xml")
-        || lower_path.ends_with("/feed.json")
-        || lower_path.contains("/rss/")
+    let trimmed_path = path_part.trim_end_matches('/');
+    const FEED_SUFFIXES: &[&str] = &[
+        ".rss",
+        ".atom",
+        "/rss",
+        "/feed",
+        "/atom",
+        "/feed.xml",
+        "/rss.xml",
+        "/atom.xml",
+        "/index.xml",
+        "/feed.json",
+    ];
+    if FEED_SUFFIXES.iter().any(|&suffix| {
+        crate::system::text_util::ends_with_ascii_case_insensitive(trimmed_path, suffix)
+    }) || crate::system::text_util::contains_ascii_case_insensitive(trimmed_path, "/rss/")
     {
         return true;
     }
     if let Some(q) = query_part {
-        let lower_q = q.to_ascii_lowercase();
-        if lower_q.contains("format=rss")
-            || lower_q.contains("format=atom")
-            || lower_q.contains("output=rss")
-            || lower_q.contains("feed=rss")
+        const QUERY_PATTERNS: &[&str] = &["format=rss", "format=atom", "output=rss", "feed=rss"];
+        if QUERY_PATTERNS
+            .iter()
+            .any(|&pattern| crate::system::text_util::contains_ascii_case_insensitive(q, pattern))
         {
             return true;
         }

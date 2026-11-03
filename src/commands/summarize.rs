@@ -362,7 +362,7 @@ pub async fn handle_news(
     args: &Cli,
 ) -> Result<SummaryOutcome> {
     let news_client = crate::news::GoogleNewsClient::with_client(scraper.client().clone());
-    let is_direct_feed = topic.starts_with("http://") || topic.starts_with("https://");
+    let is_direct_feed = crate::system::text_util::is_http_url(topic);
 
     if is_direct_feed {
         Ui::info(&format!(

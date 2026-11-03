@@ -43,7 +43,7 @@ impl GoogleNewsClient {
         limit: usize,
     ) -> Result<Vec<NewsArticleItem>> {
         let trimmed = topic.trim();
-        let endpoint = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        let endpoint = if crate::system::text_util::is_http_url(trimmed) {
             trimmed.to_string()
         } else {
             let suffix = timeframe.as_google_query_suffix();
@@ -319,7 +319,7 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
                 .find(|l| !l.href.is_empty())
                 .map(|l| l.href)
                 .unwrap_or_else(|| {
-                    if entry.id.starts_with("http://") || entry.id.starts_with("https://") {
+                    if crate::system::text_util::is_http_url(&entry.id) {
                         entry.id
                     } else {
                         String::new()

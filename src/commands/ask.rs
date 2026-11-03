@@ -36,7 +36,7 @@ async fn resolve_document_context(
         let trimmed = target_str.trim();
 
         // 1. Web URL
-        if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        if crate::system::text_util::is_http_url(trimmed) {
             let page =
                 crate::commands::fetch_or_cache_page(trimmed, scraper, cache, "", "", "").await?;
             let title = page.title.unwrap_or_else(|| trimmed.to_string());
@@ -364,14 +364,17 @@ pub async fn handle_ask(
     } else {
         let (t, c) =
             resolve_document_context(target.as_deref(), scraper, cache, db.as_ref()).await?;
-        let t_type = if target.as_deref().is_some_and(|s| s.starts_with("http")) {
+        let t_type = if target
+            .as_deref()
+            .is_some_and(crate::system::text_util::is_http_url)
+        {
             "web".to_string()
         } else {
             "doc".to_string()
         };
         let t_url = target
             .as_deref()
-            .filter(|s| s.starts_with("http"))
+            .filter(|s| crate::system::text_util::is_http_url(s))
             .map(|s| s.to_string());
         (t, c, t_type, t_url)
     };
