@@ -325,32 +325,21 @@ impl Cache {
                              data TEXT NOT NULL,
                              cached_at TIMESTAMP NOT NULL DEFAULT current_timestamp
                          );
-                         ALTER TABLE cache_summaries ADD COLUMN IF NOT EXISTS data TEXT;
-                         CREATE TABLE IF NOT EXISTS cache_server_capabilities (
-                             endpoint VARCHAR PRIMARY KEY,
-                             model_id VARCHAR NOT NULL,
-                             n_ctx UBIGINT NOT NULL,
-                             total_slots UINTEGER NOT NULL DEFAULT 1,
-                             supports_tokenize BOOLEAN NOT NULL DEFAULT FALSE,
-                             tokenize_endpoint VARCHAR,
-                             backend_kind VARCHAR NOT NULL,
-                             cached_ms BIGINT NOT NULL DEFAULT 0
-                         );",
-                    );
-                } else {
-                    let _ = conn.execute_batch(
-                        "CREATE TABLE IF NOT EXISTS cache_server_capabilities (
-                             endpoint VARCHAR PRIMARY KEY,
-                             model_id VARCHAR NOT NULL,
-                             n_ctx UBIGINT NOT NULL,
-                             total_slots UINTEGER NOT NULL DEFAULT 1,
-                             supports_tokenize BOOLEAN NOT NULL DEFAULT FALSE,
-                             tokenize_endpoint VARCHAR,
-                             backend_kind VARCHAR NOT NULL,
-                             cached_ms BIGINT NOT NULL DEFAULT 0
-                         );",
+                         ALTER TABLE cache_summaries ADD COLUMN IF NOT EXISTS data TEXT;",
                     );
                 }
+                let _ = conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS cache_server_capabilities (
+                         endpoint VARCHAR PRIMARY KEY,
+                         model_id VARCHAR NOT NULL,
+                         n_ctx UBIGINT NOT NULL,
+                         total_slots UINTEGER NOT NULL DEFAULT 1,
+                         supports_tokenize BOOLEAN NOT NULL DEFAULT FALSE,
+                         tokenize_endpoint VARCHAR,
+                         backend_kind VARCHAR NOT NULL,
+                         cached_ms BIGINT NOT NULL DEFAULT 0
+                     );",
+                );
                 *guard = Some(conn);
             }
         }
@@ -1161,11 +1150,7 @@ impl Cache {
         {
             let now_ms = now_epoch_ms();
             let _ = conn.execute(
-                "DELETE FROM cache_server_capabilities WHERE endpoint = ?",
-                params![&caps.endpoint],
-            );
-            let _ = conn.execute(
-                "INSERT INTO cache_server_capabilities
+                "INSERT OR REPLACE INTO cache_server_capabilities
                  (endpoint, model_id, n_ctx, total_slots, supports_tokenize, tokenize_endpoint, backend_kind, cached_ms)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 params![

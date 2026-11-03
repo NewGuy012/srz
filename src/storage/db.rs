@@ -429,15 +429,7 @@ impl Database {
 
     /// Fetches a specific library item by its ID.
     pub fn get_library_item_by_id(&self, id: i64) -> Result<Option<LibraryItem>> {
-        let sql = "SELECT l.id, h.target_type, h.title, h.author, h.url, l.summary,
-                          h.style, h.model, h.word_count, h.prompt_tokens, h.completion_tokens,
-                          h.duration_ms, h.tokens_per_second,
-                          strftime(h.created_at, '%Y-%m-%d %H:%M')
-                   FROM library l
-                   JOIN history h ON l.id = h.id
-                   WHERE l.id = ?
-                   LIMIT 1";
-        let mut stmt = self.conn.prepare(sql)?;
+        let mut stmt = self.conn.prepare(SELECT_LIBRARY_ITEM_BY_ID_SQL)?;
         let mut rows = stmt.query_map(params![id], map_library_item_row)?;
         if let Some(row) = rows.next() {
             Ok(Some(row?))
@@ -923,15 +915,27 @@ const SELECT_HISTORY_SQL: &str = "SELECT id, target_type, title, author, url, st
      FROM history
      ORDER BY id DESC";
 
-const SELECT_LIBRARY_ITEMS_SQL: &str =
+const SELECT_LIBRARY_ITEMS_SQL: &str = concat!(
     "SELECT l.id, h.target_type, h.title, h.author, h.url, l.summary,
             coalesce(h.style, 'concise'), coalesce(h.model, 'unknown'),
             coalesce(h.word_count, 0), h.prompt_tokens, h.completion_tokens,
             coalesce(h.duration_ms, 0), h.tokens_per_second,
             strftime(h.created_at, '%Y-%m-%d %H:%M')
      FROM library l
-     JOIN history h ON l.id = h.id
-     ORDER BY l.id DESC";
+     JOIN history h ON l.id = h.id",
+    " ORDER BY l.id DESC"
+);
+
+const SELECT_LIBRARY_ITEM_BY_ID_SQL: &str = concat!(
+    "SELECT l.id, h.target_type, h.title, h.author, h.url, l.summary,
+            coalesce(h.style, 'concise'), coalesce(h.model, 'unknown'),
+            coalesce(h.word_count, 0), h.prompt_tokens, h.completion_tokens,
+            coalesce(h.duration_ms, 0), h.tokens_per_second,
+            strftime(h.created_at, '%Y-%m-%d %H:%M')
+     FROM library l
+     JOIN history h ON l.id = h.id",
+    " WHERE l.id = ? LIMIT 1"
+);
 
 fn map_library_item_row(row: &duckdb::Row<'_>) -> duckdb::Result<LibraryItem> {
     Ok(LibraryItem {

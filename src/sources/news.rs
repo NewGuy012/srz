@@ -264,8 +264,11 @@ fn clean_xml_text(raw: &str) -> String {
     decode_html_entities(trimmed).into_owned()
 }
 
-/// Extracts `<source>` values from `<item>` elements if present.
-fn extract_source_tags(xml: &str) -> Vec<String> {
+/// Extracts `<source>` values from `<item>` elements if present, bounded by `limit`.
+fn extract_source_tags(xml: &str, limit: usize) -> Vec<String> {
+    if limit == 0 {
+        return Vec::new();
+    }
     let mut sources = Vec::new();
     let mut cursor = 0;
     while let Some(rel_start) = find_ascii_case_insensitive(&xml[cursor..], "<source") {
@@ -276,6 +279,9 @@ fn extract_source_tags(xml: &str) -> Vec<String> {
                 let inner = xml[inner_start..inner_start + end_rel].trim();
                 if !inner.is_empty() {
                     sources.push(clean_xml_text(inner));
+                    if sources.len() >= limit {
+                        break;
+                    }
                 }
                 cursor = inner_start + end_rel + "</source>".len();
                 continue;
@@ -293,19 +299,30 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
     }
 
     let normalized_xml;
-    let xml_to_parse = if xml.contains("<rss") && !xml.contains("version=") {
-        normalized_xml = xml.replacen("<rss>", "<rss version=\"2.0\">", 1).replacen(
-            "<rss ",
-            "<rss version=\"2.0\" ",
-            1,
-        );
-        normalized_xml.as_str()
+    let xml_to_parse = if let Some(rss_pos) = find_ascii_case_insensitive(xml, "<rss") {
+        let tag_close = xml[rss_pos..].find('>').map(|i| rss_pos + i);
+        let rss_tag_has_version = tag_close.is_some_and(|end| {
+            crate::system::text_util::contains_ascii_case_insensitive(
+                &xml[rss_pos..end],
+                "version=",
+            )
+        });
+        if !rss_tag_has_version {
+            normalized_xml = xml.replacen("<rss>", "<rss version=\"2.0\">", 1).replacen(
+                "<rss ",
+                "<rss version=\"2.0\" ",
+                1,
+            );
+            normalized_xml.as_str()
+        } else {
+            xml
+        }
     } else {
         xml
     };
 
     let parsed_feed = feed_rs::parser::parse(xml_to_parse.as_bytes()).ok();
-    let source_tags = extract_source_tags(xml);
+    let source_tags = extract_source_tags(xml, limit);
 
     if let Some(feed) = parsed_feed {
         let mut items = Vec::new();
