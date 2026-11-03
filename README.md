@@ -110,11 +110,11 @@ cargo install --path .
 ## Usage
 
 ### 0. Recommend Model & Context Length for Your Hardware
-Before summarizing, run `srz recommend` (or `srz doctor`) to instantly inspect your host RAM/CPU and get the recommended model, optimal context window, and exact launch commands:
+Before summarizing, run `srz recommend` (or `srz doctor`) to instantly inspect your host RAM/CPU and get the recommended model, optimal context window, and exact setup instructions:
 ```bash
 srz recommend
 ```
-> 💡 **One-Command Decision**: Auto-detects whether your device has 8GB, 16GB, 24–36GB, or 64GB+ unified memory, steers towards high-fidelity Google Gemma 4 (`Q8_0`), selects the optimal context length (8k, 32k, 64k, or 128k), and prints ready-to-run startup commands for llama.cpp and Ollama!
+> 💡 **One-Command Decision**: Auto-detects whether your device has 8GB, 16GB, 24–36GB, or 64GB+ unified memory, steers towards high-fidelity Google Gemma 4 (`Q8_0`), selects the optimal context length (`8k ctx`, `32k ctx`, `64k ctx`, or `128k ctx`), and displays simplified selections for the Llama GUI as well as ready launch commands for llama.cpp CLI and Ollama!
 
 ### Summarize
 ```bash
@@ -175,11 +175,15 @@ Run `srz --help` to see all available subcommands and flags.
 `srz` connects to any OpenAI-compatible API. Local inference is preferred for privacy and zero cost, but cloud providers are fully supported.
 
 > 💡 **Not sure which model or context length to choose?**
-> Run `srz recommend` in your terminal. It instantly detects your machine's physical RAM, recommends the best high-fidelity Google Gemma 4 model (`Q8_0`), selects the optimal context length, and outputs ready launch commands for both `llama.cpp` and `Ollama`!
+> Run `srz recommend` in your terminal. It instantly detects your machine's physical RAM, recommends the best high-fidelity Google Gemma 4 model (`Q8_0`), selects the optimal context length (e.g. `32k ctx`), and outputs direct Llama GUI model cards and launch commands!
 
 ### Local LLMs (Preferred)
 
-- **macOS & Windows (Default)**: Install [Llama-macOS](https://github.com/ggml-org/Llama-macOS) (macOS) or [Llama-Windows](https://github.com/ggml-org/Llama-Windows) (Windows). Launch the app and load a model—`srz` connects automatically to `http://localhost:9931/v1` with zero setup.
+- **macOS & Windows (Default)**: Install [Llama-macOS](https://github.com/ggml-org/Llama-macOS) (macOS) or [Llama-Windows](https://github.com/ggml-org/Llama-Windows) (Windows). Launch the app and load the model—`srz` connects automatically to `http://localhost:9931/v1` with zero setup.
+  - In Llama GUI, simply select the simplified model card shown by `srz recommend`:
+    - Model: `gemma-4`
+    - Badges: `E4B` `Q8_0` (or `26B-A4B` `Q8_0` for 64GB+ workstations)
+    - Context: `32k ctx` (or `64k ctx` / `128k ctx`)
 - **Linux & llama.cpp**: Build or install [llama.cpp](https://github.com/ggml-org/llama.cpp) and launch `llama-server`:
   ```bash
   # Start llama-server on port 9931 with recommended Gemma 4 Q8_0 model:
@@ -213,10 +217,10 @@ srz "1984" --base-url "https://api.openai.com/v1" --model "gpt-4o-mini" --api-ke
 Run `srz config init` to generate a `~/.config/srz/config.toml` file pre-tailored to your computer's RAM, optimal model, and context window:
 
 ```toml
-# Default local model tailored for your hardware
+# Default local model tailored for your hardware (matches Llama GUI naming)
 base_url = "http://localhost:9931/v1"
-model = "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
-context_window = 32768
+model = "gemma-4"
+context_window = 32768  # 32k ctx in Llama GUI
 
 # Storage limits and retention policies
 [cache]

@@ -73,13 +73,17 @@ Host Machine:
   • Device: Apple M5 Pro
   • Memory: 24.0 GB RAM (24–36 GB Tier (High-End Pro / Max Laptop))
 
-Recommended Local LLM Setup:
-  • Family:  Google Gemma 4 (High-fidelity Q8_0, laptop battery & memory optimized)
-  • Model:   ggml-org/gemma-4-E4B-it-GGUF:Q8_0 (Q8_0)
-  • Context: 65536 tokens (~8.5 GB total)
+Recommended Local LLM Setup (Llama GUI / llama.cpp):
+  • Model:   gemma-4
+  • Size:    E4B
+  • Quant:   Q8_0
+  • Context: 64k ctx (65536 tokens, ~8.5 GB total)
 
-Ready-to-Run Launch Commands:
-  • llama.cpp / Llama-macOS / Llama-Windows (default port 9931):
+How to Load in Your Runner:
+  • Llama GUI (Llama-macOS / Llama-Windows - localhost:9931):
+      Open Llama GUI and select/download:
+      gemma-4  |  E4B  |  Q8_0  |  64k ctx
+  • llama.cpp CLI (headless llama-server):
       llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 65536 --port 9931
   • Ollama:
       ollama run gemma2:9b --ctx-size 65536
@@ -91,16 +95,16 @@ Summary Synthesis Speed:
 
 ### Hardware Tier Reference Matrix
 
-| Host Memory | Typical Devices | Recommended Model | Quantization | Context Window (`n_ctx`) | Approximate RAM Usage | llama.cpp Launch Command | Ollama Launch Command |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **8 GB RAM** | MacBook Air 8GB, Thin-and-light Laptops | `gemma-4-E4B-it` | **`Q8_0`** | **8,192** (8k) | ~5.0 GB total | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 8192 --port 9931` | `ollama run gemma2:9b --ctx-size 8192` |
-| **16 GB RAM** | MacBook Pro/Air 16GB, Standard PC Laptops | `gemma-4-E4B-it` | **`Q8_0`** | **32,768** (32k) | ~6.5 GB total | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 32768 --port 9931` | `ollama run gemma2:9b --ctx-size 32768` |
-| **24–36 GB RAM** | MacBook Pro M Pro / Max, 32GB PCs | `gemma-4-E4B-it` | **`Q8_0`** | **65,536** (64k) | ~8.5 GB total | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 65536 --port 9931` | `ollama run gemma2:9b --ctx-size 65536` |
-| **64+ GB RAM** | MacBook Pro M Max, Mac Studio, Workstations | `gemma-4-26B-it` | **`Q8_0`** | **131,072** (128k) | ~28–32 GB total | `llama-server -m gemma-4-26B-it-Q8_0.gguf -c 131072 --port 9931` | `ollama run gemma2:27b --ctx-size 131072` |
+| Host Memory | Typical Devices | Model Name | Size | Quantization | Context Window (`n_ctx`) | Approximate RAM Usage | Llama GUI Selection | llama.cpp Launch Command | Ollama Launch Command |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **8 GB RAM** | MacBook Air 8GB, Thin-and-light Laptops | `gemma-4` | `E4B` | **`Q8_0`** | **`8k ctx`** (8,192) | ~5.0 GB total | `gemma-4 \| E4B \| Q8_0 \| 8k ctx` | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 8192 --port 9931` | `ollama run gemma2:9b --ctx-size 8192` |
+| **16 GB RAM** | MacBook Pro/Air 16GB, Standard PC Laptops | `gemma-4` | `E4B` | **`Q8_0`** | **`32k ctx`** (32,768) | ~6.5 GB total | `gemma-4 \| E4B \| Q8_0 \| 32k ctx` | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 32768 --port 9931` | `ollama run gemma2:9b --ctx-size 32768` |
+| **24–36 GB RAM** | MacBook Pro M Pro / Max, 32GB PCs | `gemma-4` | `E4B` | **`Q8_0`** | **`64k ctx`** (65,536) | ~8.5 GB total | `gemma-4 \| E4B \| Q8_0 \| 64k ctx` | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 65536 --port 9931` | `ollama run gemma2:9b --ctx-size 65536` |
+| **64+ GB RAM** | MacBook Pro M Max, Mac Studio, Workstations | `gemma-4` | `26B-A4B` | **`Q8_0`** | **`128k ctx`** (131,072) | ~28–32 GB total | `gemma-4 \| 26B-A4B \| Q8_0 \| 128k ctx` | `llama-server -m gemma-4-26B-A4B-it-Q8_0.gguf -c 131072 --port 9931` | `ollama run gemma2:27b --ctx-size 131072` |
 
 ### Single-Pass vs. Map-Reduce Chunking
 
-- **1-Pass Mode**: When document token count $\le \sim 70\%$ of the configured server context window (`n_ctx`), `srz` synthesizes the document in one pass with complete cross-chapter coherence.
+- **1-Pass Mode**: When document token count \\(\le \sim 70\\%\\) of the configured server context window (`n_ctx`), `srz` synthesizes the document in one pass with complete cross-chapter coherence.
 - **Chunking Mode**: When documents exceed this threshold (e.g. 200+ page books or large document bundles on small context servers), `srz` automatically partitions the text into token-budgeted chunks, summarizes them in parallel up to the server's slot capacity (`total_slots`), and executes a final reduction pass.
 
 ### Why We Recommend Google Gemma 4 (`Q8_0`) for Laptops

@@ -177,8 +177,8 @@ srz find <QUERY>
 
 Executes a local Robertson-Sparck Jones BM25 search ranking across your entire DuckDB reading history without internet access.
 
-* $2.5\times$ title weight boost for matching terms.
-* Document length normalization ($k_1=1.2, b=0.75$).
+* \\(2.5\times\\) title weight boost for matching terms.
+* Document length normalization (\\(k_1=1.2, b=0.75\\)).
 * Extracts relevance-focused preview snippets centered around query terms.
 
 ---
@@ -245,18 +245,18 @@ srz models
 ### Hardware & LLM Advisor in `srz recommend` & `srz doctor`
 Running `srz recommend` or `srz doctor` automatically profiles host memory and suggests the optimal local configuration:
 * **Host Hardware Profile**: Displays detected host RAM (e.g. 24 GB RAM, `Tier32GB`) and CPU architecture.
-* **Hardware Steering Advisor**: Recommends high-fidelity Gemma 4 models (e.g., `ggml-org/gemma-4-E4B-it-GGUF:Q8_0` or `26B-A4B-it:Q8_0`) with the optimal context window for your RAM.
-* **Multi-Runner Commands**: Ready-to-copy launch commands for both `llama-server` and `Ollama`.
+* **Hardware Steering Advisor**: Recommends high-fidelity Gemma 4 models using simplified Llama GUI conventions (e.g. `gemma-4` with size `E4B` or `26B-A4B`, `Q8_0` quant) and optimal context lengths (`8k ctx`, `32k ctx`, `64k ctx`, `128k ctx`).
+* **Llama GUI Selections & CLI Commands**: Direct model card selections for the Llama GUI as well as ready-to-copy launch commands for `llama-server` and `Ollama`.
 * **Single-Pass Synthesis Ceiling**: Displays the token threshold (~70% of context window) before map-reduce chunking kicks in.
 * **Server Capabilities (`srz doctor`)**: Probes server `n_ctx` (context length) and `total_slots` (concurrency capacity) from `llama.cpp` (`/props`) or `Ollama` (`/api/show`).
 * **Sub-Optimal Context Alerts**: Warns if server context window is configured below 8,192 tokens or concurrency slots are bottlenecked.
 
-| Host Memory | Recommended Model | Precision | Context Window (`n_ctx`) | Total RAM Footprint | llama.cpp Launch Command | Ollama Launch Command |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **8 GB RAM** | `gemma-4-E4B-it` | `Q8_0` | **8,192** (8k) | ~5.0 GB | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 8192 --port 9931` | `ollama run gemma2:9b --ctx-size 8192` |
-| **16 GB RAM** | `gemma-4-E4B-it` | `Q8_0` | **32,768** (32k) | ~6.5 GB | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 32768 --port 9931` | `ollama run gemma2:9b --ctx-size 32768` |
-| **24–36 GB RAM** | `gemma-4-E4B-it` | `Q8_0` | **65,536** (64k) | ~8.5 GB | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 65536 --port 9931` | `ollama run gemma2:9b --ctx-size 65536` |
-| **64+ GB RAM** | `gemma-4-26B-it` | `Q8_0` | **131,072** (128k) | ~28–32 GB | `llama-server -m gemma-4-26B-it-Q8_0.gguf -c 131072 --port 9931` | `ollama run gemma2:27b --ctx-size 131072` |
+| Host Memory | Model Name | Size | Quantization | Context Window (`n_ctx`) | Total RAM Footprint | Llama GUI Selection | llama.cpp Launch Command | Ollama Launch Command |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **8 GB RAM** | `gemma-4` | `E4B` | `Q8_0` | **`8k ctx`** (8,192) | ~5.0 GB | `gemma-4 \| E4B \| Q8_0 \| 8k ctx` | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 8192 --port 9931` | `ollama run gemma2:9b --ctx-size 8192` |
+| **16 GB RAM** | `gemma-4` | `E4B` | `Q8_0` | **`32k ctx`** (32,768) | ~6.5 GB | `gemma-4 \| E4B \| Q8_0 \| 32k ctx` | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 32768 --port 9931` | `ollama run gemma2:9b --ctx-size 32768` |
+| **24–36 GB RAM** | `gemma-4` | `E4B` | `Q8_0` | **`64k ctx`** (65,536) | ~8.5 GB | `gemma-4 \| E4B \| Q8_0 \| 64k ctx` | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 65536 --port 9931` | `ollama run gemma2:9b --ctx-size 65536` |
+| **64+ GB RAM** | `gemma-4` | `26B-A4B` | `Q8_0` | **`128k ctx`** (131,072) | ~28–32 GB | `gemma-4 \| 26B-A4B \| Q8_0 \| 128k ctx` | `llama-server -m gemma-4-26B-A4B-it-Q8_0.gguf -c 131072 --port 9931` | `ollama run gemma2:27b --ctx-size 131072` |
 
 ---
 
