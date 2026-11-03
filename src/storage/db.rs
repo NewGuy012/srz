@@ -148,17 +148,15 @@ impl LibraryItem {
             return true;
         }
         if q.is_ascii() {
-            crate::search::contains_ascii_case_insensitive(&self.title, q)
-                || crate::search::contains_ascii_case_insensitive(&self.target_type, q)
-                || self
-                    .author
-                    .as_deref()
-                    .is_some_and(|a| crate::search::contains_ascii_case_insensitive(a, q))
-                || self
-                    .url
-                    .as_deref()
-                    .is_some_and(|u| crate::search::contains_ascii_case_insensitive(u, q))
-                || crate::search::contains_ascii_case_insensitive(&self.summary, q)
+            crate::system::text_util::contains_ascii_case_insensitive(&self.title, q)
+                || crate::system::text_util::contains_ascii_case_insensitive(&self.target_type, q)
+                || self.author.as_deref().is_some_and(|a| {
+                    crate::system::text_util::contains_ascii_case_insensitive(a, q)
+                })
+                || self.url.as_deref().is_some_and(|u| {
+                    crate::system::text_util::contains_ascii_case_insensitive(u, q)
+                })
+                || crate::system::text_util::contains_ascii_case_insensitive(&self.summary, q)
         } else {
             let q_lower = q.to_lowercase();
             let matches_field = |field: &str| -> bool {
@@ -1004,14 +1002,16 @@ fn map_search_result_row(
 /// Uses UTF-8 character boundaries to prevent indexing panics on multi-byte characters.
 #[allow(clippy::incompatible_msrv)]
 fn extract_snippet(text: &str, query: &str, terms: &[String]) -> String {
-    let match_pos = crate::search::find_ascii_case_insensitive(text, query).or_else(|| {
-        for term in terms {
-            if let Some(pos) = crate::search::find_ascii_case_insensitive(text, term) {
-                return Some(pos);
+    let match_pos =
+        crate::system::text_util::find_ascii_case_insensitive(text, query).or_else(|| {
+            for term in terms {
+                if let Some(pos) = crate::system::text_util::find_ascii_case_insensitive(text, term)
+                {
+                    return Some(pos);
+                }
             }
-        }
-        None
-    });
+            None
+        });
 
     let (start, end) = if let Some(pos) = match_pos {
         let raw_start = pos.saturating_sub(60);

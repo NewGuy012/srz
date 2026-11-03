@@ -250,7 +250,7 @@ impl GoogleNewsClient {
     }
 }
 
-pub use crate::system::text_util::{decode_html_entities, find_ascii_case_insensitive};
+use crate::system::text_util::{decode_html_entities, find_ascii_case_insensitive};
 
 /// Cleans CDATA wrappers and decodes HTML entities from an XML element's inner text.
 fn clean_xml_text(raw: &str) -> String {

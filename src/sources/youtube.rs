@@ -193,7 +193,7 @@ pub fn format_timestamp(seconds: u64) -> String {
     }
 }
 
-pub use crate::system::text_util::decode_html_entities;
+use crate::system::text_util::decode_html_entities;
 
 struct TimedTranscriptBuilder {
     result: String,

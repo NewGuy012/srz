@@ -540,7 +540,7 @@ pub async fn handle_ask(
     Ok(())
 }
 
-const MAX_ASK_HISTORY_TURNS: usize = 10;
+const MAX_ASK_HISTORY_TURNS: usize = 20;
 
 /// Constructs chat completion request messages, prepending grounded context to the first prompt
 /// and formatting prior turns for context-aware multi-turn Q&A.
@@ -613,8 +613,8 @@ async fn ask_turn(
         history_tokens += turn_tokens;
         start_idx = i;
     }
-    if history.len().saturating_sub(start_idx) > MAX_ASK_HISTORY_TURNS.max(20) {
-        start_idx = history.len() - MAX_ASK_HISTORY_TURNS.max(20);
+    if history.len().saturating_sub(start_idx) > MAX_ASK_HISTORY_TURNS {
+        start_idx = history.len() - MAX_ASK_HISTORY_TURNS;
     }
     let history_slice = &history[start_idx..];
 

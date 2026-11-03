@@ -118,10 +118,6 @@ struct ModelsListResponse {
 /// leaving ample headroom for up to 8,192 completion tokens (thinking + summary).
 pub const MAX_CONTEXT_TOKENS: usize = 16_000;
 
-/// Maximum tokens per chunk when map-reducing extra-long documents.
-pub const CHUNK_MAX_TOKENS: usize = 12_000;
-pub const CHUNK_OVERLAP_TOKENS: usize = 800;
-
 /// Maximum words of grounded reference context for legacy word-based boundaries.
 pub const MAX_CONTEXT_WORDS: usize = 12_000;
 
@@ -408,23 +404,31 @@ impl LlmClient {
         &self.model
     }
 
-    async fn send_root_request(
+    fn strip_v1(base: &str) -> &str {
+        let clean = base.trim_end_matches('/');
+        clean.strip_suffix("/v1").unwrap_or(clean)
+    }
+
+    async fn send_with_retry(
         &self,
+        primary_base: &str,
         path: &str,
+        is_root: bool,
         build_req: impl Fn(&reqwest::Client, String) -> reqwest::RequestBuilder,
     ) -> Result<reqwest::Response, reqwest::Error> {
-        let base_clean = self.base_url.trim_end_matches('/');
-        let primary_root = base_clean.strip_suffix("/v1").unwrap_or(base_clean);
-        let mut response = build_req(&self.client, format!("{}{}", primary_root, path))
+        let mut response = build_req(&self.client, format!("{}{}", primary_base, path))
             .send()
             .await;
 
         if response.is_err()
             && let Some(alt_base) = &self.fallback_base_url
         {
-            let alt_clean = alt_base.trim_end_matches('/');
-            let alt_root = alt_clean.strip_suffix("/v1").unwrap_or(alt_clean);
-            if let Ok(alt_resp) = build_req(&self.client, format!("{}{}", alt_root, path))
+            let alt_target = if is_root {
+                Self::strip_v1(alt_base)
+            } else {
+                alt_base.as_str()
+            };
+            if let Ok(alt_resp) = build_req(&self.client, format!("{}{}", alt_target, path))
                 .send()
                 .await
             {
@@ -432,6 +436,25 @@ impl LlmClient {
             }
         }
         response
+    }
+
+    async fn send_root_request(
+        &self,
+        path: &str,
+        build_req: impl Fn(&reqwest::Client, String) -> reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response, reqwest::Error> {
+        let primary_root = Self::strip_v1(&self.base_url);
+        self.send_with_retry(primary_root, path, true, build_req)
+            .await
+    }
+
+    async fn probe_tokenize_endpoint(&self, endpoint: &str, body: serde_json::Value) -> bool {
+        self.send_root_request(endpoint, |c, u| {
+            c.post(u).json(&body).timeout(Duration::from_millis(1500))
+        })
+        .await
+        .map(|resp| resp.status().is_success())
+        .unwrap_or(false)
     }
 
     /// Extracts operational capabilities from the backend server (context window, total slots, native tokenizer).
@@ -467,14 +490,9 @@ impl LlmClient {
             }
 
             // Probe POST /tokenize on llama.cpp
-            if let Ok(tok_resp) = self
-                .send_root_request("/tokenize", |c, u| {
-                    c.post(u)
-                        .json(&serde_json::json!({ "content": "test" }))
-                        .timeout(Duration::from_millis(1500))
-                })
+            if self
+                .probe_tokenize_endpoint("/tokenize", serde_json::json!({ "content": "test" }))
                 .await
-                && tok_resp.status().is_success()
             {
                 caps.supports_tokenize = true;
                 caps.tokenize_endpoint = Some("/tokenize".to_string());
@@ -512,14 +530,12 @@ impl LlmClient {
             }
 
             // Probe POST /api/tokenize on Ollama
-            if let Ok(tok_resp) = self
-                .send_root_request("/api/tokenize", |c, u| {
-                    c.post(u)
-                        .json(&serde_json::json!({ "model": &self.model, "prompt": "test" }))
-                        .timeout(Duration::from_millis(1500))
-                })
+            if self
+                .probe_tokenize_endpoint(
+                    "/api/tokenize",
+                    serde_json::json!({ "model": &self.model, "prompt": "test" }),
+                )
                 .await
-                && tok_resp.status().is_success()
             {
                 caps.supports_tokenize = true;
                 caps.tokenize_endpoint = Some("/api/tokenize".to_string());
@@ -531,14 +547,9 @@ impl LlmClient {
         // 3. Fallback: query models list
         if let Ok(models) = self.list_models().await {
             caps.backend_kind = "openai-compatible".to_string();
-            if let Ok(tok_resp) = self
-                .send_root_request("/tokenize", |c, u| {
-                    c.post(u)
-                        .json(&serde_json::json!({ "content": "test" }))
-                        .timeout(Duration::from_millis(1500))
-                })
+            if self
+                .probe_tokenize_endpoint("/tokenize", serde_json::json!({ "content": "test" }))
                 .await
-                && tok_resp.status().is_success()
             {
                 caps.supports_tokenize = true;
                 caps.tokenize_endpoint = Some("/tokenize".to_string());
@@ -622,17 +633,9 @@ impl LlmClient {
         build_req: impl Fn(&reqwest::Client, String) -> reqwest::RequestBuilder,
     ) -> (String, Result<reqwest::Response, reqwest::Error>) {
         let primary_url = format!("{}{}", self.base_url, path);
-        let mut response = build_req(&self.client, primary_url.clone()).send().await;
-
-        if response.is_err()
-            && let Some(alt_base) = &self.fallback_base_url
-            && let Ok(alt_resp) = build_req(&self.client, format!("{alt_base}{path}"))
-                .send()
-                .await
-        {
-            response = Ok(alt_resp);
-        }
-
+        let response = self
+            .send_with_retry(&self.base_url, path, false, build_req)
+            .await;
         (primary_url, response)
     }
 
@@ -1343,13 +1346,14 @@ pub fn truncate_words_preserving_lines(text: &str, max_words: usize) -> Cow<'_, 
 
 /// Wraps untrusted source text inside XML tags (`<tag>...</tag>`), escaping closing tag delimiters
 /// and enforcing both word and BPE token limits while preserving line breaks.
-pub fn format_untrusted_section(tag: &str, content: &str, max_words: Option<usize>) -> String {
-    let word_bounded = match max_words {
+pub fn format_untrusted_section(tag: &str, content: &str, max_tokens: Option<usize>) -> String {
+    let token_limit = max_tokens.unwrap_or(MAX_CONTEXT_TOKENS);
+    let word_bounded = match max_tokens {
         Some(limit) => truncate_words_preserving_lines(content, limit),
         None => Cow::Borrowed(content),
     };
-    let token_bounded = if max_words.is_some() {
-        TextChunker::truncate_by_tokens(&word_bounded, MAX_CONTEXT_TOKENS)
+    let token_bounded = if max_tokens.is_some() {
+        TextChunker::truncate_by_tokens(&word_bounded, token_limit)
     } else {
         Cow::Borrowed(word_bounded.as_ref())
     };

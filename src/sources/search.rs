@@ -443,7 +443,7 @@ pub fn rank_candidates(
     candidates.sort_by_key(|a| std::cmp::Reverse(a.score));
 }
 
-pub use crate::system::text_util::{contains_ascii_case_insensitive, find_ascii_case_insensitive};
+use crate::system::text_util::contains_ascii_case_insensitive;
 
 fn normalize_title_for_comparison(title: &str) -> String {
     let stripped = title
