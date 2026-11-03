@@ -4,6 +4,46 @@
 
 ---
 
+## Key Features & Subcommands Quick Reference
+
+| Category | Command / Flag | Description |
+| :--- | :--- | :--- |
+| **Ingestion** | `srz <URL>` | Summarizes articles, blogs, documentation, RSS/Atom/JSON feeds, or online PDFs. |
+| | `srz <YOUTUBE_URL>` | Extracts timed-text transcripts and chapters from YouTube videos. |
+| | `srz "Book Title"` | Resolves synopses from Wikipedia and Open Library by title alone. |
+| | `srz <FILE>` | Ingests local `.pdf`, `.html`, `.md`, or `.txt` documents (20 MB ceiling). |
+| | `cat ... \| srz -` | Reads piped command outputs, logs, or `git diff` streams (10 MB ceiling). |
+| | `srz news "<topic\|feed_url>" [-t week]` | Aggregates and summarizes top stories from Google News RSS or any RSS/Atom/JSON feed URL. |
+| **Styling & Output** | `--style <PRESET>` | 3 summary formats: `concise` (default), `bullets`, `detailed`. |
+| | `--max-tokens <NUM>` | Sets the maximum completion tokens to generate (default: `8192`). |
+| | `--context-window <NUM>` | Overrides auto-detected server context window in tokens (e.g. `32768`). |
+| | `--concurrency <NUM>` | Sets parallel map-reduce chunking concurrency (default: autoscaled to server slots). |
+| | `--open` (`-b`) | Opens the summary in a distraction-free HTML reader with light/dark mode. |
+| | `--plain` | Outputs raw Markdown without terminal colors or automatic paging. |
+| | `--paging <auto\|always\|never>` | Controls terminal output pager (`never` disables paging). |
+| | `-o <FILE.html\|md>` | Saves the rendered output directly to an HTML or Markdown file. |
+| | `--json` | Emits machine-readable JSON on `stdout` for script integration. |
+| | `--stream` | Streams LLM output tokens live to `stdout` as they are generated. |
+| **Interactive Tools** | `srz ask [TARGET] [Q]` | Grounded Q&A against a document, URL, file, or latest read. |
+| | `srz ask -i` | Interactive multi-turn chat REPL grounded on source context. |
+| | `srz ask [--chats\|--resume <ID>]` | Lists saved chat sessions or resumes a previous multi-turn conversation. |
+| | `srz ask [--show-chat\|--delete-chat] <ID>` | Inspects or deletes a persisted multi-turn chat session transcript. |
+| | `srz browse` (alias `tui`) | Interactive TUI dashboard (`[j/k]` navigate, `[/]` filter, `[y]` copy, `[d]` delete, `[Enter]` open). |
+| **Library & History** | `srz find "keyword"` | Offline BM25 relevance-ranked search across past summaries in DuckDB. |
+| | `srz history [--limit N]` | Displays recent reads, word counts, model usage, and generation speeds. |
+| | `srz stats` | Telemetry overview: reading streaks, days active, time saved, top domains, and model throughput percentiles (P50/P95). |
+| | `srz index [--open]` | Generates and opens an interactive HTML library dashboard. |
+| **System & Config** | `--profile <NAME>` | Switches LLM backends defined in `~/.config/srz/config.toml`. |
+| | `srz config <init\|show\|path>` | Manages and inspects the local configuration file. |
+| | `srz cache <dir\|size\|clean\|prune>` | Cache inspection, TTL/LRU pruning (`--older-than`, `--max-size`), and safe clean (`--reset-db`). |
+| | `srz models` | Lists available models reported by the local LLM backend. |
+| | `srz recommend` | Recommends optimal model, context window, and ready launch commands for host hardware. |
+| | `srz doctor` | Tests backend reachability, latency, cache health, and database integrity. |
+| | `srz upgrade [--check\|--force]` | Safe, in-place binary self-updater with SHA-256 integrity verification. |
+| | `srz completions <SHELL>` | Generates autocomplete scripts for bash, zsh, fish, powershell, and elvish. |
+
+---
+
 ## 1. Root Target Dispatch (`srz <TARGET>`)
 
 ```bash

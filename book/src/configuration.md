@@ -108,6 +108,23 @@ When resolving runtime settings, `srz` applies the following priority (highest t
 
 ---
 
+## Cache & Storage Settings
+
+The `[cache]` table controls how `srz` manages disk storage under `~/.cache/srz/`:
+
+| Setting | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `max_size_mb` | integer | `500` | Total storage budget in megabytes across `cache.duckdb` and `views/`. LRU eviction triggers when exceeded. |
+| `pages_ttl_days` | integer | `7` | Retention for scraped DOM and web article text (YouTube and PDFs retain for 30 days). |
+| `search_ttl_days` | integer | `14` | Retention for Open Library book metadata and search query candidates. |
+| `summaries_ttl_days` | integer | `90` | Retention for generated LLM summary outputs (`(target, model, style)`). |
+| `views_ttl_days` | integer | `14` | Retention for rendered standalone HTML and Markdown view files in `views/`. |
+| `auto_prune` | boolean | `true` | Enables opportunistic background cache cleanup (throttled to once every 24 hours via `~/.cache/srz/.last_prune`). |
+
+> 🔒 **Privacy & Isolation**: All cache databases and view files are created with owner-only Unix permissions (`0700` directories, `0600` files). To completely bypass caching for a single command, pass `--no-cache`.
+
+---
+
 ## Configuration Commands
 
 ```bash

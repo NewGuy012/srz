@@ -37,4 +37,9 @@ Browse through the chapters to get started:
 - [**Quick Start**](quickstart.md): Connect your local LLM backend (Llama-macOS, Llama-Windows, llama.cpp, Ollama, LM Studio) and run your first summaries.
 - [**Command Reference**](commands.md): In-depth guide covering CLI auto-detection, subcommands, flags, interactive TUI keybindings, and session management.
 - [**Configuration**](configuration.md): `config.toml` structure, named profiles, storage limits, and cache retention policies.
-- [**Architecture & Design**](architecture.md): Systems architecture, ingestion pipelines, embedded DuckDB schema, BM25 ranking algorithm, and security model.
+- [**Architecture & Design**](architecture.md): Systems architecture, lifecycle sequence flows, ingestion pipelines, embedded DuckDB schema, BM25 ranking algorithm, performance optimizations, and security model.
+
+### Deep-Dive Guides & Audits
+
+- 🦀 [**Rust Learning Guide**](../../docs/RUST_LEARNING_GUIDE.md): Architectural deep-dive and systems programming concepts using `srz` as a case study.
+- 🛡️ [**Security Audit**](../../docs/SECURITY_AUDIT.md): Comprehensive security analysis, memory safety guarantees, and threat mitigations.

@@ -161,13 +161,13 @@ Run `srz --help` to see all available subcommands and flags.
 
 ## Features
 
-- [**Universal Ingestion**](docs/OVERVIEW.md#1-high-level-architecture)
-- [**Interactive Q&A (`srz ask`)**](docs/OVERVIEW.md#2-key-cli-features--commands)
-- [**TUI Dashboard (`srz browse`)**](docs/OVERVIEW.md#ui--terminal-rendering)
-- [**3 Summary Presets**](docs/OVERVIEW.md#2-key-cli-features--commands)
-- [**Offline BM25 Library Search**](docs/OVERVIEW.md#database-caching--instant-search)
+- [**Universal Ingestion**](book/src/architecture.md#1-high-level-subsystem-architecture)
+- [**Interactive Q&A (`srz ask`)**](book/src/commands.md#3-grounded-qa--multi-turn-chat-srz-ask)
+- [**TUI Dashboard (`srz browse`)**](book/src/commands.md#2-interactive-terminal-explorer-srz-browse)
+- [**3 Summary Presets**](book/src/commands.md#key-features--subcommands-quick-reference)
+- [**Offline BM25 Library Search**](book/src/architecture.md#4-offline-bm25-full-text-search-algorithm)
 
-> For full guides and tutorials, visit the [**Documentation Website**](https://newguy012.github.io/srz/). For architectural diagrams, lifecycle execution sequences, and in-depth subsystem specs, see [**`OVERVIEW.md`**](docs/OVERVIEW.md).
+> For full guides and tutorials, visit the [**Documentation Website**](https://newguy012.github.io/srz/). For architectural diagrams, lifecycle execution sequences, and in-depth subsystem specs, see [**`Architecture & Design`**](book/src/architecture.md).
 
 
 ## Configuring Your LLM Backend
@@ -244,7 +244,7 @@ srz "The Rust Programming Language" --profile openai # Cloud profile
 ## Documentation & Architecture
 
 - 🌐 [**Documentation Website**](https://newguy012.github.io/srz/): Comprehensive mdBook site covering installation, quick start, command reference, and configuration.
-- 🏗️ [**Architecture Overview (`OVERVIEW.md`)**](docs/OVERVIEW.md): Detailed Mermaid architecture diagrams, execution sequence flows, storage schemas, and subsystem specifications.
+- 🏗️ [**Architecture & Design Guide (`book/src/architecture.md`)**](book/src/architecture.md): Detailed Mermaid architecture diagrams, execution sequence flows, storage schemas, and subsystem specifications.
 - 🦀 [**Rust Learning Guide (`RUST_LEARNING_GUIDE.md`)**](docs/RUST_LEARNING_GUIDE.md): Hands-on case study exploring Rust systems programming concepts and patterns using real `srz` code.
 
 
