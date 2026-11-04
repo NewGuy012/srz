@@ -196,6 +196,11 @@ impl Database {
 
     /// Opens a DuckDB database at the specified file path.
     pub fn open_at(path: &Path) -> Result<Self> {
+        if let Ok(meta) = std::fs::symlink_metadata(path)
+            && meta.file_type().is_symlink()
+        {
+            anyhow::bail!("Refusing to open DuckDB database: {:?} is a symlink", path);
+        }
         let exists = path.exists()
             && std::fs::metadata(path)
                 .map(|m| m.len() > 0)

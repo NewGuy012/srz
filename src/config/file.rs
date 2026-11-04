@@ -81,6 +81,9 @@ impl std::ops::DerefMut for Config {
     }
 }
 
+/// Maximum allowable size for a configuration file in bytes (1 MB).
+pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+
 impl Config {
     /// Returns the default path for `config.toml` (`$SRZ_CONFIG`, `$XDG_CONFIG_HOME/srz/config.toml`, or `~/.config/srz/config.toml`).
     pub fn default_config_path() -> PathBuf {
@@ -98,6 +101,19 @@ impl Config {
 
     /// Loads the configuration file from a specific path.
     pub fn load_from_path(path: &Path) -> Result<Self> {
+        let meta = fs::metadata(path)
+            .with_context(|| format!("Failed to read config file metadata at {:?}", path))?;
+        if !meta.is_file() {
+            anyhow::bail!("Config path {:?} is not a regular file", path);
+        }
+        if meta.len() > MAX_CONFIG_BYTES {
+            anyhow::bail!(
+                "Config file {:?} exceeds maximum allowed size ({} bytes > {} bytes)",
+                path,
+                meta.len(),
+                MAX_CONFIG_BYTES
+            );
+        }
         let content = fs::read_to_string(path)
             .with_context(|| format!("Failed to read config file at {:?}", path))?;
         let config: Config = toml::from_str(&content)
@@ -239,5 +255,21 @@ mod tests {
         // Malformed TOML returns error
         fs::write(&config_path, "not a [valid toml").unwrap();
         assert!(Config::load_from_path(&config_path).is_err());
+    }
+
+    #[test]
+    fn test_load_from_path_bounds_and_file_type() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Directory path is rejected
+        let dir_path = tmp.path().join("config_dir");
+        fs::create_dir(&dir_path).unwrap();
+        assert!(Config::load_from_path(&dir_path).is_err());
+
+        // Oversized file is rejected
+        let large_config = tmp.path().join("large_config.toml");
+        let file = fs::File::create(&large_config).unwrap();
+        file.set_len(MAX_CONFIG_BYTES + 1).unwrap();
+        assert!(Config::load_from_path(&large_config).is_err());
     }
 }

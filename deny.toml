@@ -1,7 +1,7 @@
 # Configuration for cargo-deny (https://github.com/EmbarkStudios/cargo-deny)
 
 [advisories]
-yanked = "warn"
+yanked = "deny"
 unmaintained = "workspace"
 
 [licenses]

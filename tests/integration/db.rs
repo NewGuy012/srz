@@ -482,3 +482,26 @@ fn test_database_search_special_characters_and_sql_injection() {
     assert!(db.search("% * _ ?").unwrap().is_empty());
     assert!(db.search("").unwrap().is_empty());
 }
+
+#[test]
+#[cfg(unix)]
+fn test_database_refuses_symlink() {
+    let tmp = tempfile::tempdir().unwrap();
+    let real_db = tmp.path().join("real.duckdb");
+    let symlink_db = tmp.path().join("symlink.duckdb");
+
+    // Open and initialize a real DB
+    {
+        let db = Database::open_at(&real_db).expect("Create real db");
+        assert!(db.get_stats().is_ok());
+    }
+
+    // Create a symlink pointing to the real DB
+    std::os::unix::fs::symlink(&real_db, &symlink_db).unwrap();
+
+    // Opening the symlinked path directly must be rejected
+    let res = Database::open_at(&symlink_db);
+    assert!(res.is_err());
+    let err = res.err().unwrap();
+    assert!(err.to_string().contains("is a symlink"));
+}

@@ -291,6 +291,11 @@ impl Cache {
         let mut guard = self.db_conn.lock().ok()?;
         if guard.is_none() {
             let db_path = self.base_dir.join("cache.duckdb");
+            if let Ok(meta) = fs::symlink_metadata(&db_path)
+                && meta.file_type().is_symlink()
+            {
+                return None;
+            }
             let already_exists =
                 db_path.exists() && fs::metadata(&db_path).map(|m| m.len() > 0).unwrap_or(false);
             if let Some(parent) = db_path.parent() {

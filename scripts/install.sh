@@ -160,9 +160,11 @@ main() {
   chmod +x "${TMP_DIR}/srz"
 
   mkdir -p "${INSTALL_DIR}"
-  # Atomically install binary using a temp file on the target directory/filesystem
-  TMP_TARGET="${INSTALL_DIR}/.srz.tmp.$$"
+  # Atomically install binary using an unguessable temp file on the target directory/filesystem
+  TMP_TARGET=$(mktemp "${INSTALL_DIR}/.srz.tmp.XXXXXX" 2>/dev/null || echo "${INSTALL_DIR}/.srz.tmp.$$.$RANDOM")
+  rm -f "${TMP_TARGET}"
   cp "${TMP_DIR}/srz" "${TMP_TARGET}"
+  chmod 0755 "${TMP_TARGET}"
   mv -f "${TMP_TARGET}" "${INSTALL_DIR}/srz"
 
   echo "✔ Successfully installed srz to ${INSTALL_DIR}/srz"
