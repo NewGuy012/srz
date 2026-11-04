@@ -465,22 +465,18 @@ pub async fn handle_ask(
     if let Some(initial_q) = question {
         let safe_q = crate::ui::sanitize_terminal_text(&initial_q);
         println!("\x1b[1;32mQuestion:\x1b[0m {}", safe_q);
-        let (ans, turn_toks) = ask_turn(
+        record_and_ask_turn(
             &grounded_context,
-            &history,
-            &history_turn_tokens,
+            &mut history,
+            &mut history_turn_tokens,
             &initial_q,
             llm,
             args.stream,
             args.plain,
+            chat_id,
+            db.as_ref(),
         )
         .await?;
-        if let (Some(cid), Some(db_ref)) = (chat_id, &db) {
-            let _ = db_ref.add_chat_turn(cid, &initial_q, &ans);
-        }
-        history.push((initial_q, ans));
-        history_turn_tokens.push(turn_toks);
-        println!();
     }
 
     let mut rl =
@@ -505,22 +501,18 @@ pub async fn handle_ask(
 
                 let _ = rl.add_history_entry(trimmed);
 
-                let (ans, turn_toks) = ask_turn(
+                record_and_ask_turn(
                     &grounded_context,
-                    &history,
-                    &history_turn_tokens,
+                    &mut history,
+                    &mut history_turn_tokens,
                     trimmed,
                     llm,
                     args.stream,
                     args.plain,
+                    chat_id,
+                    db.as_ref(),
                 )
                 .await?;
-                if let (Some(cid), Some(db_ref)) = (chat_id, &db) {
-                    let _ = db_ref.add_chat_turn(cid, trimmed, &ans);
-                }
-                history.push((trimmed.to_string(), ans));
-                history_turn_tokens.push(turn_toks);
-                println!();
             }
             Err(rustyline::error::ReadlineError::Interrupted) => {
                 println!("\x1b[2mGoodbye!\x1b[0m\n");
@@ -655,6 +647,37 @@ async fn ask_turn(
         + crate::chunker::TextChunker::count_tokens(&output.content);
 
     Ok((output.content, this_turn_tokens))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn record_and_ask_turn(
+    grounded_context: &str,
+    history: &mut Vec<(String, String)>,
+    history_turn_tokens: &mut Vec<usize>,
+    query: &str,
+    llm: &LlmClient,
+    stream: bool,
+    plain: bool,
+    chat_id: Option<i64>,
+    db: Option<&Database>,
+) -> Result<()> {
+    let (ans, turn_toks) = ask_turn(
+        grounded_context,
+        history,
+        history_turn_tokens,
+        query,
+        llm,
+        stream,
+        plain,
+    )
+    .await?;
+    if let (Some(cid), Some(db_ref)) = (chat_id, db) {
+        let _ = db_ref.add_chat_turn(cid, query, &ans);
+    }
+    history.push((query.to_string(), ans));
+    history_turn_tokens.push(turn_toks);
+    println!();
+    Ok(())
 }
 
 #[cfg(test)]

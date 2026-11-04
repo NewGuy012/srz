@@ -247,28 +247,34 @@ pub fn sanitize_terminal_text_cow<'a>(input: &'a str) -> Cow<'a, str> {
     let mut clean = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
 
+    let skip_csi = |iter: &mut std::iter::Peekable<std::str::Chars>| {
+        for c in iter.by_ref() {
+            if ('@'..='~').contains(&c) {
+                break;
+            }
+        }
+    };
+
+    let skip_string_control = |iter: &mut std::iter::Peekable<std::str::Chars>| {
+        let mut prev = '\0';
+        for c in iter.by_ref() {
+            if c == '\x07' || c == '\u{009C}' || (prev == '\x1b' && c == '\\') {
+                break;
+            }
+            prev = c;
+        }
+    };
+
     while let Some(ch) = chars.next() {
         if ch == '\x1b' {
             match chars.peek() {
                 Some('[') => {
                     chars.next(); // consume '['
-                    // CSI sequence ends at 0x40..=0x7E (@..=~)
-                    for c in chars.by_ref() {
-                        if ('@'..='~').contains(&c) {
-                            break;
-                        }
-                    }
+                    skip_csi(&mut chars);
                 }
                 Some(']' | 'P' | 'X' | '^' | '_') => {
                     chars.next(); // consume string sequence initiator
-                    // OSC/DCS/SOS/PM/APC sequence ends at BEL (\x07) or ST (\x1b\ or \u{009C})
-                    let mut prev = '\0';
-                    for c in chars.by_ref() {
-                        if c == '\x07' || c == '\u{009C}' || (prev == '\x1b' && c == '\\') {
-                            break;
-                        }
-                        prev = c;
-                    }
+                    skip_string_control(&mut chars);
                 }
                 Some(_) => {
                     chars.next();
@@ -280,11 +286,7 @@ pub fn sanitize_terminal_text_cow<'a>(input: &'a str) -> Cow<'a, str> {
 
         // 8-bit C1 CSI sequence (\u{009B})
         if ch == '\u{009B}' {
-            for c in chars.by_ref() {
-                if ('@'..='~').contains(&c) {
-                    break;
-                }
-            }
+            skip_csi(&mut chars);
             continue;
         }
 
@@ -293,13 +295,7 @@ pub fn sanitize_terminal_text_cow<'a>(input: &'a str) -> Cow<'a, str> {
             ch,
             '\u{0090}' | '\u{0098}' | '\u{009D}' | '\u{009E}' | '\u{009F}'
         ) {
-            let mut prev = '\0';
-            for c in chars.by_ref() {
-                if c == '\x07' || c == '\u{009C}' || (prev == '\x1b' && c == '\\') {
-                    break;
-                }
-                prev = c;
-            }
+            skip_string_control(&mut chars);
             continue;
         }
 

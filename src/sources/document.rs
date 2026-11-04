@@ -63,9 +63,7 @@ impl DocumentLoader {
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
         {
-            let bytes =
-                fs::read(path).with_context(|| format!("Failed to read PDF file at {:?}", path))?;
-            let page = PdfExtractor::extract_from_bytes(&bytes, Some(path))?;
+            let page = PdfExtractor::extract_file(path)?;
             let t = page.title.unwrap_or_else(fallback_title);
             (page.content, page.word_count, t)
         } else {

@@ -262,6 +262,14 @@ pub fn markdown_to_html(md: &str) -> String {
 
     // Sanitize raw HTML tags into escaped text to prevent HTML injection from untrusted sources,
     // and neutralize dangerous link/image schemes (javascript:, data:, vbscript:, file:).
+    fn sanitize_dest<'a>(url: pulldown_cmark::CowStr<'a>) -> pulldown_cmark::CowStr<'a> {
+        if is_safe_markdown_url(&url) {
+            url
+        } else {
+            pulldown_cmark::CowStr::Borrowed("#")
+        }
+    }
+
     let parser = pulldown_cmark::Parser::new_ext(md, options).map(|event| match event {
         pulldown_cmark::Event::Html(text) => pulldown_cmark::Event::Text(text),
         pulldown_cmark::Event::InlineHtml(text) => pulldown_cmark::Event::Text(text),
@@ -270,37 +278,23 @@ pub fn markdown_to_html(md: &str) -> String {
             dest_url,
             title,
             id,
-        }) => {
-            let safe_dest = if is_safe_markdown_url(&dest_url) {
-                dest_url
-            } else {
-                pulldown_cmark::CowStr::Borrowed("#")
-            };
-            pulldown_cmark::Event::Start(pulldown_cmark::Tag::Link {
-                link_type,
-                dest_url: safe_dest,
-                title,
-                id,
-            })
-        }
+        }) => pulldown_cmark::Event::Start(pulldown_cmark::Tag::Link {
+            link_type,
+            dest_url: sanitize_dest(dest_url),
+            title,
+            id,
+        }),
         pulldown_cmark::Event::Start(pulldown_cmark::Tag::Image {
             link_type,
             dest_url,
             title,
             id,
-        }) => {
-            let safe_dest = if is_safe_markdown_url(&dest_url) {
-                dest_url
-            } else {
-                pulldown_cmark::CowStr::Borrowed("#")
-            };
-            pulldown_cmark::Event::Start(pulldown_cmark::Tag::Image {
-                link_type,
-                dest_url: safe_dest,
-                title,
-                id,
-            })
-        }
+        }) => pulldown_cmark::Event::Start(pulldown_cmark::Tag::Image {
+            link_type,
+            dest_url: sanitize_dest(dest_url),
+            title,
+            id,
+        }),
         other => other,
     });
 
