@@ -324,6 +324,7 @@ pub fn handle_recommend(as_json: bool) -> Result<()> {
                 "model_id": hw.recommended_model,
                 "size": hw.recommended_size,
                 "quantization": hw.recommended_quant,
+                "disk_size": hw.disk_size,
                 "context_window": hw.recommended_context,
                 "context_display": hw.recommended_context_display,
                 "ram_footprint": hw.ram_footprint,
@@ -346,13 +347,12 @@ pub fn handle_recommend(as_json: bool) -> Result<()> {
     println!();
 
     println!("Recommended Local LLM Setup (Llama GUI / llama.cpp):");
-    println!("  • Model:   {}", hw.concise_model);
-    println!("  • Size:    {}", hw.recommended_size);
-    println!("  • Quant:   {}", hw.recommended_quant);
-    println!(
-        "  • Context: {} ({} tokens, {})",
-        hw.recommended_context_display, hw.recommended_context, hw.ram_footprint
-    );
+    println!("  • Model:         {}", hw.concise_model);
+    println!("  • Size:          {}", hw.recommended_size);
+    println!("  • Quant:         {}", hw.recommended_quant);
+    println!("  • Disk Size:     {}", hw.disk_size);
+    println!("  • Context:       {}", hw.recommended_context_display);
+    println!("  • Estimated RAM: {}", hw.ram_footprint);
     println!();
 
     Ok(())

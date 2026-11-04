@@ -48,6 +48,7 @@ pub struct HardwareProfile {
     pub concise_model: &'static str,
     pub recommended_size: &'static str,
     pub recommended_quant: &'static str,
+    pub disk_size: &'static str,
     pub recommended_context: usize,
     pub recommended_context_display: &'static str,
     pub recommended_launch_command: String,
@@ -73,6 +74,7 @@ impl HardwareProfile {
             concise_model,
             recommended_size,
             recommended_quant,
+            disk_size,
             recommended_context,
             recommended_context_display,
             model_file,
@@ -84,44 +86,48 @@ impl HardwareProfile {
                 "gemma-4",
                 "E4B",
                 "Q8_0",
+                "~8.6 GB",
                 8_192,
                 "8k ctx",
                 "gemma-4-E4B-it-Q8_0.gguf",
                 "gemma2:9b",
-                "~5.0 GB total",
+                "~8.9 GB",
             ),
             HardwareTier::Tier16GB => (
                 "ggml-org/gemma-4-E4B-it-GGUF:Q8_0",
                 "gemma-4",
                 "E4B",
                 "Q8_0",
+                "~8.6 GB",
                 32_768,
                 "32k ctx",
                 "gemma-4-E4B-it-Q8_0.gguf",
                 "gemma2:9b",
-                "~6.5 GB total",
+                "~9.4 GB",
             ),
             HardwareTier::Tier32GB => (
                 "ggml-org/gemma-4-E4B-it-GGUF:Q8_0",
                 "gemma-4",
                 "E4B",
                 "Q8_0",
+                "~8.6 GB",
                 65_536,
                 "64k ctx",
                 "gemma-4-E4B-it-Q8_0.gguf",
                 "gemma2:9b",
-                "~8.5 GB total",
+                "~10 GB",
             ),
             HardwareTier::Tier64GBPlus => (
                 "ggml-org/gemma-4-26B-A4B-it-GGUF:Q8_0",
                 "gemma-4",
                 "26B-A4B",
                 "Q8_0",
+                "~28.0 GB",
                 131_072,
                 "128k ctx",
                 "gemma-4-26B-A4B-it-Q8_0.gguf",
                 "gemma2:27b",
-                "~28–32 GB total",
+                "~30–32 GB",
             ),
         };
 
@@ -143,6 +149,7 @@ impl HardwareProfile {
             concise_model,
             recommended_size,
             recommended_quant,
+            disk_size,
             recommended_context,
             recommended_context_display,
             recommended_launch_command,
@@ -190,6 +197,7 @@ impl HardwareProfile {
             "concise_model": self.concise_model,
             "recommended_size": self.recommended_size,
             "recommended_quant": self.recommended_quant,
+            "disk_size": self.disk_size,
             "recommended_context": self.recommended_context,
             "recommended_context_display": self.recommended_context_display,
             "recommended_launch_command": self.recommended_launch_command,
@@ -331,9 +339,10 @@ mod tests {
         assert_eq!(profile.concise_model, "gemma-4");
         assert_eq!(profile.recommended_size, "E4B");
         assert_eq!(profile.recommended_quant, "Q8_0");
+        assert_eq!(profile.disk_size, "~8.6 GB");
         assert_eq!(profile.recommended_context, 32_768);
         assert_eq!(profile.recommended_context_display, "32k ctx");
-        assert_eq!(profile.ram_footprint, "~6.5 GB total");
+        assert_eq!(profile.ram_footprint, "~9.4 GB");
         assert!(profile.recommended_launch_command.contains("-c 32768"));
         assert!(profile.recommended_launch_command.contains("gemma-4-E4B"));
         assert!(
@@ -364,6 +373,7 @@ mod tests {
         assert_eq!(profile.concise_model, "gemma-4");
         assert_eq!(profile.recommended_size, "26B-A4B");
         assert_eq!(profile.recommended_quant, "Q8_0");
+        assert_eq!(profile.disk_size, "~28.0 GB");
         assert_eq!(profile.recommended_context, 131_072);
         assert_eq!(profile.recommended_context_display, "128k ctx");
         assert!(profile.recommended_launch_command.contains("26B-A4B"));

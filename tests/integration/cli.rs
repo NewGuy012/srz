@@ -890,6 +890,8 @@ fn test_recommend_simplified_naming_for_llama_gui() {
     assert_eq!(p8.concise_model, "gemma-4");
     assert_eq!(p8.recommended_size, "E4B");
     assert_eq!(p8.recommended_quant, "Q8_0");
+    assert_eq!(p8.disk_size, "~8.6 GB");
+    assert_eq!(p8.ram_footprint, "~8.9 GB");
     assert_eq!(p8.recommended_context, 8192);
     assert_eq!(p8.recommended_context_display, "8k ctx");
     assert_eq!(
@@ -904,6 +906,8 @@ fn test_recommend_simplified_naming_for_llama_gui() {
     assert_eq!(p16.concise_model, "gemma-4");
     assert_eq!(p16.recommended_size, "E4B");
     assert_eq!(p16.recommended_quant, "Q8_0");
+    assert_eq!(p16.disk_size, "~8.6 GB");
+    assert_eq!(p16.ram_footprint, "~9.4 GB");
     assert_eq!(p16.recommended_context, 32768);
     assert_eq!(p16.recommended_context_display, "32k ctx");
     assert_eq!(
@@ -918,6 +922,8 @@ fn test_recommend_simplified_naming_for_llama_gui() {
     assert_eq!(p32.concise_model, "gemma-4");
     assert_eq!(p32.recommended_size, "E4B");
     assert_eq!(p32.recommended_quant, "Q8_0");
+    assert_eq!(p32.disk_size, "~8.6 GB");
+    assert_eq!(p32.ram_footprint, "~10 GB");
     assert_eq!(p32.recommended_context, 65536);
     assert_eq!(p32.recommended_context_display, "64k ctx");
     assert_eq!(
@@ -935,6 +941,8 @@ fn test_recommend_simplified_naming_for_llama_gui() {
     assert_eq!(p64.concise_model, "gemma-4");
     assert_eq!(p64.recommended_size, "26B-A4B");
     assert_eq!(p64.recommended_quant, "Q8_0");
+    assert_eq!(p64.disk_size, "~28.0 GB");
+    assert_eq!(p64.ram_footprint, "~30–32 GB");
     assert_eq!(p64.recommended_context, 131072);
     assert_eq!(p64.recommended_context_display, "128k ctx");
     assert_eq!(

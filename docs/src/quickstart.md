@@ -77,20 +77,22 @@ Host Machine:
   • Memory: 24.0 GB RAM (24–36 GB Tier (High-End Pro / Max Laptop))
 
 Recommended Local LLM Setup (Llama GUI / llama.cpp):
-  • Model:   gemma-4
-  • Size:    E4B
-  • Quant:   Q8_0
-  • Context: 64k ctx (65536 tokens, ~8.5 GB total)
+  • Model:         gemma-4
+  • Size:          E4B
+  • Quant:         Q8_0
+  • Disk Size:     ~8.6 GB
+  • Context:       64k ctx
+  • Estimated RAM: ~10 GB
 ```
 
 ### Hardware Tier Reference Matrix
 
-| Host Memory | Typical Devices | Backend Model ID (Default) | Parameters | Quantization | Disk Size | Context Window (`n_ctx`) | Llama GUI Selection |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **8 GB RAM** | MacBook Air 8GB, Thin-and-light Laptops | `ggml-org/gemma-4-E4B-it-GGUF:Q8_0` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`8k ctx`** (8,192) | `gemma-4 \| E4B \| Q8_0 \| 8k ctx` |
-| **16 GB RAM** | MacBook Pro/Air 16GB, Standard PC Laptops | `ggml-org/gemma-4-E4B-it-GGUF:Q8_0` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`32k ctx`** (32,768) | `gemma-4 \| E4B \| Q8_0 \| 32k ctx` |
-| **24–36 GB RAM** | MacBook Pro M Pro / Max, 32GB PCs | `ggml-org/gemma-4-E4B-it-GGUF:Q8_0` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`64k ctx`** (65,536) | `gemma-4 \| E4B \| Q8_0 \| 64k ctx` |
-| **64+ GB RAM** | MacBook Pro M Max, Mac Studio, Workstations | `ggml-org/gemma-4-26B-A4B-it-GGUF:Q8_0` | **26B Total / ~4B Active** (MoE) | **`Q8_0`** | **~28.0 GB** | **`128k ctx`** (131,072) | `gemma-4 \| 26B-A4B \| Q8_0 \| 128k ctx` |
+| Host Memory | Typical Devices | Backend Model ID (Default) | Parameters | Quantization | Disk Size | Context Window (`n_ctx`) | Estimated RAM | Llama GUI Selection |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **8 GB RAM** | MacBook Air 8GB, Thin-and-light Laptops | `ggml-org/gemma-4-E4B-it-GGUF:Q8_0` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`8k ctx`** (8,192) | **~8.9 GB** | `gemma-4 \| E4B \| Q8_0 \| 8k ctx` |
+| **16 GB RAM** | MacBook Pro/Air 16GB, Standard PC Laptops | `ggml-org/gemma-4-E4B-it-GGUF:Q8_0` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`32k ctx`** (32,768) | **~9.4 GB** | `gemma-4 \| E4B \| Q8_0 \| 32k ctx` |
+| **24–36 GB RAM** | MacBook Pro M Pro / Max, 32GB PCs | `ggml-org/gemma-4-E4B-it-GGUF:Q8_0` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`64k ctx`** (65,536) | **~10 GB** | `gemma-4 \| E4B \| Q8_0 \| 64k ctx` |
+| **64+ GB RAM** | MacBook Pro M Max, Mac Studio, Workstations | `ggml-org/gemma-4-26B-A4B-it-GGUF:Q8_0` | **26B Total / ~4B Active** (MoE) | **`Q8_0`** | **~28.0 GB** | **`128k ctx`** (131,072) | **~30–32 GB** | `gemma-4 \| 26B-A4B \| Q8_0 \| 128k ctx` |
 
 ### Single-Pass vs. Map-Reduce Chunking
 
