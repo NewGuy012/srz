@@ -1,8 +1,6 @@
 use crate::cli::SummaryStyle;
 use crate::engine::ServerCapabilities;
-use crate::fs_util::{
-    create_private_dir_all, non_empty_env_path, open_private_file_for_write, write_private_file,
-};
+use crate::fs_util::{create_private_dir_all, non_empty_env_path, write_private_file};
 use crate::scraper::ScrapedPage;
 use crate::search::{BookMetadata, SearchResult};
 use duckdb::{Connection, params};
@@ -11,7 +9,7 @@ use sha2::{Digest, Sha256};
 use std::env;
 use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
-use std::io::{BufReader, BufWriter};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -755,12 +753,9 @@ impl Cache {
 
     fn write_disk_entry<T: Serialize>(&self, namespace: &str, key_hash: &str, value: &T) {
         let dir = self.base_dir.join(namespace);
-        if create_private_dir_all(&dir).is_err() {
-            return;
-        }
         let path = dir.join(format!("{}.json", key_hash));
-        if let Ok(file) = open_private_file_for_write(&path) {
-            let _ = serde_json::to_writer(BufWriter::new(file), value);
+        if let Ok(bytes) = serde_json::to_vec(value) {
+            let _ = write_private_file(&path, bytes);
         }
     }
 

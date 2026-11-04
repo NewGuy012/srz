@@ -80,11 +80,41 @@ pub fn open_private_file_for_write(path: &Path) -> std::io::Result<File> {
     Ok(file)
 }
 
-/// Writes `contents` to `path` with atomic owner-only permissions (`0600` on Unix).
+/// Writes `contents` to `path` with crash-safe atomic rename and owner-only permissions (`0600` on Unix).
+/// Rejects symlink targets to prevent arbitrary file truncation/privilege escalation (CWE-59).
 pub fn write_private_file(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
-    let mut file = open_private_file_for_write(path)?;
-    file.write_all(contents.as_ref())?;
-    file.flush()?;
+    if let Ok(meta) = fs::symlink_metadata(path)
+        && meta.file_type().is_symlink()
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("Refusing to write to symlink: {}", path.display()),
+        ));
+    }
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    if !parent.as_os_str().is_empty() && !parent.exists() {
+        create_private_dir_all(parent)?;
+    }
+
+    let mut temp = tempfile::Builder::new()
+        .prefix(".srz-tmp-")
+        .tempfile_in(parent)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = temp
+            .as_file()
+            .set_permissions(fs::Permissions::from_mode(0o600));
+    }
+
+    temp.write_all(contents.as_ref())?;
+    temp.flush()?;
+
+    temp.persist(path).map_err(|e| e.error)?;
+    set_private_file_perms(path);
+
     Ok(())
 }
 
@@ -144,6 +174,14 @@ mod tests {
         assert!(write_res.is_err());
         assert_eq!(
             write_res.err().unwrap().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+
+        // Atomic write to symlink must also be rejected
+        let atomic_res = write_private_file(&link, b"hijack attempt");
+        assert!(atomic_res.is_err());
+        assert_eq!(
+            atomic_res.err().unwrap().kind(),
             std::io::ErrorKind::InvalidInput
         );
 
