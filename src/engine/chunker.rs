@@ -50,6 +50,19 @@ impl TextChunker {
         Self::chunk_with_metric(text, max_tokens, overlap_tokens, Self::count_tokens)
     }
 
+    /// Splits text into chunks of roughly `max_tokens` with `overlap_tokens` overlap,
+    /// returning each chunk alongside its pre-computed token count to avoid re-tokenization.
+    pub fn chunk_by_tokens_with_counts<'a>(
+        text: &'a str,
+        max_tokens: usize,
+        overlap_tokens: usize,
+    ) -> Vec<(Cow<'a, str>, usize)> {
+        if text.len() <= max_tokens {
+            return vec![(Cow::Borrowed(text), Self::count_tokens(text))];
+        }
+        Self::chunk_with_metric_with_counts(text, max_tokens, overlap_tokens, Self::count_tokens)
+    }
+
     /// Splits text into chunks of roughly `max_words` with `overlap_words` overlap.
     /// Preserves paragraph boundaries wherever possible and returns zero-copy `Cow::Borrowed`
     /// slices whenever the input or a chunk does not require concatenation.
@@ -63,8 +76,23 @@ impl TextChunker {
         text: &'a str,
         max_limit: usize,
         overlap_limit: usize,
-        mut count_fn: F,
+        count_fn: F,
     ) -> Vec<Cow<'a, str>>
+    where
+        F: FnMut(&str) -> usize,
+    {
+        Self::chunk_with_metric_with_counts(text, max_limit, overlap_limit, count_fn)
+            .into_iter()
+            .map(|(c, _)| c)
+            .collect()
+    }
+
+    fn chunk_with_metric_with_counts<'a, F>(
+        text: &'a str,
+        max_limit: usize,
+        overlap_limit: usize,
+        mut count_fn: F,
+    ) -> Vec<(Cow<'a, str>, usize)>
     where
         F: FnMut(&str) -> usize,
     {
@@ -81,16 +109,19 @@ impl TextChunker {
         }
 
         if paragraphs.is_empty() || total_count <= max_limit {
-            return vec![Cow::Borrowed(text)];
+            return vec![(Cow::Borrowed(text), total_count)];
         }
 
-        let mut chunks: Vec<Cow<'a, str>> = Vec::new();
+        let mut chunks: Vec<(Cow<'a, str>, usize)> = Vec::new();
         let mut current_chunk_paragraphs: Vec<(&'a str, usize)> = Vec::new();
         let mut current_count = 0;
 
         for &(para, p_count) in &paragraphs {
             if current_count + p_count > max_limit && !current_chunk_paragraphs.is_empty() {
-                chunks.push(Self::build_chunk(text, &current_chunk_paragraphs));
+                chunks.push((
+                    Self::build_chunk(text, &current_chunk_paragraphs),
+                    current_count,
+                ));
 
                 let mut retained = Vec::new();
                 let mut retained_count = 0;
@@ -113,7 +144,10 @@ impl TextChunker {
         }
 
         if !current_chunk_paragraphs.is_empty() {
-            chunks.push(Self::build_chunk(text, &current_chunk_paragraphs));
+            chunks.push((
+                Self::build_chunk(text, &current_chunk_paragraphs),
+                current_count,
+            ));
         }
 
         chunks
@@ -177,6 +211,13 @@ mod tests {
         assert_eq!(chunks.len(), 2);
         assert!(matches!(chunks[0], Cow::Borrowed(_)));
         assert!(matches!(chunks[1], Cow::Borrowed(_)));
+
+        let chunks_with_counts = TextChunker::chunk_by_tokens_with_counts(&text, 120, 20);
+        assert_eq!(chunks_with_counts.len(), chunks.len());
+        for (i, (chunk, count)) in chunks_with_counts.into_iter().enumerate() {
+            assert_eq!(chunk, chunks[i]);
+            assert_eq!(count, TextChunker::count_tokens(&chunk));
+        }
     }
 
     #[test]

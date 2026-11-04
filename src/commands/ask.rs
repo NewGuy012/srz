@@ -109,9 +109,7 @@ pub fn select_relevant_context_with_budget<'a>(
 ) -> std::borrow::Cow<'a, str> {
     use crate::chunker::TextChunker;
 
-    if content.len() <= (max_tokens.saturating_mul(3) / 4)
-        || TextChunker::count_tokens(content) <= max_tokens
-    {
+    if content.len() <= (max_tokens.saturating_mul(3) / 4) {
         return std::borrow::Cow::Borrowed(content);
     }
 
@@ -125,23 +123,23 @@ pub fn select_relevant_context_with_budget<'a>(
 
     let chunk_size = (max_tokens / 8).clamp(500, 2000);
     let chunk_overlap = (chunk_size / 12).clamp(50, 150);
-    let chunks = TextChunker::chunk_by_tokens(content, chunk_size, chunk_overlap);
-    if chunks.len() <= 1 {
+    let chunks_with_counts =
+        TextChunker::chunk_by_tokens_with_counts(content, chunk_size, chunk_overlap);
+    if chunks_with_counts.len() <= 1 {
         return std::borrow::Cow::Borrowed(content);
     }
 
-    let mut scored: Vec<(usize, usize, usize)> = chunks
+    let mut scored: Vec<(usize, usize, usize)> = chunks_with_counts
         .iter()
         .enumerate()
-        .map(|(idx, chunk)| {
+        .map(|(idx, (chunk, tokens))| {
             let mut score = if idx == 0 { 2 } else { 0 };
             for term in &q_terms {
                 if crate::system::text_util::contains_ascii_case_insensitive(chunk, term) {
                     score += 5;
                 }
             }
-            let tokens = TextChunker::count_tokens(chunk);
-            (idx, score, tokens)
+            (idx, score, *tokens)
         })
         .collect();
 
@@ -162,7 +160,7 @@ pub fn select_relevant_context_with_budget<'a>(
         if pos > 0 {
             out.push_str("\n\n...\n\n");
         }
-        out.push_str(&chunks[idx]);
+        out.push_str(&chunks_with_counts[idx].0);
     }
     std::borrow::Cow::Owned(out)
 }
