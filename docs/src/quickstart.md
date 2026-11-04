@@ -2,6 +2,9 @@
 
 `srz` connects to any OpenAI API-compliant LLM server. While cloud provider APIs are supported, running a **local LLM is strongly preferred** for complete privacy, zero subscription fees, and offline capability.
 
+> 💡 **New to Local LLMs?**  
+> A local LLM runner (such as **Llama GUI**, **llama.cpp**, or **Ollama**) is an application that runs language models directly on your computer's CPU or GPU. This ensures 100% privacy—no text, summaries, transcripts, or personal reading habits ever leave your machine.
+
 ---
 
 ## 1. LLM Backend Setup
@@ -95,16 +98,16 @@ Summary Synthesis Speed:
 
 ### Hardware Tier Reference Matrix
 
-| Host Memory | Typical Devices | Model Name | Size | Quantization | Context Window (`n_ctx`) | Approximate RAM Usage | Llama GUI Selection | llama.cpp Launch Command | Ollama Launch Command |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **8 GB RAM** | MacBook Air 8GB, Thin-and-light Laptops | `gemma-4` | `E4B` | **`Q8_0`** | **`8k ctx`** (8,192) | ~5.0 GB total | `gemma-4 \| E4B \| Q8_0 \| 8k ctx` | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 8192 --port 9931` | `ollama run gemma2:9b --ctx-size 8192` |
-| **16 GB RAM** | MacBook Pro/Air 16GB, Standard PC Laptops | `gemma-4` | `E4B` | **`Q8_0`** | **`32k ctx`** (32,768) | ~6.5 GB total | `gemma-4 \| E4B \| Q8_0 \| 32k ctx` | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 32768 --port 9931` | `ollama run gemma2:9b --ctx-size 32768` |
-| **24–36 GB RAM** | MacBook Pro M Pro / Max, 32GB PCs | `gemma-4` | `E4B` | **`Q8_0`** | **`64k ctx`** (65,536) | ~8.5 GB total | `gemma-4 \| E4B \| Q8_0 \| 64k ctx` | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 65536 --port 9931` | `ollama run gemma2:9b --ctx-size 65536` |
-| **64+ GB RAM** | MacBook Pro M Max, Mac Studio, Workstations | `gemma-4` | `26B-A4B` | **`Q8_0`** | **`128k ctx`** (131,072) | ~28–32 GB total | `gemma-4 \| 26B-A4B \| Q8_0 \| 128k ctx` | `llama-server -m gemma-4-26B-A4B-it-Q8_0.gguf -c 131072 --port 9931` | `ollama run gemma2:27b --ctx-size 131072` |
+| Host Memory | Typical Devices | Model Name | Parameters | Quantization | Disk / Download Size | Context Window (`n_ctx`) | Runtime RAM Usage | Llama GUI Selection | llama.cpp Launch Command | Ollama Launch Command |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **8 GB RAM** | MacBook Air 8GB, Thin-and-light Laptops | `gemma-4` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`8k ctx`** (8,192) | ~5.0 GB total | `gemma-4 \| E4B \| Q8_0 \| 8k ctx` | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 8192 --port 9931` | `ollama run gemma2:9b --ctx-size 8192` |
+| **16 GB RAM** | MacBook Pro/Air 16GB, Standard PC Laptops | `gemma-4` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`32k ctx`** (32,768) | ~6.5 GB total | `gemma-4 \| E4B \| Q8_0 \| 32k ctx` | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 32768 --port 9931` | `ollama run gemma2:9b --ctx-size 32768` |
+| **24–36 GB RAM** | MacBook Pro M Pro / Max, 32GB PCs | `gemma-4` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`64k ctx`** (65,536) | ~8.5 GB total | `gemma-4 \| E4B \| Q8_0 \| 64k ctx` | `llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 65536 --port 9931` | `ollama run gemma2:9b --ctx-size 65536` |
+| **64+ GB RAM** | MacBook Pro M Max, Mac Studio, Workstations | `gemma-4` | **26B Total / ~4B Active** (MoE) | **`Q8_0`** | **~28.0 GB** | **`128k ctx`** (131,072) | ~28–32 GB total | `gemma-4 \| 26B-A4B \| Q8_0 \| 128k ctx` | `llama-server -m gemma-4-26B-A4B-it-Q8_0.gguf -c 131072 --port 9931` | `ollama run gemma2:27b --ctx-size 131072` |
 
 ### Single-Pass vs. Map-Reduce Chunking
 
-- **1-Pass Mode**: When document token count \\(\le \sim 70\\%\\) of the configured server context window (`n_ctx`), `srz` synthesizes the document in one pass with complete cross-chapter coherence.
+- **1-Pass Mode**: When document token count $\le \sim 70\%$ of the configured server context window (`n_ctx`), `srz` synthesizes the document in one pass with complete cross-chapter coherence.
 - **Chunking Mode**: When documents exceed this threshold (e.g. 200+ page books or large document bundles on small context servers), `srz` automatically partitions the text into token-budgeted chunks, summarizes them in parallel up to the server's slot capacity (`total_slots`), and executes a final reduction pass.
 
 ### Why We Recommend Google Gemma 4 (`Q8_0`) for Laptops
@@ -170,7 +173,7 @@ srz "https://blog.rust-lang.org/feed.xml"
 
 ---
 
-## 3. Interactive Grounded Q&A (`srz ask`)
+## 4. Interactive Grounded Q&A (`srz ask`)
 
 Ask targeted questions or start an interactive chat session grounded directly in document text (persisted to DuckDB):
 
@@ -192,7 +195,7 @@ srz ask --show-chat 1
 
 ---
 
-## 4. Terminal Explorer & Offline Library Search
+## 5. Terminal Explorer & Offline Library Search
 
 ### Full-Screen Ratatui Terminal Dashboard (`srz browse`)
 Explore your reading history, filter items by category, copy summaries to clipboard, or read in fullscreen:

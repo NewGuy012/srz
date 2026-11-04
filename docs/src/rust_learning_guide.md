@@ -690,7 +690,11 @@ Rust tasks spawned onto Tokio run cooperatively. An application can comfortably 
 <a id="125-the-mathematical-invariant-of-dynamic-context-budgeting"></a>
 ### 12.5 The Mathematical Invariant of Dynamic Context Budgeting
 - 💡 **Simple Analogy:** A shipping container with a hard weight limit. You reserve 30% for fragile return cargo and 25% for packaging buffers, precisely sizing the rest for your main shipment so the vessel never capsizes.
-- 💡 **The "Click" Moment: Zero-Drift Native Tokenization & Invariant Arithmetic:** Hardcoded limits (like assuming 12k or 16k tokens) break on small 4k models or underutilize 128k models. Worse, measuring tokens client-side with OpenAI's `tiktoken-rs` against a Gemma or Llama model introduces a 15–25% "tokenizer drift" error. `srz` queries the server's native `/tokenize` endpoint (`0% drift`), then feeds the exact capacity (`n_ctx`) into a mathematical invariant struct `DynamicBudget`. The struct guarantees at runtime that `effective_ctx = prompt_chunk + reserve_completion + headroom`, preventing out-of-memory context overflows before an inference request is dispatched.
+- 💡 **The "Click" Moment: Zero-Drift Native Tokenization & Invariant Arithmetic:** Hardcoded limits (like assuming 12k or 16k tokens) break on small 4k models or underutilize 128k models. Worse, measuring tokens client-side with OpenAI's `tiktoken-rs` against a Gemma or Llama model introduces a 15–25% "tokenizer drift" error. `srz` queries the server's native `/tokenize` endpoint (`0% drift`), then feeds the exact capacity (`n_ctx`) into a mathematical invariant struct `DynamicBudget`. The struct enforces the mathematical capacity invariant at runtime:
+
+  $$ \text{effective\_ctx} = \text{prompt\_chunk} + \text{reserve\_completion} + \text{headroom} \le n_{\text{ctx}} $$
+
+  This mathematically guarantees that prompt chunks and completion headroom fit within hardware bounds, preventing out-of-memory context overflows before an inference request is dispatched.
 - 🔍 **Real Code in `srz` ([src/engine/budget.rs](https://github.com/NewGuy012/srz/blob/master/src/engine/budget.rs)):**
   ```rust
   #[derive(Debug, Clone, Copy, PartialEq, Eq)]

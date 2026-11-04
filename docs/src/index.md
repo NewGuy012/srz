@@ -22,7 +22,7 @@
 - ⚡ **Terminal Paging & Live Streaming**: Clean CLI output with automatic `$PAGER` integration (`less -RFX`), terminal escape sequence sanitization, and optional live token streaming (`--stream`).
 - 💬 **Interactive Q&A & Multi-Turn Chat (`srz ask`)**: Ask targeted questions grounded on source text or engage in persistent multi-turn chat sessions with full transcript recall.
 - 🖥️ **Terminal Dashboard (`srz browse`)**: Full-screen keyboard-navigated TUI built on Ratatui with live search filtering, reader views, and clipboard export.
-- 🔍 **Offline BM25 Full-Text Search (`srz find`)**: Embedded DuckDB indexes every read into an inverted term index with \\(2.5\times\\) title boosting, Robertson-Sparck Jones IDF ranking, and query-focused snippet extraction.
+- 🔍 **Offline BM25 Full-Text Search (`srz find`)**: Embedded DuckDB indexes every read into an inverted term index with 2.5× title boosting, Robertson-Sparck Jones IDF ranking, and query-focused snippet extraction.
 - 📊 **Reading Analytics & Model Telemetry (`srz stats`)**: Track reading streaks, active days, estimated reading time saved (225 wpm baseline), and local model token throughput percentiles (P50/P95).
 - 🗄️ **Consolidated DuckDB Storage & TTL Caching**: High-speed embedded storage (`srz.duckdb` and `cache.duckdb`) with atomic transactions, SHA-256 hash indexing, and millisecond-accurate TTL pruning.
 - 📖 **Distraction-Free Reader Views**: Rendered HTML and Markdown views with light/dark theme toggle, opened via `--open` or `srz index`.
@@ -31,7 +31,12 @@
 
 ## Documentation Guide
 
-Browse through the chapters to get started:
+> 🧭 **Where should I begin?**
+> - **Brand new to `srz` or local LLMs?** Start with [Installation](installation.md) and the [Quick Start](quickstart.md) to run your first summary in under 2 minutes.
+> - **Looking for specific flags, subcommands, or keybindings?** Jump straight to the [Command Reference](commands.md).
+> - **Curious how it works under the hood?** Explore [Architecture & Design](architecture.md) and the deep-dive [Rust Learning Guide](rust_learning_guide.md).
+
+Browse through the chapters:
 
 - [**Installation**](installation.md): Quick one-line curl/PowerShell scripts, Homebrew tap, Cargo build, precompiled releases, and in-place self-upgrades.
 - [**Quick Start**](quickstart.md): Connect your local LLM backend (Llama-macOS, Llama-Windows, llama.cpp, Ollama, LM Studio) and run your first summaries.

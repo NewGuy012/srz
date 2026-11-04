@@ -177,8 +177,8 @@ srz find <QUERY>
 
 Executes a local Robertson-Sparck Jones BM25 search ranking across your entire DuckDB reading history without internet access.
 
-* \\(2.5\times\\) title weight boost for matching terms.
-* Document length normalization (\\(k_1=1.2, b=0.75\\)).
+* **2.5× Title Weight Boost**: Terms matching document titles receive 2.5× the weight of terms matching summary bodies.
+* **Document Length Normalization**: Sized with tuned parameters ($k_1 = 1.2, b = 0.75$) to balance term repetition and document length.
 * Extracts relevance-focused preview snippets centered around query terms.
 
 ---

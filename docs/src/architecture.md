@@ -102,7 +102,7 @@ src/
 | | [`src/config/file.rs`](https://github.com/NewGuy012/srz/blob/master/src/config/file.rs) | `config::file` | `config.toml` file loading, named profile switching, and starter template generation. |
 | **Engine** | [`src/engine/llm.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/llm.rs) | `engine::llm` | Zero-copy SSE client (`complete_chat` / `SseStreamState`), server capability discovery (`probe_server_capabilities`), native `/tokenize` queries, wall-clock token rate tracking, and dynamic map-reduce synthesis. |
 | | [`src/engine/budget.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/budget.rs) | `engine::budget` | Dynamic token budgeting math (`DynamicBudget`) and server capability descriptors (`ServerCapabilities`) autoscaling prompt chunks and slot concurrency. |
-| | [`src/engine/chunker.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/chunker.rs) | `engine::chunker` | Accurate BPE token budgeting (`tiktoken-rs` `cl100k_base`), token counting (`count_tokens`), token-safe truncation (`truncate_by_tokens`), \\(O(1)\\) fast-path budget checks, and unified zero-copy `Cow` paragraph chunking (`chunk_with_metric`) for long documents (> 16k tokens). |
+| | [`src/engine/chunker.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/chunker.rs) | `engine::chunker` | Accurate BPE token budgeting (`tiktoken-rs` `cl100k_base`), token counting (`count_tokens`), token-safe truncation (`truncate_by_tokens`), $O(1)$ fast-path budget checks, and unified zero-copy `Cow` paragraph chunking (`chunk_with_metric`) for long documents (> 16k tokens). |
 | **Sources** | [`src/sources/document.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/document.rs) | `sources::document` | Unified local document ingestion (`DocumentLoader`): shared file validation (`validate_file`, 20 MB cap), PDF extraction, HTML/Markdown normalization, and title fallbacks. |
 | | [`src/sources/scraper.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/scraper.rs) | `sources::scraper` | HTTP client (10 MB cap), streaming body readers (`read_response_bytes_limited`, `read_response_text_limited`), Mozilla Readability DOM content extraction (`dom_smoothie`) with zero-copy fallback, and text cleaning. |
 | | [`src/sources/pdf.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/pdf.rs) | `sources::pdf` | Single-pass pure-Rust PDF `Document` parsing, text layer & `Info` trailer metadata extraction, and scanned-PDF detection via `pdf-extract`. |
@@ -224,16 +224,36 @@ graph LR
 
 ## 4. Offline BM25 Full-Text Search Algorithm
 
-When executing `srz find <QUERY>`, `srz` computes relevance scores offline across the library using the Robertson-Sparck Jones BM25 formula:
+When executing `srz find <QUERY>`, `srz` computes relevance scores offline across the library using the Robertson-Sparck Jones BM25 ranking formula:
 
-\\[
-\text{Score}(D, Q) = \sum_{t \in Q} \text{IDF}(t) \cdot \frac{f(t, D) \cdot (k_1 + 1)}{f(t, D) + k_1 \cdot \left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}
-\\]
+$$
+\text{Score}(D, Q) = \sum_{t \in Q} \text{IDF}(t) \cdot w(t) \cdot \frac{f(t, D) \cdot (k_1 + 1)}{f(t, D) + k_1 \cdot \left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}
+$$
 
-- **\\(2.5\times\\) Title Weighting**: Terms matching document titles receive \\(2.5\times\\) the weight of terms matching summary bodies.
-- **Tuned Parameters**: Term frequency saturation \\(k_1 = 1.2\\), document length normalization \\(b = 0.75\\).
-- **Snippet Extraction**: Pre-tokenizes query terms to extract high-density preview sentences for fast scanning.
-- **Pure SQL Execution**: Runs directly inside DuckDB without requiring external search engine plugins or background daemons.
+Where the Robertson-Sparck Jones Inverse Document Frequency $\text{IDF}(t)$ is computed as:
+
+$$
+\text{IDF}(t) = \ln\left( \frac{N - n(t) + 0.5}{n(t) + 0.5} + 1.0 \right)
+$$
+
+### Algorithm & Parameter Breakdown
+
+For developers and learners curious about the mechanics behind offline library search:
+
+| Symbol / Variable | Value / Formula | Description |
+| :--- | :--- | :--- |
+| **$f(t, D)$** | Term Frequency | Number of times query term $t$ appears in document $D$. |
+| **$w(t)$** | $2.5$ (title) / $1.0$ (body) | **2.5× Title Boost**: Matching query terms in the document title are weighted 2.5× higher than terms in the summary body. |
+| **$k_1$** | `1.2` | **Term Frequency Saturation**: Controls non-linear scaling of repeated term matches, preventing long repetitive documents from monopolizing results. |
+| **$b$** | `0.75` | **Document Length Normalization**: Penalizes verbose documents relative to the average length (`avgdl`). |
+| **$|D|$ / $\text{avgdl}$** | Relative Doc Length | The word count of document $D$ divided by the average word count across your library history. |
+| **$N$** | Total Documents | Total number of summarized items stored in `history`. |
+| **$n(t)$** | Document Frequency | Number of library documents containing term $t$. |
+
+### Implementation Highlights
+- **Pure SQL Execution**: Runs directly inside DuckDB via Common Table Expressions (`WITH doc_stats AS (...)`, `term_df`, `scored_docs`) without external search engine plugins or background daemons.
+- **Pre-Tokenized Snippet Extraction**: Pre-tokenizes query terms to extract high-density preview sentences for rapid scanning.
+- **Sub-Millisecond Query Speed**: The inverted index table (`library_terms`) indexes term frequencies at summary save time, enabling instant searches even across thousands of articles.
 
 ---
 
@@ -263,7 +283,7 @@ To eliminate context length guesswork and prevent Out-of-Memory context truncati
 
 ### Single-Pass Synthesis vs. Map-Reduce Chunking
 
-- **1-Pass Mode (Optimal)**: When document token count \\(\le \sim 70\\%\\) of the server context window (`n_ctx`), `srz` synthesizes the entire document in one LLM call. This preserves narrative continuity and produces the highest-fidelity structured summary.
+- **1-Pass Mode (Optimal)**: When document token count $\le \sim 70\%$ of the server context window (`n_ctx`), `srz` synthesizes the entire document in one LLM call. This preserves narrative continuity and produces the highest-fidelity structured summary.
 - **Map-Reduce Mode (Automatic)**: When a document exceeds the single-pass limit (e.g. a 300-page book or 100-page PDF on an 8k context server), `srz` dynamically partitions content into overlapping token windows sized by `DynamicBudget`, summarizes chunks concurrently up to the server's detected slot limit (`total_slots`), and performs a final reduction pass.
 
 ### Zero-Drift Server-Native Tokenization
@@ -272,10 +292,15 @@ Third-party BPE tokenizers (e.g. OpenAI's `cl100k_base`) drift by 15–25% when 
 
 ### Dynamic Context Budgeting (`DynamicBudget`)
 
-`DynamicBudget` mathematically sizes prompt budgets, chunk overlaps, and completion headroom based on probed server parameters:
-- **Prompt Chunks**: Scaled to ~45% of `n_ctx`.
-- **Reserve Completion Tokens**: Sized to ~30% of context (capped at 8,192).
-- **Safety Headroom**: ~25% margin ensures prompt + completion never exceeds physical server context capacity or triggers OOM errors.
+`DynamicBudget` mathematically sizes prompt budgets, chunk overlaps, and completion headroom based on probed server parameters to maintain a strict capacity invariant:
+
+$$
+\text{effective\_ctx} = \text{prompt\_chunk} + \text{reserve\_completion} + \text{headroom} \le n_{\text{ctx}}
+$$
+
+- **Prompt Chunks**: Scaled to ~45% of `n_ctx` (clamped between 1,024 and 65,536 tokens).
+- **Reserve Completion Tokens**: Sized to ~30% of context (clamped between 512 and 8,192).
+- **Safety Headroom**: ~25% margin (clamped between 512 and 4,096) ensures prompt + completion never exceeds physical server context capacity or triggers OOM errors.
 - **Slot-Aware Concurrency**: Probes server worker slots (`total_slots`) to scale parallel map-reduce chunk summarization without congesting the inference queue.
 - **Sub-Optimal Context Alerts**: When execution is constrained by small server context windows, `srz` emits a non-intrusive 1-line terminal footer hint, and `srz doctor` provides a full hardware optimization panel.
 
@@ -303,10 +328,10 @@ Third-party BPE tokenizers (e.g. OpenAI's `cl100k_base`) drift by 15–25% when 
 - **Server-Native Tokenization (`/tokenize`)**: Probes and uses the server's native `/tokenize` endpoint (0% tokenizer drift across multilingual text and code) while seamlessly falling back to OpenAI's `cl100k_base` BPE tokenizer (`tiktoken-rs`).
 - **Persistent Capability Caching with Model-Change Invalidation**: Caches probed server operational parameters in `cache.duckdb` (`cache_server_capabilities`) for sub-millisecond startup, automatically invalidating and re-probing whenever a model change or server restart is detected.
 - **Laptop Hardware Steering (Gemma 4 Q8_0)**: Automatically inspects host unified memory and chip characteristics without `unsafe` code (`sysctl` on macOS, `/proc/meminfo` on Linux), steering users towards battery-efficient, high-fidelity Google Gemma 4 `Q8_0` setups with optimal context sizing.
-- **Autoscaled Map-Reduce Concurrency**: Automatically scales parallel chunk workers to the server's detected slot capacity (`total_slots`), completing map-reduce passes up to \\(4\\times\\) faster out-of-the-box.
+- **Autoscaled Map-Reduce Concurrency**: Automatically scales parallel chunk workers to the server's detected slot capacity (`total_slots`), completing map-reduce passes up to 4× faster out-of-the-box.
 - **Question-Aware Q&A Context Selection**: For long documents in `srz ask`, `select_relevant_context_with_budget` ranks document chunks by query term overlap within a dynamic token budget, paired with token-budgeted sliding conversational history.
 - **Zero-Copy SSE Streaming**: Server-Sent Events (SSE) stream tokens directly from network byte buffers into borrowed string slices (`Cow<str>`), batching terminal flushes per packet to eliminate redundant string allocations and terminal redraw flicker.
-- **Fast-Path Budget Checks**: Unified chunking in `TextChunker` uses an \\(O(1)\\) byte-length check to instantly pass documents that already fit within token limits, completely bypassing tokenizer passes on shorter texts.
+- **Fast-Path Budget Checks**: Unified chunking in `TextChunker` uses an $O(1)$ byte-length check to instantly pass documents that already fit within token limits, completely bypassing tokenizer passes on shorter texts.
 - **Subtle Terminal Advisor & Doctor Audit**: Emits a non-intrusive 1-line terminal footer hint when execution was constrained by sub-optimal server context, and provides a full hardware optimization panel in `srz doctor`.
 
 #### High-Speed Ingestion & Parsing
@@ -320,7 +345,7 @@ Third-party BPE tokenizers (e.g. OpenAI's `cl100k_base`) drift by 15–25% when 
 #### Database, Caching & Instant Search
 - **Consolidated Single-Write DuckDB Cache**: Stores web pages, search metadata, and LLM summaries directly in a single embedded `cache.duckdb` without dual-writing `.json` files—eliminating inode exhaustion and enabling sub-millisecond lookups, SQL byte-size accounting (`strlen`), and instantaneous SQL timestamp TTL eviction via `epoch_ms(cached_at)::BIGINT`.
 - **Lazy Database Initialization & Normalized Schema**: Both `cache.duckdb` and `srz.duckdb` skip schema DDL when already initialized and defer auto-pruning past fast-exit CLI subcommands. In `srz.duckdb`, `library` is normalized (`(id, summary)`) and joined against `history` to eliminate duplicate metadata columns.
-- **Offline BM25 Full-Text Relevance**: Pure SQL Robertson-Sparck Jones BM25 search ranking runs directly inside DuckDB without external extensions, featuring \\(2.5\times\\) title weight boosting, document length normalization (\\(k_1=1.2, b=0.75\\)), and pre-tokenized query vectors for rapid snippet extraction.
+- **Offline BM25 Full-Text Relevance**: Pure SQL Robertson-Sparck Jones BM25 search ranking runs directly inside DuckDB without external extensions, featuring 2.5× title weight boosting, document length normalization ($k_1 = 1.2, b = 0.75$), and pre-tokenized query vectors for rapid snippet extraction.
 - **Unified SQL + Disk LRU Pruning**: `Cache::prune` collects surviving database rows and view file metadata in a single pass, executing LRU size-based eviction across both `cache.duckdb` tables and `views/` files.
 - **Transactional Database Safety**: ACID database transactions guarantee complete atomicity and rollback safety across library records and chat histories.
 
