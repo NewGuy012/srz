@@ -101,11 +101,45 @@ pub struct LlmOutput {
     pub tokens_per_second: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ModelInfoMeta {
+    #[serde(default)]
+    pub n_ctx: Option<usize>,
+    #[serde(default)]
+    pub n_ctx_train: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelInfo {
     pub id: String,
     #[serde(default)]
     pub owned_by: Option<String>,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
+    pub meta: Option<ModelInfoMeta>,
+    #[serde(default)]
+    pub context_length: Option<usize>,
+    #[serde(default)]
+    pub max_model_len: Option<usize>,
+}
+
+impl ModelInfo {
+    /// Discovers the active context window size in tokens, prioritizing runtime context (`meta.n_ctx`)
+    /// followed by context limits (`context_length`, `max_model_len`).
+    pub fn context_window(&self) -> Option<usize> {
+        self.meta
+            .as_ref()
+            .and_then(|m| m.n_ctx)
+            .filter(|&c| c > 0)
+            .or(self.context_length.filter(|&c| c > 0))
+            .or(self.max_model_len.filter(|&c| c > 0))
+    }
+
+    /// Checks if this model entry matches the target model name by ID or alias.
+    pub fn matches_model_id(&self, target: &str) -> bool {
+        self.id == target || self.aliases.iter().any(|a| a == target)
+    }
 }
 
 #[derive(Deserialize)]
@@ -468,38 +502,123 @@ impl LlmClient {
             backend_kind: "default".to_string(),
         };
 
-        // 1. Try llama.cpp GET /props
-        if let Ok(resp) = self
-            .send_root_request("/props", |c, u| {
-                c.get(u).timeout(Duration::from_millis(1500))
-            })
-            .await
+        // 1. Try llama.cpp GET /props (with model query param fallback for router/multi-model servers)
+        let mut props_json: Option<serde_json::Value> = None;
+
+        if !self.model.is_empty() {
+            let model_path = format!("/props?model={}", urlencoding::encode(&self.model));
+            if let Ok(resp) = self
+                .send_root_request(&model_path, |c, u| {
+                    c.get(u).timeout(Duration::from_millis(1500))
+                })
+                .await
+                && resp.status().is_success()
+                && let Ok(bytes) =
+                    crate::scraper::read_response_bytes_limited(resp, MAX_HTTP_RESPONSE_BYTES).await
+                && let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes)
+            {
+                let n_ctx = json
+                    .pointer("/default_generation_settings/n_ctx")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                if n_ctx > 0 {
+                    props_json = Some(json);
+                }
+            }
+        }
+
+        if props_json.is_none()
+            && let Ok(resp) = self
+                .send_root_request("/props", |c, u| {
+                    c.get(u).timeout(Duration::from_millis(1500))
+                })
+                .await
             && resp.status().is_success()
             && let Ok(bytes) =
                 crate::scraper::read_response_bytes_limited(resp, MAX_HTTP_RESPONSE_BYTES).await
             && let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes)
         {
+            let is_router = json.get("role").and_then(|r| r.as_str()) == Some("router")
+                || json
+                    .pointer("/default_generation_settings/n_ctx")
+                    .and_then(|v| v.as_u64())
+                    == Some(0);
+            if is_router && !self.model.is_empty() {
+                let model_path = format!("/props?model={}", urlencoding::encode(&self.model));
+                if let Ok(m_resp) = self
+                    .send_root_request(&model_path, |c, u| {
+                        c.get(u).timeout(Duration::from_millis(1500))
+                    })
+                    .await
+                    && m_resp.status().is_success()
+                    && let Ok(m_bytes) =
+                        crate::scraper::read_response_bytes_limited(m_resp, MAX_HTTP_RESPONSE_BYTES)
+                            .await
+                    && let Ok(m_json) = serde_json::from_slice::<serde_json::Value>(&m_bytes)
+                {
+                    props_json = Some(m_json);
+                } else {
+                    props_json = Some(json);
+                }
+            } else {
+                props_json = Some(json);
+            }
+        }
+
+        if let Some(json) = props_json {
             caps.backend_kind = "llama.cpp".to_string();
             if let Some(n_ctx) = json
                 .pointer("/default_generation_settings/n_ctx")
                 .and_then(|v| v.as_u64())
+                .filter(|&v| v > 0)
             {
                 caps.n_ctx = (n_ctx as usize).clamp(
                     crate::budget::MIN_CONTEXT_WINDOW,
                     crate::budget::MAX_CONTEXT_WINDOW,
                 );
             }
-            if let Some(slots) = json.get("total_slots").and_then(|v| v.as_u64()) {
+            if let Some(slots) = json
+                .get("total_slots")
+                .and_then(|v| v.as_u64())
+                .filter(|&v| v > 0)
+            {
                 caps.total_slots = (slots as usize).clamp(1, crate::budget::MAX_CONCURRENCY);
             }
 
-            // Probe POST /tokenize on llama.cpp
-            if self
-                .probe_tokenize_endpoint("/tokenize", serde_json::json!({ "content": "test" }))
+            // Probe POST /tokenize on llama.cpp (send model name if available, fallback without)
+            let token_probed = if !self.model.is_empty() {
+                self.probe_tokenize_endpoint(
+                    "/tokenize",
+                    serde_json::json!({ "model": &self.model, "content": "test" }),
+                )
                 .await
+            } else {
+                false
+            };
+
+            if token_probed
+                || self
+                    .probe_tokenize_endpoint("/tokenize", serde_json::json!({ "content": "test" }))
+                    .await
             {
                 caps.supports_tokenize = true;
                 caps.tokenize_endpoint = Some("/tokenize".to_string());
+            }
+
+            // Fallback check against /v1/models if context window could not be resolved from props
+            let ctx_from_props = json
+                .pointer("/default_generation_settings/n_ctx")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            if ctx_from_props == 0
+                && let Ok(models) = self.list_models().await
+                && let Some(matching) = models.iter().find(|m| m.matches_model_id(&self.model))
+                && let Some(ctx) = matching.context_window()
+            {
+                caps.n_ctx = ctx.clamp(
+                    crate::budget::MIN_CONTEXT_WINDOW,
+                    crate::budget::MAX_CONTEXT_WINDOW,
+                );
             }
 
             return caps;
@@ -559,9 +678,29 @@ impl LlmClient {
         // 3. Fallback: query models list
         if let Ok(models) = self.list_models().await {
             caps.backend_kind = "openai-compatible".to_string();
-            if self
-                .probe_tokenize_endpoint("/tokenize", serde_json::json!({ "content": "test" }))
+            if let Some(matching) = models.iter().find(|m| m.matches_model_id(&self.model))
+                && let Some(ctx) = matching.context_window()
+            {
+                caps.n_ctx = ctx.clamp(
+                    crate::budget::MIN_CONTEXT_WINDOW,
+                    crate::budget::MAX_CONTEXT_WINDOW,
+                );
+            }
+
+            let token_probed = if !self.model.is_empty() {
+                self.probe_tokenize_endpoint(
+                    "/tokenize",
+                    serde_json::json!({ "model": &self.model, "content": "test" }),
+                )
                 .await
+            } else {
+                false
+            };
+
+            if token_probed
+                || self
+                    .probe_tokenize_endpoint("/tokenize", serde_json::json!({ "content": "test" }))
+                    .await
             {
                 caps.supports_tokenize = true;
                 caps.tokenize_endpoint = Some("/tokenize".to_string());
@@ -610,18 +749,37 @@ impl LlmClient {
                 "model": &self.model,
                 "prompt": text,
             })
+        } else if !self.model.is_empty() {
+            serde_json::json!({
+                "model": &self.model,
+                "content": text,
+            })
         } else {
             serde_json::json!({
                 "content": text,
             })
         };
 
-        let resp = self
+        let mut resp = self
             .send_root_request(path, |c, u| {
                 c.post(u).json(&body).timeout(Duration::from_secs(3))
             })
             .await
             .ok()?;
+
+        if !resp.status().is_success() && !is_ollama && !self.model.is_empty() {
+            let fallback_body = serde_json::json!({ "content": text });
+            if let Ok(fb_resp) = self
+                .send_root_request(path, |c, u| {
+                    c.post(u)
+                        .json(&fallback_body)
+                        .timeout(Duration::from_secs(3))
+                })
+                .await
+            {
+                resp = fb_resp;
+            }
+        }
 
         if !resp.status().is_success() {
             return None;
@@ -1891,5 +2049,41 @@ mod tests {
             formatted_500,
             "LLM server internal error (HTTP 500 Internal Server Error): CUDA out of memory"
         );
+    }
+
+    #[test]
+    fn test_model_info_deserialization_and_context_discovery() {
+        // llama.cpp / Llama.app format with meta and aliases
+        let llamacpp_json = r#"{
+            "id": "ggml-org/gemma-4-E4B-it-GGUF:Q8_0",
+            "aliases": ["gemma-4-E4B-it-Q8_0"],
+            "owned_by": "llamacpp",
+            "context_length": 131072,
+            "meta": {
+                "n_ctx": 65536,
+                "n_ctx_train": 131072
+            }
+        }"#;
+        let model: ModelInfo = serde_json::from_str(llamacpp_json).expect("failed to parse");
+        assert_eq!(model.id, "ggml-org/gemma-4-E4B-it-GGUF:Q8_0");
+        assert_eq!(model.context_window(), Some(65536));
+        assert!(model.matches_model_id("ggml-org/gemma-4-E4B-it-GGUF:Q8_0"));
+        assert!(model.matches_model_id("gemma-4-E4B-it-Q8_0"));
+        assert!(!model.matches_model_id("llama-3"));
+
+        // vLLM format with max_model_len
+        let vllm_json = r#"{
+            "id": "meta-llama/Llama-3-8B-Instruct",
+            "owned_by": "vllm",
+            "max_model_len": 8192
+        }"#;
+        let vllm_model: ModelInfo = serde_json::from_str(vllm_json).expect("failed to parse");
+        assert_eq!(vllm_model.context_window(), Some(8192));
+        assert!(vllm_model.matches_model_id("meta-llama/Llama-3-8B-Instruct"));
+
+        // Minimal format (no context info provided)
+        let minimal_json = r#"{"id": "generic-model"}"#;
+        let minimal_model: ModelInfo = serde_json::from_str(minimal_json).expect("failed to parse");
+        assert_eq!(minimal_model.context_window(), None);
     }
 }
