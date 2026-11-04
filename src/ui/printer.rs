@@ -55,7 +55,7 @@ pub fn display_summary(
 ) -> io::Result<()> {
     let stdout_is_tty = io::stdout().is_terminal();
     let sanitized_title = crate::ui::sanitize_title(title);
-    let sanitized_content = crate::ui::sanitize_terminal_text(content);
+    let sanitized_content = crate::ui::sanitize_terminal_text_cow(content);
 
     // If output is redirected/piped, or plain mode is requested, or colors are disabled:
     if !stdout_is_tty || plain || !Ui::use_color() {

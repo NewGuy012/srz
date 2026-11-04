@@ -1,4 +1,5 @@
 use indicatif::{ProgressBar, ProgressStyle};
+use std::borrow::Cow;
 use std::env;
 use std::future::Future;
 use std::io::IsTerminal;
@@ -94,7 +95,7 @@ impl Ui {
         if Self::is_quiet() {
             return;
         }
-        let safe_msg = sanitize_terminal_text(message);
+        let safe_msg = sanitize_terminal_text_cow(message);
         if elapsed >= Duration::from_millis(50) {
             let elapsed_str = format_duration_short(elapsed);
             if Self::use_color() {
@@ -206,7 +207,7 @@ impl Ui {
     }
 
     fn print_styled(symbol: &str, color_code: &str, message: &str) {
-        let safe_msg = sanitize_terminal_text(message);
+        let safe_msg = sanitize_terminal_text_cow(message);
         if Self::use_color() {
             eprintln!("\x1b[{color_code}m{symbol}\x1b[0m {safe_msg}");
         } else {
@@ -226,7 +227,10 @@ fn is_bidi_control(c: char) -> bool {
 /// Sanitizes a string for safe terminal display by stripping ANSI escape sequences,
 /// string-type controls (OSC, DCS, SOS, PM, APC), 8-bit C1 controls, BiDi overrides,
 /// and unprintable ASCII control characters (CWE-150 / CWE-451).
-pub fn sanitize_terminal_text(input: &str) -> String {
+///
+/// Returns a borrowed `Cow::Borrowed` when the input contains no suspicious characters,
+/// avoiding heap allocations on clean inputs.
+pub fn sanitize_terminal_text_cow<'a>(input: &'a str) -> Cow<'a, str> {
     let has_suspicious = input.chars().any(|c| {
         c == '\x1b'
             || (c.is_control() && c != '\n' && c != '\t')
@@ -237,7 +241,7 @@ pub fn sanitize_terminal_text(input: &str) -> String {
             )
     });
     if !has_suspicious {
-        return input.to_string();
+        return Cow::Borrowed(input);
     }
 
     let mut clean = String::with_capacity(input.len());
@@ -307,15 +311,22 @@ pub fn sanitize_terminal_text(input: &str) -> String {
         clean.push(ch);
     }
 
-    clean
+    Cow::Owned(clean)
+}
+
+/// Sanitizes a string for safe terminal display by stripping ANSI escape sequences,
+/// string-type controls (OSC, DCS, SOS, PM, APC), 8-bit C1 controls, BiDi overrides,
+/// and unprintable ASCII control characters (CWE-150 / CWE-451).
+pub fn sanitize_terminal_text(input: &str) -> String {
+    sanitize_terminal_text_cow(input).into_owned()
 }
 
 /// Sanitizes a title string for terminal presentation by removing escape sequences and collapsing whitespace.
 pub fn sanitize_title(title: &str) -> String {
-    let sanitized = sanitize_terminal_text(title);
+    let sanitized = sanitize_terminal_text_cow(title);
     let bytes = sanitized.as_bytes();
     if bytes.is_empty() {
-        return sanitized;
+        return sanitized.into_owned();
     }
 
     let mut prev_space = false;
@@ -341,7 +352,7 @@ pub fn sanitize_title(title: &str) -> String {
     }
 
     if !needs_collapse {
-        return sanitized;
+        return sanitized.into_owned();
     }
 
     let mut out = String::with_capacity(sanitized.len());
@@ -452,6 +463,25 @@ mod tests {
 
         let bidi_title = "Title \u{202E}with \n \t BiDi\u{202C}";
         assert_eq!(sanitize_title(bidi_title), "Title with BiDi");
+    }
+
+    #[test]
+    fn test_sanitize_terminal_text_cow_zero_alloc() {
+        let clean = "This is a completely clean string!";
+        match sanitize_terminal_text_cow(clean) {
+            std::borrow::Cow::Borrowed(borrowed) => {
+                assert_eq!(borrowed, clean);
+            }
+            std::borrow::Cow::Owned(_) => panic!("expected clean string to be borrowed"),
+        }
+
+        let dirty = "This has \x1b[31mcolor\x1b[0m";
+        match sanitize_terminal_text_cow(dirty) {
+            std::borrow::Cow::Borrowed(_) => panic!("expected dirty string to be owned"),
+            std::borrow::Cow::Owned(owned) => {
+                assert_eq!(owned, "This has color");
+            }
+        }
     }
 
     #[test]

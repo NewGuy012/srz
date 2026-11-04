@@ -146,9 +146,8 @@ struct SseStreamState {
     last_spinner_update: std::time::Instant,
 }
 
-impl Default for SseStreamState {
-    fn default() -> Self {
-        let now = std::time::Instant::now();
+impl SseStreamState {
+    fn new(start_time: std::time::Instant) -> Self {
         Self {
             content_buf: String::with_capacity(2048),
             thinking_tokens: 0,
@@ -158,9 +157,15 @@ impl Default for SseStreamState {
             truncated: false,
             last_usage: None,
             needs_stdout_flush: false,
-            start_time: now,
-            last_spinner_update: now,
+            start_time,
+            last_spinner_update: start_time,
         }
+    }
+}
+
+impl Default for SseStreamState {
+    fn default() -> Self {
+        Self::new(std::time::Instant::now())
     }
 }
 
@@ -169,15 +174,6 @@ pub const MAX_CONTENT_BUFFER_BYTES: usize = 10 * 1024 * 1024; // 10 MB total con
 pub const MAX_HTTP_RESPONSE_BYTES: usize = 10 * 1024 * 1024; // 10 MB for JSON responses
 
 impl SseStreamState {
-    fn new(start_time: std::time::Instant) -> Self {
-        Self {
-            content_buf: String::with_capacity(2048),
-            start_time,
-            last_spinner_update: start_time,
-            ..Self::default()
-        }
-    }
-
     /// Processes a single SSE line. Returns `true` if the `[DONE]` sentinel was reached or limit hit.
     fn process_line(
         &mut self,
@@ -275,7 +271,7 @@ impl SseStreamState {
                     let safe_title = crate::ui::sanitize_title(header_title);
                     Ui::header(&format!("Summary: {}", safe_title));
                 }
-                print!("{}", crate::ui::sanitize_terminal_text(text_to_emit));
+                print!("{}", crate::ui::sanitize_terminal_text_cow(text_to_emit));
                 self.needs_stdout_flush = true;
             }
             StreamMode::Buffered => {

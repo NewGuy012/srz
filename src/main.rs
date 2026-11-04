@@ -275,23 +275,41 @@ fn print_execution_error(action_label: &str, err: &anyhow::Error) {
         || err_msg.contains("is listening on port 9931");
 
     let is_model_not_found = err_msg.contains("Local model not detected")
-        || err_msg.to_ascii_lowercase().contains("model not detected")
-        || (err_msg.to_ascii_lowercase().contains("model")
-            && (err_msg.to_ascii_lowercase().contains("not found")
-                || err_msg.to_ascii_lowercase().contains("not loaded")
-                || err_msg.to_ascii_lowercase().contains("does not exist")
-                || err_msg.to_ascii_lowercase().contains("no model is loaded")));
+        || srz::system::text_util::contains_ascii_case_insensitive(&err_msg, "model not detected")
+        || (srz::system::text_util::contains_ascii_case_insensitive(&err_msg, "model")
+            && (srz::system::text_util::contains_ascii_case_insensitive(&err_msg, "not found")
+                || srz::system::text_util::contains_ascii_case_insensitive(
+                    &err_msg,
+                    "not loaded",
+                )
+                || srz::system::text_util::contains_ascii_case_insensitive(
+                    &err_msg,
+                    "does not exist",
+                )
+                || srz::system::text_util::contains_ascii_case_insensitive(
+                    &err_msg,
+                    "no model is loaded",
+                )));
 
-    let is_context_error = err_msg.to_ascii_lowercase().contains("context length")
-        || err_msg.to_ascii_lowercase().contains("context window")
-        || err_msg.to_ascii_lowercase().contains("maximum context")
-        || err_msg.to_ascii_lowercase().contains("prompt is too long");
+    let is_context_error =
+        srz::system::text_util::contains_ascii_case_insensitive(&err_msg, "context length")
+            || srz::system::text_util::contains_ascii_case_insensitive(&err_msg, "context window")
+            || srz::system::text_util::contains_ascii_case_insensitive(&err_msg, "maximum context")
+            || srz::system::text_util::contains_ascii_case_insensitive(
+                &err_msg,
+                "prompt is too long",
+            );
 
-    let is_oom_error = err_msg.to_ascii_lowercase().contains("out of memory")
-        || err_msg.to_ascii_lowercase().contains("cuda out of memory")
-        || err_msg
-            .to_ascii_lowercase()
-            .contains("ggml_metal_graph_compute");
+    let is_oom_error =
+        srz::system::text_util::contains_ascii_case_insensitive(&err_msg, "out of memory")
+            || srz::system::text_util::contains_ascii_case_insensitive(
+                &err_msg,
+                "cuda out of memory",
+            )
+            || srz::system::text_util::contains_ascii_case_insensitive(
+                &err_msg,
+                "ggml_metal_graph_compute",
+            );
 
     if is_connection_error {
         let hw = srz::system::hardware::HardwareProfile::detect();
