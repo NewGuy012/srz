@@ -318,7 +318,7 @@ fn print_execution_error(action_label: &str, err: &anyhow::Error) {
         Ui::info("How to resolve:");
         Ui::info(&format!(
             "  • In Llama GUI (localhost:9931): Download or select {} ({})",
-            hw.recommended_model, hw.recommended_context_display
+            hw.concise_model, hw.recommended_context_display
         ));
         Ui::info("  • If using Ollama, pull or run the model:");
         println!("    \x1b[1;32m{}\x1b[0m", hw.ollama_launch_command);

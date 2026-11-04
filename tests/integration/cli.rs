@@ -879,14 +879,15 @@ fn test_feed_url_detection_and_routing() {
 fn test_recommend_simplified_naming_for_llama_gui() {
     use srz::system::hardware::{HardwareProfile, HardwareTier};
 
-    // Verify default CLI model reflects simplified Llama GUI naming
+    // Verify default CLI model uses verbose full model name for backend compatibility
     let default_cli = Cli::parse_from(["srz", "https://example.com"]);
-    assert_eq!(default_cli.model, "gemma-4");
+    assert_eq!(default_cli.model, "ggml-org/gemma-4-E4B-it-GGUF:Q8_0");
 
     // Tier 8GB
     let p8 = HardwareProfile::from_specs(8 * 1024 * 1024 * 1024, "Apple M1".to_string());
     assert_eq!(p8.tier, HardwareTier::Tier8GB);
-    assert_eq!(p8.recommended_model, "gemma-4");
+    assert_eq!(p8.recommended_model, "ggml-org/gemma-4-E4B-it-GGUF:Q8_0");
+    assert_eq!(p8.concise_model, "gemma-4");
     assert_eq!(p8.recommended_size, "E4B");
     assert_eq!(p8.recommended_quant, "Q8_0");
     assert_eq!(p8.recommended_context, 8192);
@@ -899,7 +900,8 @@ fn test_recommend_simplified_naming_for_llama_gui() {
     // Tier 16GB
     let p16 = HardwareProfile::from_specs(16 * 1024 * 1024 * 1024, "Apple M2".to_string());
     assert_eq!(p16.tier, HardwareTier::Tier16GB);
-    assert_eq!(p16.recommended_model, "gemma-4");
+    assert_eq!(p16.recommended_model, "ggml-org/gemma-4-E4B-it-GGUF:Q8_0");
+    assert_eq!(p16.concise_model, "gemma-4");
     assert_eq!(p16.recommended_size, "E4B");
     assert_eq!(p16.recommended_quant, "Q8_0");
     assert_eq!(p16.recommended_context, 32768);
@@ -912,7 +914,8 @@ fn test_recommend_simplified_naming_for_llama_gui() {
     // Tier 32GB
     let p32 = HardwareProfile::from_specs(32 * 1024 * 1024 * 1024, "Apple M3 Pro".to_string());
     assert_eq!(p32.tier, HardwareTier::Tier32GB);
-    assert_eq!(p32.recommended_model, "gemma-4");
+    assert_eq!(p32.recommended_model, "ggml-org/gemma-4-E4B-it-GGUF:Q8_0");
+    assert_eq!(p32.concise_model, "gemma-4");
     assert_eq!(p32.recommended_size, "E4B");
     assert_eq!(p32.recommended_quant, "Q8_0");
     assert_eq!(p32.recommended_context, 65536);
@@ -925,7 +928,11 @@ fn test_recommend_simplified_naming_for_llama_gui() {
     // Tier 64GB+
     let p64 = HardwareProfile::from_specs(64 * 1024 * 1024 * 1024, "Apple M3 Max".to_string());
     assert_eq!(p64.tier, HardwareTier::Tier64GBPlus);
-    assert_eq!(p64.recommended_model, "gemma-4");
+    assert_eq!(
+        p64.recommended_model,
+        "ggml-org/gemma-4-26B-A4B-it-GGUF:Q8_0"
+    );
+    assert_eq!(p64.concise_model, "gemma-4");
     assert_eq!(p64.recommended_size, "26B-A4B");
     assert_eq!(p64.recommended_quant, "Q8_0");
     assert_eq!(p64.recommended_context, 131072);
@@ -937,7 +944,7 @@ fn test_recommend_simplified_naming_for_llama_gui() {
 
     // Verify template config generation matches
     let template = srz::config::Config::template_for_hardware(&p16);
-    assert!(template.contains("model = \"gemma-4\""));
+    assert!(template.contains("model = \"ggml-org/gemma-4-E4B-it-GGUF:Q8_0\""));
     assert!(template.contains("context_window = 32768"));
 }
 

@@ -109,8 +109,13 @@ pub struct Cli {
     )]
     pub base_url: String,
 
-    /// Model name to use (default: "gemma-4" matching Llama GUI & llama.cpp)
-    #[arg(long, global = true, env = "OPENAI_MODEL", default_value = "gemma-4")]
+    /// Model name to use (default: "ggml-org/gemma-4-E4B-it-GGUF:Q8_0" matching Llama GUI & llama.cpp)
+    #[arg(
+        long,
+        global = true,
+        env = "OPENAI_MODEL",
+        default_value = "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
+    )]
     pub model: String,
 
     /// OpenAI API key (optional for local LLMs)

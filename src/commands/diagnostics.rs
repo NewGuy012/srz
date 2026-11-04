@@ -320,7 +320,8 @@ pub fn handle_recommend(as_json: bool) -> Result<()> {
             },
             "recommendations": {
                 "family": "Google Gemma 4",
-                "model": hw.recommended_model,
+                "model": hw.concise_model,
+                "model_id": hw.recommended_model,
                 "size": hw.recommended_size,
                 "quantization": hw.recommended_quant,
                 "context_window": hw.recommended_context,
@@ -345,7 +346,7 @@ pub fn handle_recommend(as_json: bool) -> Result<()> {
     println!();
 
     println!("Recommended Local LLM Setup (Llama GUI / llama.cpp):");
-    println!("  • Model:   {}", hw.recommended_model);
+    println!("  • Model:   {}", hw.concise_model);
     println!("  • Size:    {}", hw.recommended_size);
     println!("  • Quant:   {}", hw.recommended_quant);
     println!(

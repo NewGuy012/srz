@@ -45,6 +45,7 @@ pub struct HardwareProfile {
     pub chip_name: String,
     pub tier: HardwareTier,
     pub recommended_model: &'static str,
+    pub concise_model: &'static str,
     pub recommended_size: &'static str,
     pub recommended_quant: &'static str,
     pub recommended_context: usize,
@@ -69,6 +70,7 @@ impl HardwareProfile {
 
         let (
             recommended_model,
+            concise_model,
             recommended_size,
             recommended_quant,
             recommended_context,
@@ -78,6 +80,7 @@ impl HardwareProfile {
             ram_footprint,
         ) = match tier {
             HardwareTier::Tier8GB => (
+                "ggml-org/gemma-4-E4B-it-GGUF:Q8_0",
                 "gemma-4",
                 "E4B",
                 "Q8_0",
@@ -88,6 +91,7 @@ impl HardwareProfile {
                 "~5.0 GB total",
             ),
             HardwareTier::Tier16GB => (
+                "ggml-org/gemma-4-E4B-it-GGUF:Q8_0",
                 "gemma-4",
                 "E4B",
                 "Q8_0",
@@ -98,6 +102,7 @@ impl HardwareProfile {
                 "~6.5 GB total",
             ),
             HardwareTier::Tier32GB => (
+                "ggml-org/gemma-4-E4B-it-GGUF:Q8_0",
                 "gemma-4",
                 "E4B",
                 "Q8_0",
@@ -108,6 +113,7 @@ impl HardwareProfile {
                 "~8.5 GB total",
             ),
             HardwareTier::Tier64GBPlus => (
+                "ggml-org/gemma-4-26B-A4B-it-GGUF:Q8_0",
                 "gemma-4",
                 "26B-A4B",
                 "Q8_0",
@@ -134,6 +140,7 @@ impl HardwareProfile {
             chip_name,
             tier,
             recommended_model,
+            concise_model,
             recommended_size,
             recommended_quant,
             recommended_context,
@@ -148,7 +155,7 @@ impl HardwareProfile {
     pub fn llama_gui_selection(&self) -> String {
         format!(
             "{}  |  {}  |  {}  |  {}",
-            self.recommended_model,
+            self.concise_model,
             self.recommended_size,
             self.recommended_quant,
             self.recommended_context_display
@@ -159,7 +166,7 @@ impl HardwareProfile {
     pub fn llama_gui_badge_summary(&self) -> String {
         format!(
             "{} [{}] [{}] ({})",
-            self.recommended_model,
+            self.concise_model,
             self.recommended_size,
             self.recommended_quant,
             self.recommended_context_display
@@ -180,6 +187,7 @@ impl HardwareProfile {
             "tier": self.tier.display_name(),
             "recommended_family": "Gemma 4",
             "recommended_model": self.recommended_model,
+            "concise_model": self.concise_model,
             "recommended_size": self.recommended_size,
             "recommended_quant": self.recommended_quant,
             "recommended_context": self.recommended_context,
@@ -316,7 +324,11 @@ mod tests {
     fn test_profile_from_specs() {
         let profile = HardwareProfile::from_specs(16 * 1024 * 1024 * 1024, "Apple M3".to_string());
         assert_eq!(profile.tier, HardwareTier::Tier16GB);
-        assert_eq!(profile.recommended_model, "gemma-4");
+        assert_eq!(
+            profile.recommended_model,
+            "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
+        );
+        assert_eq!(profile.concise_model, "gemma-4");
         assert_eq!(profile.recommended_size, "E4B");
         assert_eq!(profile.recommended_quant, "Q8_0");
         assert_eq!(profile.recommended_context, 32_768);
@@ -345,7 +357,11 @@ mod tests {
         let profile =
             HardwareProfile::from_specs(64 * 1024 * 1024 * 1024, "Apple M3 Max".to_string());
         assert_eq!(profile.tier, HardwareTier::Tier64GBPlus);
-        assert_eq!(profile.recommended_model, "gemma-4");
+        assert_eq!(
+            profile.recommended_model,
+            "ggml-org/gemma-4-26B-A4B-it-GGUF:Q8_0"
+        );
+        assert_eq!(profile.concise_model, "gemma-4");
         assert_eq!(profile.recommended_size, "26B-A4B");
         assert_eq!(profile.recommended_quant, "Q8_0");
         assert_eq!(profile.recommended_context, 131_072);
