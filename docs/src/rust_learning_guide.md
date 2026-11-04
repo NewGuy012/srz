@@ -273,7 +273,7 @@ Structs allow you to package related values together into named types, creating 
 ### 4.2 Modern Let-Chains (`if let ... && ...`)
 - 💡 **Simple Analogy:** An airport boarding gate check: *"If your boarding pass is valid AND your passport is unexpired, please board the plane."*
 - 💡 **The "Click" Moment: Eliminating the Pyramid of Doom:** In older Rust (or languages like Go/Python), combining condition checks and value extractions required deeply nested `if` statements. Let-chains combine boolean conditions (`!outcome.cached`) and pattern-matching variable extractions (`let Some(db) = ...`) into a single guard condition without indentation drift.
-- 🔍 **Real Code in `srz` ([src/main.rs](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L214-L217)):**
+- 🔍 **Real Code in `srz` ([src/main.rs](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L231-L234)):**
   ```rust
   // Record newly generated summaries in DuckDB history & library (lazily opened)
   if !outcome.cached
@@ -304,7 +304,7 @@ Understanding this difference is critical for writing high-performance Rust with
 ### 5.2 Pre-allocating Capacity to Prevent Reallocation
 - 💡 **Simple Analogy:** Booking a bus for 30 passengers upfront, instead of hailing a 4-seater taxi, discovering it is full, hailing an 8-seater, and transferring luggage again and again.
 - 💡 **The "Click" Moment: The Hidden Cost of Dynamic Resizing:** A `String` or `Vec` stores data on the heap. When it fills up, the OS must allocate a new chunk of memory twice as big, copy *every single existing byte* over, and free the old buffer. When rendering Markdown to HTML, `srz` knows the text will expand by roughly 50%, so it pre-allocates `md.len() * 3 / 2` upfront in a single allocation.
-- 🔍 **Real Code in `srz` ([src/ui/render.rs](https://github.com/NewGuy012/srz/blob/master/src/ui/render.rs#L241-L244)):**
+- 🔍 **Real Code in `srz` ([src/ui/render.rs](https://github.com/NewGuy012/srz/blob/master/src/ui/render.rs#L307-L310)):**
   ```rust
   // Pre-allocate buffer: Markdown -> HTML expands text by ~50%
   let mut html_output = String::with_capacity(md.len() * 3 / 2);
@@ -372,7 +372,7 @@ In application code (like CLIs and servers), writing dozens of custom error enum
 ### 7.2 Lifetimes in Structs (`NewSummaryRecord<'a>`)
 - 💡 **Simple Analogy:** Filling out a library checkout receipt that references a manuscript on display, rather than having to make a full physical copy of the manuscript just to fill in the receipt.
 - 💡 **The "Click" Moment:** Why not make `summary: String` in database insertion structs? If a summary is 50KB long, having `String` fields forces Rust to duplicate all 50,000 characters on the heap just to insert it into DuckDB. By annotating the struct with `'a`, `NewSummaryRecord` borrows existing strings in memory. The Rust compiler guarantees at compile time that the record cannot outlive the strings it borrows, preventing dangling pointers with **zero allocations**.
-- 🔍 **Real Code in `srz` ([src/storage/db.rs](https://github.com/NewGuy012/srz/blob/master/src/storage/db.rs#L11-L24) and [src/main.rs](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L217-L231)):**
+- 🔍 **Real Code in `srz` ([src/storage/db.rs](https://github.com/NewGuy012/srz/blob/master/src/storage/db.rs#L11-L24) and [src/main.rs](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L234-L248)):**
   ```rust
   // In src/storage/db.rs: Struct holding borrowed strings
   pub struct NewSummaryRecord<'a> {
@@ -442,7 +442,7 @@ In application code (like CLIs and servers), writing dozens of custom error enum
 ### 8.1 Higher-Order Functions & Closures (`FnMut`)
 - 💡 **Simple Analogy:** A universal bread-slicing machine where you can swap out the slicing blade. You can insert a blade that cuts by number of slices, or a blade that cuts by weight, without rebuilding the whole machine.
 - 💡 **The "Click" Moment: Zero-Cost Monomorphization:** In Python or JS, passing callback functions creates heap-allocated closures and dynamic dispatch overhead. In Rust, generic closures (`fn chunk_with_metric<F>(..., mut count_fn: F) where F: FnMut(&str) -> usize`) use static dispatch: the compiler generates separate, highly-optimized machine-code functions with zero runtime function-call overhead.
-- 🔍 **Real Code in `srz` ([src/engine/chunker.rs](https://github.com/NewGuy012/srz/blob/master/src/engine/chunker.rs#L29-L48)):**
+- 🔍 **Real Code in `srz` ([src/engine/chunker.rs](https://github.com/NewGuy012/srz/blob/master/src/engine/chunker.rs#L50-L70)):**
   ```rust
   // In src/engine/chunker.rs:
   // 1. Chunking by BPE AI tokens passes a function pointer
@@ -490,7 +490,7 @@ In application code (like CLIs and servers), writing dozens of custom error enum
 ### 9.1 Crash-Safe Terminals via RAII (`Drop`)
 - 💡 **Simple Analogy:** A hotel room keycard that turns on the lights when inserted and turns off all electricity automatically when you remove the card and step outside.
 - 💡 **The "Click" Moment: Deterministic Destruction:** In other languages, if an interactive terminal program panics or crashes, your terminal is left in "raw mode" (keys don't echo, cursor is invisible, typing `Enter` doesn't work). In Rust, types implementing `Drop` are guaranteed to run cleanup when unwinding the stack, automatically restoring your terminal even if the code panics.
-- 🔍 **Real Code in `srz` ([src/ui/tui.rs](https://github.com/NewGuy012/srz/blob/master/src/ui/tui.rs#L130-L147)):**
+- 🔍 **Real Code in `srz` ([src/ui/tui.rs](https://github.com/NewGuy012/srz/blob/master/src/ui/tui.rs#L144-L162)):**
   ```rust
   pub fn run_tui(db: &Database, cache: &Cache) -> Result<()> {
       enable_raw_mode()?;
@@ -516,7 +516,7 @@ In application code (like CLIs and servers), writing dozens of custom error enum
 ### 9.2 The RAII Closure Loan Pattern (`with_db`)
 - 💡 **Simple Analogy:** A safe deposit box at a bank. The vault manager unlocks the door for you, lends you access to your box, waits until you are done with your transaction, and locks the heavy vault door behind you the moment you leave.
 - 💡 **The "Click" Moment: Scoped RAII Lending:** Instead of forcing callers to remember `db.close()`, `with_db` enforces a strict lexical lifetime. The database connection cannot leak outside the closure because the borrow `&Database` is invalid once the closure returns.
-- 🔍 **Real Code in `srz` ([src/commands/mod.rs](https://github.com/NewGuy012/srz/blob/master/src/commands/mod.rs#L47-L54) and [src/main.rs](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L64-L72)):**
+- 🔍 **Real Code in `srz` ([src/commands/mod.rs](https://github.com/NewGuy012/srz/blob/master/src/commands/mod.rs#L56-L63) and [src/main.rs](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L63-L71)):**
   ```rust
   // In src/commands/mod.rs
   pub fn with_db(f: impl FnOnce(&Database) -> Result<()>) -> Result<()> {
@@ -548,7 +548,7 @@ In application code (like CLIs and servers), writing dozens of custom error enum
 ### 9.3 Clone-on-Write in Action (`std::borrow::Cow<'a, str>`)
 - 💡 **Simple Analogy:** Reading a library book with transparent sticky notes. You read the original text for free (borrowed). Only if you need to rewrite or reformat a sentence do you photocopy that page and write on your copy (owned/cloned).
 - 💡 **The "Click" Moment: Borrow by Default, Allocate on Demand:** If a function only needs to modify data occasionally, returning `String` forces an allocation every time. `Cow<'a, str>` acts as a smart enum: it holds `Cow::Borrowed(&'a str)` when reading existing data, and seamlessly converts to `Cow::Owned(String)` only when edits are needed.
-- 🔍 **Real Code in `srz` ([src/main.rs](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L164-L171)):**
+- 🔍 **Real Code in `srz` ([src/main.rs](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L173-L187)):**
   ```rust
   let content = if render::is_html_path(output_path) {
       // 1. User wants HTML: Allocate a brand-new styled HTML document string
@@ -672,14 +672,16 @@ Rust tasks spawned onto Tokio run cooperatively. An application can comfortably 
 ### 12.4 Safe Host Hardware Profiling Without FFI or `unsafe`
 - 💡 **Simple Analogy:** Looking at the speedometer on your car dashboard rather than taking the transmission apart while driving.
 - 💡 **The "Click" Moment: Zero-FFI Kernel Querying:** Many C/C++ libraries query physical RAM or CPU architectures using complex Foreign Function Interfaces (FFI) with raw pointers and `libc` calls, which risk memory corruption if types mismatch across OS releases. In `srz`, because `#![forbid(unsafe_code)]` is strictly enforced across the codebase, hardware profiling must be 100% memory-safe. Instead of C FFI, `srz` queries native OS facilities via safe subprocess executions (`sysctl` on macOS, `/proc/meminfo` on Linux, PowerShell WMI on Windows), parsing standard UTF-8 streams defensively with robust fallbacks.
-- 🔍 **Real Code in `srz` ([src/system/hardware.rs](https://github.com/NewGuy012/srz/blob/master/src/system/hardware.rs)):**
+- 🔍 **Real Code in `srz` ([src/system/hardware.rs](https://github.com/NewGuy012/srz/blob/master/src/system/hardware.rs#L208-L218)):**
   ```rust
   #[cfg(target_os = "macos")]
-  fn detect_ram_bytes() -> Option<u64> {
-      let output = Command::new("sysctl").arg("-n").arg("hw.memsize").output().ok()?;
-      if output.status.success() {
-          let s = String::from_utf8_lossy(&output.stdout);
-          return s.trim().parse::<u64>().ok();
+  fn detect_total_memory() -> Option<u64> {
+      if let Ok(output) = Command::new("sysctl").args(["-n", "hw.memsize"]).output()
+          && output.status.success()
+          && let Ok(text) = std::str::from_utf8(&output.stdout)
+          && let Ok(bytes) = text.trim().parse::<u64>()
+      {
+          return Some(bytes);
       }
       None
   }
@@ -689,36 +691,56 @@ Rust tasks spawned onto Tokio run cooperatively. An application can comfortably 
 
 <a id="125-the-mathematical-invariant-of-dynamic-context-budgeting"></a>
 ### 12.5 The Mathematical Invariant of Dynamic Context Budgeting
-- 💡 **Simple Analogy:** A shipping container with a hard weight limit. You reserve 30% for fragile return cargo and 25% for packaging buffers, precisely sizing the rest for your main shipment so the vessel never capsizes.
+- 💡 **Simple Analogy:** A shipping container with a hard weight limit. You reserve capacity for completion output and safety headroom, precisely sizing prompt chunks and slot concurrency so the context window never overflows.
 - 💡 **The "Click" Moment: Zero-Drift Native Tokenization & Invariant Arithmetic:** Hardcoded limits (like assuming 12k or 16k tokens) break on small 4k models or underutilize 128k models. Worse, measuring tokens client-side with OpenAI's `tiktoken-rs` against a Gemma or Llama model introduces a 15–25% "tokenizer drift" error. `srz` queries the server's native `/tokenize` endpoint (`0% drift`), then feeds the exact capacity (`n_ctx`) into a mathematical invariant struct `DynamicBudget`. The struct enforces the mathematical capacity invariant at runtime:
 
-  $$ \text{effective\_ctx} = \text{prompt\_chunk} + \text{reserve\_completion} + \text{headroom} \le n_{\text{ctx}} $$
+  $$ \text{overhead} = \text{max\_completion} + \text{system\_margin} + \text{cushion} \le n_{\text{ctx}} $$
 
-  This mathematically guarantees that prompt chunks and completion headroom fit within hardware bounds, preventing out-of-memory context overflows before an inference request is dispatched.
-- 🔍 **Real Code in `srz` ([src/engine/budget.rs](https://github.com/NewGuy012/srz/blob/master/src/engine/budget.rs)):**
+  This mathematically guarantees with saturating arithmetic that prompt chunks, document grounding budgets (for `srz ask`), and completion headroom fit within hardware bounds without arithmetic overflow or OOM panics.
+- 🔍 **Real Code in `srz` ([src/engine/budget.rs](https://github.com/NewGuy012/srz/blob/master/src/engine/budget.rs#L39-L97)):**
   ```rust
-  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+  #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
   pub struct DynamicBudget {
-      pub context_window: usize,
-      pub prompt_chunk_tokens: usize,
-      pub reserve_completion_tokens: usize,
-      pub max_parallel_chunks: usize,
+      pub n_ctx: usize,
+      pub max_completion: u32,
+      pub concurrency: usize,
+      pub single_pass_threshold: usize,
+      pub chunk_tokens: usize,
+      pub chunk_overlap: usize,
+      pub ask_doc_budget: usize,
+      pub ask_hist_budget: usize,
   }
 
   impl DynamicBudget {
-      pub fn compute(n_ctx: usize, total_slots: usize, cli_max_tokens: Option<usize>) -> Self {
-          let ctx = n_ctx.max(2048);
-          let reserve = cli_max_tokens.unwrap_or_else(|| ((ctx * 30) / 100).clamp(512, 8192));
-          let headroom = ((ctx * 25) / 100).clamp(512, 4096);
-          let usable_prompt = ctx.saturating_sub(reserve).saturating_sub(headroom);
-          let chunk = usable_prompt.clamp(1024, 65536);
-          let slots = total_slots.clamp(1, 16);
+      pub fn new(
+          n_ctx: usize,
+          total_slots: usize,
+          cli_max_tokens: Option<u32>,
+          cli_concurrency: Option<usize>,
+      ) -> Self {
+          let n_ctx = n_ctx.clamp(MIN_CONTEXT_WINDOW, MAX_CONTEXT_WINDOW);
+          let max_completion_cap = (n_ctx / 3).clamp(512, u32::MAX as usize) as u32;
+          let max_completion = match cli_max_tokens {
+              Some(m) if m > 0 => m.min(max_completion_cap),
+              _ => (n_ctx / 4).clamp(1024, 8192) as u32,
+          };
+          let concurrency = cli_concurrency.unwrap_or(total_slots).clamp(1, MAX_CONCURRENCY);
+          let overhead = (max_completion as usize)
+              .saturating_add(500)
+              .saturating_add((n_ctx / 20).clamp(200, 1600));
+          let usable = n_ctx.saturating_sub(overhead);
+          let chunk_tokens = (usable.saturating_mul(7) / 10).max(1500);
+          let chunk_overlap = (chunk_tokens / 15).clamp(100, 1000);
 
           Self {
-              context_window: ctx,
-              prompt_chunk_tokens: chunk,
-              reserve_completion_tokens: reserve,
-              max_parallel_chunks: slots,
+              n_ctx,
+              max_completion,
+              concurrency,
+              single_pass_threshold: usable,
+              chunk_tokens,
+              chunk_overlap,
+              ask_doc_budget: usable / 2,
+              ask_hist_budget: usable.saturating_mul(4) / 10,
           }
       }
   }
@@ -729,15 +751,20 @@ Rust tasks spawned onto Tokio run cooperatively. An application can comfortably 
 ### 12.6 Model-Aware Caching & Invalidation in Embedded DuckDB
 - 💡 **Simple Analogy:** A library card catalog that immediately updates a shelf note if a book is replaced with a revised edition.
 - 💡 **The "Click" Moment: Deterministic Schema Migration & Invalidation:** Probing server properties on every single CLI invocation would add 10–30ms of network latency. To eliminate this, `srz` caches server capabilities (`n_ctx`, `total_slots`, `model_name`) in embedded DuckDB (`cache.duckdb`). If the user switches models in Ollama or `llama.cpp`, the cached model string mismatches: DuckDB automatically invalidates the stale row and executes a fresh probe. All table creation uses `CREATE TABLE IF NOT EXISTS` with explicit column migrations, ensuring zero corrupted cache schemas across versions.
-- 🔍 **Real Code in `srz` ([src/storage/cache.rs](https://github.com/NewGuy012/srz/blob/master/src/storage/cache.rs)):**
+- 🔍 **Real Code in `srz` ([src/storage/cache.rs](https://github.com/NewGuy012/srz/blob/master/src/storage/cache.rs#L1094-L1146)):**
   ```rust
-  pub fn get_server_capabilities(&self, base_url: &str) -> Option<ServerCapabilities> {
-      let mut conn = self.conn.lock().ok()?;
+  pub fn get_server_capabilities(
+      &self,
+      endpoint: &str,
+      current_model_id: &str,
+  ) -> Option<ServerCapabilities> {
+      let guard = self.get_or_init_db()?;
+      let conn = guard.as_ref()?;
       let mut stmt = conn.prepare(
-          "SELECT context_length, total_slots, model_name, updated_at
-           FROM cache_server_capabilities WHERE base_url = ?;"
+          "SELECT endpoint, model_id, n_ctx, total_slots, supports_tokenize, tokenize_endpoint, backend_kind, cached_ms
+           FROM cache_server_capabilities WHERE endpoint = ?"
       ).ok()?;
-      // ... checks TTL and model identity ...
+      // ... invalidates if model != current_model_id or entry is older than 24h ...
   }
   ```
 - 📖 **The Rust Book Reference:** [Chapter 16.3: Shared-State Concurrency](https://doc.rust-lang.org/book/ch16-03-shared-state.html) and [Chapter 9.2: Recoverable Errors](https://doc.rust-lang.org/book/ch09-02-recoverable-errors-with-result.html)
@@ -768,13 +795,15 @@ flowchart TD
         direction TB
         Args["User Inputs & Flags<br/>(clap derive)"] --> Resolver["Action Resolver<br/>(What does the user want?)"]
         ConfigFile["config.toml<br/>(User settings)"] -. merged into .-> Args
+        AskFlow["Grounded Q&A & REPL<br/>(srz ask with rustyline)"]
     end
 
     subgraph Sources ["2. Ingestion & Sources (src/sources/)"]
         WebScraper["Web Scraper<br/>(Fetches web pages)"]
+        YouTube["YouTube Client<br/>(Captions via XML/JSON3)"]
         PdfExtractor["PDF Extractor<br/>(Reads PDF documents)"]
         DocLoader["Document Loader<br/>(Validates local files)"]
-        NewsClient["News Client<br/>(Reads RSS news feeds)"]
+        NewsClient["News Client<br/>(Reads RSS & news feeds)"]
         Searcher["Book Searcher<br/>(Searches web for book info)"]
     end
 
@@ -788,7 +817,7 @@ flowchart TD
 
     subgraph Storage ["4. Storage & Persistence (src/storage/)"]
         Cache["Local Disk Cache<br/>(Remembers past web pages)"]
-        DB["DuckDB Database<br/>(Tracks stats, history & server caps)"]
+        DB["DuckDB Database<br/>(Tracks stats, history, chat sessions & server caps)"]
     end
 
     subgraph UI ["5. Presentation & Output (src/ui/)"]
@@ -799,7 +828,10 @@ flowchart TD
     end
 
     Hw -.-> GemmaSteering -.-> Resolver
-    Resolver -->|"Web, Book, File, or News"| Sources
+    Resolver -->|"Web, Book, File, News, or YouTube"| Sources
+    Resolver -->|"Grounded Q&A / Chat"| AskFlow
+    AskFlow --> Sources
+    AskFlow --> Chunker
     Sources -->|"Extracted Text"| Chunker
     Discovery --> DB
     Discovery --> BudgetEngine
@@ -817,11 +849,11 @@ flowchart TD
 ### 13.2 End-to-End Data Flow
 
 1. **System & Profiling Layer (`src/system/`)**: Detects physical host memory and CPU architecture via safe kernel sysctls/WMI, classifying machines into hardware tiers and recommending optimal high-fidelity Gemma 4 quantization presets (`Q8_0`).
-2. **CLI Layer (`src/main.rs`, `src/config/`)**: Parses arguments with `clap`, merges defaults from `config.toml`, and resolves user intentions into strongly typed `ResolvedAction` variants using exhaustive `match`.
-3. **Sources Layer (`src/sources/`)**: Fetches data over HTTP or local filesystem. Uses `LazyLock` for regex/selectors, and streams bytes defensively to avoid OOM crashes.
-4. **Engine Layer (`src/engine/`)**: Discovers OpenAI/llama.cpp/Ollama server capabilities (`n_ctx`, `total_slots`), eliminates tokenizer drift via native `/tokenize` APIs, and dynamically sizes chunk windows and completion headroom (`DynamicBudget`).
-5. **Storage Layer (`src/storage/`)**: Caches server capabilities, raw documents, and analytical stats in DuckDB using zero-allocation borrowed records (`NewSummaryRecord<'a>`) with model-change invalidation.
-6. **UI Layer (`src/ui/`)**: Renders styled Markdown/HTML, emits subtle 1-line context advisor footers for constrained hardware, and hosts full-screen interactive browsing safely restored via `Drop`.
+2. **CLI Layer (`src/main.rs`, `src/config/`, `src/commands/`)**: Parses arguments with `clap`, merges defaults from `config.toml`, and resolves user intentions into strongly typed `ResolvedAction` variants using exhaustive `match`—dispatching summaries, grounded Q&A (`srz ask`), model recommendations (`srz recommend`), health checks (`srz doctor`), or self-upgrades (`srz upgrade`).
+3. **Sources Layer (`src/sources/`)**: Fetches data from webpages, YouTube timed-text caption tracks (XML/JSON3), PDF documents, local text files, Unix stdin streams, Open Library book candidates, and live Google News RSS feeds. Uses `LazyLock` for regex/selectors and streams bytes defensively to avoid OOM crashes.
+4. **Engine Layer (`src/engine/`)**: Discovers OpenAI/llama.cpp/Ollama server capabilities (`n_ctx`, `total_slots`), eliminates tokenizer drift via native `/tokenize` APIs, and dynamically sizes chunk windows, grounding context, and completion headroom (`DynamicBudget`).
+5. **Storage Layer (`src/storage/`)**: Caches server capabilities, raw documents, and analytical stats in DuckDB using zero-allocation borrowed records (`NewSummaryRecord<'a>`) with model-change invalidation, and persists multi-turn chat sessions (`chat_sessions`) and inverted index search terms (`library_terms`).
+6. **UI Layer (`src/ui/`)**: Renders styled Markdown/HTML, routes tall outputs to the system `$PAGER`, emits subtle 1-line context advisor footers for constrained hardware, and hosts full-screen interactive browsing safely restored via `Drop`.
 
 ---
 
@@ -832,25 +864,25 @@ flowchart TD
 | :--- | :--- | :--- | :--- |
 | **Move vs. Borrow (`&`)** | [`src/main.rs#L23-L30`](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L23-L30) | **Reading over a shoulder**: Borrowing with `&` avoids transferring ownership and triggering error `E0382`. | [Ch 4.2: References & Borrowing](https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html) |
 | **Defensive Streaming** | [`src/sources/scraper.rs#L58-L86`](https://github.com/NewGuy012/srz/blob/master/src/sources/scraper.rs#L58-L86) | **Fuel pump auto-shutoff**: Streaming chunks with hard byte limits protects against Out-of-Memory DOS attacks. | [Ch 4.1: Ownership](https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html) |
-| **`Cow<'a, str>`** | [`src/main.rs#L164-L171`](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L164-L171) | **Reading with sticky notes**: Zero-copy borrowing by default, lazily allocating `String` only when edits occur. | [Ch 4.3: Slices](https://doc.rust-lang.org/book/ch04-03-slices.html) |
-| **Enums with Payloads** | [`src/config/cli.rs#L337-L358`](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs#L337-L358) | **Swiss Army Knife**: Makes invalid states unrepresentable; each variant holds only the fields it requires. | [Ch 6.1: Defining an Enum](https://doc.rust-lang.org/book/ch06-01-defining-an-enum.html) |
-| **Exhaustive `match`** | [`src/main.rs#L55-L75`](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L55-L75) | **Postal sorting bins**: The compiler flags missing variants if new commands are introduced. | [Ch 6.2: Pattern Matching](https://doc.rust-lang.org/book/ch06-02-match.html) |
-| **Modern Let-Chains** | [`src/main.rs#L214-L217`](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L214-L217) | **Airport boarding gate**: Combines bool checks and `let Some(...)` extraction into a single readable line. | [Ch 6.3: `if let`](https://doc.rust-lang.org/book/ch06-03-if-let.html) |
-| **Capacity Pre-allocation** | [`src/ui/render.rs#L241-L244`](https://github.com/NewGuy012/srz/blob/master/src/ui/render.rs#L241-L244) | **Booking bus upfront**: Eliminates multiple heap reallocations during Markdown-to-HTML conversions. | [Ch 8.2: Strings](https://doc.rust-lang.org/book/ch08-02-strings.html#updating-a-string) |
+| **`Cow<'a, str>`** | [`src/main.rs#L173-L187`](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L173-L187) | **Reading with sticky notes**: Zero-copy borrowing by default, lazily allocating `String` only when edits occur. | [Ch 4.3: Slices](https://doc.rust-lang.org/book/ch04-03-slices.html) |
+| **Enums with Payloads** | [`src/config/cli.rs#L338-L386`](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs#L338-L386) | **Swiss Army Knife**: Makes invalid states unrepresentable; each variant holds only the fields it requires. | [Ch 6.1: Defining an Enum](https://doc.rust-lang.org/book/ch06-01-defining-an-enum.html) |
+| **Exhaustive `match`** | [`src/main.rs#L54-L104`](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L54-L104) | **Postal sorting bins**: The compiler flags missing variants if new commands are introduced. | [Ch 6.2: Pattern Matching](https://doc.rust-lang.org/book/ch06-02-match.html) |
+| **Modern Let-Chains** | [`src/main.rs#L231-L234`](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L231-L234) | **Airport boarding gate**: Combines bool checks and `let Some(...)` extraction into a single readable line. | [Ch 6.3: `if let`](https://doc.rust-lang.org/book/ch06-03-if-let.html) |
+| **Capacity Pre-allocation** | [`src/ui/render.rs#L307-L310`](https://github.com/NewGuy012/srz/blob/master/src/ui/render.rs#L307-L310) | **Booking bus upfront**: Eliminates multiple heap reallocations during Markdown-to-HTML conversions. | [Ch 8.2: Strings](https://doc.rust-lang.org/book/ch08-02-strings.html#updating-a-string) |
 | **`Result`, `Option`, & `?`** | [`src/main.rs#L25-L27`](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L25-L27) | **Gift box & return receipt**: Explicit type-based errors that propagate cleanly without hidden crashes. | [Ch 9.2: Result](https://doc.rust-lang.org/book/ch09-02-recoverable-errors-with-result.html) |
-| **Lifetimes in Structs (`'a`)** | [`src/storage/db.rs#L11-L24`](https://github.com/NewGuy012/srz/blob/master/src/storage/db.rs#L11-L24) | **Expiring visitor pass**: Lets database records borrow 50KB strings without duplicating memory on the heap. | [Ch 10.3: Struct Lifetimes](https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html#lifetime-annotations-in-struct-definitions) |
-| **`#[serde(borrow)]`** | [`src/engine/llm.rs#L33-L55`](https://github.com/NewGuy012/srz/blob/master/src/engine/llm.rs#L33-L55) | **Highlighting original letter**: Deserializes streaming LLM JSON directly from network buffers with **0B allocations**. | [Ch 10.3: Lifetimes](https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html) |
-| **Closures & `FnMut`** | [`src/engine/chunker.rs#L29-L48`](https://github.com/NewGuy012/srz/blob/master/src/engine/chunker.rs#L29-L48) | **Swappable bread-slicing blades**: Zero-cost monomorphization allowing flexible metric counting. | [Ch 13.1: Closures](https://doc.rust-lang.org/book/ch13-01-closures.html) |
-| **Crash-Safe Terminal (RAII)** | [`src/ui/tui.rs#L130-L147`](https://github.com/NewGuy012/srz/blob/master/src/ui/tui.rs#L130-L147) | **Hotel keycard light switch**: Restores normal terminal modes upon function exit, even after panics. | [Ch 15.3: Drop Trait](https://doc.rust-lang.org/book/ch15-03-drop.html) |
-| **Closure Loan Pattern** | [`src/commands/mod.rs#L47-L54`](https://github.com/NewGuy012/srz/blob/master/src/commands/mod.rs#L47-L54) | **Bank vault attendant**: Enforces strict lexical database access boundaries and automatic RAII lock release. | [Ch 15.3: Drop Trait](https://doc.rust-lang.org/book/ch15-03-drop.html) |
+| **Lifetimes in Structs (`'a`)** | [`src/storage/db.rs#L11-L24`](https://github.com/NewGuy012/srz/blob/master/src/storage/db.rs#L11-L24), [`src/main.rs#L234-L248`](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L234-L248) | **Expiring visitor pass**: Lets database records borrow 50KB strings without duplicating memory on the heap. | [Ch 10.3: Struct Lifetimes](https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html#lifetime-annotations-in-struct-definitions) |
+| **`#[serde(borrow)]`** | [`src/engine/llm.rs#L34-L57`](https://github.com/NewGuy012/srz/blob/master/src/engine/llm.rs#L34-L57) | **Highlighting original letter**: Deserializes streaming LLM JSON directly from network buffers with **0B allocations**. | [Ch 10.3: Lifetimes](https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html) |
+| **Closures & `FnMut`** | [`src/engine/chunker.rs#L50-L70`](https://github.com/NewGuy012/srz/blob/master/src/engine/chunker.rs#L50-L70) | **Swappable bread-slicing blades**: Zero-cost monomorphization allowing flexible metric counting. | [Ch 13.1: Closures](https://doc.rust-lang.org/book/ch13-01-closures.html) |
+| **Crash-Safe Terminal (RAII)** | [`src/ui/tui.rs#L144-L162`](https://github.com/NewGuy012/srz/blob/master/src/ui/tui.rs#L144-L162) | **Hotel keycard light switch**: Restores normal terminal modes upon function exit, even after panics. | [Ch 15.3: Drop Trait](https://doc.rust-lang.org/book/ch15-03-drop.html) |
+| **Closure Loan Pattern** | [`src/commands/mod.rs#L56-L63`](https://github.com/NewGuy012/srz/blob/master/src/commands/mod.rs#L56-L63), [`src/main.rs#L63-L71`](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L63-L71) | **Bank vault attendant**: Enforces strict lexical database access boundaries and automatic RAII lock release. | [Ch 15.3: Drop Trait](https://doc.rust-lang.org/book/ch15-03-drop.html) |
 | **`LazyLock<T>`** | [`src/sources/scraper.rs#L8-L12`](https://github.com/NewGuy012/srz/blob/master/src/sources/scraper.rs#L8-L12) | **Motion-sensor light**: Safe, one-time, thread-safe initialization on demand with zero ongoing lock cost. | [Ch 16.3: Concurrency](https://doc.rust-lang.org/book/ch16-03-shared-state.html) |
 | **`#[tokio::main]`** | [`src/main.rs#L14-L18`](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L14-L18) | **Restaurant waiter**: Non-blocking work-stealing thread pool for high-throughput network I/O. | [Ch 17: Async/Await](https://doc.rust-lang.org/book/ch17-00-async-await.html) |
 | **`#[cfg(unix)]`** | [`src/system/fs_util.rs#L27-L35`](https://github.com/NewGuy012/srz/blob/master/src/system/fs_util.rs#L27-L35) | **Packing for the weather**: Zero-overhead platform-specific file permissions compiled without runtime checks. | [Ch 14.1: Profiles](https://doc.rust-lang.org/book/ch14-01-release-profiles.html) |
 | **`#![forbid(unsafe_code)]`** | [`src/main.rs#L1`](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L1), [`src/lib.rs#L1`](https://github.com/NewGuy012/srz/blob/master/src/lib.rs#L1) | **Sealed cockpit door**: Mathematical compile-time guarantee of zero memory corruption or segfaults. | [Ch 19.1: Unsafe Rust](https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html) |
 | **Derive Macros** | [`src/config/cli.rs#L5-L14`](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs#L5-L14) | **3D architectural printer**: Generates hundreds of lines of type validation and `--help` CLI text at compile time. | [Ch 19.5: Macros](https://doc.rust-lang.org/book/ch19-06-macros.html#how-to-write-a-custom-derive-macro) |
-| **Safe Hardware Profiling** | [`src/system/hardware.rs`](https://github.com/NewGuy012/srz/blob/master/src/system/hardware.rs) | **Dashboard gauges**: Reads RAM/CPU metrics via isolated subprocesses with zero FFI and zero `unsafe`. | [Ch 19.1: Unsafe Rust](https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html) |
-| **Dynamic Budgeting** | [`src/engine/budget.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/budget.rs) | **Vessel weight balancing**: Invariant math sizing prompt chunks and reserve headroom to eliminate OOMs. | [Ch 5.3: Method Syntax](https://doc.rust-lang.org/book/ch05-03-method-syntax.html) |
-| **Model Cache Invalidation** | [`src/storage/cache.rs`](https://github.com/NewGuy012/srz/blob/master/src/storage/cache.rs) | **Card catalog update**: Embedded DuckDB invalidates cached context size when server switches models. | [Ch 16.3: Shared-State](https://doc.rust-lang.org/book/ch16-03-shared-state.html) |
+| **Safe Hardware Profiling** | [`src/system/hardware.rs#L208-L218`](https://github.com/NewGuy012/srz/blob/master/src/system/hardware.rs#L208-L218) | **Dashboard gauges**: Reads RAM/CPU metrics via isolated subprocesses with zero FFI and zero `unsafe`. | [Ch 19.1: Unsafe Rust](https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html) |
+| **Dynamic Budgeting** | [`src/engine/budget.rs#L39-L97`](https://github.com/NewGuy012/srz/blob/master/src/engine/budget.rs#L39-L97) | **Vessel weight balancing**: Invariant math sizing prompt chunks and reserve headroom to eliminate OOMs. | [Ch 5.3: Method Syntax](https://doc.rust-lang.org/book/ch05-03-method-syntax.html) |
+| **Model Cache Invalidation** | [`src/storage/cache.rs#L1094-L1146`](https://github.com/NewGuy012/srz/blob/master/src/storage/cache.rs#L1094-L1146) | **Card catalog update**: Embedded DuckDB invalidates cached context size when server switches models. | [Ch 16.3: Shared-State](https://doc.rust-lang.org/book/ch16-03-shared-state.html) |
 
 ---
 
@@ -938,7 +970,7 @@ Open `Cargo.toml` and add the dependencies to match `srz`'s modern stack:
 [package]
 name = "mini-srz"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 # 1. Declarative CLI parsing with derive macros
