@@ -63,6 +63,7 @@ impl HardwareProfile {
     }
 
     pub fn from_specs(total_memory_bytes: u64, chip_name: String) -> Self {
+        let chip_name = crate::ui::sanitize_title(&chip_name);
         let total_memory_gb = total_memory_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
         let tier = HardwareTier::from_bytes(total_memory_bytes);
 

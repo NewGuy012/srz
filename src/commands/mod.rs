@@ -169,7 +169,7 @@ pub fn handle_config(
             if !config.profiles.is_empty() {
                 println!("\n# Configured profiles in config.toml:");
                 for name in config.profiles.keys() {
-                    println!("- {}", name);
+                    println!("- {}", crate::ui::sanitize_title(name));
                 }
             }
         }

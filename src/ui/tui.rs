@@ -38,7 +38,21 @@ struct AppState {
 }
 
 impl AppState {
-    fn new(items: Vec<LibraryItem>, views_dir: std::path::PathBuf) -> Self {
+    fn new(mut items: Vec<LibraryItem>, views_dir: std::path::PathBuf) -> Self {
+        for item in &mut items {
+            item.title = crate::ui::sanitize_title(&item.title);
+            item.model = crate::ui::sanitize_title(&item.model);
+            item.style = crate::ui::sanitize_title(&item.style);
+            item.created_at = crate::ui::sanitize_title(&item.created_at);
+            if let Some(ref mut author) = item.author {
+                *author = crate::ui::sanitize_title(author);
+            }
+            if let Some(ref mut url) = item.url {
+                *url = crate::ui::sanitize_terminal_text(url);
+            }
+            item.summary = crate::ui::sanitize_terminal_text(&item.summary);
+        }
+
         let indices: Vec<usize> = (0..items.len()).collect();
         let mut list_state = ListState::default();
         if !indices.is_empty() {
@@ -609,5 +623,36 @@ mod tests {
         state.apply_filter();
         assert_eq!(state.filtered_indices.len(), 0);
         assert!(state.selected_item().is_none());
+    }
+
+    #[test]
+    fn test_app_state_sanitizes_untrusted_item_fields() {
+        let malicious_items = vec![LibraryItem {
+            id: 1,
+            target_type: "web".into(),
+            title: "\x1b[31mRed Title\x1b[0m\nSecond Line".into(),
+            author: Some("Evil\u{202E}Author\x1b]0;Title\x07".into()),
+            url: Some("https://example.com/\x1b[2Jevil".into()),
+            summary: "Malicious \x1b[31;1mANSI\x1b[0m and \u{202E}BiDi summary".into(),
+            style: "concise\r\n".into(),
+            model: "gemma\x07".into(),
+            word_count: 100,
+            prompt_tokens: None,
+            completion_tokens: None,
+            duration_ms: 100,
+            tokens_per_second: None,
+            created_at: "2026-10-28\n12:00".into(),
+        }];
+
+        let state = AppState::new(malicious_items, std::path::PathBuf::from("/tmp"));
+        let item = &state.items[0];
+        assert_eq!(item.title, "Red Title Second Line");
+        assert!(!item.author.as_ref().unwrap().contains('\u{202E}'));
+        assert!(!item.author.as_ref().unwrap().contains('\x1b'));
+        assert!(!item.url.as_ref().unwrap().contains("\x1b[2J"));
+        assert!(!item.summary.contains("\x1b[31;1m"));
+        assert!(!item.summary.contains('\u{202E}'));
+        assert_eq!(item.style, "concise");
+        assert_eq!(item.model, "gemma");
     }
 }

@@ -183,21 +183,23 @@ pub async fn handle_doctor(
 
     // Print LLM status
     println!("LLM Backend:");
+    let safe_base_url = crate::ui::sanitize_terminal_text(&args.base_url);
+    let safe_model = crate::ui::sanitize_title(&args.model);
     if endpoint_ok {
         println!(
             "  ✓ Reachable: {} (latency: {}ms)",
-            args.base_url,
+            safe_base_url,
             latency_ms.unwrap_or(0)
         );
         if model_found {
             println!(
                 "  ✓ Configured Model: \"{}\" is loaded and ready",
-                args.model
+                safe_model
             );
         } else {
             println!(
                 "  ! Configured Model: \"{}\" was not reported by /models endpoint.",
-                args.model
+                safe_model
             );
             if !available_models.is_empty() {
                 let safe_models: Vec<String> = available_models
@@ -228,7 +230,8 @@ pub async fn handle_doctor(
                     "Fallback (tiktoken-rs)"
                 }
             );
-            println!("  ✓ Backend Kind: {}", caps.backend_kind);
+            let safe_kind = crate::ui::sanitize_title(&caps.backend_kind);
+            println!("  ✓ Backend Kind: {}", safe_kind);
             if caps.n_ctx >= hw.recommended_context {
                 println!(
                     "  ✓ Optimization Status: EXCELLENT (Fully optimized for single-pass summaries)"
@@ -246,7 +249,7 @@ pub async fn handle_doctor(
             }
         }
     } else {
-        println!("  ✗ Endpoint Unreachable: {}", args.base_url);
+        println!("  ✗ Endpoint Unreachable: {}", safe_base_url);
         if let Some(err) = endpoint_err {
             let safe_err = crate::ui::sanitize_terminal_text(&err);
             println!("    Reason: {}", safe_err);
@@ -303,7 +306,7 @@ pub async fn handle_doctor(
         );
     }
     if let Some(p) = &args.profile {
-        println!("  • Active profile: {}", p);
+        println!("  • Active profile: {}", crate::ui::sanitize_title(p));
     }
     println!();
 

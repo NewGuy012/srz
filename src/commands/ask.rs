@@ -299,9 +299,10 @@ pub async fn handle_ask(
             return Ok(());
         }
         let safe_title = crate::ui::sanitize_title(&session.title);
+        let safe_model = crate::ui::sanitize_title(&session.model);
         Ui::header(&format!(
             "Chat Transcript #{}: \"{}\" ({})",
-            session.id, safe_title, session.model
+            session.id, safe_title, safe_model
         ));
         for msg in &msgs {
             let safe_content = crate::ui::sanitize_terminal_text(&msg.content);
