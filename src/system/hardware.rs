@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::process::Command;
+use sysinfo::System;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HardwareTier {
@@ -222,6 +223,14 @@ pub fn format_context_tokens(tokens: usize) -> String {
 }
 
 fn detect_total_memory() -> Option<u64> {
+    if let Ok(mut sys) = System::new() {
+        sys.refresh_memory();
+        let mem = sys.total_memory();
+        if mem > 0 {
+            return Some(mem);
+        }
+    }
+
     #[cfg(target_os = "macos")]
     {
         if let Ok(output) = Command::new("sysctl").args(["-n", "hw.memsize"]).output()
@@ -270,6 +279,16 @@ fn detect_total_memory() -> Option<u64> {
 }
 
 fn detect_chip_name() -> Option<String> {
+    if let Ok(mut sys) = System::new() {
+        sys.refresh_cpu_all();
+        if let Some(cpu) = sys.cpus().first() {
+            let brand = cpu.brand().trim();
+            if !brand.is_empty() {
+                return Some(brand.to_string());
+            }
+        }
+    }
+
     #[cfg(target_os = "macos")]
     {
         if let Ok(output) = Command::new("sysctl")
@@ -398,5 +417,13 @@ mod tests {
         let profile = HardwareProfile::detect();
         assert!(profile.total_memory_bytes > 0);
         assert!(!profile.chip_name.is_empty());
+    }
+
+    #[test]
+    fn test_sysinfo_detection() {
+        let mem = detect_total_memory();
+        assert!(mem.is_some_and(|m| m > 0));
+        let chip = detect_chip_name();
+        assert!(chip.is_some_and(|c| !c.is_empty()));
     }
 }
