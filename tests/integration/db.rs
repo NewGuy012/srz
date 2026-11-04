@@ -86,6 +86,12 @@ fn test_database_query_raw_and_exports() {
     let csv_str = std::fs::read_to_string(&csv_path).unwrap();
     assert!(csv_str.contains("Dune"));
     assert!(csv_str.contains("Frank Herbert"));
+
+    // 5. handle_query with multi-byte characters and ANSI sequences
+    let long_multibyte_sql = "SELECT '✨🌟🚀 ' || repeat('狐狸日本語 café résumé — ', 5) as mb_col, '\x1b[31;1mInjected ANSI\x1b[0m' as ansi_col";
+    srz::commands::handle_query(&db, long_multibyte_sql, false, false).unwrap();
+    srz::commands::handle_query(&db, long_multibyte_sql, true, false).unwrap();
+    srz::commands::handle_query(&db, long_multibyte_sql, false, true).unwrap();
 }
 
 #[test]

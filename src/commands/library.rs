@@ -272,7 +272,16 @@ pub fn handle_query(db: &Database, sql: &str, csv: bool, as_json: bool) -> Resul
         return Ok(());
     }
 
-    let mut col_widths: Vec<usize> = res.columns.iter().map(|c| c.len().max(4)).collect();
+    let sanitized_columns: Vec<String> = res
+        .columns
+        .iter()
+        .map(|c| crate::ui::terminal::sanitize_terminal_text(c))
+        .collect();
+
+    let mut col_widths: Vec<usize> = sanitized_columns
+        .iter()
+        .map(|c| c.chars().count().max(4))
+        .collect();
 
     let string_rows: Vec<Vec<String>> = res
         .rows
@@ -281,13 +290,14 @@ pub fn handle_query(db: &Database, sql: &str, csv: bool, as_json: bool) -> Resul
             row.iter()
                 .enumerate()
                 .map(|(idx, val)| {
-                    let s = match val {
+                    let raw_str = match val {
                         serde_json::Value::String(s) => s.replace('\n', " "),
                         serde_json::Value::Null => "NULL".to_string(),
                         other => other.to_string(),
                     };
+                    let s = crate::ui::terminal::sanitize_terminal_text(&raw_str);
                     if idx < col_widths.len() {
-                        col_widths[idx] = col_widths[idx].max(s.len()).min(50);
+                        col_widths[idx] = col_widths[idx].max(s.chars().count()).min(50);
                     }
                     s
                 })
@@ -296,13 +306,14 @@ pub fn handle_query(db: &Database, sql: &str, csv: bool, as_json: bool) -> Resul
         .collect();
 
     // Print header
-    let header_line = res
-        .columns
+    let header_line = sanitized_columns
         .iter()
         .enumerate()
         .map(|(i, col)| {
             let w = col_widths[i];
-            format!("{:width$}", col, width = w)
+            let col_len = col.chars().count();
+            let pad = w.saturating_sub(col_len);
+            format!("{}{}", col, " ".repeat(pad))
         })
         .collect::<Vec<_>>()
         .join(" │ ");
@@ -322,11 +333,18 @@ pub fn handle_query(db: &Database, sql: &str, csv: bool, as_json: bool) -> Resul
             .iter()
             .enumerate()
             .map(|(i, cell)| {
-                let w = col_widths.get(i).copied().unwrap_or(cell.len());
-                if cell.len() > w {
-                    format!("{}…", &cell[..w.saturating_sub(1)])
+                let w = col_widths
+                    .get(i)
+                    .copied()
+                    .unwrap_or_else(|| cell.chars().count());
+                let cell_len = cell.chars().count();
+                if cell_len > w {
+                    let keep = w.saturating_sub(1);
+                    let truncated: String = cell.chars().take(keep).collect();
+                    format!("{}…", truncated)
                 } else {
-                    format!("{:width$}", cell, width = w)
+                    let pad = w.saturating_sub(cell_len);
+                    format!("{}{}", cell, " ".repeat(pad))
                 }
             })
             .collect::<Vec<_>>()
