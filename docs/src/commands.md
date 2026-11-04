@@ -28,11 +28,13 @@
 | | `srz ask -i` | Interactive multi-turn chat REPL grounded on source context. |
 | | `srz ask [--chats\|--resume <ID>]` | Lists saved chat sessions or resumes a previous multi-turn conversation. |
 | | `srz ask [--show-chat\|--delete-chat] <ID>` | Inspects or deletes a persisted multi-turn chat session transcript. |
-| | `srz browse` (alias `tui`) | Interactive TUI dashboard (`[j/k]` navigate, `[/]` filter, `[y]` copy, `[d]` delete, `[Enter]` open). |
+| | `srz browse` (alias `tui`) | Interactive TUI dashboard (`[j/k]` navigate, `[/]` filter, `[a]` ask/chat, `[y]` copy, `[d]` delete, `[Enter]` open). |
 | **Library & History** | `srz find "keyword"` | Offline BM25 relevance-ranked search across past summaries in DuckDB. |
 | | `srz history [--limit N]` | Displays recent reads, word counts, model usage, and generation speeds. |
 | | `srz stats` | Telemetry overview: reading streaks, days active, time saved, top domains, and model throughput percentiles (P50/P95). |
 | | `srz index [--open]` | Generates and opens an interactive HTML library dashboard. |
+| | `srz query "<SQL>"` | Execute read-only analytical SQL queries on DuckDB with formatted tables, `--csv`, or `--json`. |
+| | `srz export -f <FORMAT> -o <PATH>` | Export summarized library to Obsidian/Logseq Markdown vault, JSON, CSV, or Parquet. |
 | **System & Config** | `--profile <NAME>` | Switches LLM backends defined in `~/.config/srz/config.toml`. |
 | | `srz config <init\|show\|path>` | Manages and inspects the local configuration file. |
 | | `srz cache <dir\|size\|clean\|prune>` | Cache inspection, TTL/LRU pruning (`--older-than`, `--max-size`), and safe clean (`--reset-db`). |
@@ -100,7 +102,8 @@ Launches an interactive, full-screen Ratatui terminal dashboard for exploring pa
 | `k` / `Up` | Move selection up |
 | `Enter` | Open the reader view for the selected summary |
 | `/` | Focus live search bar to filter summaries in real time |
-| `Tab` | Cycle category filters (`All`, `Web`, `PDF`, `Books`, `News`, `Chat`) |
+| `Tab` | Switch focus between summary list and reader preview |
+| `a` | Seamlessly launch grounded interactive chat (`srz ask`) on the selected document |
 | `y` / `c` | Copy summary markdown to system clipboard |
 | `d` | Delete selected summary from history |
 | `Esc` / `q` | Exit search focus, close reader view, or quit application |
@@ -192,7 +195,55 @@ srz index [--open]
 
 ---
 
-## 7. Storage & Cache Maintenance (`srz cache`)
+## 7. Analytical SQL Interface (`srz query`)
+
+```bash
+srz query "<SQL>" [FLAGS]
+```
+
+Executes an arbitrary read-only analytical SQL query against the local DuckDB database (`srz.duckdb`). Results are formatted into an aligned terminal table by default, or exported as CSV or JSON.
+
+```bash
+# Query model usage and token counts
+srz query "SELECT model, count(*) AS runs, avg(tokens_per_second) FROM history GROUP BY model"
+
+# Output as CSV
+srz query "SELECT title, word_count, style FROM history" --csv
+
+# Output as JSON
+srz query "SELECT id, title, target_type FROM library LIMIT 5" --json
+```
+
+---
+
+## 8. Library Vault & Data Export (`srz export`)
+
+```bash
+srz export --format <FORMAT> --output <PATH>
+```
+
+Exports your offline summarized library into standard portable formats:
+
+* **Markdown Vault (`--format markdown`)**: Exports every summary into an individual Markdown file equipped with Obsidian and Logseq-compatible YAML frontmatter (`title`, `target_type`, `model`, `style`, `word_count`, `created_at`, `author`, `url`).
+  ```bash
+  srz export --format markdown ~/Obsidian/Vault/Summaries/
+  ```
+* **Structured JSON (`--format json`)**: Exports the entire library and metadata into a single formatted JSON file.
+  ```bash
+  srz export --format json ~/backup_library.json
+  ```
+* **CSV (`--format csv`)**: Exports all library rows and timing metrics as a spreadsheet-friendly CSV.
+  ```bash
+  srz export --format csv ~/summaries.csv
+  ```
+* **Parquet (`--format parquet`)**: Exports to compressed Apache Parquet for data science workflows with Polars, Pandas, or DuckDB CLI.
+  ```bash
+  srz export --format parquet ~/library.parquet
+  ```
+
+---
+
+## 9. Storage & Cache Maintenance (`srz cache`)
 
 ```bash
 srz cache <SUBCOMMAND>
@@ -210,7 +261,7 @@ srz cache <SUBCOMMAND>
 
 ---
 
-## 8. Configuration Management (`srz config`)
+## 10. Configuration Management (`srz config`)
 
 ```bash
 srz config <SUBCOMMAND>
@@ -222,7 +273,7 @@ srz config <SUBCOMMAND>
 
 ---
 
-## 9. Diagnostics & Recommendations (`srz recommend`, `srz doctor`, `srz models`)
+## 11. Diagnostics & Recommendations (`srz recommend`, `srz doctor`, `srz models`)
 
 ```bash
 # Instant hardware & model recommendation card
@@ -238,7 +289,7 @@ srz models
 
 ### Hardware Profiling & Diagnostic Advisories
 
-Running `srz recommend` or `srz doctor` profiles your physical machine without invasive C FFI bindings. By reading host kernel statistics (`sysctl` on macOS, `/proc/meminfo` on Linux, and PowerShell WMI on Windows), `srz` classifies your system into hardware tiers and suggests optimal model configurations:
+Running `srz recommend` or `srz doctor` profiles your physical machine without invasive C FFI bindings. By inspecting host system characteristics via pure-Rust in-process hardware profiling (`sysinfo`), `srz` classifies your system into hardware tiers and suggests optimal model configurations:
 
 The advisor recommends high-fidelity Google Gemma 4 models tailored to your physical RAM, matching the exact selection cards shown in Llama GUI (such as `gemma-4` with size `E4B` or `26B-A4B` at `Q8_0` quantization) while configuring the full model ID (`ggml-org/gemma-4-E4B-it-GGUF:Q8_0`) for seamless backend API communication. It calculates your single-pass token synthesis ceiling—the approximate 70% threshold of your context window—beyond which map-reduce chunking activates.
 
@@ -248,7 +299,7 @@ For the complete tier-by-tier hardware breakdown, refer to the canonical [Hardwa
 
 ---
 
-## 10. Self Updates & Shell Completions
+## 12. Self Updates & Shell Completions
 
 ```bash
 # Check for updates or upgrade in place

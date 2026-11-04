@@ -124,8 +124,11 @@ srz ask -i                             # Interactive chat
 
 ### Library, Search & Telemetry
 ```bash
-srz browse         # Terminal dashboard
-srz find "keyword" # Search past summaries
+srz browse                                      # Terminal dashboard (press 'a' for grounded chat)
+srz find "keyword"                              # Search past summaries
+srz query "SELECT model, count(*) FROM history GROUP BY model" # SQL analytics
+srz export --format markdown ~/Notes/Vault/     # Export vault for Obsidian / Logseq
+srz export --format json library.json           # Export as structured JSON
 ```
 
 ### Cache & Storage Maintenance

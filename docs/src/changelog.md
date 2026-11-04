@@ -22,6 +22,23 @@ All notable changes to `srz` are documented in this file.
 
 ---
 
+## v0.8.0
+
+### Summary
+
+> Delivers major performance, UX, and architectural upgrades: in-process hardware detection with `sysinfo`, semantic HTML-to-Markdown scraping with `htmd`, crash-safe atomic file persistence, strict XDG data directory compliance, seamless in-TUI grounded chat (`a` in `srz browse`), user-facing DuckDB SQL analytics (`srz query`), and multi-format library vault exports (`srz export`).
+
+### Changes
+- **In-Process Hardware Profiling (`src/system/hardware.rs`)**: Integrated `sysinfo` to detect host memory and processor architecture in pure Rust, eliminating 500–1500ms startup latency on Windows from spawning `powershell.exe` and avoiding `sysctl` subprocess calls on macOS.
+- **Semantic HTML-to-Markdown Scraping (`src/sources/scraper.rs`)**: Integrated `htmd` to convert web articles into clean semantic Markdown (preserving `#` headings, bullet points, code fences, and tables), significantly enhancing document comprehension and summary structure for local LLMs.
+- **Crash-Safe Atomic File Writes (`src/system/fs_util.rs`)**: Implemented atomic persistence with `tempfile::NamedTempFile` and strict `0600` POSIX permissions, preventing corrupted or half-written cache entries and database files on sudden process interruption.
+- **Strict XDG Standard Directory Compliance (`src/system/fs_util.rs`, `src/storage/db.rs`)**: Separated persistent user data (`srz.duckdb` and chat histories now reside in `XDG_DATA_HOME` / `~/.local/share/srz`) from disposable web caches (`XDG_CACHE_HOME` / `~/.cache/srz`). Includes transparent automatic migration from legacy cache paths so existing users retain 100% of their reading history.
+- **Seamless In-TUI Grounded Chat (`src/ui/tui.rs`, `src/main.rs`)**: Added the `a` keybinding in `srz browse` to launch an interactive grounded Q&A session (`srz ask`) directly on the highlighted document without exiting the browser, automatically returning to the library view upon exiting chat.
+- **User-Facing SQL Analytics CLI (`srz query`)**: Added the `srz query "<SQL>"` subcommand to execute arbitrary read-only analytical SQL queries on the offline DuckDB database, with output formatted as an aligned terminal table, `--csv`, or `--json`.
+- **Multi-Format Library Vault Export (`srz export`)**: Added the `srz export` subcommand supporting Obsidian and Logseq-compatible Markdown vaults with YAML frontmatter, structured JSON, spreadsheet-ready CSV, and compressed Apache Parquet.
+
+---
+
 ## v0.7.2
 
 ### Summary
