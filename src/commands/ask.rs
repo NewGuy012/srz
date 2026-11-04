@@ -37,8 +37,7 @@ async fn resolve_document_context(
 
         // 1. Web URL
         if crate::system::text_util::is_http_url(trimmed) {
-            let page =
-                crate::commands::fetch_or_cache_page(trimmed, scraper, cache, "", "", "").await?;
+            let page = crate::commands::fetch_url_content(trimmed, scraper, cache, false).await?;
             let title = page.title.unwrap_or_else(|| trimmed.to_string());
             return Ok((title, page.content));
         }

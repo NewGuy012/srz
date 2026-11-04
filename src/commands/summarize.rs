@@ -127,6 +127,93 @@ pub async fn fetch_or_cache_page(
     .await
 }
 
+/// Determines the target type label ("youtube", "file", or "web") for a given URL.
+pub fn target_type_for_url(url: &str) -> &'static str {
+    if crate::sources::youtube::extract_youtube_video_id(url).is_some() {
+        "youtube"
+    } else if url.split('?').next().unwrap_or(url).ends_with(".pdf") {
+        "file"
+    } else {
+        "web"
+    }
+}
+
+/// Dispatches URL fetching according to destination type (YouTube transcript, remote PDF, or webpage scrape)
+/// and caches the resulting content.
+pub async fn fetch_url_content(
+    url: &str,
+    scraper: &WebScraper,
+    cache: &Cache,
+    verbose: bool,
+) -> Result<ScrapedPage> {
+    let is_youtube = crate::sources::youtube::extract_youtube_video_id(url);
+    let is_pdf = url.split('?').next().unwrap_or(url).ends_with(".pdf");
+
+    if let Some(video_id) = is_youtube {
+        let (cache_msg, spinner_msg, done_msg) = if verbose {
+            (
+                "Loaded YouTube transcript from local cache.",
+                "Fetching YouTube video metadata and captions...",
+                "YouTube transcript and metadata fetched.",
+            )
+        } else {
+            ("", "", "")
+        };
+        fetch_or_cache_page_with(
+            url,
+            cache,
+            cache_msg,
+            spinner_msg,
+            done_msg,
+            crate::sources::youtube::fetch_youtube_transcript(scraper.client(), video_id),
+        )
+        .await
+    } else if is_pdf {
+        let (cache_msg, spinner_msg, done_msg) = if verbose {
+            (
+                "Loaded PDF content from local cache.",
+                "Downloading and extracting PDF text...",
+                "PDF text layer extracted.",
+            )
+        } else {
+            ("", "", "")
+        };
+        fetch_or_cache_page_with(url, cache, cache_msg, spinner_msg, done_msg, async {
+            let resp = scraper
+                .client()
+                .get(url)
+                .send()
+                .await
+                .with_context(|| format!("Failed to download PDF from {}", url))?;
+            if !resp.status().is_success() {
+                anyhow::bail!(
+                    "Failed to download PDF from {} (HTTP status: {})",
+                    url,
+                    resp.status()
+                );
+            }
+            let bytes = crate::scraper::read_response_bytes_limited(
+                resp,
+                crate::sources::document::MAX_FILE_BYTES as usize,
+            )
+            .await?;
+            crate::sources::pdf::PdfExtractor::extract_from_bytes(&bytes, None)
+        })
+        .await
+    } else {
+        let (cache_msg, spinner_msg, done_msg) = if verbose {
+            (
+                "Loaded webpage content from local cache.",
+                "Scraping and normalizing webpage content...",
+                "Webpage content scraped and normalized.",
+            )
+        } else {
+            ("", "", "")
+        };
+        fetch_or_cache_page(url, scraper, cache, cache_msg, spinner_msg, done_msg).await
+    }
+}
+
 pub async fn handle_file(
     path: &std::path::Path,
     scraper: &WebScraper,
@@ -231,15 +318,7 @@ pub async fn handle_web(
         .await;
     }
 
-    let is_youtube = crate::sources::youtube::extract_youtube_video_id(url);
-    let is_pdf = url.split('?').next().unwrap_or(url).ends_with(".pdf");
-    let target_type = if is_youtube.is_some() {
-        "youtube"
-    } else if is_pdf {
-        "file"
-    } else {
-        "web"
-    };
+    let target_type = target_type_for_url(url);
 
     // 1. Check for a cached summary matching URL + style + model
     if let Some(cached) = cache.get_web_summary(url, args.style, &args.model) {
@@ -253,57 +332,7 @@ pub async fn handle_web(
     }
 
     // 2. Fetch or load cached page / transcript / PDF
-    let page = if let Some(video_id) = is_youtube {
-        fetch_or_cache_page_with(
-            url,
-            cache,
-            "Loaded YouTube transcript from local cache.",
-            "Fetching YouTube video metadata and captions...",
-            "YouTube transcript and metadata fetched.",
-            crate::sources::youtube::fetch_youtube_transcript(scraper.client(), video_id),
-        )
-        .await?
-    } else if is_pdf {
-        fetch_or_cache_page_with(
-            url,
-            cache,
-            "Loaded PDF content from local cache.",
-            "Downloading and extracting PDF text...",
-            "PDF text layer extracted.",
-            async {
-                let resp = scraper
-                    .client()
-                    .get(url)
-                    .send()
-                    .await
-                    .with_context(|| format!("Failed to download PDF from {}", url))?;
-                if !resp.status().is_success() {
-                    anyhow::bail!(
-                        "Failed to download PDF from {} (HTTP status: {})",
-                        url,
-                        resp.status()
-                    );
-                }
-                let bytes = crate::scraper::read_response_bytes_limited(
-                    resp,
-                    crate::sources::document::MAX_FILE_BYTES as usize,
-                )
-                .await?;
-                crate::sources::pdf::PdfExtractor::extract_from_bytes(&bytes, None)
-            },
-        )
-        .await?
-    } else {
-        fetch_or_cache_page(
-            url,
-            scraper,
-            cache,
-            "Loaded webpage content from local cache.",
-            "Scraping and normalizing webpage content...",
-            "Webpage content scraped and normalized.",
-        )
-        .await?
-    };
+    let page = fetch_url_content(url, scraper, cache, true).await?;
 
     let title_display = page.title.clone().unwrap_or_else(|| url.to_string());
 
@@ -712,4 +741,26 @@ async fn generate_book_summary(
         .summarize_book_from_memory(query.title, query.author, args.style, mode)
         .await?;
     Ok((output, 0, None))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_target_type_for_url() {
+        assert_eq!(
+            target_type_for_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+            "youtube"
+        );
+        assert_eq!(
+            target_type_for_url("https://youtu.be/dQw4w9WgXcQ"),
+            "youtube"
+        );
+        assert_eq!(
+            target_type_for_url("https://example.com/paper.pdf?token=123"),
+            "file"
+        );
+        assert_eq!(target_type_for_url("https://example.com/article"), "web");
+    }
 }
