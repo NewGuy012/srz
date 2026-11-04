@@ -85,12 +85,12 @@ Recommended Local LLM Setup (Llama GUI / llama.cpp):
 
 ### Hardware Tier Reference Matrix
 
-| Host Memory | Typical Devices | Model Name | Parameters | Quantization | Disk Size | Context Window (`n_ctx`) | Llama GUI Selection |
+| Host Memory | Typical Devices | Backend Model ID (Default) | Parameters | Quantization | Disk Size | Context Window (`n_ctx`) | Llama GUI Selection |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **8 GB RAM** | MacBook Air 8GB, Thin-and-light Laptops | `gemma-4` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`8k ctx`** (8,192) | `gemma-4 \| E4B \| Q8_0 \| 8k ctx` |
-| **16 GB RAM** | MacBook Pro/Air 16GB, Standard PC Laptops | `gemma-4` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`32k ctx`** (32,768) | `gemma-4 \| E4B \| Q8_0 \| 32k ctx` |
-| **24–36 GB RAM** | MacBook Pro M Pro / Max, 32GB PCs | `gemma-4` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`64k ctx`** (65,536) | `gemma-4 \| E4B \| Q8_0 \| 64k ctx` |
-| **64+ GB RAM** | MacBook Pro M Max, Mac Studio, Workstations | `gemma-4` | **26B Total / ~4B Active** (MoE) | **`Q8_0`** | **~28.0 GB** | **`128k ctx`** (131,072) | `gemma-4 \| 26B-A4B \| Q8_0 \| 128k ctx` |
+| **8 GB RAM** | MacBook Air 8GB, Thin-and-light Laptops | `ggml-org/gemma-4-E4B-it-GGUF:Q8_0` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`8k ctx`** (8,192) | `gemma-4 \| E4B \| Q8_0 \| 8k ctx` |
+| **16 GB RAM** | MacBook Pro/Air 16GB, Standard PC Laptops | `ggml-org/gemma-4-E4B-it-GGUF:Q8_0` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`32k ctx`** (32,768) | `gemma-4 \| E4B \| Q8_0 \| 32k ctx` |
+| **24–36 GB RAM** | MacBook Pro M Pro / Max, 32GB PCs | `ggml-org/gemma-4-E4B-it-GGUF:Q8_0` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`64k ctx`** (65,536) | `gemma-4 \| E4B \| Q8_0 \| 64k ctx` |
+| **64+ GB RAM** | MacBook Pro M Max, Mac Studio, Workstations | `ggml-org/gemma-4-26B-A4B-it-GGUF:Q8_0` | **26B Total / ~4B Active** (MoE) | **`Q8_0`** | **~28.0 GB** | **`128k ctx`** (131,072) | `gemma-4 \| 26B-A4B \| Q8_0 \| 128k ctx` |
 
 ### Single-Pass vs. Map-Reduce Chunking
 

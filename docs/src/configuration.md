@@ -22,7 +22,7 @@ srz config init
 # Default local LLM endpoint (e.g. Llama-macOS, Llama-Windows, llama.cpp, Ollama)
 # Connects automatically with Llama GUI running on localhost:9931
 base_url = "http://localhost:9931/v1"
-model = "gemma-4"
+model = "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
 context_window = 65536
 api_key = ""
 
@@ -59,14 +59,14 @@ api_key = "sk-..."
 # Quick mode: Fast concise summaries for news and short articles
 [profiles.fast]
 base_url = "http://localhost:9931/v1"
-model = "gemma-4"
+model = "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
 style = "concise"
 context_window = 8192
 
 # Deep research / book mode: Full synthesis with maximum context window
 [profiles.deep]
 base_url = "http://localhost:9931/v1"
-model = "gemma-4"
+model = "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
 style = "detailed"
 context_window = 65536
 max_tokens = 8192

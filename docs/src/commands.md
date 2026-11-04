@@ -240,7 +240,7 @@ srz models
 
 Running `srz recommend` or `srz doctor` profiles your physical machine without invasive C FFI bindings. By reading host kernel statistics (`sysctl` on macOS, `/proc/meminfo` on Linux, and PowerShell WMI on Windows), `srz` classifies your system into hardware tiers and suggests optimal model configurations:
 
-The advisor recommends high-fidelity Google Gemma 4 models tailored to your physical RAM, matching the exact selection cards shown in Llama GUI (such as `gemma-4` with size `E4B` or `26B-A4B` at `Q8_0` quantization). It calculates your single-pass token synthesis ceiling—the approximate 70% threshold of your context window—beyond which map-reduce chunking activates.
+The advisor recommends high-fidelity Google Gemma 4 models tailored to your physical RAM, matching the exact selection cards shown in Llama GUI (such as `gemma-4` with size `E4B` or `26B-A4B` at `Q8_0` quantization) while configuring the full model ID (`ggml-org/gemma-4-E4B-it-GGUF:Q8_0`) for seamless backend API communication. It calculates your single-pass token synthesis ceiling—the approximate 70% threshold of your context window—beyond which map-reduce chunking activates.
 
 When running `srz doctor`, the engine performs an active end-to-end audit: it pings the local LLM endpoint, probes operational context lengths (`n_ctx`) and concurrency slots (`total_slots`), and verifies the integrity of DuckDB databases and cache directories. If the connected runner is constrained by sub-optimal context sizing (under 8k tokens) or slot bottlenecks, `srz doctor` provides concrete terminal guidance to unlock maximum throughput.
 

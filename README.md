@@ -143,7 +143,7 @@ Run `srz --help` to see all available subcommands and flags.
 
 ### Local LLMs (Preferred)
 
-- **macOS & Windows (Default)**: Install [Llama-macOS](https://github.com/ggml-org/Llama-macOS) (macOS) or [Llama-Windows](https://github.com/ggml-org/Llama-Windows) (Windows). Launch the app and load the model—`srz` connects automatically to `http://localhost:9931/v1` with zero setup.
+- **macOS & Windows (Default)**: Install [Llama-macOS](https://github.com/ggml-org/Llama-macOS) (macOS) or [Llama-Windows](https://github.com/ggml-org/Llama-Windows) (Windows). Launch the app and load the model—`srz` connects automatically to `http://localhost:9931/v1` with zero setup (default model: `ggml-org/gemma-4-E4B-it-GGUF:Q8_0`).
   - In Llama GUI, simply select the simplified model card shown by `srz recommend`:
     - Model: `gemma-4`
     - Badges: `E4B` `Q8_0` (or `26B-A4B` `Q8_0` for 64GB+ workstations)
@@ -163,7 +163,7 @@ Run `srz config init` to auto-generate a `~/.config/srz/config.toml` tailored to
 
 ```toml
 base_url = "http://localhost:9931/v1"
-model = "gemma-4"
+model = "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
 context_window = 32768
 
 [profiles.openai]
