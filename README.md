@@ -15,6 +15,8 @@
 
 ## Highlights
 
+> 💡 **What makes `srz` different?** Unlike cloud-dependent AI tools that require subscriptions and upload private reading data, `srz` runs 100% locally with zero telemetry—pairing instant streaming synthesis and unified multi-format ingestion with embedded offline DuckDB search.
+
 ```mermaid
 %%{init: {"flowchart": {"minNodeWidth": 210, "minNodeHeight": 54}}}%%
 flowchart LR

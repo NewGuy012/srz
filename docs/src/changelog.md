@@ -26,9 +26,10 @@ All notable changes to `srz` are documented in this file.
 
 ### Summary
 
-> Introduces intelligent local model diagnostics and CLI typo suggestions, comprehensive Security Audit #5 hardening across inputs and storage, simplified Llama GUI model recommendations, and dynamic token budgeting up to 128k context.
+> Introduces intelligent local model diagnostics and CLI typo suggestions, week-by-default news search recency with empty-feed guidance, comprehensive Security Audit #5 hardening, simplified Llama GUI model recommendations, and dynamic token budgeting up to 128k context.
 
 ### Changes
+- **News Recency Defaults & Guidance (`srz news`)**: Defaults news search recency to `week` (past 7 days) across CLI options and natural queries to prevent empty feeds on niche topics, and adds actionable diagnostic tips suggesting `-t month` or `-t all` when feeds return no results.
 - **Local Model Diagnostics & Command Typo Guidance (`src/engine/llm.rs`, `src/config/cli.rs`)**: Replaces raw JSON dumps with clear 'Local model not detected' diagnostics on model mismatch, suggests closest available models from the backend via string similarity, and offers command typo suggestions (e.g. `srz doctur` -> `doctor`).
 - **Security Audit #5 Hardening (Findings 26–31)**: Enforces input bounds across JSON responses, syndication feeds, and config files; neutralizes dangerous URI schemes in markdown; sanitizes control codes in terminal outputs; and adds symlink guards to database initialization.
 - **Static Analysis & Session ID Disambiguation (`src/commands/ask.rs`)**: Disambiguated chat session IDs to clear CodeQL `rust/cleartext-logging` false positives.
