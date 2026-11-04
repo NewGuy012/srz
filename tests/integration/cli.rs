@@ -395,7 +395,7 @@ fn test_news_subcommand_resolution() {
         default_news.resolve_action().unwrap(),
         ResolvedAction::News {
             topic: "javascript".to_string(),
-            timeframe: NewsTimeframe::Day,
+            timeframe: NewsTimeframe::Week,
             limit: 5,
         }
     );
@@ -405,7 +405,7 @@ fn test_news_subcommand_resolution() {
         "news",
         "artificial intelligence",
         "-t",
-        "week",
+        "day",
         "-l",
         "8",
     ]);
@@ -413,7 +413,7 @@ fn test_news_subcommand_resolution() {
         custom_news.resolve_action().unwrap(),
         ResolvedAction::News {
             topic: "artificial intelligence".to_string(),
-            timeframe: NewsTimeframe::Week,
+            timeframe: NewsTimeframe::Day,
             limit: 8,
         }
     );
@@ -426,7 +426,7 @@ fn test_news_natural_query_auto_detection() {
         js_news.resolve_action().unwrap(),
         ResolvedAction::News {
             topic: "javascript".to_string(),
-            timeframe: NewsTimeframe::Day,
+            timeframe: NewsTimeframe::Week,
             limit: 5,
         }
     );
@@ -436,7 +436,7 @@ fn test_news_natural_query_auto_detection() {
         latest_rust.resolve_action().unwrap(),
         ResolvedAction::News {
             topic: "rust".to_string(),
-            timeframe: NewsTimeframe::Day,
+            timeframe: NewsTimeframe::Week,
             limit: 5,
         }
     );
@@ -446,7 +446,7 @@ fn test_news_natural_query_auto_detection() {
         news_about_tech.resolve_action().unwrap(),
         ResolvedAction::News {
             topic: "quantum computing".to_string(),
-            timeframe: NewsTimeframe::Day,
+            timeframe: NewsTimeframe::Week,
             limit: 5,
         }
     );
@@ -456,7 +456,7 @@ fn test_news_natural_query_auto_detection() {
         general_news.resolve_action().unwrap(),
         ResolvedAction::News {
             topic: "top stories".to_string(),
-            timeframe: NewsTimeframe::Day,
+            timeframe: NewsTimeframe::Week,
             limit: 5,
         }
     );
@@ -581,7 +581,7 @@ fn test_readme_web_and_news_resolution() {
     );
 
     // 3. News digest
-    let cmd5 = Cli::parse_from(["srz", "news", "Rust language updates", "-t", "week"]);
+    let cmd5 = Cli::parse_from(["srz", "news", "Rust language updates"]);
     assert_eq!(
         cmd5.resolve_action().unwrap(),
         ResolvedAction::News {

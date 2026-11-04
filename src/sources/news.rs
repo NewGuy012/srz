@@ -198,10 +198,29 @@ impl GoogleNewsClient {
         let fetch_limit = limit.saturating_mul(2).max(limit.saturating_add(2));
         let feed_items = self.fetch_feed(topic, timeframe, fetch_limit).await?;
         if feed_items.is_empty() {
+            let tip = match timeframe {
+                NewsTimeframe::Day => {
+                    " Try expanding the recency timeframe with `-t week`, `-t month`, or `-t all`, or broadening the topic search terms."
+                }
+                NewsTimeframe::Week => {
+                    " Try expanding the recency timeframe with `-t month` or `-t all`, or broadening the topic search terms."
+                }
+                NewsTimeframe::Month => {
+                    " Try expanding the recency timeframe with `-t all`, or broadening the topic search terms."
+                }
+                NewsTimeframe::All => {
+                    " Try broadening the topic search terms, or verify the syndication feed URL."
+                }
+            };
             anyhow::bail!(
-                "No recent articles found in feed for '{}' ({}).",
+                "No recent articles found in feed for '{}' ({}){}",
                 topic,
-                timeframe.display_label()
+                timeframe.display_label(),
+                if crate::system::text_util::is_http_url(topic.trim()) {
+                    ""
+                } else {
+                    tip
+                }
             );
         }
 

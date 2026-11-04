@@ -158,7 +158,7 @@ Aggregates and synthesizes top news stories from Google News RSS topics or direc
   # Or pass directly as root target:
   srz "https://blog.rust-lang.org/feed.xml"
   ```
-* `-t, --timeframe <TIMEFRAME>`: Recency filter: `day` (default, past 24h), `week` (past 7 days), `month` (past 30 days), `all`.
+* `-t, --timeframe <TIMEFRAME>`: Recency filter: `week` (default, past 7 days), `day` (past 24h), `month` (past 30 days), `all`.
 * `-l, --limit <N>`: Maximum number of articles to aggregate (default: 5).
 
 ---

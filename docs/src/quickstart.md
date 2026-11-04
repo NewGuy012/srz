@@ -150,11 +150,11 @@ srz "The Rust Programming Language" --open
 Aggregate and synthesize news stories from Google News RSS or summarize direct syndication feeds:
 
 ```bash
-# Recent news on a topic (past 24 hours by default)
+# Recent news on a topic (past week by default)
 srz news "Rust language updates"
 
 # Filter by recency (day, week, month, all)
-srz news "artificial intelligence" -t week
+srz news "artificial intelligence" -t day
 
 # Or summarize any RSS, Atom, or JSON feed directly
 srz "https://blog.rust-lang.org/feed.xml"

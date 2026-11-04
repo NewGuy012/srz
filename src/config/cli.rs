@@ -40,10 +40,10 @@ impl SummaryStyle {
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum NewsTimeframe {
-    /// Past 24 hours / current day (default)
-    #[default]
+    /// Past 24 hours / current day
     Day,
-    /// Past 7 days / week
+    /// Past 7 days / week (default)
+    #[default]
     Week,
     /// Past 30 days / month
     Month,
@@ -272,8 +272,8 @@ pub enum Commands {
     News {
         /// Topic or query to search for (e.g. "javascript", "rust", "tech")
         topic: String,
-        /// Timeframe for news recency (day, week, month, all; default: day)
-        #[arg(short = 't', long, value_enum, default_value = "day")]
+        /// Timeframe for news recency (day, week, month, all; default: week)
+        #[arg(short = 't', long, value_enum, default_value = "week")]
         timeframe: NewsTimeframe,
         /// Maximum number of top articles to aggregate and summarize (default: 5)
         #[arg(short, long, default_value_t = 5)]
@@ -499,7 +499,7 @@ impl Cli {
                     let clean_topic = clean_news_query(trimmed);
                     Ok(ResolvedAction::News {
                         topic: clean_topic,
-                        timeframe: NewsTimeframe::Day,
+                        timeframe: NewsTimeframe::Week,
                         limit: 5,
                     })
                 } else if let Some(suggestion) = suggest_command(trimmed) {
