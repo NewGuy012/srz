@@ -205,13 +205,13 @@ jobs:
           echo "exists=false" >> $GITHUB_OUTPUT
 
           mkdir -p dist
-          echo "Extracting release notes for ${VERSION} from docs/CHANGELOG.md..."
+          echo "Extracting release notes for ${VERSION} from docs/src/changelog.md..."
           awk -v ver="${VERSION}" '
             $0 ~ "^## " ver { found=1; next }
             found && /^## / { exit }
             found && /^---/ { exit }
             found { print }
-          ' docs/CHANGELOG.md > dist/release_notes.md
+          ' docs/src/changelog.md > dist/release_notes.md
 
           if [ -s dist/release_notes.md ]; then
             echo "has_notes=true" >> $GITHUB_OUTPUT

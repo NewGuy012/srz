@@ -201,10 +201,10 @@ if [ "${CURRENT_VER}" != "${NEW_VER}" ]; then
   fi
 fi
 
-# Step 3: Check CHANGELOG.md for the new version section
-if [ -f "docs/CHANGELOG.md" ]; then
-  if ! grep -q "^## ${TAG}" docs/CHANGELOG.md; then
-    echo "Warning: No section '## ${TAG}' found in docs/CHANGELOG.md."
+# Step 3: Check changelog.md for the new version section
+if [ -f "docs/src/changelog.md" ]; then
+  if ! grep -q "^## ${TAG}" docs/src/changelog.md; then
+    echo "Warning: No section '## ${TAG}' found in docs/src/changelog.md."
     echo "         GitHub Actions release notes will fall back to auto-generated commits."
   fi
 fi
@@ -228,8 +228,8 @@ else
   echo ""
   echo "==> Committing version bump..."
   git add Cargo.toml Cargo.lock
-  if [ -f "docs/CHANGELOG.md" ] && ! git diff --quiet docs/CHANGELOG.md; then
-    git add docs/CHANGELOG.md
+  if [ -f "docs/src/changelog.md" ] && ! git diff --quiet docs/src/changelog.md; then
+    git add docs/src/changelog.md
   fi
   git commit -m "chore: bump version to ${TAG}"
 fi

@@ -141,7 +141,7 @@ Ownership is Rust's most unique feature. It enables memory safety guarantees wit
 ### 2.2 The "Move vs. Borrow" Trap in Real Code
 - 💡 **Simple Analogy:** Handing someone a physical book (move) vs. letting them read over your shoulder (borrow `&`). If you hand it to them, you no longer have it. If they look over your shoulder, you both retain access to the information.
 - 💡 **The "Click" Moment: Ownership is Linear:** In Rust, every value has exactly *one* owner at any given moment. Moving a variable gives away ownership permanently. If you need to use the variable again, you must **borrow** it (`&`) rather than moving it.
-- 🔍 **Real Code in `srz` ([src/main.rs](file:///Users/myoo/Documents/Repo/srz/src/main.rs#L23-L30)):**
+- 🔍 **Real Code in `srz` ([src/main.rs](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L23-L30)):**
   ```rust
   let (config, config_path) = match &args.config {
       Some(p) => {
@@ -183,7 +183,7 @@ Ownership is Rust's most unique feature. It enables memory safety guarantees wit
 ### 2.4 Defensive Streaming & Memory Protection
 - 💡 **Simple Analogy:** A fuel tank nozzle with an automatic shutoff valve. If a pump tries to dump 1,000 gallons into a 10-gallon tank, the valve snaps shut before the tank overflows.
 - 💡 **The "Click" Moment: Defending Against Out-Of-Memory (OOM) Attacks:** Calling `response.bytes().await` blindly buffers an entire web page into RAM. If a malicious web server returns an infinite stream ("decompression bomb"), your app crashes. `srz` inspects HTTP headers first, streams chunk by chunk, and terminates the connection if bytes exceed `max_bytes`.
-- 🔍 **Real Code in `srz` ([src/sources/scraper.rs](file:///Users/myoo/Documents/Repo/srz/src/sources/scraper.rs#L58-L86)):**
+- 🔍 **Real Code in `srz` ([src/sources/scraper.rs](https://github.com/NewGuy012/srz/blob/master/src/sources/scraper.rs#L58-L86)):**
   ```rust
   pub async fn read_response_bytes_limited(
       mut response: reqwest::Response,
@@ -223,7 +223,7 @@ Structs allow you to package related values together into named types, creating 
 ### 3.2 Enums with Payloads (Tagged Unions): Making Invalid States Unrepresentable
 - 💡 **Simple Analogy:** A Swiss Army knife where each fold-out tool holds its own specific accessories. The screwdriver slot carries screwdriver bits; the scissors slot carries replacement springs. You can never accidentally put a screwdriver bit into the scissors.
 - 💡 **The "Click" Moment: Make Invalid States Unrepresentable:** In OOP, you might build an `Action` class with `url`, `title`, and `limit` fields—all nullable (`None`/`null`). You have to remember: *"If action is WEB, make sure `url` isn't null, but ignore `limit`."* In Rust, each enum variant holds *only* the specific data it needs. An invalid state cannot even exist in memory.
-- 🔍 **Real Code in `srz` ([src/config/cli.rs](file:///Users/myoo/Documents/Repo/srz/src/config/cli.rs#L337-L358)):**
+- 🔍 **Real Code in `srz` ([src/config/cli.rs](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs#L337-L358)):**
   ```rust
   #[derive(Debug, PartialEq, Eq)]
   pub enum ResolvedAction<'a> {
@@ -247,7 +247,7 @@ Structs allow you to package related values together into named types, creating 
 ### 4.1 Exhaustive Pattern Matching (`match`) as a Co-Pilot
 - 💡 **Simple Analogy:** A strict postal sorting room with a designated bin for every single zip code. If a new zip code is introduced and there isn't a bin for it, the conveyor belt stops immediately until a bin is built.
 - 💡 **The "Click" Moment: The Compiler as a Co-Pilot:** Unlike `switch` in C/Java where forgetting a `break` or omitting a case causes silent runtime bugs, Rust's `match` is strictly exhaustive. If you add a new action variant (e.g. `Podcast`), the Rust compiler will flag every single `match` statement across your codebase that hasn't handled it yet.
-- 🔍 **Real Code in `srz` ([src/main.rs](file:///Users/myoo/Documents/Repo/srz/src/main.rs#L55-L75)):**
+- 🔍 **Real Code in `srz` ([src/main.rs](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L55-L75)):**
   ```rust
   match action {
       ResolvedAction::Cache(cache_cmd) => {
@@ -273,7 +273,7 @@ Structs allow you to package related values together into named types, creating 
 ### 4.2 Modern Let-Chains (`if let ... && ...`)
 - 💡 **Simple Analogy:** An airport boarding gate check: *"If your boarding pass is valid AND your passport is unexpired, please board the plane."*
 - 💡 **The "Click" Moment: Eliminating the Pyramid of Doom:** In older Rust (or languages like Go/Python), combining condition checks and value extractions required deeply nested `if` statements. Let-chains combine boolean conditions (`!outcome.cached`) and pattern-matching variable extractions (`let Some(db) = ...`) into a single guard condition without indentation drift.
-- 🔍 **Real Code in `srz` ([src/main.rs](file:///Users/myoo/Documents/Repo/srz/src/main.rs#L214-L217)):**
+- 🔍 **Real Code in `srz` ([src/main.rs](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L214-L217)):**
   ```rust
   // Record newly generated summaries in DuckDB history & library (lazily opened)
   if !outcome.cached
@@ -304,7 +304,7 @@ Understanding this difference is critical for writing high-performance Rust with
 ### 5.2 Pre-allocating Capacity to Prevent Reallocation
 - 💡 **Simple Analogy:** Booking a bus for 30 passengers upfront, instead of hailing a 4-seater taxi, discovering it is full, hailing an 8-seater, and transferring luggage again and again.
 - 💡 **The "Click" Moment: The Hidden Cost of Dynamic Resizing:** A `String` or `Vec` stores data on the heap. When it fills up, the OS must allocate a new chunk of memory twice as big, copy *every single existing byte* over, and free the old buffer. When rendering Markdown to HTML, `srz` knows the text will expand by roughly 50%, so it pre-allocates `md.len() * 3 / 2` upfront in a single allocation.
-- 🔍 **Real Code in `srz` ([src/ui/render.rs](file:///Users/myoo/Documents/Repo/srz/src/ui/render.rs#L241-L244)):**
+- 🔍 **Real Code in `srz` ([src/ui/render.rs](https://github.com/NewGuy012/srz/blob/master/src/ui/render.rs#L241-L244)):**
   ```rust
   // Pre-allocate buffer: Markdown -> HTML expands text by ~50%
   let mut html_output = String::with_capacity(md.len() * 3 / 2);
@@ -329,7 +329,7 @@ Understanding this difference is critical for writing high-performance Rust with
 ### 6.2 Ergonomic Error Propagation with the `?` Operator
 - 💡 **Simple Analogy:** A relay race baton. If a runner encounters an obstacle, they hand the "error baton" straight back out of the race to the team captain, rather than tumbling down the track and breaking other equipment.
 - 💡 **The "Click" Moment:** The `?` operator unboxes the parcel: if it's `Ok`, it unwraps and returns the inner value; if it's `Err`, it stops the function immediately and returns the error to the caller. No hidden exceptions, no surprise crashes!
-- 🔍 **Real Code in `srz` ([src/main.rs](file:///Users/myoo/Documents/Repo/srz/src/main.rs#L25-L27) & [src/system/fs_util.rs](file:///Users/myoo/Documents/Repo/srz/src/system/fs_util.rs#L39-L49)):**
+- 🔍 **Real Code in `srz` ([src/main.rs](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L25-L27) & [src/system/fs_util.rs](https://github.com/NewGuy012/srz/blob/master/src/system/fs_util.rs#L39-L49)):**
   ```rust
   // In src/main.rs: unwrap with ? or return early on failure
   let cfg = Config::load_from_path(p)?;
@@ -372,7 +372,7 @@ In application code (like CLIs and servers), writing dozens of custom error enum
 ### 7.2 Lifetimes in Structs (`NewSummaryRecord<'a>`)
 - 💡 **Simple Analogy:** Filling out a library checkout receipt that references a manuscript on display, rather than having to make a full physical copy of the manuscript just to fill in the receipt.
 - 💡 **The "Click" Moment:** Why not make `summary: String` in database insertion structs? If a summary is 50KB long, having `String` fields forces Rust to duplicate all 50,000 characters on the heap just to insert it into DuckDB. By annotating the struct with `'a`, `NewSummaryRecord` borrows existing strings in memory. The Rust compiler guarantees at compile time that the record cannot outlive the strings it borrows, preventing dangling pointers with **zero allocations**.
-- 🔍 **Real Code in `srz` ([src/storage/db.rs](file:///Users/myoo/Documents/Repo/srz/src/storage/db.rs#L11-L24) and [src/main.rs](file:///Users/myoo/Documents/Repo/srz/src/main.rs#L217-L231)):**
+- 🔍 **Real Code in `srz` ([src/storage/db.rs](https://github.com/NewGuy012/srz/blob/master/src/storage/db.rs#L11-L24) and [src/main.rs](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L217-L231)):**
   ```rust
   // In src/storage/db.rs: Struct holding borrowed strings
   pub struct NewSummaryRecord<'a> {
@@ -409,7 +409,7 @@ In application code (like CLIs and servers), writing dozens of custom error enum
 ### 7.3 Zero-Copy Deserialization with `#[serde(borrow)]`
 - 💡 **Simple Analogy:** Highlighting words directly in a physical letter mailed to you, instead of manually re-copying the entire letter word-for-word onto a separate notepad.
 - 💡 **The "Click" Moment: Eliminating the Heap Allocation Tax:** When streaming AI responses at 80 tokens per second, creating 80 new heap `String`s every second causes constant memory allocation churn. With `#[serde(borrow)]`, Rust deserializes JSON strings by pointing `Cow<'a, str>` directly to the slice inside Tokio's network buffer—allocating **0 bytes** of extra heap memory!
-- 🔍 **Real Code in `srz` ([src/engine/llm.rs](file:///Users/myoo/Documents/Repo/srz/src/engine/llm.rs#L33-L55)):**
+- 🔍 **Real Code in `srz` ([src/engine/llm.rs](https://github.com/NewGuy012/srz/blob/master/src/engine/llm.rs#L33-L55)):**
   ```rust
   #[derive(Deserialize)]
   struct ChatCompletionChunk<'a> {
@@ -442,7 +442,7 @@ In application code (like CLIs and servers), writing dozens of custom error enum
 ### 8.1 Higher-Order Functions & Closures (`FnMut`)
 - 💡 **Simple Analogy:** A universal bread-slicing machine where you can swap out the slicing blade. You can insert a blade that cuts by number of slices, or a blade that cuts by weight, without rebuilding the whole machine.
 - 💡 **The "Click" Moment: Zero-Cost Monomorphization:** In Python or JS, passing callback functions creates heap-allocated closures and dynamic dispatch overhead. In Rust, generic closures (`fn chunk_with_metric<F>(..., mut count_fn: F) where F: FnMut(&str) -> usize`) use static dispatch: the compiler generates separate, highly-optimized machine-code functions with zero runtime function-call overhead.
-- 🔍 **Real Code in `srz` ([src/engine/chunker.rs](file:///Users/myoo/Documents/Repo/srz/src/engine/chunker.rs#L29-L48)):**
+- 🔍 **Real Code in `srz` ([src/engine/chunker.rs](https://github.com/NewGuy012/srz/blob/master/src/engine/chunker.rs#L29-L48)):**
   ```rust
   // In src/engine/chunker.rs:
   // 1. Chunking by BPE AI tokens passes a function pointer
@@ -490,7 +490,7 @@ In application code (like CLIs and servers), writing dozens of custom error enum
 ### 9.1 Crash-Safe Terminals via RAII (`Drop`)
 - 💡 **Simple Analogy:** A hotel room keycard that turns on the lights when inserted and turns off all electricity automatically when you remove the card and step outside.
 - 💡 **The "Click" Moment: Deterministic Destruction:** In other languages, if an interactive terminal program panics or crashes, your terminal is left in "raw mode" (keys don't echo, cursor is invisible, typing `Enter` doesn't work). In Rust, types implementing `Drop` are guaranteed to run cleanup when unwinding the stack, automatically restoring your terminal even if the code panics.
-- 🔍 **Real Code in `srz` ([src/ui/tui.rs](file:///Users/myoo/Documents/Repo/srz/src/ui/tui.rs#L130-L147)):**
+- 🔍 **Real Code in `srz` ([src/ui/tui.rs](https://github.com/NewGuy012/srz/blob/master/src/ui/tui.rs#L130-L147)):**
   ```rust
   pub fn run_tui(db: &Database, cache: &Cache) -> Result<()> {
       enable_raw_mode()?;
@@ -516,7 +516,7 @@ In application code (like CLIs and servers), writing dozens of custom error enum
 ### 9.2 The RAII Closure Loan Pattern (`with_db`)
 - 💡 **Simple Analogy:** A safe deposit box at a bank. The vault manager unlocks the door for you, lends you access to your box, waits until you are done with your transaction, and locks the heavy vault door behind you the moment you leave.
 - 💡 **The "Click" Moment: Scoped RAII Lending:** Instead of forcing callers to remember `db.close()`, `with_db` enforces a strict lexical lifetime. The database connection cannot leak outside the closure because the borrow `&Database` is invalid once the closure returns.
-- 🔍 **Real Code in `srz` ([src/commands/mod.rs](file:///Users/myoo/Documents/Repo/srz/src/commands/mod.rs#L47-L54) and [src/main.rs](file:///Users/myoo/Documents/Repo/srz/src/main.rs#L64-L72)):**
+- 🔍 **Real Code in `srz` ([src/commands/mod.rs](https://github.com/NewGuy012/srz/blob/master/src/commands/mod.rs#L47-L54) and [src/main.rs](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L64-L72)):**
   ```rust
   // In src/commands/mod.rs
   pub fn with_db(f: impl FnOnce(&Database) -> Result<()>) -> Result<()> {
@@ -548,7 +548,7 @@ In application code (like CLIs and servers), writing dozens of custom error enum
 ### 9.3 Clone-on-Write in Action (`std::borrow::Cow<'a, str>`)
 - 💡 **Simple Analogy:** Reading a library book with transparent sticky notes. You read the original text for free (borrowed). Only if you need to rewrite or reformat a sentence do you photocopy that page and write on your copy (owned/cloned).
 - 💡 **The "Click" Moment: Borrow by Default, Allocate on Demand:** If a function only needs to modify data occasionally, returning `String` forces an allocation every time. `Cow<'a, str>` acts as a smart enum: it holds `Cow::Borrowed(&'a str)` when reading existing data, and seamlessly converts to `Cow::Owned(String)` only when edits are needed.
-- 🔍 **Real Code in `srz` ([src/main.rs](file:///Users/myoo/Documents/Repo/srz/src/main.rs#L164-L171)):**
+- 🔍 **Real Code in `srz` ([src/main.rs](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L164-L171)):**
   ```rust
   let content = if render::is_html_path(output_path) {
       // 1. User wants HTML: Allocate a brand-new styled HTML document string
@@ -573,7 +573,7 @@ In application code (like CLIs and servers), writing dozens of custom error enum
 ### 10.1 Safe Global State with `std::sync::LazyLock`
 - 💡 **Simple Analogy:** A motion-activated light. It draws zero electricity until someone steps into the room for the very first time, turns on smoothly, and stays on for everyone else safely.
 - 💡 **The "Click" Moment: Zero Startup Lag & No Static Fiascos:** Parsing CSS selectors (like finding `<meta property="og:title">`) takes noticeable CPU time. In C++, static globals risk undefined initialization order ("Static Initialization Order Fiasco"). In Python, heavy imports slow down CLI startup. `LazyLock` defers parsing CSS selectors until the exact millisecond they are first queried, and caches them thread-safely with zero ongoing lock overhead.
-- 🔍 **Real Code in `srz` ([src/sources/scraper.rs](file:///Users/myoo/Documents/Repo/srz/src/sources/scraper.rs#L8-L12)):**
+- 🔍 **Real Code in `srz` ([src/sources/scraper.rs](https://github.com/NewGuy012/srz/blob/master/src/sources/scraper.rs#L8-L12)):**
   ```rust
   static OG_TITLE_SEL: LazyLock<Selector> =
       LazyLock::new(|| Selector::parse("meta[property='og:title']").unwrap());
@@ -597,7 +597,7 @@ Because `LazyLock` is integrated directly into the standard library in modern Ru
 ### 11.1 Async Entry Point (`#[tokio::main]`)
 - 💡 **Simple Analogy:** A busy restaurant waiter serving 10 tables at once. Instead of standing idle in the kitchen waiting for a steak to grill (blocking), the waiter delivers drinks to table 2, takes an order from table 3, and returns the second the steak is ready (non-blocking).
 - 💡 **The "Click" Moment: Work-Stealing Without Thread Bloat:** Operating systems only understand synchronous `fn main()`. The `#[tokio::main]` macro expands your `async fn main()` into a standard OS entry point that initializes a multi-threaded work-stealing thread pool. When waiting on LLM streaming or web network packets, threads don't sleep—they immediately pick up another pending task.
-- 🔍 **Real Code in `srz` ([src/main.rs](file:///Users/myoo/Documents/Repo/srz/src/main.rs#L14-L18)):**
+- 🔍 **Real Code in `srz` ([src/main.rs](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L14-L18)):**
   ```rust
   #[tokio::main]
   async fn main() -> Result<()> {
@@ -623,7 +623,7 @@ Rust tasks spawned onto Tokio run cooperatively. An application can comfortably 
 ### 12.1 Declarative Derive Macros (`clap` & `serde`)
 - 💡 **Simple Analogy:** Drawing a simple floor plan on paper, and having an automated robot 3D-print the entire furnished house overnight with all wiring and plumbing included.
 - 💡 **The "Click" Moment: Zero-Cost Compile-Time Code Generation:** In Python or Ruby, command-line arguments and serialization require runtime inspection (reflection) which slows down boot time. In Rust, `#[derive(...)]` tells the compiler to write hundreds of lines of parsing, validation, and documentation code *at compile time*. The doc-comments (`/// Concise summary...`) become the actual `--help` manual!
-- 🔍 **Real Code in `srz` ([src/config/cli.rs](file:///Users/myoo/Documents/Repo/srz/src/config/cli.rs#L5-L14)):**
+- 🔍 **Real Code in `srz` ([src/config/cli.rs](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs#L5-L14)):**
   ```rust
   #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
   #[serde(rename_all = "lowercase")]
@@ -643,7 +643,7 @@ Rust tasks spawned onto Tokio run cooperatively. An application can comfortably 
 ### 12.2 Compile-Time OS Switches (`#[cfg(unix)]`)
 - 💡 **Simple Analogy:** Packing winter coats for an Alaska trip and light shorts for a Hawaii trip *before* you leave, rather than carrying both outfits everywhere.
 - 💡 **The "Click" Moment: Zero-Cost Portability:** In Python (`if sys.platform == 'win32':`) or C, platform checks happen at runtime or through complex build files. In Rust, `#[cfg(unix)]` tells the compiler: "Only compile this block when targeting macOS or Linux." On Windows, the Unix-specific `std::os::unix::fs::PermissionsExt` trait isn't even compiled, avoiding missing symbol errors completely.
-- 🔍 **Real Code in `srz` ([src/system/fs_util.rs](file:///Users/myoo/Documents/Repo/srz/src/system/fs_util.rs#L27-L35)):**
+- 🔍 **Real Code in `srz` ([src/system/fs_util.rs](https://github.com/NewGuy012/srz/blob/master/src/system/fs_util.rs#L27-L35)):**
   ```rust
   pub fn set_private_file_perms(path: &Path) {
       #[cfg(unix)]
@@ -661,7 +661,7 @@ Rust tasks spawned onto Tokio run cooperatively. An application can comfortably 
 ### 12.3 Mathematical Compile-Time Safety: `#![forbid(unsafe_code)]`
 - 💡 **Simple Analogy:** A sealed airplane cockpit door. The flight rules strictly forbid opening it during flight, guaranteeing that nobody can accidentally bump an emergency switch.
 - 💡 **The "Click" Moment: Mathematical Safety Proof:** Rust gives developers an `unsafe { ... }` escape hatch for writing low-level device drivers or C bindings. Writing `#![forbid(unsafe_code)]` on line 1 mathematically proves at compile time that the entire binary contains zero null-pointer dereferences, zero buffer overflows, and zero data races.
-- 🔍 **Real Code in `srz` ([src/main.rs](file:///Users/myoo/Documents/Repo/srz/src/main.rs#L1) and [src/lib.rs](file:///Users/myoo/Documents/Repo/srz/src/lib.rs#L1)):**
+- 🔍 **Real Code in `srz` ([src/main.rs](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L1) and [src/lib.rs](https://github.com/NewGuy012/srz/blob/master/src/lib.rs#L1)):**
   ```rust
   #![forbid(unsafe_code)]
   ```
@@ -672,7 +672,7 @@ Rust tasks spawned onto Tokio run cooperatively. An application can comfortably 
 ### 12.4 Safe Host Hardware Profiling Without FFI or `unsafe`
 - 💡 **Simple Analogy:** Looking at the speedometer on your car dashboard rather than taking the transmission apart while driving.
 - 💡 **The "Click" Moment: Zero-FFI Kernel Querying:** Many C/C++ libraries query physical RAM or CPU architectures using complex Foreign Function Interfaces (FFI) with raw pointers and `libc` calls, which risk memory corruption if types mismatch across OS releases. In `srz`, because `#![forbid(unsafe_code)]` is strictly enforced across the codebase, hardware profiling must be 100% memory-safe. Instead of C FFI, `srz` queries native OS facilities via safe subprocess executions (`sysctl` on macOS, `/proc/meminfo` on Linux, PowerShell WMI on Windows), parsing standard UTF-8 streams defensively with robust fallbacks.
-- 🔍 **Real Code in `srz` ([src/system/hardware.rs](file:///Users/myoo/Documents/Repo/srz/src/system/hardware.rs)):**
+- 🔍 **Real Code in `srz` ([src/system/hardware.rs](https://github.com/NewGuy012/srz/blob/master/src/system/hardware.rs)):**
   ```rust
   #[cfg(target_os = "macos")]
   fn detect_ram_bytes() -> Option<u64> {
@@ -691,7 +691,7 @@ Rust tasks spawned onto Tokio run cooperatively. An application can comfortably 
 ### 12.5 The Mathematical Invariant of Dynamic Context Budgeting
 - 💡 **Simple Analogy:** A shipping container with a hard weight limit. You reserve 30% for fragile return cargo and 25% for packaging buffers, precisely sizing the rest for your main shipment so the vessel never capsizes.
 - 💡 **The "Click" Moment: Zero-Drift Native Tokenization & Invariant Arithmetic:** Hardcoded limits (like assuming 12k or 16k tokens) break on small 4k models or underutilize 128k models. Worse, measuring tokens client-side with OpenAI's `tiktoken-rs` against a Gemma or Llama model introduces a 15–25% "tokenizer drift" error. `srz` queries the server's native `/tokenize` endpoint (`0% drift`), then feeds the exact capacity (`n_ctx`) into a mathematical invariant struct `DynamicBudget`. The struct guarantees at runtime that `effective_ctx = prompt_chunk + reserve_completion + headroom`, preventing out-of-memory context overflows before an inference request is dispatched.
-- 🔍 **Real Code in `srz` ([src/engine/budget.rs](file:///Users/myoo/Documents/Repo/srz/src/engine/budget.rs)):**
+- 🔍 **Real Code in `srz` ([src/engine/budget.rs](https://github.com/NewGuy012/srz/blob/master/src/engine/budget.rs)):**
   ```rust
   #[derive(Debug, Clone, Copy, PartialEq, Eq)]
   pub struct DynamicBudget {
@@ -725,7 +725,7 @@ Rust tasks spawned onto Tokio run cooperatively. An application can comfortably 
 ### 12.6 Model-Aware Caching & Invalidation in Embedded DuckDB
 - 💡 **Simple Analogy:** A library card catalog that immediately updates a shelf note if a book is replaced with a revised edition.
 - 💡 **The "Click" Moment: Deterministic Schema Migration & Invalidation:** Probing server properties on every single CLI invocation would add 10–30ms of network latency. To eliminate this, `srz` caches server capabilities (`n_ctx`, `total_slots`, `model_name`) in embedded DuckDB (`cache.duckdb`). If the user switches models in Ollama or `llama.cpp`, the cached model string mismatches: DuckDB automatically invalidates the stale row and executes a fresh probe. All table creation uses `CREATE TABLE IF NOT EXISTS` with explicit column migrations, ensuring zero corrupted cache schemas across versions.
-- 🔍 **Real Code in `srz` ([src/storage/cache.rs](file:///Users/myoo/Documents/Repo/srz/src/storage/cache.rs)):**
+- 🔍 **Real Code in `srz` ([src/storage/cache.rs](https://github.com/NewGuy012/srz/blob/master/src/storage/cache.rs)):**
   ```rust
   pub fn get_server_capabilities(&self, base_url: &str) -> Option<ServerCapabilities> {
       let mut conn = self.conn.lock().ok()?;
@@ -826,27 +826,27 @@ flowchart TD
 
 | Concept | File Location | Real-World Analogy & Mental Model | The Rust Book Reference |
 | :--- | :--- | :--- | :--- |
-| **Move vs. Borrow (`&`)** | [`src/main.rs#L23-L30`](file:///Users/myoo/Documents/Repo/srz/src/main.rs#L23-L30) | **Reading over a shoulder**: Borrowing with `&` avoids transferring ownership and triggering error `E0382`. | [Ch 4.2: References & Borrowing](https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html) |
-| **Defensive Streaming** | [`src/sources/scraper.rs#L58-L86`](file:///Users/myoo/Documents/Repo/srz/src/sources/scraper.rs#L58-L86) | **Fuel pump auto-shutoff**: Streaming chunks with hard byte limits protects against Out-of-Memory DOS attacks. | [Ch 4.1: Ownership](https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html) |
-| **`Cow<'a, str>`** | [`src/main.rs#L164-L171`](file:///Users/myoo/Documents/Repo/srz/src/main.rs#L164-L171) | **Reading with sticky notes**: Zero-copy borrowing by default, lazily allocating `String` only when edits occur. | [Ch 4.3: Slices](https://doc.rust-lang.org/book/ch04-03-slices.html) |
-| **Enums with Payloads** | [`src/config/cli.rs#L337-L358`](file:///Users/myoo/Documents/Repo/srz/src/config/cli.rs#L337-L358) | **Swiss Army Knife**: Makes invalid states unrepresentable; each variant holds only the fields it requires. | [Ch 6.1: Defining an Enum](https://doc.rust-lang.org/book/ch06-01-defining-an-enum.html) |
-| **Exhaustive `match`** | [`src/main.rs#L55-L75`](file:///Users/myoo/Documents/Repo/srz/src/main.rs#L55-L75) | **Postal sorting bins**: The compiler flags missing variants if new commands are introduced. | [Ch 6.2: Pattern Matching](https://doc.rust-lang.org/book/ch06-02-match.html) |
-| **Modern Let-Chains** | [`src/main.rs#L214-L217`](file:///Users/myoo/Documents/Repo/srz/src/main.rs#L214-L217) | **Airport boarding gate**: Combines bool checks and `let Some(...)` extraction into a single readable line. | [Ch 6.3: `if let`](https://doc.rust-lang.org/book/ch06-03-if-let.html) |
-| **Capacity Pre-allocation** | [`src/ui/render.rs#L241-L244`](file:///Users/myoo/Documents/Repo/srz/src/ui/render.rs#L241-L244) | **Booking bus upfront**: Eliminates multiple heap reallocations during Markdown-to-HTML conversions. | [Ch 8.2: Strings](https://doc.rust-lang.org/book/ch08-02-strings.html#updating-a-string) |
-| **`Result`, `Option`, & `?`** | [`src/main.rs#L25-L27`](file:///Users/myoo/Documents/Repo/srz/src/main.rs#L25-L27) | **Gift box & return receipt**: Explicit type-based errors that propagate cleanly without hidden crashes. | [Ch 9.2: Result](https://doc.rust-lang.org/book/ch09-02-recoverable-errors-with-result.html) |
-| **Lifetimes in Structs (`'a`)** | [`src/storage/db.rs#L11-L24`](file:///Users/myoo/Documents/Repo/srz/src/storage/db.rs#L11-L24) | **Expiring visitor pass**: Lets database records borrow 50KB strings without duplicating memory on the heap. | [Ch 10.3: Struct Lifetimes](https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html#lifetime-annotations-in-struct-definitions) |
-| **`#[serde(borrow)]`** | [`src/engine/llm.rs#L33-L55`](file:///Users/myoo/Documents/Repo/srz/src/engine/llm.rs#L33-L55) | **Highlighting original letter**: Deserializes streaming LLM JSON directly from network buffers with **0B allocations**. | [Ch 10.3: Lifetimes](https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html) |
-| **Closures & `FnMut`** | [`src/engine/chunker.rs#L29-L48`](file:///Users/myoo/Documents/Repo/srz/src/engine/chunker.rs#L29-L48) | **Swappable bread-slicing blades**: Zero-cost monomorphization allowing flexible metric counting. | [Ch 13.1: Closures](https://doc.rust-lang.org/book/ch13-01-closures.html) |
-| **Crash-Safe Terminal (RAII)** | [`src/ui/tui.rs#L130-L147`](file:///Users/myoo/Documents/Repo/srz/src/ui/tui.rs#L130-L147) | **Hotel keycard light switch**: Restores normal terminal modes upon function exit, even after panics. | [Ch 15.3: Drop Trait](https://doc.rust-lang.org/book/ch15-03-drop.html) |
-| **Closure Loan Pattern** | [`src/commands/mod.rs#L47-L54`](file:///Users/myoo/Documents/Repo/srz/src/commands/mod.rs#L47-L54) | **Bank vault attendant**: Enforces strict lexical database access boundaries and automatic RAII lock release. | [Ch 15.3: Drop Trait](https://doc.rust-lang.org/book/ch15-03-drop.html) |
-| **`LazyLock<T>`** | [`src/sources/scraper.rs#L8-L12`](file:///Users/myoo/Documents/Repo/srz/src/sources/scraper.rs#L8-L12) | **Motion-sensor light**: Safe, one-time, thread-safe initialization on demand with zero ongoing lock cost. | [Ch 16.3: Concurrency](https://doc.rust-lang.org/book/ch16-03-shared-state.html) |
-| **`#[tokio::main]`** | [`src/main.rs#L14-L18`](file:///Users/myoo/Documents/Repo/srz/src/main.rs#L14-L18) | **Restaurant waiter**: Non-blocking work-stealing thread pool for high-throughput network I/O. | [Ch 17: Async/Await](https://doc.rust-lang.org/book/ch17-00-async-await.html) |
-| **`#[cfg(unix)]`** | [`src/system/fs_util.rs#L27-L35`](file:///Users/myoo/Documents/Repo/srz/src/system/fs_util.rs#L27-L35) | **Packing for the weather**: Zero-overhead platform-specific file permissions compiled without runtime checks. | [Ch 14.1: Profiles](https://doc.rust-lang.org/book/ch14-01-release-profiles.html) |
-| **`#![forbid(unsafe_code)]`** | [`src/main.rs#L1`](file:///Users/myoo/Documents/Repo/srz/src/main.rs#L1), [`src/lib.rs#L1`](file:///Users/myoo/Documents/Repo/srz/src/lib.rs#L1) | **Sealed cockpit door**: Mathematical compile-time guarantee of zero memory corruption or segfaults. | [Ch 19.1: Unsafe Rust](https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html) |
-| **Derive Macros** | [`src/config/cli.rs#L5-L14`](file:///Users/myoo/Documents/Repo/srz/src/config/cli.rs#L5-L14) | **3D architectural printer**: Generates hundreds of lines of type validation and `--help` CLI text at compile time. | [Ch 19.5: Macros](https://doc.rust-lang.org/book/ch19-06-macros.html#how-to-write-a-custom-derive-macro) |
-| **Safe Hardware Profiling** | [`src/system/hardware.rs`](file:///Users/myoo/Documents/Repo/srz/src/system/hardware.rs) | **Dashboard gauges**: Reads RAM/CPU metrics via isolated subprocesses with zero FFI and zero `unsafe`. | [Ch 19.1: Unsafe Rust](https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html) |
-| **Dynamic Budgeting** | [`src/engine/budget.rs`](file:///Users/myoo/Documents/Repo/srz/src/engine/budget.rs) | **Vessel weight balancing**: Invariant math sizing prompt chunks and reserve headroom to eliminate OOMs. | [Ch 5.3: Method Syntax](https://doc.rust-lang.org/book/ch05-03-method-syntax.html) |
-| **Model Cache Invalidation** | [`src/storage/cache.rs`](file:///Users/myoo/Documents/Repo/srz/src/storage/cache.rs) | **Card catalog update**: Embedded DuckDB invalidates cached context size when server switches models. | [Ch 16.3: Shared-State](https://doc.rust-lang.org/book/ch16-03-shared-state.html) |
+| **Move vs. Borrow (`&`)** | [`src/main.rs#L23-L30`](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L23-L30) | **Reading over a shoulder**: Borrowing with `&` avoids transferring ownership and triggering error `E0382`. | [Ch 4.2: References & Borrowing](https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html) |
+| **Defensive Streaming** | [`src/sources/scraper.rs#L58-L86`](https://github.com/NewGuy012/srz/blob/master/src/sources/scraper.rs#L58-L86) | **Fuel pump auto-shutoff**: Streaming chunks with hard byte limits protects against Out-of-Memory DOS attacks. | [Ch 4.1: Ownership](https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html) |
+| **`Cow<'a, str>`** | [`src/main.rs#L164-L171`](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L164-L171) | **Reading with sticky notes**: Zero-copy borrowing by default, lazily allocating `String` only when edits occur. | [Ch 4.3: Slices](https://doc.rust-lang.org/book/ch04-03-slices.html) |
+| **Enums with Payloads** | [`src/config/cli.rs#L337-L358`](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs#L337-L358) | **Swiss Army Knife**: Makes invalid states unrepresentable; each variant holds only the fields it requires. | [Ch 6.1: Defining an Enum](https://doc.rust-lang.org/book/ch06-01-defining-an-enum.html) |
+| **Exhaustive `match`** | [`src/main.rs#L55-L75`](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L55-L75) | **Postal sorting bins**: The compiler flags missing variants if new commands are introduced. | [Ch 6.2: Pattern Matching](https://doc.rust-lang.org/book/ch06-02-match.html) |
+| **Modern Let-Chains** | [`src/main.rs#L214-L217`](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L214-L217) | **Airport boarding gate**: Combines bool checks and `let Some(...)` extraction into a single readable line. | [Ch 6.3: `if let`](https://doc.rust-lang.org/book/ch06-03-if-let.html) |
+| **Capacity Pre-allocation** | [`src/ui/render.rs#L241-L244`](https://github.com/NewGuy012/srz/blob/master/src/ui/render.rs#L241-L244) | **Booking bus upfront**: Eliminates multiple heap reallocations during Markdown-to-HTML conversions. | [Ch 8.2: Strings](https://doc.rust-lang.org/book/ch08-02-strings.html#updating-a-string) |
+| **`Result`, `Option`, & `?`** | [`src/main.rs#L25-L27`](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L25-L27) | **Gift box & return receipt**: Explicit type-based errors that propagate cleanly without hidden crashes. | [Ch 9.2: Result](https://doc.rust-lang.org/book/ch09-02-recoverable-errors-with-result.html) |
+| **Lifetimes in Structs (`'a`)** | [`src/storage/db.rs#L11-L24`](https://github.com/NewGuy012/srz/blob/master/src/storage/db.rs#L11-L24) | **Expiring visitor pass**: Lets database records borrow 50KB strings without duplicating memory on the heap. | [Ch 10.3: Struct Lifetimes](https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html#lifetime-annotations-in-struct-definitions) |
+| **`#[serde(borrow)]`** | [`src/engine/llm.rs#L33-L55`](https://github.com/NewGuy012/srz/blob/master/src/engine/llm.rs#L33-L55) | **Highlighting original letter**: Deserializes streaming LLM JSON directly from network buffers with **0B allocations**. | [Ch 10.3: Lifetimes](https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html) |
+| **Closures & `FnMut`** | [`src/engine/chunker.rs#L29-L48`](https://github.com/NewGuy012/srz/blob/master/src/engine/chunker.rs#L29-L48) | **Swappable bread-slicing blades**: Zero-cost monomorphization allowing flexible metric counting. | [Ch 13.1: Closures](https://doc.rust-lang.org/book/ch13-01-closures.html) |
+| **Crash-Safe Terminal (RAII)** | [`src/ui/tui.rs#L130-L147`](https://github.com/NewGuy012/srz/blob/master/src/ui/tui.rs#L130-L147) | **Hotel keycard light switch**: Restores normal terminal modes upon function exit, even after panics. | [Ch 15.3: Drop Trait](https://doc.rust-lang.org/book/ch15-03-drop.html) |
+| **Closure Loan Pattern** | [`src/commands/mod.rs#L47-L54`](https://github.com/NewGuy012/srz/blob/master/src/commands/mod.rs#L47-L54) | **Bank vault attendant**: Enforces strict lexical database access boundaries and automatic RAII lock release. | [Ch 15.3: Drop Trait](https://doc.rust-lang.org/book/ch15-03-drop.html) |
+| **`LazyLock<T>`** | [`src/sources/scraper.rs#L8-L12`](https://github.com/NewGuy012/srz/blob/master/src/sources/scraper.rs#L8-L12) | **Motion-sensor light**: Safe, one-time, thread-safe initialization on demand with zero ongoing lock cost. | [Ch 16.3: Concurrency](https://doc.rust-lang.org/book/ch16-03-shared-state.html) |
+| **`#[tokio::main]`** | [`src/main.rs#L14-L18`](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L14-L18) | **Restaurant waiter**: Non-blocking work-stealing thread pool for high-throughput network I/O. | [Ch 17: Async/Await](https://doc.rust-lang.org/book/ch17-00-async-await.html) |
+| **`#[cfg(unix)]`** | [`src/system/fs_util.rs#L27-L35`](https://github.com/NewGuy012/srz/blob/master/src/system/fs_util.rs#L27-L35) | **Packing for the weather**: Zero-overhead platform-specific file permissions compiled without runtime checks. | [Ch 14.1: Profiles](https://doc.rust-lang.org/book/ch14-01-release-profiles.html) |
+| **`#![forbid(unsafe_code)]`** | [`src/main.rs#L1`](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L1), [`src/lib.rs#L1`](https://github.com/NewGuy012/srz/blob/master/src/lib.rs#L1) | **Sealed cockpit door**: Mathematical compile-time guarantee of zero memory corruption or segfaults. | [Ch 19.1: Unsafe Rust](https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html) |
+| **Derive Macros** | [`src/config/cli.rs#L5-L14`](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs#L5-L14) | **3D architectural printer**: Generates hundreds of lines of type validation and `--help` CLI text at compile time. | [Ch 19.5: Macros](https://doc.rust-lang.org/book/ch19-06-macros.html#how-to-write-a-custom-derive-macro) |
+| **Safe Hardware Profiling** | [`src/system/hardware.rs`](https://github.com/NewGuy012/srz/blob/master/src/system/hardware.rs) | **Dashboard gauges**: Reads RAM/CPU metrics via isolated subprocesses with zero FFI and zero `unsafe`. | [Ch 19.1: Unsafe Rust](https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html) |
+| **Dynamic Budgeting** | [`src/engine/budget.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/budget.rs) | **Vessel weight balancing**: Invariant math sizing prompt chunks and reserve headroom to eliminate OOMs. | [Ch 5.3: Method Syntax](https://doc.rust-lang.org/book/ch05-03-method-syntax.html) |
+| **Model Cache Invalidation** | [`src/storage/cache.rs`](https://github.com/NewGuy012/srz/blob/master/src/storage/cache.rs) | **Card catalog update**: Embedded DuckDB invalidates cached context size when server switches models. | [Ch 16.3: Shared-State](https://doc.rust-lang.org/book/ch16-03-shared-state.html) |
 
 ---
 
@@ -958,9 +958,9 @@ serde_json = "1.0"
 ```
 
 > 💡 **Why These Three Crates Simplify Everything:**
-> - **`clap`**: Replaces 60+ lines of manual `std::env::args()` loops with a 15-line annotated struct. (See `srz`'s CLI in [`src/config/cli.rs`](file:///Users/myoo/Documents/Repo/srz/src/config/cli.rs#L5)).
-> - **`scraper`**: Eliminates custom regex and state machines for HTML parsing by querying the DOM with standard CSS selectors. (See `srz`'s web scraper in [`src/sources/scraper.rs`](file:///Users/myoo/Documents/Repo/srz/src/sources/scraper.rs#L8)).
-> - **`anyhow`**: Replaces verbose `Box<dyn std::error::Error>` trait objects with a clean `Result<T>` and rich contextual failure messages. (See `srz`'s error handling in [`src/sources/scraper.rs`](file:///Users/myoo/Documents/Repo/srz/src/sources/scraper.rs#L1)).
+> - **`clap`**: Replaces 60+ lines of manual `std::env::args()` loops with a 15-line annotated struct. (See `srz`'s CLI in [`src/config/cli.rs`](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs#L5)).
+> - **`scraper`**: Eliminates custom regex and state machines for HTML parsing by querying the DOM with standard CSS selectors. (See `srz`'s web scraper in [`src/sources/scraper.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/scraper.rs#L8)).
+> - **`anyhow`**: Replaces verbose `Box<dyn std::error::Error>` trait objects with a clean `Result<T>` and rich contextual failure messages. (See `srz`'s error handling in [`src/sources/scraper.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/scraper.rs#L1)).
 >
 > 📖 **The Rust Book Connection**: [Chapter 7.1: Packages and Crates](https://doc.rust-lang.org/book/ch07-01-packages-and-crates.html)
 

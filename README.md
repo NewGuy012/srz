@@ -13,9 +13,6 @@
 - 📚 **Books**
 - 📰 **Live news digests & universal RSS/Atom feeds**
 
-> 📖 **Documentation**: Visit the [**srz Documentation Site**](https://newguy012.github.io/srz/) for full guides, tutorials, and command references.
-
-
 ## Highlights
 
 ```mermaid
@@ -53,15 +50,8 @@ flowchart LR
 - 🔒 **100% Local & Private**: Runs on your device with zero fees and no API keys.
 - 🎯 **3 Summary Presets**: Choose concise, bulleted, or detailed summaries.
 - ⚡ **Zero-Worry Dynamic Sizing**: Automatically probes server context (`n_ctx`) and concurrency slots to size chunks and eliminate OOM crashes.
-- 💻 **Laptop Hardware Optimization**: Steers towards high-fidelity Google Gemma 4 (`Q8_0`) models matched to your machine's unified memory.
-- 🎯 **Exact Server Tokenization**: Queries the local LLM's native `/tokenize` endpoint for 0% tokenizer drift across code and multilingual text.
-- 📰 **Google News Feeds**: Summarize top stories and search topics by default.
-- ⚡ **Terminal Paging**: Clean CLI output with auto-paging for long summaries.
 - 💬 **Interactive Q&A**: Chat and ask questions about any document or read with token-budgeted memory.
 - 🖥️ **Terminal Dashboard**: Browse, search, filter, and read past summaries.
-- 🔍 **Fast Offline Search**: Find past summaries instantly without internet.
-- 🗄️ **Local Smart Cache**: Saves past reads and server capabilities locally for instant offline review.
-- 📖 **Clean Reader Views**: Distraction-free HTML and Markdown with dark mode.
 
 
 ## Prerequisites: LLM Backend Server
@@ -109,21 +99,17 @@ cargo install --path .
 
 ## Usage
 
-### 0. Recommend Model & Context Length for Your Hardware
-Before summarizing, run `srz recommend` (or `srz doctor`) to instantly inspect your host RAM/CPU and get the recommended model, optimal context window, and exact setup instructions:
+### Hardware Recommendation
+Run `srz recommend` to inspect your system's RAM/CPU and get the optimal model and context window:
 ```bash
 srz recommend
 ```
-> 💡 **One-Command Decision**: Auto-detects whether your device has 8GB, 16GB, 24–36GB, or 64GB+ unified memory, steers towards high-fidelity Google Gemma 4 (`Q8_0`), selects the optimal context length (`8k ctx`, `32k ctx`, `64k ctx`, or `128k ctx`), and displays simplified selections for the Llama GUI as well as ready launch commands for llama.cpp CLI and Ollama!
 
 ### Summarize
 ```bash
-srz "https://en.wikipedia.org/wiki/Rust_(programming_language)" # Article
+srz "https://en.wikipedia.org/wiki/Rust_(programming_language)" # Web article
 srz "https://youtu.be/5C_HPTJg5ek"          # YouTube video
 srz assets/document.pdf                     # PDF document
-srz "The Rust Programming Language" --open  # Book synopsis
-srz news "Rust language updates" -t week    # News digest
-git diff | srz -                            # Stdin stream
 ```
 
 ### Ask & Chat
@@ -131,51 +117,26 @@ git diff | srz -                            # Stdin stream
 srz ask "What are the main findings?"  # Ask latest read
 srz ask assets/document.pdf "Summary"  # Ask document
 srz ask -i                             # Interactive chat
-srz ask --chats                        # List saved chats
-srz ask --resume 1                     # Resume chat session
-srz ask --show-chat 1                  # Show transcript
-srz ask --delete-chat 1                # Delete chat session
 ```
 
 ### Library, Search & Telemetry
 ```bash
 srz browse         # Terminal dashboard
 srz find "keyword" # Search past summaries
-srz history        # View recent reads
-srz stats          # Reading statistics
 ```
 
 ### Cache & Storage Maintenance
 ```bash
-srz cache size                   # Check disk usage
-srz cache prune --older-than 14d # Prune older cache
-srz cache prune --max-size 500MB # Enforce size limit
-srz cache clean                  # Clean cache files
-srz cache clean --reset-db       # Full database reset
-srz doctor                       # Backend diagnostics
-srz recommend                    # Model & hardware advisor
+srz cache clean    # Clean cache files
+srz doctor         # Backend diagnostics
 ```
 
 Run `srz --help` to see all available subcommands and flags.
 
 
-## Features
-
-- [**Universal Ingestion**](book/src/architecture.md#1-high-level-subsystem-architecture)
-- [**Interactive Q&A (`srz ask`)**](book/src/commands.md#3-grounded-qa--multi-turn-chat-srz-ask)
-- [**TUI Dashboard (`srz browse`)**](book/src/commands.md#2-interactive-terminal-explorer-srz-browse)
-- [**3 Summary Presets**](book/src/commands.md#key-features--subcommands-quick-reference)
-- [**Offline BM25 Library Search**](book/src/architecture.md#4-offline-bm25-full-text-search-algorithm)
-
-> For full guides and tutorials, visit the [**Documentation Website**](https://newguy012.github.io/srz/). For architectural diagrams, lifecycle execution sequences, and in-depth subsystem specs, see [**`Architecture & Design`**](book/src/architecture.md).
-
-
 ## Configuring Your LLM Backend
 
 `srz` connects to any OpenAI-compatible API. Local inference is preferred for privacy and zero cost, but cloud providers are fully supported.
-
-> 💡 **Not sure which model or context length to choose?**
-> Run `srz recommend` in your terminal. It instantly detects your machine's physical RAM, recommends the best high-fidelity Google Gemma 4 model (`Q8_0`), selects the optimal context length (e.g. `32k ctx`), and outputs direct Llama GUI model cards and launch commands!
 
 ### Local LLMs (Preferred)
 
@@ -184,53 +145,24 @@ Run `srz --help` to see all available subcommands and flags.
     - Model: `gemma-4`
     - Badges: `E4B` `Q8_0` (or `26B-A4B` `Q8_0` for 64GB+ workstations)
     - Context: `32k ctx` (or `64k ctx` / `128k ctx`)
-- **Linux & llama.cpp**: Build or install [llama.cpp](https://github.com/ggml-org/llama.cpp) and launch `llama-server`:
-  ```bash
-  # Start llama-server on port 9931 with recommended Gemma 4 Q8_0 model:
-  llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 32768 --port 9931
-
-  # Or on default port 8080:
-  llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 32768 --port 8080
-  export OPENAI_BASE_URL="http://localhost:8080/v1"
-  ```
-- **Ollama**: Run with explicit context window size (Ollama defaults to only 2048 tokens unless specified):
-  ```bash
-  OLLAMA_NUM_PARALLEL=1 ollama run gemma2:9b --ctx-size 32768
-  export OPENAI_BASE_URL="http://localhost:11434/v1" OPENAI_MODEL="gemma2:9b"
-  ```
-- **Hardware & Context Recommendations**: Run `srz recommend` for a fast 1-second advisory card, or `srz doctor` for full diagnostics including network latency, DuckDB integrity, and server context probing (`n_ctx`).
-- **Manual Context Override**: Override auto-detected context length on the fly via `--context-window <NUM>` (or `context_window` in `config.toml`).
 
 ### Cloud Providers (Optional)
 
-`srz` works with any OpenAI-compatible provider (OpenAI, Anthropic, Google, Groq, OpenRouter):
+`srz` works with any OpenAI-compatible provider (OpenAI, Gemini, Groq, Anthropic):
 
 ```bash
 export OPENAI_BASE_URL="https://api.openai.com/v1" OPENAI_MODEL="gpt-4o-mini" OPENAI_API_KEY="sk-..."
-
-# Or on the fly via CLI flag:
-srz "1984" --base-url "https://api.openai.com/v1" --model "gpt-4o-mini" --api-key "sk-..."
 ```
 
 ### Hardware-Tailored Configuration (`srz config init`)
 
-Run `srz config init` to generate a `~/.config/srz/config.toml` file pre-tailored to your computer's RAM, optimal model, and context window:
+Run `srz config init` to auto-generate a `~/.config/srz/config.toml` tailored to your machine's hardware:
 
 ```toml
-# Default local model tailored for your hardware (matches Llama GUI naming)
 base_url = "http://localhost:9931/v1"
 model = "gemma-4"
-context_window = 32768  # 32k ctx in Llama GUI
+context_window = 32768
 
-# Storage limits and retention policies
-[cache]
-max_size_mb = 500         # Disk budget (LRU eviction past threshold)
-pages_ttl_days = 7        # Scraped web content & news TTL
-search_ttl_days = 14      # Book metadata & search candidates TTL
-summaries_ttl_days = 90   # Generated LLM outputs TTL
-auto_prune = true         # Opportunistic 24h background pruning
-
-# Cloud profile (e.g. OpenAI or Anthropic)
 [profiles.openai]
 base_url = "https://api.openai.com/v1"
 model = "gpt-4o-mini"
@@ -240,24 +172,11 @@ api_key = "sk-..."
 Switch profiles on the fly with `--profile`:
 
 ```bash
-srz "The Rust Programming Language"                  # Default model
-srz "The Rust Programming Language" --profile openai # Cloud profile
+srz "The Rust Programming Language" --profile openai
 ```
 
 
-## Documentation & Architecture
+## Documentation
 
-- 🌐 [**Documentation Website**](https://newguy012.github.io/srz/): Comprehensive mdBook site covering installation, quick start, command reference, and configuration.
-- 🏗️ [**Architecture & Design Guide (`book/src/architecture.md`)**](book/src/architecture.md): Detailed Mermaid architecture diagrams, execution sequence flows, storage schemas, and subsystem specifications.
-- 🦀 [**Rust Learning Guide (`RUST_LEARNING_GUIDE.md`)**](docs/RUST_LEARNING_GUIDE.md): Hands-on case study exploring Rust systems programming concepts and patterns using real `srz` code.
+For full guides, tutorials, architecture specifications, and complete command references, visit the [**srz Documentation Site**](https://newguy012.github.io/srz/).
 
-
-## Running Tests & Static Analysis
-
-```bash
-# Run full automated test suite (120 tests)
-cargo test
-
-# Strict static analysis (warnings denied)
-cargo clippy --all-targets -- -D warnings
-```

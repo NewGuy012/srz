@@ -3,7 +3,7 @@
 **Project:** `srz` (Summarize CLI)  
 **Repository:** [github.com/NewGuy012/srz](https://github.com/NewGuy012/srz)  
 **Language & Platform:** Rust (Edition 2024) · macOS / Linux / Windows  
-**Cumulative Posture:** 🛡️ **100% Safe Rust** (`#![forbid(unsafe_code)]` enforced) · ✅ **25 / 25 Vulnerabilities Resolved** · ✅ **104 / 104 Tests Passing**
+**Cumulative Posture:** 🛡️ **100% Safe Rust** (`#![forbid(unsafe_code)]` enforced) · ✅ **31 / 31 Vulnerabilities Resolved** · ✅ **156 / 156 Tests Passing**
 
 This document serves as the chronological security audit ledger for `srz`. Each audit section is recorded with its execution timestamp, assessed scope, identified vulnerabilities, implemented remediations, and verification results.
 
@@ -17,6 +17,7 @@ This document serves as the chronological security audit ledger for `srz`. Each 
 | **[Audit #2](#audit-2)** | **2026-10-28 16:30:00 PDT** | Self-Update Engine (`upgrade`), Installers, TOCTOU Races & Unbounded Streams | 7 / 7 | ✅ Complete |
 | **[Audit #3](#audit-3)** | **2026-10-28 20:15:00 PDT** | Grounded Q&A Injection, Terminal Escape Injection, Insecure Installers & Safe Rust Restoration | 6 / 6 | ✅ Complete |
 | **[Audit #4](#audit-4)** | **2026-10-29 08:15:00 PDT** | Prompt Delimiter Escaping, C1/BiDi Terminal Sanitization, Bounded Streams, YouTube SSRF, Symlink Hardening & SHA-256 Hashing | 7 / 7 | ✅ Complete |
+| **[Audit #5](#audit-5)** | **2026-11-03 16:15:00 PST** | Server Discovery & Tokenization Bounds, Dynamic Budget Arithmetic, Google News Syndication & batchexecute RPC, Markdown URL Scheme Neutralization, TUI/Diagnostics Terminal Sanitization, Pager Subprocess Hardening, DuckDB Symlink Guards & Supply-Chain Deny Policy | 6 / 6 | ✅ Complete |
 
 * **[Cumulative Verification & Test Suite](#verification)**
 * **[Production Hardening & Residual Risk Recommendations](#recommendations)**
@@ -698,6 +699,172 @@ A fourth deep-dive security audit was performed across the complete `srz` codeba
 
 ---
 
+<a id="audit-5"></a>
+## 📅 Audit #5 — November 3, 2026 · 4:15 PM PST (Phase 5: Server Capabilities Discovery, Syndication Feeds, TUI Hardening & DuckDB Symlink Security)
+
+### Overview & Scope
+A comprehensive vulnerability audit was conducted across all features and enhancements introduced between `v0.4.0` and `v0.7.1`:
+* **Server Discovery & Native Tokenization:** llama.cpp `/props` discovery, Ollama `/api/show` model inspect, dynamic budgeting (`DynamicBudget`), and native token counting (`/tokenize` and `/api/tokenize`).
+* **Live News Syndication & batchexecute RPC:** Direct RSS/Atom/JSON feeds, Google News `/articles/` decoding, ephemeral signature extraction, and batchexecute RPC destination resolution.
+* **TUI Library Explorer & Diagnostics:** Ratatui terminal dashboard (`srz browse`), host hardware profiling (`srz recommend`), and `srz doctor` connectivity advisors.
+* **HTML Reader Views:** CommonMark / GFM markdown rendering via `pulldown-cmark`.
+* **Packaging & Installers:** Pager environment handling (`$PAGER`), self-upgrade version canonicalization (`srz upgrade`), shell installation script (`scripts/install.sh`), and dependency advisory policies (`deny.toml`).
+
+### Audit #5 Scorecard
+
+| Metric | Result | Notes |
+|:---|:---:|:---|
+| **Memory Safety** | 🛡️ **100% Safe Rust** | `#![forbid(unsafe_code)]` continuously enforced |
+| **Flaws Identified** | **6 Total** | 1 High, 1 Med-High, 3 Medium, 1 Low-Medium |
+| **Flaws Remediated** | ✅ **6 / 6 (100%)** | All issues patched with regression tests |
+| **Test Suite Status** | ✅ **156 / 156 Passing** | 0 failures, 0 warnings under Clippy `-D warnings` |
+
+### Audit #5 Findings Matrix
+
+| # | Finding Title | Severity | CWE / Category | Status |
+|:---:|:---|:---:|:---|:---:|
+| **26** | [Unbounded HTTP JSON Reads, Unclamped Server Capabilities & Dynamic Budget Arithmetic Overflow](#finding-26) | 🔴 High | CWE-400 / CWE-770 / CWE-190 | ✅ Patched |
+| **27** | [Syndication Feed URL Validation, Google News batchexecute RPC Injection & Unbounded Ingestion Limit](#finding-27) | 🟡 Med-High | CWE-918 / CWE-20 / CWE-74 | ✅ Patched |
+| **28** | [Dangerous URI Schemes (javascript:, vbscript:, data:) in Markdown HTML Views](#finding-28) | 🟡 Medium | CWE-79 / CWE-116 | ✅ Patched |
+| **29** | [Terminal Escape & BiDi Injection in TUI Library Explorer, Hardware Diagnostics, and Transcripts](#finding-29) | 🟡 Medium | CWE-150 / CWE-451 | ✅ Patched |
+| **30** | [Pager Subprocess Environment Injection (LESSSECURE=1) & Uncanonicalized Self-Upgrade Release Tags](#finding-30) | 🟡 Medium | CWE-78 / CWE-88 / CWE-20 | ✅ Patched |
+| **31** | [Unbounded Config File Size, DuckDB Symlink Traversal, Predictable Installer Staging & Supply-Chain Deny Policy](#finding-31) | 🟢 Low-Medium | CWE-59 / CWE-377 / CWE-400 | ✅ Patched |
+
+---
+
+### Detailed Findings & Remediations (Audit #5)
+
+#### Finding 26: Unbounded HTTP JSON Reads, Unclamped Server Capabilities & Dynamic Budget Arithmetic Overflow
+
+| Attribute | Details |
+|:---|:---|
+| **Severity** | 🔴 **High** |
+| **CWE** | CWE-400 (Uncontrolled Resource Consumption), CWE-770 (Allocation of Resources Without Limits or Throttling), CWE-190 (Integer Overflow or Wraparound) |
+| **Location** | `src/engine/llm.rs`, `src/engine/budget.rs`, `src/commands/ask.rs` |
+| **Commit** | `d99e9a8` (*fix(security): clamp server capabilities, bound JSON responses, and prevent budget arithmetic overflow (Finding 26)*) |
+
+##### 💥 Threat & Impact
+1. `probe_server_capabilities` (`/props`, `/api/show`) and `tokenize_text` (`/tokenize`, `/api/tokenize`) called `resp.json::<serde_json::Value>().await` directly without byte bounds, re-introducing unbounded memory consumption (CWE-400) if an endpoint returned an infinite or multi-gigabyte payload.
+2. Discovered `n_ctx` and `total_slots` from remote backends (or `--context-window` / `--concurrency` CLI flags) were unvalidated without upper limits. In `DynamicBudget::new`, calculations such as `usable * 7 / 10` and `usable * 4 / 10` panicked on integer overflow when compiled with release overflow checks enabled (`overflow-checks = true`), and unbounded `concurrency` could exhaust host threads and sockets.
+3. In `ask.rs`, `content.len() <= (max_tokens * 3 / 4)` lacked saturating multiplication.
+
+##### 🛡️ Remediation
+* Replaced `resp.json().await` in `probe_server_capabilities` and `tokenize_text` with `crate::scraper::read_response_bytes_limited(resp, MAX_HTTP_RESPONSE_BYTES)` and `serde_json::from_slice`.
+* Enforced `MIN_CONTEXT_WINDOW = 2_048`, `MAX_CONTEXT_WINDOW = 2_097_152` (2M tokens), and `MAX_CONCURRENCY = 64`.
+* Converted all `DynamicBudget::new` token budget arithmetic to `saturating_mul`, `saturating_add`, and `saturating_sub`, with safe `u32` clamping.
+* Added unit test `test_dynamic_budget_clamping_and_overflow_safety` testing extreme `usize::MAX` context windows without panicking.
+
+---
+
+#### Finding 27: Syndication Feed URL Validation, Google News batchexecute RPC Injection & Unbounded Ingestion Limit
+
+| Attribute | Details |
+|:---|:---|
+| **Severity** | 🟡 **Med-High** |
+| **CWE** | CWE-918 (Server-Side Request Forgery), CWE-20 (Improper Input Validation), CWE-74 (Improper Neutralization of Special Elements in Output Used by a Downstream Component) |
+| **Location** | `src/sources/news.rs` |
+| **Commit** | `9a23581` (*fix(security): harden syndication feed URLs, Google News RPC parsing, and bound digest limits (Finding 27)*) |
+
+##### 💥 Threat & Impact
+1. `extract_article_id` matched `/articles/` on any arbitrary URL host without verifying `news.google.com` origin or validating base64 character sets, allowing crafted feed items (`https://attacker.com/articles/../../../evil`) to inject into downstream requests.
+2. `resolve_article_url` interpolated unescaped `sig` and `base64_id` into a raw JSON string template (`r#"["garturlreq",...,"{}",{},"{}"]"#`), allowing quote/control character injection in the batchexecute payload.
+3. `parse_batchexecute_destination_url` and `parse_rss_items` accepted links without checking for valid `http://` or `https://` schemes, allowing `javascript:` or `file:` URLs to propagate into scrapers.
+4. `collect_news_articles_with_cache` accepted unbounded `limit`, spawning uncapped concurrent scraping tasks.
+
+##### 🛡️ Remediation
+* Enforced `https://news.google.com/` (or `http://news.google.com/`) origin validation and strict URL-safe base64 character filtering (`[A-Za-z0-9_=-]`, `<= 2048` bytes) in `extract_article_id`.
+* Constructed the `garturlreq` RPC envelope using `serde_json::json!` with strict control/quote character rejection on `sig`.
+* Enforced `is_http_url` validation on resolved batchexecute destination URLs and RSS/Atom feed links.
+* Defined `MAX_NEWS_LIMIT = 50` and clamped `limit` with saturating arithmetic.
+* Added regression test `test_google_news_url_extraction_security` covering foreign origin rejection, path traversal rejection, non-HTTP RPC URL filtering, and malformed RSS items.
+
+---
+
+#### Finding 28: Dangerous URI Schemes (javascript:, vbscript:, data:) in Markdown HTML Views
+
+| Attribute | Details |
+|:---|:---|
+| **Severity** | 🟡 **Medium** |
+| **CWE** | CWE-79 (Improper Neutralization of Input During Web Page Generation), CWE-116 (Improper Encoding or Escaping of Output) |
+| **Location** | `src/ui/render.rs` |
+| **Commit** | `71da8bd` (*fix(security): neutralize dangerous URI schemes in markdown links and images (Finding 28)*) |
+
+##### 💥 Threat & Impact
+While raw HTML tags (`<script>`, `<iframe>`) were neutralized to text events in `markdown_to_html`, Markdown links (`[Click](javascript:alert(1))`) and images (`![alt](data:text/html,...)`) were passed directly to `pulldown_cmark::html::push_html`, generating `<a href="javascript:...">` anchors. In browser reader views or exported HTML documents, clicking these links could execute arbitrary client-side script in contexts where meta CSP headers are not honored or when copying links.
+
+##### 🛡️ Remediation
+* Added `is_safe_markdown_url` validating that Markdown links and images permit only safe web protocols (`http://`, `https://`, `mailto:`), document anchors (`#`), and safe relative paths, while rejecting dangerous schemes (`javascript:`, `vbscript:`, `data:`, `file:`, `blob:`) and control characters.
+* Intercepted `pulldown_cmark::Event::Start(Tag::Link)` and `Tag::Image` events, rewriting any unsafe destinations to `"#"` before HTML generation.
+* Added unit tests `test_is_safe_markdown_url` and `test_markdown_to_html_neutralizes_xss_schemes`.
+
+---
+
+#### Finding 29: Terminal Escape & BiDi Injection in TUI Library Explorer, Hardware Diagnostics, and Transcripts
+
+| Attribute | Details |
+|:---|:---|
+| **Severity** | 🟡 **Medium** |
+| **CWE** | CWE-150 (Improper Neutralization of Escape, Meta, or Control Sequences), CWE-451 (User Interface Misrepresentation of Critical Information) |
+| **Location** | `src/ui/tui.rs`, `src/system/hardware.rs`, `src/commands/diagnostics.rs`, `src/commands/ask.rs`, `src/commands/mod.rs` |
+| **Commit** | `4edcbce` (*fix(security): sanitize untrusted fields across TUI explorer, hardware diagnostics, and transcripts (Finding 29)*) |
+
+##### 💥 Threat & Impact
+1. In `src/ui/tui.rs`, `LibraryItem` entries loaded from DuckDB (titles, authors, URLs, models, styles, summaries) were rendered directly into Ratatui widgets without sanitization. Malicious ANSI escape sequences, OSC title-change sequences, or BiDi overrides (`\u{202E}`) from scraped web pages or LLM outputs could corrupt terminal screen buffers or spoof user interface elements.
+2. In `src/system/hardware.rs`, detected `chip_name` from `sysctl` / `/proc/cpuinfo` was inserted unescaped into `config.toml` template comments and CLI diagnostics.
+3. Unsanitized strings in `srz doctor` (`args.base_url`, `args.model`, `caps.backend_kind`), `srz ask` chat session headers (`session.model`), and `srz config show` profile names bypassed terminal escaping filters.
+
+##### 🛡️ Remediation
+* Sanitized all `LibraryItem` fields in `AppState::new` using `crate::ui::sanitize_title` and `crate::ui::sanitize_terminal_text`.
+* Sanitized `chip_name` in `HardwareProfile::from_specs` before template interpolation.
+* Routed all diagnostic and transcript model/backend output through `sanitize_title` and `sanitize_terminal_text`.
+* Added unit test `test_app_state_sanitizes_untrusted_item_fields` in `src/ui/tui.rs`.
+
+---
+
+#### Finding 30: Pager Subprocess Environment Injection (LESSSECURE=1) & Uncanonicalized Self-Upgrade Release Tags
+
+| Attribute | Details |
+|:---|:---|
+| **Severity** | 🟡 **Medium** |
+| **CWE** | CWE-78 (Improper Neutralization of Special Elements used in an OS Command), CWE-88 (Improper Neutralization of Argument Delimiters in a Command), CWE-20 (Improper Input Validation) |
+| **Location** | `src/ui/printer.rs`, `src/system/upgrade.rs`, `tests/integration/upgrade.rs` |
+| **Commit** | `8464976` (*fix(security): harden pager subprocess environment and canonicalize self-upgrade release tags (Finding 30)*) |
+
+##### 💥 Threat & Impact
+1. In `src/ui/printer.rs::run_pager`, `$PAGER` was split on whitespace and executed without setting `LESSSECURE=1`. When `less` is invoked on untrusted or user-supplied text, interactive keys such as `!` (shell escape), `|` (pipe to process), `v` (launch editor), and `s` (save file) can execute arbitrary shell commands or overwrite local files. In addition, leading-dash binary names could trigger command flag injection.
+2. In `src/system/upgrade.rs`, version strings extracted from GitHub redirect `Location` headers or `--version` flags were interpolated into asset download URLs without canonicalization, risking path traversal or URL manipulation.
+
+##### 🛡️ Remediation
+* Hardened `run_pager` by falling back to `"less"` if the resolved binary is empty, starts with `'-'`, or contains control characters, and setting `.env("LESSSECURE", "1")` on the spawned child command to disable shell execution and file modification.
+* Validated redirect and JSON version tags in `resolve_latest_version` using `parse_clean_version`, and canonicalized `target_tag` strictly as `format!("v{}", target_version)`.
+* Added integration test `test_parse_clean_version_canonicalization_and_rejection` in `tests/integration/upgrade.rs`.
+
+---
+
+#### Finding 31: Unbounded Config File Size, DuckDB Symlink Traversal, Predictable Installer Staging & Supply-Chain Deny Policy
+
+| Attribute | Details |
+|:---|:---|
+| **Severity** | 🟢 **Low-Medium** |
+| **CWE** | CWE-59 (Improper Link Resolution / Symlink Following), CWE-377 (Insecure Temporary File), CWE-400 (Uncontrolled Resource Consumption) |
+| **Location** | `src/config/file.rs`, `src/storage/db.rs`, `src/storage/cache.rs`, `scripts/install.sh`, `deny.toml`, `tests/integration/db.rs` |
+| **Commit** | `68674da` (*fix(security): bound config file size, guard DuckDB symlinks, harden install script, and deny yanked crates (Finding 31)*) |
+
+##### 💥 Threat & Impact
+1. `Config::load_from_path` called `fs::read_to_string` without checking file type or size limits, risking memory exhaustion if pointed to `/dev/zero`, a named pipe, or a huge file.
+2. `Database::open_at` and `Cache::get_or_init_db` opened DuckDB database files and executed `chmod 0600` without checking whether the path was a symlink, allowing planted symlinks to alter permissions or write to target files (CWE-59).
+3. `scripts/install.sh` used predictable PID temporary file paths (`${INSTALL_DIR}/.srz.tmp.$$`) with `cp`, vulnerable to local symlink overwrite attacks.
+4. `deny.toml` configured `yanked = "warn"` instead of `"deny"`, allowing yanked dependencies into production builds.
+
+##### 🛡️ Remediation
+* Added `MAX_CONFIG_BYTES = 1024 * 1024` (1 MB) and regular-file verification in `Config::load_from_path`.
+* Checked `symlink_metadata(path)` in `Database::open_at` and `Cache::get_or_init_db`, refusing to open or chmod symlinks.
+* Updated `scripts/install.sh` to use unguessable `mktemp "${INSTALL_DIR}/.srz.tmp.XXXXXX"` with `chmod 0755` prior to atomic rename.
+* Configured `yanked = "deny"` in `deny.toml`.
+* Added unit test `test_load_from_path_bounds_and_file_type` and integration test `test_database_refuses_symlink`.
+
+---
+
 <a id="verification"></a>
 ## 🧪 Cumulative Verification & Test Suite
 
@@ -711,19 +878,19 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 ```
 
-### Complete Test Suite Breakdown (104 Total Tests)
+### Complete Test Suite Breakdown (156 Total Tests)
 
 | Test Suite Module | Tests | Verified Security & Operational Controls | Result |
 |:---|:---:|:---|:---:|
-| **`src/lib.rs` & `src/main.rs`** | 28 | PDF safe parsing, YouTube captions & SSRF checks, TUI filtering, C1/BiDi terminal sanitization | ✅ Pass |
-| **`tests/cache_tests.rs`** | 14 | POSIX `0700`/`0600` modes, symlink rejection, SHA-256 keys, safe float bounds, auto-prune | ✅ Pass |
-| **`tests/cli_tests.rs`** | 24 | Flag parsing precedence, target auto-detection, subcommands, output formats, upgrade flags | ✅ Pass |
-| **`tests/config_tests.rs`** | 6 | Safe config deserialization, profile override rules, saturating arithmetic, API key trimming | ✅ Pass |
-| **`tests/content_tests.rs`** | 11 | CSP injection, single quote escaping, case-insensitive closing tag escaping, ask prompt guardrails | ✅ Pass |
-| **`tests/db_tests.rs`** | 8 | Parameterized queries, safe multibyte UTF-8 snippet extraction, DuckDB transactions | ✅ Pass |
-| **`tests/search_tests.rs`** | 4 | Wikipedia & DuckDuckGo disambiguation, URL deduplication, bounded JSON reading | ✅ Pass |
-| **`tests/upgrade_tests.rs`** | 9 | Atomic temp file creation, symlink overwrite rejection, SHA-256 verification, timeout bounds | ✅ Pass |
-| **Total** | **104 / 104** | **Zero Failures · Zero Ignored · Zero Clippy Warnings · #![forbid(unsafe_code)]** | ✅ **100% Pass** |
+| **`src/lib.rs` & `src/main.rs`** | 65 | PDF safe parsing, YouTube captions & SSRF checks, TUI filtering & sanitization, C1/BiDi terminal sanitization, DynamicBudget overflow safety & clamping, safe markdown URL scheme neutralization, Google News URL/RPC validation, config bounds | ✅ Pass |
+| **`tests/integration/cache.rs`** | 14 | POSIX `0700`/`0600` modes, symlink rejection, SHA-256 keys, safe float bounds, auto-prune, capability cache invalidation | ✅ Pass |
+| **`tests/integration/cli.rs`** | 25 | Flag parsing precedence, target auto-detection, subcommands, output formats, upgrade flags, Llama GUI naming | ✅ Pass |
+| **`tests/integration/config.rs`** | 7 | Safe config deserialization, profile override rules, saturating arithmetic, API key trimming, context window merge | ✅ Pass |
+| **`tests/integration/content.rs`** | 11 | CSP injection, single quote escaping, case-insensitive closing tag escaping, ask prompt guardrails, HTML rendering | ✅ Pass |
+| **`tests/integration/db.rs`** | 16 | Parameterized queries, safe multibyte UTF-8 snippet extraction, DuckDB transactions, symlink refusal, BM25 ranking | ✅ Pass |
+| **`tests/integration/search.rs`** | 4 | Wikipedia & DuckDuckGo disambiguation, URL deduplication, bounded JSON reading, client pooling | ✅ Pass |
+| **`tests/integration/upgrade.rs`** | 10 | Atomic temp file creation, symlink overwrite rejection, SHA-256 verification, timeout bounds, tag canonicalization | ✅ Pass |
+| **Total** | **156 / 156** | **Zero Failures · Zero Ignored · Zero Clippy Warnings · #![forbid(unsafe_code)]** | ✅ **100% Pass** |
 
 ---
 

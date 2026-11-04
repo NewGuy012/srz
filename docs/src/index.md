@@ -41,5 +41,6 @@ Browse through the chapters to get started:
 
 ### Deep-Dive Guides & Audits
 
-- 🦀 [**Rust Learning Guide**](../../docs/RUST_LEARNING_GUIDE.md): Architectural deep-dive and systems programming concepts using `srz` as a case study.
-- 🛡️ [**Security Audit**](../../docs/SECURITY_AUDIT.md): Comprehensive security analysis, memory safety guarantees, and threat mitigations.
+- 🦀 [**Rust Learning Guide**](rust_learning_guide.md): Architectural deep-dive and systems programming concepts using `srz` as a case study.
+- 🛡️ [**Security Audit**](security_audit.md): Comprehensive security analysis, memory safety guarantees, and threat mitigations.
+- 📋 [**Changelog**](changelog.md): Release history, version highlights, and breaking changes.

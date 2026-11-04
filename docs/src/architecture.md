@@ -349,7 +349,8 @@ Third-party BPE tokenizers (e.g. OpenAI's `cl100k_base`) drift by 15–25% when 
 
 ## 8. Related Technical Guides & Resources
 
-- 🦀 [**Rust Learning Guide**](../../docs/RUST_LEARNING_GUIDE.md): Architectural deep-dive and systems programming concepts using `srz` as a case study.
-- 🛡️ [**Security Audit**](../../docs/SECURITY_AUDIT.md): In-depth security analysis, memory safety guarantees, and threat mitigations.
+- 🦀 [**Rust Learning Guide**](rust_learning_guide.md): Architectural deep-dive and systems programming concepts using `srz` as a case study.
+- 🛡️ [**Security Audit**](security_audit.md): In-depth security analysis, memory safety guarantees, and threat mitigations.
+- 📋 [**Changelog**](changelog.md): Release history, version highlights, and breaking changes.
 - 📖 [**Command Reference**](commands.md): Complete CLI reference, auto-detection rules, subcommands, and flags.
 - ⚙️ [**Configuration Guide**](configuration.md): Config file schema, named profiles, and cache retention tuning.
