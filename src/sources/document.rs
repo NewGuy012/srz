@@ -72,14 +72,7 @@ impl DocumentLoader {
             let raw = fs::read_to_string(path)
                 .with_context(|| format!("Failed to read file: {:?}", path))?;
 
-            if render::is_html_path(path) {
-                let norm = scraper.normalize(&path.display().to_string(), &raw)?;
-                let t = norm.title.unwrap_or_else(fallback_title);
-                (norm.content, norm.word_count, t)
-            } else {
-                let words = raw.split_whitespace().count();
-                (raw, words, fallback_title())
-            }
+            Self::normalize_or_plain_text(scraper, &path.display().to_string(), raw, fallback_title)
         };
 
         if content.trim().is_empty() {
@@ -91,5 +84,26 @@ impl DocumentLoader {
             content,
             word_count,
         })
+    }
+
+    /// Extracts clean text, word count, and title from raw string content, normalizing HTML if detected.
+    pub fn normalize_or_plain_text(
+        scraper: &WebScraper,
+        source: &str,
+        raw: String,
+        fallback_title: impl FnOnce() -> String,
+    ) -> (String, usize, String) {
+        let looks_like_html = render::is_html_path(Path::new(source))
+            || crate::system::text_util::contains_ascii_case_insensitive(&raw, "<!doctype")
+            || crate::system::text_util::contains_ascii_case_insensitive(&raw, "<html")
+            || crate::system::text_util::contains_ascii_case_insensitive(&raw, "<body");
+
+        if looks_like_html && let Ok(norm) = scraper.normalize(source, &raw) {
+            let t = norm.title.unwrap_or_else(fallback_title);
+            (norm.content, norm.word_count, t)
+        } else {
+            let words = raw.split_whitespace().count();
+            (raw, words, fallback_title())
+        }
     }
 }

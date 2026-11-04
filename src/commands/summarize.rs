@@ -3,7 +3,7 @@ use crate::cli::Cli;
 use crate::llm::{self, LlmClient, LlmOutput, StreamMode};
 use crate::scraper::{ScrapedPage, WebScraper};
 use crate::search::{BookSearcher, SearchResult};
-use crate::system::text_util::contains_ascii_case_insensitive;
+use crate::sources::document::DocumentLoader;
 use crate::ui::Ui;
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -187,17 +187,10 @@ pub async fn handle_stdin(
         anyhow::bail!("Standard input was empty.");
     }
 
-    let is_html = contains_ascii_case_insensitive(&raw, "<!doctype")
-        || contains_ascii_case_insensitive(&raw, "<html")
-        || contains_ascii_case_insensitive(&raw, "<body");
-    let (content, word_count, title) = if is_html && let Ok(norm) = scraper.normalize("stdin", &raw)
-    {
-        let t = norm.title.unwrap_or_else(|| "Standard Input".to_string());
-        (norm.content, norm.word_count, t)
-    } else {
-        let words = raw.split_whitespace().count();
-        (raw, words, "Standard Input".to_string())
-    };
+    let (content, word_count, title) =
+        DocumentLoader::normalize_or_plain_text(scraper, "stdin", raw, || {
+            "Standard Input".to_string()
+        });
 
     Ui::info(&format!("Read {} words from standard input", word_count));
 
