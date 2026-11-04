@@ -1015,6 +1015,8 @@ fn test_suggest_command_typo_detection() {
     assert_eq!(suggest_command("confg"), Some("config"));
     assert_eq!(suggest_command("tu1"), Some("tui"));
     assert_eq!(suggest_command("librery"), Some("library"));
+    assert_eq!(suggest_command("qeury"), Some("query"));
+    assert_eq!(suggest_command("exprot"), Some("export"));
 }
 
 #[test]

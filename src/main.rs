@@ -183,12 +183,6 @@ async fn main() -> Result<()> {
             }
             return Ok(());
         }
-        ResolvedAction::Query { sql, csv } => {
-            return with_db(|db| commands::handle_query(db, &sql, csv, args.json));
-        }
-        ResolvedAction::Export { format, output } => {
-            return with_db(|db| commands::handle_export(db, format, &output));
-        }
         ResolvedAction::Web { url } => {
             commands::handle_web(url, &scraper, &llm, &cache, &args).await
         }
