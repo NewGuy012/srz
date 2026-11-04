@@ -53,13 +53,13 @@ pub fn open_db_or_warn() -> Option<Database> {
 }
 
 /// Executes a closure with an active database connection if available.
-pub fn with_db(f: impl FnOnce(&Database) -> Result<()>) -> Result<()> {
+pub fn with_db<T: Default>(f: impl FnOnce(&Database) -> Result<T>) -> Result<T> {
     if let Some(db) = open_db_or_warn() {
-        f(&db)?;
+        f(&db)
     } else {
         Ui::error("DuckDB database unavailable.");
+        Ok(T::default())
     }
-    Ok(())
 }
 
 /// Handles cache maintenance subcommands (`dir`, `size`, `clean`, `prune`).

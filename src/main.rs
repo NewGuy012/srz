@@ -86,7 +86,35 @@ async fn main() -> Result<()> {
             return with_db(|db| commands::handle_index(db, &cache, args.open));
         }
         ResolvedAction::Browse => {
-            return with_db(|db| srz::ui::run_tui(db, &cache));
+            loop {
+                let action = with_db(|db| srz::ui::run_tui(db, &cache))?;
+                match action {
+                    srz::ui::TuiAction::Exit => break,
+                    srz::ui::TuiAction::Ask { target } => {
+                        let llm =
+                            commands::init_llm_with_capabilities_or_exit(&args, Some(&cache)).await;
+                        let scraper = WebScraper::new()?;
+                        let _ = commands::handle_ask(
+                            Some(target),
+                            None,
+                            true,
+                            false,
+                            None,
+                            None,
+                            None,
+                            &scraper,
+                            &llm,
+                            &cache,
+                            &args,
+                        )
+                        .await;
+                        println!("\n\x1b[2mPress Enter to return to library...\x1b[0m");
+                        let mut line = String::new();
+                        let _ = std::io::stdin().read_line(&mut line);
+                    }
+                }
+            }
+            return Ok(());
         }
         ResolvedAction::Completions { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "srz", &mut std::io::stdout());

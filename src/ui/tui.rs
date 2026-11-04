@@ -140,8 +140,17 @@ impl AppState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum TuiAction {
+    #[default]
+    Exit,
+    Ask {
+        target: String,
+    },
+}
+
 /// Runs the interactive terminal UI library explorer.
-pub fn run_tui(db: &Database, cache: &Cache) -> Result<()> {
+pub fn run_tui(db: &Database, cache: &Cache) -> Result<TuiAction> {
     enable_raw_mode()?;
     let mut stdout = stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -164,7 +173,7 @@ fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     state: &mut AppState,
     db: &Database,
-) -> Result<()> {
+) -> Result<TuiAction> {
     let mut needs_redraw = true;
     loop {
         // Clear status after 3 seconds
@@ -212,14 +221,20 @@ fn run_loop(
 
                     // Normal navigation mode
                     match key.code {
-                        KeyCode::Char('q') => break,
+                        KeyCode::Char('q') => return Ok(TuiAction::Exit),
                         KeyCode::Esc => {
                             if !state.filter_query.is_empty() {
                                 state.filter_query.clear();
                                 state.apply_filter();
                                 state.set_status("Filter cleared");
                             } else {
-                                break;
+                                return Ok(TuiAction::Exit);
+                            }
+                        }
+                        KeyCode::Char('a') => {
+                            if let Some(item) = state.selected_item() {
+                                let target = item.url.clone().unwrap_or_else(|| item.title.clone());
+                                return Ok(TuiAction::Ask { target });
                             }
                         }
                         KeyCode::Char('/') => {
@@ -298,7 +313,6 @@ fn run_loop(
             }
         }
     }
-    Ok(())
 }
 
 fn ui_draw(f: &mut Frame, state: &mut AppState) {
@@ -540,9 +554,11 @@ fn ui_draw(f: &mut Frame, state: &mut AppState) {
             Span::styled("[/]", Style::default().fg(Color::Cyan)),
             Span::raw(" Search "),
             Span::styled("[Tab]", Style::default().fg(Color::Cyan)),
-            Span::raw(" Switch Focus "),
+            Span::raw(" Focus "),
+            Span::styled("[a]", Style::default().fg(Color::Cyan)),
+            Span::raw(" Ask/Chat "),
             Span::styled("[Enter/b]", Style::default().fg(Color::Cyan)),
-            Span::raw(" Open Browser "),
+            Span::raw(" Browser "),
             Span::styled("[y]", Style::default().fg(Color::Cyan)),
             Span::raw(" Copy "),
             Span::styled("[d]", Style::default().fg(Color::Cyan)),
