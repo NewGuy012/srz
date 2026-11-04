@@ -110,7 +110,9 @@ pub fn select_relevant_context_with_budget<'a>(
 ) -> std::borrow::Cow<'a, str> {
     use crate::chunker::TextChunker;
 
-    if content.len() <= (max_tokens * 3 / 4) || TextChunker::count_tokens(content) <= max_tokens {
+    if content.len() <= (max_tokens.saturating_mul(3) / 4)
+        || TextChunker::count_tokens(content) <= max_tokens
+    {
         return std::borrow::Cow::Borrowed(content);
     }
 

@@ -25,6 +25,15 @@ impl Default for ServerCapabilities {
     }
 }
 
+/// Minimum context window size in tokens.
+pub const MIN_CONTEXT_WINDOW: usize = 2_048;
+
+/// Maximum context window size in tokens (2M tokens ceiling to prevent arithmetic overflow and OOM).
+pub const MAX_CONTEXT_WINDOW: usize = 2_097_152;
+
+/// Maximum concurrent map-reduce worker count (caps untrusted server `total_slots` or CLI `--concurrency`).
+pub const MAX_CONCURRENCY: usize = 64;
+
 /// Sizing parameters dynamically derived from the active LLM server context window and slot capacity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DynamicBudget {
@@ -54,20 +63,26 @@ impl DynamicBudget {
         cli_max_tokens: Option<u32>,
         cli_concurrency: Option<usize>,
     ) -> Self {
-        let n_ctx = n_ctx.max(2048);
+        let n_ctx = n_ctx.clamp(MIN_CONTEXT_WINDOW, MAX_CONTEXT_WINDOW);
+        let max_completion_cap = (n_ctx / 3).clamp(512, u32::MAX as usize) as u32;
         let max_completion = match cli_max_tokens {
-            Some(m) if m > 0 => m.min((n_ctx / 3).max(512) as u32),
+            Some(m) if m > 0 => m.min(max_completion_cap),
             _ => (n_ctx / 4).clamp(1024, 8192) as u32,
         };
-        let concurrency = cli_concurrency.unwrap_or(total_slots).max(1);
-        let system_margin = 500;
+        let concurrency = cli_concurrency
+            .unwrap_or(total_slots)
+            .clamp(1, MAX_CONCURRENCY);
+        let system_margin = 500usize;
         let cushion = (n_ctx / 20).clamp(200, 1600); // 5% headroom
-        let usable = n_ctx.saturating_sub(max_completion as usize + system_margin + cushion);
+        let overhead = (max_completion as usize)
+            .saturating_add(system_margin)
+            .saturating_add(cushion);
+        let usable = n_ctx.saturating_sub(overhead);
         let single_pass_threshold = usable;
-        let chunk_tokens = (usable * 7 / 10).max(1500);
+        let chunk_tokens = (usable.saturating_mul(7) / 10).max(1500);
         let chunk_overlap = (chunk_tokens / 15).clamp(100, 1000);
         let ask_doc_budget = usable / 2;
-        let ask_hist_budget = (usable * 4) / 10;
+        let ask_hist_budget = usable.saturating_mul(4) / 10;
 
         Self {
             n_ctx,
@@ -126,5 +141,20 @@ mod tests {
         let budget = DynamicBudget::new(32_768, 4, Some(2048), Some(2));
         assert_eq!(budget.max_completion, 2048);
         assert_eq!(budget.concurrency, 2);
+    }
+
+    #[test]
+    fn test_dynamic_budget_clamping_and_overflow_safety() {
+        // Extreme values from rogue server or misconfigured CLI: usize::MAX should clamp without panic
+        let budget = DynamicBudget::new(usize::MAX, 100_000, Some(u32::MAX), Some(1_000_000));
+        assert_eq!(budget.n_ctx, MAX_CONTEXT_WINDOW);
+        assert_eq!(budget.concurrency, MAX_CONCURRENCY);
+        assert!(budget.max_completion <= (MAX_CONTEXT_WINDOW / 3) as u32);
+        assert!(budget.single_pass_threshold < MAX_CONTEXT_WINDOW);
+
+        // Lower bound clamping
+        let small_budget = DynamicBudget::new(10, 0, None, None);
+        assert_eq!(small_budget.n_ctx, MIN_CONTEXT_WINDOW);
+        assert_eq!(small_budget.concurrency, 1);
     }
 }
