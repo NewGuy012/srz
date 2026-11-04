@@ -3,6 +3,9 @@ use crate::scraper::{ScrapedPage, WebScraper};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+/// Maximum allowable limit of news articles to process in a single digest run.
+pub const MAX_NEWS_LIMIT: usize = 50;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NewsArticleItem {
     pub title: String,
@@ -77,7 +80,8 @@ impl GoogleNewsClient {
         let xml =
             crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES)
                 .await?;
-        let items = parse_rss_items(&xml, limit);
+        let capped_limit = limit.clamp(1, MAX_NEWS_LIMIT.saturating_mul(2).saturating_add(2));
+        let items = parse_rss_items(&xml, capped_limit);
 
         Ok(items)
     }
@@ -95,14 +99,55 @@ impl GoogleNewsClient {
                 .ok()?;
 
         let sig = extract_attr_value(&html, "data-n-a-sg=")?;
+        if sig.is_empty()
+            || sig.len() > 512
+            || sig.chars().any(|c| c.is_control() || c == '"' || c == '\\')
+        {
+            return None;
+        }
         let ts_str = extract_attr_value(&html, "data-n-a-ts=")?;
         let ts: i64 = ts_str.parse().ok()?;
 
-        // 2. Submit batchexecute RPC request to resolve destination URL
-        let payload_str = format!(
-            r#"["garturlreq",[["X","X",["X","X"],null,null,1,1,"US:en",null,1,null,null,null,null,null,0,1],"X","X",1,[1,1,1],1,1,null,0,0,null,0],"{}",{},"{}"]"#,
-            base64_id, ts, sig
-        );
+        // 2. Submit batchexecute RPC request to resolve destination URL safely via structured JSON
+        let payload_json = serde_json::json!([
+            "garturlreq",
+            [
+                [
+                    "X",
+                    "X",
+                    ["X", "X"],
+                    null,
+                    null,
+                    1,
+                    1,
+                    "US:en",
+                    null,
+                    1,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    0,
+                    1
+                ],
+                "X",
+                "X",
+                1,
+                [1, 1, 1],
+                1,
+                1,
+                null,
+                0,
+                0,
+                null,
+                0
+            ],
+            base64_id,
+            ts,
+            sig
+        ]);
+        let payload_str = payload_json.to_string();
         let envelope = serde_json::json!([[["Fbv4je", payload_str, null, "generic"]]]);
         let form_body = format!("f.req={}", urlencoding::encode(&envelope.to_string()));
 
@@ -148,8 +193,9 @@ impl GoogleNewsClient {
     ) -> Result<Vec<NewsDigestSource>> {
         const MAX_CONCURRENT_NEWS_SCRAPES: usize = 6;
 
+        let limit = limit.clamp(1, MAX_NEWS_LIMIT);
         // Fetch up to 2x limit (or at least limit + 2) candidates to buffer against paywalls/dead links
-        let fetch_limit = (limit * 2).max(limit + 2);
+        let fetch_limit = limit.saturating_mul(2).max(limit.saturating_add(2));
         let feed_items = self.fetch_feed(topic, timeframe, fetch_limit).await?;
         if feed_items.is_empty() {
             anyhow::bail!(
@@ -333,11 +379,12 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
             let link = entry
                 .links
                 .into_iter()
-                .find(|l| !l.href.is_empty())
-                .map(|l| l.href)
+                .map(|l| l.href.trim().to_string())
+                .find(|href| crate::system::text_util::is_http_url(href))
                 .unwrap_or_else(|| {
-                    if crate::system::text_util::is_http_url(&entry.id) {
-                        entry.id
+                    let id_trimmed = entry.id.trim();
+                    if crate::system::text_util::is_http_url(id_trimmed) {
+                        id_trimmed.to_string()
                     } else {
                         String::new()
                     }
@@ -373,10 +420,20 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
 
 pub fn extract_article_id(url: &str) -> Option<&str> {
     let clean = url.trim();
+    if !clean.starts_with("https://news.google.com/")
+        && !clean.starts_with("http://news.google.com/")
+    {
+        return None;
+    }
     if let Some(pos) = clean.find("/articles/") {
         let after = &clean[pos + 10..];
-        let id = after.split('?').next().unwrap_or(after);
-        if !id.is_empty() {
+        let id = after.split(['?', '#', '/']).next().unwrap_or(after);
+        if !id.is_empty()
+            && id.len() <= 2048
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'=')
+        {
             return Some(id);
         }
     }
@@ -400,7 +457,12 @@ pub fn parse_batchexecute_destination_url(text: &str) -> Option<String> {
     let parsed: serde_json::Value = serde_json::from_str(split_chunk).ok()?;
     let json_str = parsed.pointer("/0/2")?.as_str()?;
     let inner_json: serde_json::Value = serde_json::from_str(json_str).ok()?;
-    inner_json.pointer("/1")?.as_str().map(String::from)
+    let dest = inner_json.pointer("/1")?.as_str()?.trim();
+    if crate::system::text_util::is_http_url(dest) && !dest.chars().any(|c| c.is_control()) {
+        Some(dest.to_string())
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -557,5 +619,49 @@ mod tests {
             parse_batchexecute_destination_url(rpc_text),
             Some("https://www.sitepoint.com/javascript-news/".to_string())
         );
+    }
+
+    #[test]
+    fn test_google_news_url_extraction_security() {
+        // Must reject foreign origins
+        assert_eq!(
+            extract_article_id("https://attacker.com/articles/CBMi12345"),
+            None
+        );
+        assert_eq!(
+            extract_article_id("http://evil.news.google.com.attacker.com/articles/CBMi12345"),
+            None
+        );
+
+        // Must reject non-base64 characters / path traversal
+        assert_eq!(
+            extract_article_id("https://news.google.com/articles/../../etc/passwd"),
+            None
+        );
+        assert_eq!(
+            extract_article_id("https://news.google.com/articles/<script>"),
+            None
+        );
+
+        // Valid Google News article URL
+        assert_eq!(
+            extract_article_id("https://news.google.com/articles/CBMi-Valid_Id=123?oc=5"),
+            Some("CBMi-Valid_Id=123")
+        );
+
+        // Reject dangerous destination schemes from RPC
+        let xss_rpc = ")]}'\n\n[[\"wrb.fr\",\"Fbv4je\",\"[\\\"garturlreq\\\",\\\"javascript:alert(1)\\\"]\"]]";
+        assert_eq!(parse_batchexecute_destination_url(xss_rpc), None);
+
+        let file_rpc =
+            ")]}'\n\n[[\"wrb.fr\",\"Fbv4je\",\"[\\\"garturlreq\\\",\\\"file:///etc/passwd\\\"]\"]]";
+        assert_eq!(parse_batchexecute_destination_url(file_rpc), None);
+
+        // Reject non-http links in RSS items
+        let bad_rss = r#"<rss version="2.0"><channel>
+            <item><title>XSS Link</title><link>javascript:alert(1)</link></item>
+            <item><title>File Link</title><link>file:///etc/passwd</link></item>
+        </channel></rss>"#;
+        assert_eq!(parse_rss_items(bad_rss, 5).len(), 0);
     }
 }
