@@ -391,6 +391,13 @@ pub async fn handle_ask(
         budget.ask_doc_budget,
     );
     let is_interactive = interactive || question.is_none() || resume.is_some();
+    let mut history_turn_tokens: Vec<usize> = history
+        .iter()
+        .map(|(q, a)| {
+            crate::chunker::TextChunker::count_tokens(q)
+                + crate::chunker::TextChunker::count_tokens(a)
+        })
+        .collect();
 
     // Create session if not already resuming and DB is available
     if chat_id.is_none()
@@ -407,9 +414,10 @@ pub async fn handle_ask(
         let mut prompt_buf = String::new();
         let messages = build_chat_messages(&grounded_context, &history, &q, &mut prompt_buf);
 
+        let answer_header = format!("Answer: {}", safe_title);
         let mode = if args.stream {
             StreamMode::Stdout {
-                header_title: &format!("Answer: {}", safe_title),
+                header_title: &answer_header,
             }
         } else {
             StreamMode::Buffered
@@ -421,7 +429,7 @@ pub async fn handle_ask(
 
         if !output.streamed_to_stdout {
             display_summary(
-                &format!("Answer: {}", safe_title),
+                &answer_header,
                 &output.content,
                 args.effective_paging(),
                 args.plain,
@@ -442,17 +450,13 @@ pub async fn handle_ask(
     }
 
     // Interactive REPL chat session
-    if let Some(cid) = chat_id {
-        if resume.is_some() {
-            println!(
-                "\n\x1b[1;36m=== Resumed Q&A Session #{} ({} past turns): {} ===\x1b[0m",
-                cid,
-                history.len(),
-                safe_title
-            );
-        } else {
-            println!("\n\x1b[1;36m=== Interactive Q&A: {} ===\x1b[0m", safe_title);
-        }
+    if let (Some(cid), true) = (chat_id, resume.is_some()) {
+        println!(
+            "\n\x1b[1;36m=== Resumed Q&A Session #{} ({} past turns): {} ===\x1b[0m",
+            cid,
+            history.len(),
+            safe_title
+        );
     } else {
         println!("\n\x1b[1;36m=== Interactive Q&A: {} ===\x1b[0m", safe_title);
     }
@@ -462,9 +466,10 @@ pub async fn handle_ask(
     if let Some(initial_q) = question {
         let safe_q = crate::ui::sanitize_terminal_text(&initial_q);
         println!("\x1b[1;32mQuestion:\x1b[0m {}", safe_q);
-        let ans = ask_turn(
+        let (ans, turn_toks) = ask_turn(
             &grounded_context,
             &history,
+            &history_turn_tokens,
             &initial_q,
             llm,
             args.stream,
@@ -475,6 +480,7 @@ pub async fn handle_ask(
             let _ = db_ref.add_chat_turn(cid, &initial_q, &ans);
         }
         history.push((initial_q, ans));
+        history_turn_tokens.push(turn_toks);
         println!();
     }
 
@@ -500,9 +506,10 @@ pub async fn handle_ask(
 
                 let _ = rl.add_history_entry(trimmed);
 
-                let ans = ask_turn(
+                let (ans, turn_toks) = ask_turn(
                     &grounded_context,
                     &history,
+                    &history_turn_tokens,
                     trimmed,
                     llm,
                     args.stream,
@@ -513,6 +520,7 @@ pub async fn handle_ask(
                     let _ = db_ref.add_chat_turn(cid, trimmed, &ans);
                 }
                 history.push((trimmed.to_string(), ans));
+                history_turn_tokens.push(turn_toks);
                 println!();
             }
             Err(rustyline::error::ReadlineError::Interrupted) => {
@@ -598,22 +606,21 @@ fn build_chat_messages<'a>(
 async fn ask_turn(
     grounded_context: &str,
     history: &[(String, String)],
+    turn_tokens: &[usize],
     question: &str,
     llm: &LlmClient,
     stream: bool,
     plain: bool,
-) -> Result<String> {
+) -> Result<(String, usize)> {
     let budget = llm.budget();
     // Dynamically calculate history slice to stay within budget.ask_hist_budget
     let mut history_tokens = 0;
     let mut start_idx = history.len();
-    for (i, (q, a)) in history.iter().enumerate().rev() {
-        let turn_tokens = crate::chunker::TextChunker::count_tokens(q)
-            + crate::chunker::TextChunker::count_tokens(a);
-        if history_tokens + turn_tokens > budget.ask_hist_budget {
+    for (i, &tokens) in turn_tokens.iter().enumerate().rev() {
+        if history_tokens + tokens > budget.ask_hist_budget {
             break;
         }
-        history_tokens += turn_tokens;
+        history_tokens += tokens;
         start_idx = i;
     }
     if history.len().saturating_sub(start_idx) > MAX_ASK_HISTORY_TURNS {
@@ -645,7 +652,10 @@ async fn ask_turn(
         }
     }
 
-    Ok(output.content)
+    let this_turn_tokens = crate::chunker::TextChunker::count_tokens(question)
+        + crate::chunker::TextChunker::count_tokens(&output.content);
+
+    Ok((output.content, this_turn_tokens))
 }
 
 #[cfg(test)]
