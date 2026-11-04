@@ -35,7 +35,8 @@ All notable changes to `srz` are documented in this file.
 - **Static Analysis & Session ID Disambiguation (`src/commands/ask.rs`)**: Disambiguated chat session IDs to clear CodeQL `rust/cleartext-logging` false positives.
 - **Dual Model Naming Strategy (`srz recommend`, `src/config/cli.rs`)**: Retains full verbose model IDs (`ggml-org/gemma-4-E4B-it-GGUF:Q8_0`) for CLI defaults, configuration templates, and backend API requests while providing concise Llama GUI model cards (`gemma-4` with `E4B` / `26B-A4B` badges and `Q8_0` quant) in `srz recommend` and diagnostic tips.
 - **Dynamic Token Budget Precision (`format_untrusted_section`)**: Honors dynamic token budgets (e.g., 28k–56k on 32k–64k servers) up to 128k context rather than clamping to legacy 16,000 token limits.
-- **Storage & Ingestion Deduplication (`src/storage/`, `src/system/`, `src/sources/`)**: Centralized URL helpers, unified DuckDB query constants, optimized feed parsing, and consolidated LLM retry paths.
+- **Storage & Ingestion Deduplication (`src/storage/`, `src/system/`, `src/sources/`)**: Centralized URL helpers, unified DuckDB query constants (`select_library_base_sql`), consolidated hardened DuckDB connection opening (`open_hardened_duckdb_file`), optimized feed parsing, removed vestigial `no_search` cache parameters, and unified HTML and plain-text fallback parsing into `DocumentLoader::normalize_or_plain_text`.
+- **Allocation & Streaming Optimizations (`src/ui/`, `src/engine/`, `src/commands/`)**: Implemented zero-allocation terminal text sanitization with `Cow<'_, str>` for streaming SSE tokens, eliminated double allocations in `SseStreamState::new`, removed repeated ASCII lowercasing in error diagnostics, and cached per-turn token counts in interactive multi-turn chat sessions to eliminate $O(N^2)$ recalculation overhead.
 
 ---
 
