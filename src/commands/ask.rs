@@ -326,7 +326,7 @@ pub async fn handle_ask(
     }
 
     // 4. Resolve document context & active session
-    let mut session_id: Option<i64> = resume;
+    let mut chat_id: Option<i64> = resume;
     let mut history: Vec<(String, String)> = Vec::new();
 
     let (title, content, target_type, target_url) = if let Some(res_id) = resume {
@@ -393,12 +393,12 @@ pub async fn handle_ask(
     let is_interactive = interactive || question.is_none() || resume.is_some();
 
     // Create session if not already resuming and DB is available
-    if session_id.is_none()
+    if chat_id.is_none()
         && let Some(ref db_ref) = db
         && let Ok(id) =
             db_ref.create_chat_session(&title, &target_type, target_url.as_deref(), llm.model())
     {
-        session_id = Some(id);
+        chat_id = Some(id);
     }
 
     if !is_interactive {
@@ -428,12 +428,12 @@ pub async fn handle_ask(
             )?;
         }
 
-        if let (Some(sid), Some(db_ref)) = (session_id, &db) {
-            let _ = db_ref.add_chat_turn(sid, &q, &output.content);
+        if let (Some(cid), Some(db_ref)) = (chat_id, &db) {
+            let _ = db_ref.add_chat_turn(cid, &q, &output.content);
             if !args.plain && !args.json {
                 println!(
                     "\n\x1b[2mSaved to session #{}. Continue conversation with: srz ask --resume {}\x1b[0m",
-                    sid, sid
+                    cid, cid
                 );
             }
         }
@@ -442,11 +442,11 @@ pub async fn handle_ask(
     }
 
     // Interactive REPL chat session
-    if let Some(sid) = session_id {
+    if let Some(cid) = chat_id {
         if resume.is_some() {
             println!(
                 "\n\x1b[1;36m=== Resumed Q&A Session #{} ({} past turns): {} ===\x1b[0m",
-                sid,
+                cid,
                 history.len(),
                 safe_title
             );
@@ -471,8 +471,8 @@ pub async fn handle_ask(
             args.plain,
         )
         .await?;
-        if let (Some(sid), Some(db_ref)) = (session_id, &db) {
-            let _ = db_ref.add_chat_turn(sid, &initial_q, &ans);
+        if let (Some(cid), Some(db_ref)) = (chat_id, &db) {
+            let _ = db_ref.add_chat_turn(cid, &initial_q, &ans);
         }
         history.push((initial_q, ans));
         println!();
@@ -509,8 +509,8 @@ pub async fn handle_ask(
                     args.plain,
                 )
                 .await?;
-                if let (Some(sid), Some(db_ref)) = (session_id, &db) {
-                    let _ = db_ref.add_chat_turn(sid, trimmed, &ans);
+                if let (Some(cid), Some(db_ref)) = (chat_id, &db) {
+                    let _ = db_ref.add_chat_turn(cid, trimmed, &ans);
                 }
                 history.push((trimmed.to_string(), ans));
                 println!();
@@ -530,13 +530,13 @@ pub async fn handle_ask(
         }
     }
 
-    if let Some(sid) = session_id
+    if let Some(cid) = chat_id
         && !args.plain
         && !args.json
     {
         println!(
             "\x1b[2mSession #{} saved. Resume anytime with: srz ask --resume {}\x1b[0m\n",
-            sid, sid
+            cid, cid
         );
     }
 

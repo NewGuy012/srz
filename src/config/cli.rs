@@ -805,11 +805,11 @@ pub fn suggest_command(input: &str) -> Option<&'static str> {
         let jaro = strsim::jaro(&input_lower, cmd);
 
         // Strict thresholds to avoid false positives with short book titles (e.g. "Dune"):
-        // 1. For 3-letter inputs, only allow 3-letter commands with edit distance 1 and high similarity.
+        // 1. For 3-letter inputs, only allow 3-letter commands with edit distance 1 and similarity >= 0.75.
         // 2. For 4-letter inputs, edit distance must be at most 1.
         // 3. For 5+ letter inputs, edit distance at most 2.
         let is_candidate = match input_len {
-            3 => cmd_len == 3 && dist == 1 && jaro >= 0.80,
+            3 => cmd_len == 3 && dist == 1 && jaro >= 0.75,
             4 => dist <= 1 && jaro >= 0.80,
             _ => dist <= 2 && jaro >= 0.80,
         };

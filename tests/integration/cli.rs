@@ -980,3 +980,56 @@ fn test_local_model_not_detected_error_formatting() {
     assert!(err.contains("Local model not detected: model 'gemma-4' was not found"));
     assert!(err.contains("http://localhost:9931/v1"));
 }
+
+#[test]
+fn test_suggest_command_typo_detection() {
+    use srz::cli::suggest_command;
+
+    assert_eq!(suggest_command("doctur"), Some("doctor"));
+    assert_eq!(suggest_command("docotr"), Some("doctor"));
+    assert_eq!(suggest_command("docter"), Some("doctor"));
+    assert_eq!(suggest_command("Doctor"), Some("doctor"));
+    assert_eq!(suggest_command("DOCTOR"), Some("doctor"));
+    assert_eq!(suggest_command("histry"), Some("history"));
+    assert_eq!(suggest_command("histor"), Some("history"));
+    assert_eq!(suggest_command("stat"), Some("stats"));
+    assert_eq!(suggest_command("model"), Some("models"));
+    assert_eq!(suggest_command("recommed"), Some("recommend"));
+    assert_eq!(suggest_command("upgrde"), Some("upgrade"));
+    assert_eq!(suggest_command("cach"), Some("cache"));
+    assert_eq!(suggest_command("confg"), Some("config"));
+    assert_eq!(suggest_command("tu1"), Some("tui"));
+    assert_eq!(suggest_command("librery"), Some("library"));
+}
+
+#[test]
+fn test_suggest_command_no_false_positives() {
+    use srz::cli::suggest_command;
+
+    assert_eq!(suggest_command("Dune"), None);
+    assert_eq!(suggest_command("1984"), None);
+    assert_eq!(suggest_command("Hamlet"), None);
+    assert_eq!(suggest_command("Macbeth"), None);
+    assert_eq!(suggest_command("Doctor Zhivago"), None);
+    assert_eq!(suggest_command("The Great Gatsby"), None);
+    assert_eq!(suggest_command("Cat"), None);
+    assert_eq!(suggest_command("War"), None);
+    assert_eq!(suggest_command("It"), None);
+    assert_eq!(suggest_command(""), None);
+}
+
+#[test]
+fn test_resolve_action_command_typo_error() {
+    let cli = Cli::parse_from(["srz", "doctur"]);
+    let err = cli.resolve_action().unwrap_err();
+    assert!(err.contains("Unrecognized command 'doctur'"));
+    assert!(err.contains("tip: a similar command exists: 'doctor'"));
+    assert!(err.contains("srz book \"doctur\""));
+
+    // Explicit book subcommand bypasses typo check
+    let book_cli = Cli::parse_from(["srz", "book", "doctur"]);
+    assert_eq!(
+        book_cli.resolve_action().unwrap(),
+        srz::cli::ResolvedAction::Book { title: "doctur" }
+    );
+}
