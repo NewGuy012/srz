@@ -205,9 +205,29 @@ pub fn open_hardened_duckdb_file(path: &Path) -> Result<(Connection, bool)> {
 }
 
 impl Database {
-    /// Returns the default path for the DuckDB database (`~/.cache/srz/srz.duckdb`).
+    /// Returns the default path for the persistent DuckDB database:
+    /// Checks $SRZ_DATA_DIR/srz.duckdb, $XDG_DATA_HOME/srz/srz.duckdb, ~/.local/share/srz/srz.duckdb.
+    /// If legacy database exists at ~/.cache/srz/srz.duckdb and new path does not, seamlessly migrates it.
     pub fn default_path() -> PathBuf {
-        Cache::default_cache_dir().join("srz.duckdb")
+        let data_dir = fs_util::default_data_dir();
+        let target_path = data_dir.join("srz.duckdb");
+
+        // Transparent migration from legacy ~/.cache/srz/srz.duckdb
+        if !target_path.exists() {
+            let legacy_path = Cache::default_cache_dir().join("srz.duckdb");
+            if legacy_path.exists() {
+                if let Ok(()) = fs_util::create_private_dir_all(&data_dir)
+                    && let Ok(_) = std::fs::copy(&legacy_path, &target_path)
+                {
+                    fs_util::set_private_file_perms(&target_path);
+                    let _ = std::fs::remove_file(&legacy_path);
+                    return target_path;
+                }
+                return legacy_path;
+            }
+        }
+
+        target_path
     }
 
     /// Opens the default DuckDB database located at `~/.cache/srz/srz.duckdb`.

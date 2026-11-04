@@ -12,6 +12,29 @@ pub fn non_empty_env_path(var: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Returns the default persistent data directory for srz (`$SRZ_DATA_DIR`, `$XDG_DATA_HOME/srz`, `~/.local/share/srz`, or `%LOCALAPPDATA%/srz/data`).
+pub fn default_data_dir() -> PathBuf {
+    if let Some(srz_data) = non_empty_env_path("SRZ_DATA_DIR") {
+        return srz_data;
+    }
+    if let Some(xdg_data) = non_empty_env_path("XDG_DATA_HOME") {
+        return xdg_data.join("srz");
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(local_app_data) = non_empty_env_path("LOCALAPPDATA") {
+            return local_app_data.join("srz").join("data");
+        }
+    }
+    if let Some(home) = non_empty_env_path("HOME") {
+        return home.join(".local").join("share").join("srz");
+    }
+    if let Some(user_profile) = non_empty_env_path("USERPROFILE") {
+        return user_profile.join(".local").join("share").join("srz");
+    }
+    std::env::temp_dir().join("srz-data")
+}
+
 /// Sets directory permissions to `0700` on Unix systems (no-op on other platforms).
 pub fn set_private_dir_perms(path: &Path) {
     #[cfg(unix)]
@@ -126,6 +149,12 @@ mod tests {
     #[test]
     fn test_non_empty_env_path() {
         assert_eq!(non_empty_env_path("SRZ_NON_EXISTENT_VAR_XYZ"), None);
+    }
+
+    #[test]
+    fn test_default_data_dir() {
+        let dir = default_data_dir();
+        assert!(!dir.as_os_str().is_empty());
     }
 
     #[test]
