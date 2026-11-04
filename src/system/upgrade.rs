@@ -246,8 +246,8 @@ pub async fn resolve_latest_version(client: &reqwest::Client, repo: &str) -> Res
         && let Some(pos) = loc_str.rfind("/tag/")
     {
         let clean_tag = loc_str[pos + 5..].trim_matches('/');
-        if !clean_tag.is_empty() {
-            return Ok(clean_tag.to_string());
+        if let Ok(ver) = parse_clean_version(clean_tag) {
+            return Ok(format!("v{}", ver));
         }
     }
 
@@ -271,8 +271,10 @@ pub async fn resolve_latest_version(client: &reqwest::Client, repo: &str) -> Res
     let tag = release_json["tag_name"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing 'tag_name' in GitHub release response"))?;
+    let ver =
+        parse_clean_version(tag).context("Failed to parse GitHub release tag_name as semver")?;
 
-    Ok(tag.to_string())
+    Ok(format!("v{}", ver))
 }
 
 /// Downloads and verifies an asset bytes matching either versioned or latest name.
@@ -450,6 +452,7 @@ pub async fn run_upgrade(
             target_tag
         )
     })?;
+    let target_tag = format!("v{}", target_version);
 
     let is_newer = target_version > current_version;
     let is_target_equal = target_version == current_version;

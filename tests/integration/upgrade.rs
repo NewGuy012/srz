@@ -208,6 +208,23 @@ fn test_sha256_verification_computation() {
 }
 
 #[test]
+fn test_parse_clean_version_canonicalization_and_rejection() {
+    assert_eq!(
+        parse_clean_version("v0.7.1").unwrap(),
+        semver::Version::new(0, 7, 1)
+    );
+    assert_eq!(
+        parse_clean_version(" 0.7.1 ").unwrap(),
+        semver::Version::new(0, 7, 1)
+    );
+    // Malicious or invalid tags must fail to parse as semver
+    assert!(parse_clean_version("../../../evil").is_err());
+    assert!(parse_clean_version("latest").is_err());
+    assert!(parse_clean_version("v0.7.1/payload").is_err());
+    assert!(parse_clean_version("; rm -rf /").is_err());
+}
+
+#[test]
 fn test_upgrade_temp_file_creation_prevents_overwrite() {
     let tmp = tempfile::tempdir().unwrap();
     let target_file = tmp.path().join(".srz-upgrade-existing");

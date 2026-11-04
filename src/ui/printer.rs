@@ -102,15 +102,22 @@ fn run_pager(content: &str) -> io::Result<()> {
     let pager_cmd = env::var("PAGER").unwrap_or_else(|_| "less".to_string());
     let mut parts = pager_cmd.split_whitespace();
     let bin = parts.next().unwrap_or("less");
+    let safe_bin = if bin.is_empty() || bin.starts_with('-') || bin.chars().any(|c| c.is_control())
+    {
+        "less"
+    } else {
+        bin
+    };
     let mut args: Vec<&str> = parts.collect();
 
     // If using default `less`, add flags to display colors and quit if fits on one screen
-    if bin == "less" && args.is_empty() {
+    if safe_bin == "less" && args.is_empty() {
         args = vec!["-R", "-F", "-X"];
     }
 
-    let mut child = Command::new(bin)
+    let mut child = Command::new(safe_bin)
         .args(&args)
+        .env("LESSSECURE", "1")
         .stdin(Stdio::piped())
         .spawn()?;
 
