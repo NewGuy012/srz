@@ -15,17 +15,18 @@
 
 ---
 
-## Key Highlights
+## What Makes `srz` Different?
 
-- 🔒 **100% Local & Private**: Runs entirely on your local machine with zero telemetry, subscriptions, or external cloud API keys required.
-- 🎯 **3 Summary Presets**: Choose `concise` (default), `bullets`, or `detailed` summaries.
-- ⚡ **Terminal Paging & Live Streaming**: Clean CLI output with automatic `$PAGER` integration (`less -RFX`), terminal escape sequence sanitization, and optional live token streaming (`--stream`).
-- 💬 **Interactive Q&A & Multi-Turn Chat (`srz ask`)**: Ask targeted questions grounded on source text or engage in persistent multi-turn chat sessions with full transcript recall.
-- 🖥️ **Terminal Dashboard (`srz browse`)**: Full-screen keyboard-navigated TUI built on Ratatui with live search filtering, reader views, and clipboard export.
-- 🔍 **Offline BM25 Full-Text Search (`srz find`)**: Embedded DuckDB indexes every read into an inverted term index with 2.5× title boosting, Robertson-Sparck Jones IDF ranking, and query-focused snippet extraction.
-- 📊 **Reading Analytics & Model Telemetry (`srz stats`)**: Track reading streaks, active days, estimated reading time saved (225 wpm baseline), and local model token throughput percentiles (P50/P95).
-- 🗄️ **Consolidated DuckDB Storage & TTL Caching**: High-speed embedded storage (`srz.duckdb` and `cache.duckdb`) with atomic transactions, SHA-256 hash indexing, and millisecond-accurate TTL pruning.
-- 📖 **Distraction-Free Reader Views**: Rendered HTML and Markdown views with light/dark theme toggle, opened via `--open` or `srz index`.
+Modern AI tools frequently require cloud subscriptions, stream your private reading data to remote servers, and clutter your system with disparate scripts and background daemons. `srz` takes an unapologetically local, high-performance approach designed for developers, researchers, and avid readers:
+
+### 100% Local Privacy & Instant Response
+Every step of the synthesis pipeline executes on your local machine. By connecting to local OpenAI-compliant runners like **llama.cpp**, **Ollama**, or **LM Studio**, `srz` extracts insights from articles, books, and transcripts without sending a single byte of telemetry to the cloud. Pairing zero-copy Server-Sent Events (SSE) streaming with automated terminal paging (`less -RFX`) ensures that output begins rendering immediately with near-zero latency.
+
+### Multi-Format Ingestion with Automatic Routing
+Instead of requiring separate commands for each format, `srz` automatically classifies inputs based on URL patterns, file extensions, and data streams. It strips advertisements and clutter from web articles using Mozilla Readability, extracts timed-text transcripts from YouTube videos, searches Open Library and Wikipedia for book synopses, reads Unix pipes (`git diff | srz -`), and parses local PDFs or syndication feeds—all through a single unified CLI entry point.
+
+### Embedded Analytics & Offline Library Search
+Summaries are permanently stored in an embedded DuckDB database (`srz.duckdb`). Using an offline Robertson-Sparck Jones BM25 ranking algorithm with title boosting, `srz find` delivers Google-style relevance search across your entire reading history in milliseconds without network access. The built-in Ratatui terminal dashboard (`srz browse`) provides a keyboard-driven reader and search explorer, while `srz stats` tracks your reading streaks and model throughput percentiles.
 
 ---
 

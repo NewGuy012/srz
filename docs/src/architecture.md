@@ -164,13 +164,24 @@ sequenceDiagram
     end
 ```
 
-### Lifecycle Highlights
+### How a Request Flows Through the System
 
-1. **Fast-Path Cache Hit**: When an identical query `(target, model, style)` has been synthesized before, `srz` returns the cached summary directly from `cache.duckdb` with sub-millisecond latency. `srz.duckdb` is not even initialized, bypassing database locking entirely.
-2. **Deterministic Metadata Resolution**: On a cache miss, book and news sources resolve metadata concurrently across Open Library, Wikipedia, and search engines. Ambiguous candidate matches present a polite interactive selection prompt on TTY devices.
-3. **Quarantined Content Ingestion**: The chosen canonical content is retrieved using strict 10 MB payload limits, stripped of boilerplate, and enclosed in sanitized `<source_document>` tags.
-4. **SSE Streaming Inference**: Summarization requests stream tokens over zero-copy Server-Sent Events (SSE). A smooth progress spinner displays status on `stderr` while token metrics are tracked live.
-5. **Atomic Persistence**: Upon completion, the summary is persisted to `cache.duckdb` and the rendered reader views are saved to `views/`. Finally, `srz.duckdb` is opened lazily to record telemetry, BM25 terms, and library history within an ACID transaction.
+Understanding the request lifecycle reveals how `srz` balances sub-millisecond responsiveness for repeated reads with thorough, defensive processing for fresh documents.
+
+#### The Sub-Millisecond Cache Fast-Path
+When you invoke `srz` on a target, the engine first constructs a deterministic cache key from the target URL or path, the selected LLM model, and the summary style preset. It probes the embedded `cache.duckdb` database. If an exact match exists, `srz` retrieves the cached summary and verifies that the corresponding standalone HTML and Markdown reader views exist on disk. The output is formatted and displayed immediately, achieving sub-millisecond return times. In this fast-path branch, the permanent library database (`srz.duckdb`) is never initialized, bypassing database locking and schema checks entirely.
+
+#### Concurrent Metadata Resolution and Disambiguation
+When a request misses the cache, the router classifies the target type and launches the appropriate ingestion pipeline. For book queries or news topics, `srz` initiates concurrent metadata lookups across Open Library, Wikipedia, and search APIs. Because book titles can be ambiguous (for example, distinguishing a novel from film adaptations or academic commentaries), a candidate scoring engine ranks the results. If multiple high-scoring candidates emerge on an interactive terminal, `srz` politely prompts the user to select the canonical reference edition before initiating downloads.
+
+#### Quarantined Content Ingestion and Text Extraction
+Once the canonical reference is established, `srz` fetches the source content under strict defensive constraints. Web scrapers enforce a 10 MB payload ceiling and apply Mozilla's Readability algorithm to discard sidebars, banner ads, and navigation menus. Local PDFs are extracted using pure-Rust text-layer parsing, and YouTube links stream timed-text captions via pull-parser XML events. To protect against prompt injection attacks, the extracted text is strictly isolated inside sanitized `<source_document>` XML boundary tags, with delimiter sequences safely neutralized.
+
+#### Zero-Copy SSE Streaming Inference
+With context prepared, `srz` queries the server's native `/tokenize` endpoint and dynamically calculates token budgets. The prompt is dispatched to the local LLM backend using an HTTP POST request requesting Server-Sent Events (`stream: true`). Rather than allocating intermediate buffers, `srz` parses the SSE stream zero-copy from network byte slices. Tokens are either streamed directly to standard output as they arrive (when `--stream` is enabled) or accumulated while displaying a lightweight progress indicator on standard error, tracking token generation velocity and elapsed wall-clock time in real time.
+
+#### Transactional Persistence and Reader Generation
+As the final tokens arrive, `srz` performs atomic persistence across storage tiers. The completed summary and its word counts are committed to `cache.duckdb`, and pre-styled HTML and Markdown reader views are written to the `views/` directory. Finally, `srz` lazily opens `srz.duckdb` to record reading habit telemetry, update reading streaks, and insert query terms into the inverted BM25 index within an ACID transaction.
 
 ---
 
@@ -213,12 +224,18 @@ graph LR
 | **Auto-Prune Schedule** | **Opportunistic (24h)** | Deferred past fast-exit commands | Throttled via `~/.cache/srz/.last_prune` (sub-millisecond overhead). |
 | **Library DuckDB (`srz.duckdb`)** | **Permanent (Not a cache)** | Explicit `--reset-db` only | Preserved across `srz cache clean`; normalized `history` + `library` schema, BM25 index, and chats. |
 
-### Technical Storage Highlights
+### Storage Engine Design Principles
 
-- **Consolidated Single-Write DuckDB Cache**: Web pages, search metadata, and LLM summaries are stored in a single embedded `cache.duckdb` database without dual-writing individual `.json` files. This eliminates inode exhaustion, speeds up lookups to sub-millisecond scale, and enables atomic SQL byte-size accounting (`strlen`) and timestamp TTL eviction via `epoch_ms(cached_at)::BIGINT`.
-- **Lazy Database Initialization & Normalized Schema**: Both `cache.duckdb` and `srz.duckdb` skip schema DDL when already initialized and defer auto-pruning past fast-exit CLI subcommands. In `srz.duckdb`, `library` is normalized (`(id, summary)`) and joined against `history` to eliminate redundant metadata columns.
-- **Unified SQL + Disk LRU Pruning**: `Cache::prune` collects surviving database rows and view file metadata in a single pass, executing LRU size-based eviction across both `cache.duckdb` tables and `views/` files to strictly respect the 500 MB cache limit.
-- **Transactional Database Safety**: ACID database transactions guarantee complete atomicity and rollback safety across library records and chat histories.
+The storage subsystem in `srz` departs from traditional CLI tool patterns that scatter thousands of raw JSON files across the user's cache directory. Instead, it pairs an embedded single-write DuckDB engine with an ACID-compliant library database.
+
+#### Consolidated Single-Write Architecture
+Rather than writing discrete `.json` files for scraped web DOMs, Open Library search metadata, and LLM completions, `srz` stores all ephemeral assets within `~/.cache/srz/cache.duckdb`. This prevents inode exhaustion on high-volume workstations and reduces lookup overhead to sub-millisecond scale. Furthermore, storing content in DuckDB enables atomic SQL byte accounting via `strlen` and precise millisecond TTL evaluation via `epoch_ms(cached_at)::BIGINT`, eliminating slow filesystem traversal during cleanup.
+
+#### Lazy Initialization and Normalized Schemas
+To maintain instantaneous CLI startup times, both `cache.duckdb` and the permanent `srz.duckdb` skip schema DDL evaluation when the databases are already initialized. Lightweight or fast-exit subcommands (such as `srz models` or `srz config show`) bypass the database layer altogether. Within `srz.duckdb`, the schema is normalized: full summary text is stored uniquely in the `library` table, while reading habit telemetry, word counts, and token rates live in `history`. Joining on the primary key eliminates redundant metadata duplication across repeated queries.
+
+#### Unified LRU Eviction and Storage Safety
+Disk budgets are enforced through `Cache::prune`, which executes a unified pass across both DuckDB tables and rendered standalone files in the `views/` directory. When total cache usage approaches the 500 MB budget, the engine evicts the oldest items down to an 85% safety threshold. Every database transaction is executed within strict ACID boundaries, ensuring that power loss or terminal interrupts never leave your library or persistent chat histories in a corrupted state.
 
 ---
 
@@ -250,10 +267,11 @@ For developers and learners curious about the mechanics behind offline library s
 | **$N$** | Total Documents | Total number of summarized items stored in `history`. |
 | **$n(t)$** | Document Frequency | Number of library documents containing term $t$. |
 
-### Implementation Highlights
-- **Pure SQL Execution**: Runs directly inside DuckDB via Common Table Expressions (`WITH doc_stats AS (...)`, `term_df`, `scored_docs`) without external search engine plugins or background daemons.
-- **Pre-Tokenized Snippet Extraction**: Pre-tokenizes query terms to extract high-density preview sentences for rapid scanning.
-- **Sub-Millisecond Query Speed**: The inverted index table (`library_terms`) indexes term frequencies at summary save time, enabling instant searches even across thousands of articles.
+### Pure SQL Evaluation in DuckDB
+
+Unlike search architectures that require external search daemons (such as Elasticsearch) or platform-specific C extensions (such as SQLite FTS5), `srz` implements the entire Robertson-Sparck Jones BM25 ranking algorithm in pure DuckDB SQL. 
+
+When a user executes `srz find`, query terms are tokenized and injected into a parameterized query with Common Table Expressions (CTEs). The query first aggregates collection-wide statistics (`doc_stats`), joins matching terms from the inverted index table (`library_terms`), applies title boost multipliers ($w(t)$), and computes saturation scores using DuckDB's vectorized analytical execution engine. Because the inverted index is populated during summary generation, search queries execute in under two milliseconds across thousands of stored documents without network access or background daemons. High-density preview sentences are extracted directly around query stems to facilitate rapid scanning in terminal outputs.
 
 ---
 
@@ -265,44 +283,39 @@ To eliminate context length guesswork and prevent Out-of-Memory context truncati
 
 `srz` auto-detects physical host RAM and CPU architecture across macOS (`sysctl -n hw.memsize`), Linux (`/proc/meminfo`), and Windows (PowerShell WMI) without external C FFI dependencies.
 
-### Hardware Tier Reference Matrix
+For the mapping of physical memory tiers to recommended models, parameters, disk sizes, and context windows, refer to the canonical [Hardware Tier Reference Matrix](quickstart.md#hardware-tier-reference-matrix) in the Quick Start guide.
 
-| Host Memory | Typical Devices | Model Name | Parameters | Quantization | Disk Size | Context Window (`n_ctx`) | Llama GUI Selection |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **8 GB RAM** | MacBook Air 8GB, Thin-and-light Laptops | `gemma-4` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`8k ctx`** (8,192) | `gemma-4 \| E4B \| Q8_0 \| 8k ctx` |
-| **16 GB RAM** | MacBook Pro/Air 16GB, Standard PC Laptops | `gemma-4` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`32k ctx`** (32,768) | `gemma-4 \| E4B \| Q8_0 \| 32k ctx` |
-| **24–36 GB RAM** | MacBook Pro M Pro / Max, 32GB PCs | `gemma-4` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`64k ctx`** (65,536) | `gemma-4 \| E4B \| Q8_0 \| 64k ctx` |
-| **64+ GB RAM** | MacBook Pro M Max, Mac Studio, Workstations | `gemma-4` | **26B Total / ~4B Active** (MoE) | **`Q8_0`** | **~28.0 GB** | **`128k ctx`** (131,072) | `gemma-4 \| 26B-A4B \| Q8_0 \| 128k ctx` |
+### Why Google Gemma 4 (`Q8_0`) on Modern Laptops
 
-### Why Google Gemma 4 (`Q8_0`) on Laptops?
+Selecting the right local model requires balancing reasoning accuracy against hardware constraints such as unified RAM capacity, battery draw, and thermal throttling. Through extensive testing across Apple Silicon and modern x86 platforms, `srz` steers users toward Google's Gemma 4 models running at 8-bit quantization (`Q8_0`).
 
-1. **State-of-the-Art Reasoning Density**: Google's Gemma 4 models offer exceptional summarization accuracy, structured output coherence, and instruction-following per parameter, outperforming earlier generation 7B/8B models while drawing less power.
-2. **High-Fidelity `Q8_0` Quantization**: Unlike aggressive 4-bit quantizations (`Q4_K_M`) which introduce loss of nuance, logical drift, and hallucination during long-form synthesis, 8-bit `Q8_0` preserves near FP16 precision with minimal memory overhead.
-3. **Deep Context Scaling**: Gemma 4 natively supports up to 128k context windows without positional degradation.
-4. **Zero-Drift Tokenizer**: `srz` queries the server's `/tokenize` endpoint directly, ensuring 0% token count discrepancies between client chunking and server KV cache limits.
+Google's Gemma 4 architecture offers exceptional parameter density and instruction-following fidelity. In long-form document synthesis, smaller earlier-generation models (such as legacy 7B or 8B weights) frequently struggle with narrative continuity, omitting crucial caveats or hallucinating connections between disparate sections. Gemma 4 provides high-fidelity synthesis while maintaining low power consumption, making it well suited for laptops running on battery power.
 
-### Single-Pass Synthesis vs. Map-Reduce Chunking
+Equally critical is the choice of quantization. While aggressive 4-bit schemes (such as `Q4_K_M`) reduce memory footprints, they introduce subtle degradation in semantic nuance, numeric precision, and prompt compliance. In contrast, 8-bit `Q8_0` quantization preserves near-FP16 reasoning precision while fitting comfortably within unified memory budgets. Coupled with native support for context windows up to 128k tokens, Gemma 4 delivers desktop-class summarization without overheating or draining mobile hardware.
 
-- **1-Pass Mode (Optimal)**: When document token count $\le \sim 70\%$ of the server context window (`n_ctx`), `srz` synthesizes the entire document in one LLM call. This preserves narrative continuity and produces the highest-fidelity structured summary.
-- **Map-Reduce Mode (Automatic)**: When a document exceeds the single-pass limit (e.g. a 300-page book or 100-page PDF on an 8k context server), `srz` dynamically partitions content into overlapping token windows sized by `DynamicBudget`, summarizes chunks concurrently up to the server's detected slot limit (`total_slots`), and performs a final reduction pass.
+### Synthesis Strategy: Single-Pass vs. Map-Reduce Chunking
+
+The synthesis engine dynamically adapts its execution strategy based on the ratio between the document length and the active context window (`n_ctx`) reported by the backend server.
+
+When the document's token count is within approximately 70% of the server's context window, `srz` synthesizes the document in a single inference pass. Single-pass synthesis is the optimal operational mode: because the entire document fits into the model's active attention window simultaneously, the LLM retains complete cross-chapter awareness, tracking narrative arcs and complex thematic relationships without contextual fragmentation.
+
+When a document exceeds the single-pass threshold—such as a 300-page book or a 100-page technical specification evaluated against an 8k context server—`srz` automatically transitions into Map-Reduce mode. The document chunker partitions the text into overlapping token windows sized strictly by `DynamicBudget`. These chunks are dispatched concurrently across the server's available inference slots (`total_slots`), and their individual intermediate syntheses are aggregated in a final reduction pass to produce a unified, comprehensive summary.
 
 ### Zero-Drift Server-Native Tokenization
 
-Third-party BPE tokenizers (e.g. OpenAI's `cl100k_base`) drift by 15–25% when measuring tokens intended for Google Gemma or Meta Llama models. `srz` probes and uses the server's native `/tokenize` endpoint (`llama.cpp /tokenize` or `Ollama /api/tokenize`), ensuring 0% token count discrepancies. When the server endpoint is unavailable, it gracefully falls back to `tiktoken-rs` (`cl100k_base`).
+Third-party BPE tokenizers (such as OpenAI's `cl100k_base`) drift by 15–25% when measuring tokens intended for Google Gemma or Meta Llama models. `srz` probes and uses the server's native `/tokenize` endpoint (`llama.cpp /tokenize` or `Ollama /api/tokenize`), ensuring 0% token count discrepancies between client chunking calculations and server KV cache allocations. When the server endpoint is unavailable, it gracefully falls back to `tiktoken-rs` (`cl100k_base`).
 
 ### Dynamic Context Budgeting (`DynamicBudget`)
 
-`DynamicBudget` mathematically sizes prompt budgets, chunk overlaps, and completion headroom based on probed server parameters to maintain a strict capacity invariant:
+Hardcoding token budgets leads to fragile CLI behavior: small 4k models crash with out-of-memory errors, while large 64k or 128k models are severely underutilized. To resolve this, `srz` queries the backend server capabilities and enforces a mathematical capacity invariant at runtime:
 
 $$
 \text{effective\_ctx} = \text{prompt\_chunk} + \text{reserve\_completion} + \text{headroom} \le n_{\text{ctx}}
 $$
 
-- **Prompt Chunks**: Scaled to ~45% of `n_ctx` (clamped between 1,024 and 65,536 tokens).
-- **Reserve Completion Tokens**: Sized to ~30% of context (clamped between 512 and 8,192).
-- **Safety Headroom**: ~25% margin (clamped between 512 and 4,096) ensures prompt + completion never exceeds physical server context capacity or triggers OOM errors.
-- **Slot-Aware Concurrency**: Probes server worker slots (`total_slots`) to scale parallel map-reduce chunk summarization without congesting the inference queue.
-- **Sub-Optimal Context Alerts**: When execution is constrained by small server context windows, `srz` emits a non-intrusive 1-line terminal footer hint, and `srz doctor` provides a full hardware optimization panel.
+Under this model, `DynamicBudget` partitions the server's detected context window into three deliberate allocations. Prompt chunks are scaled to approximately 45% of total context (bounded between 1,024 and 65,536 tokens), guaranteeing that source text consumes the majority of attention without crowding completion buffers. The completion reserve is allocated approximately 30% of the context (clamped between 512 and 8,192 tokens), ensuring the model has sufficient headroom to generate comprehensive, structured analyses. Finally, a 25% safety headroom (clamped between 512 and 4,096 tokens) accounts for token counting variance and system prompt overhead.
+
+Concurrency is similarly auto-scaled: `DynamicBudget` probes server worker slots (`total_slots`) to scale parallel map-reduce workers without congesting the inference queue. When execution is constrained by small server context windows, `srz` emits a non-intrusive 1-line terminal footer hint, while `srz doctor` provides a full hardware optimization panel.
 
 ---
 
@@ -323,52 +336,48 @@ $$
 
 ### Performance & Memory Efficiency Deep Dive
 
-#### LLM Processing & Context Management
-- **Zero-Worry Dynamic Token Budgeting (`DynamicBudget`)**: Dynamically queries backend server capabilities (`GET /props` in llama.cpp, `POST /api/show` in Ollama, or `GET /v1/models` in vLLM) to extract the active context window (`n_ctx`) and concurrency capacity (`total_slots`), mathematically sizing prompt budgets, chunk overlaps, and completion headroom without user intervention or OOM crashes.
-- **Server-Native Tokenization (`/tokenize`)**: Probes and uses the server's native `/tokenize` endpoint (0% tokenizer drift across multilingual text and code) while seamlessly falling back to OpenAI's `cl100k_base` BPE tokenizer (`tiktoken-rs`).
-- **Persistent Capability Caching with Model-Change Invalidation**: Caches probed server operational parameters in `cache.duckdb` (`cache_server_capabilities`) for sub-millisecond startup, automatically invalidating and re-probing whenever a model change or server restart is detected.
-- **Laptop Hardware Steering (Gemma 4 Q8_0)**: Automatically inspects host unified memory and chip characteristics without `unsafe` code (`sysctl` on macOS, `/proc/meminfo` on Linux), steering users towards battery-efficient, high-fidelity Google Gemma 4 `Q8_0` setups with optimal context sizing.
-- **Autoscaled Map-Reduce Concurrency**: Automatically scales parallel chunk workers to the server's detected slot capacity (`total_slots`), completing map-reduce passes up to 4× faster out-of-the-box.
-- **Question-Aware Q&A Context Selection**: For long documents in `srz ask`, `select_relevant_context_with_budget` ranks document chunks by query term overlap within a dynamic token budget, paired with token-budgeted sliding conversational history.
-- **Zero-Copy SSE Streaming**: Server-Sent Events (SSE) stream tokens directly from network byte buffers into borrowed string slices (`Cow<str>`), batching terminal flushes per packet to eliminate redundant string allocations and terminal redraw flicker.
-- **Fast-Path Budget Checks**: Unified chunking in `TextChunker` uses an $O(1)$ byte-length check to instantly pass documents that already fit within token limits, completely bypassing tokenizer passes on shorter texts.
-- **Subtle Terminal Advisor & Doctor Audit**: Emits a non-intrusive 1-line terminal footer hint when execution was constrained by sub-optimal server context, and provides a full hardware optimization panel in `srz doctor`.
+The architecture of `srz` is guided by the philosophy that a CLI tool should never waste system resources or introduce perceptible latency. Every subsystem—from network ingestion to terminal rendering—is engineered to minimize memory allocations and CPU overhead.
 
-#### High-Speed Ingestion & Parsing
-- **High-Fidelity Readability Extraction**: Web articles are parsed via Mozilla's Readability algorithm (`dom_smoothie`), scoring DOM container density to strip navigation headers, sidebars, ad trackers, and cookie notices before prompting the LLM.
-- **Universal Syndication Feeds**: Multi-format feed parsing (`feed-rs`) and automatic feed URL detection (`is_feed_url`) seamlessly normalize Google News queries and direct RSS 0.9/1.0/2.0, Atom, and JSON feed URLs into clean article lists with zero regex fragility.
-- **Single-Pass PDF Extraction**: `PdfExtractor` parses the in-memory document once for both text layer extraction and document trailer metadata lookup via `pdf-extract`.
-- **Streaming XML Parsing**: YouTube timed-text caption ingestion (`quick-xml`) uses a pull-parser event reader to stream captions without loading full XML trees into memory.
-- **Bounded & Cached Concurrent Scraping**: Parallel news fetching (`collect_news_articles_with_cache`) bounds concurrent HTTP/RPC tasks via `tokio::sync::Semaphore`, caches scraped article pages in `cache_pages`, and uses `tokio::task::JoinSet::abort_all()` to immediately terminate remaining background requests once the target article count is reached.
-- **HTTP Connection Pool Sharing & Byte Limits**: A single shared HTTP client reuses keep-alive connections across metadata lookups, search queries, and scraping, enforcing strict byte limits (10 MB cap) to avoid unbuffered memory spikes.
+#### Zero-Overhead LLM Processing and Context Management
+Inference efficiency begins with accurate token budgeting. Rather than guessing context capacities, `srz` queries the backend server's native `/tokenize` endpoint and capability descriptors (`GET /props` in llama.cpp, `POST /api/show` in Ollama, or `GET /v1/models` in vLLM) to detect the active context window (`n_ctx`) and slot concurrency (`total_slots`). These parameters are cached within `cache_server_capabilities` in DuckDB, allowing subsequent CLI commands to start in under a millisecond while automatically invalidating if the backend model changes.
 
-#### Database, Caching & Instant Search
-- **Consolidated Single-Write DuckDB Cache**: Stores web pages, search metadata, and LLM summaries directly in a single embedded `cache.duckdb` without dual-writing `.json` files—eliminating inode exhaustion and enabling sub-millisecond lookups, SQL byte-size accounting (`strlen`), and instantaneous SQL timestamp TTL eviction via `epoch_ms(cached_at)::BIGINT`.
-- **Lazy Database Initialization & Normalized Schema**: Both `cache.duckdb` and `srz.duckdb` skip schema DDL when already initialized and defer auto-pruning past fast-exit CLI subcommands. In `srz.duckdb`, `library` is normalized (`(id, summary)`) and joined against `history` to eliminate duplicate metadata columns.
-- **Offline BM25 Full-Text Relevance**: Pure SQL Robertson-Sparck Jones BM25 search ranking runs directly inside DuckDB without external extensions, featuring 2.5× title weight boosting, document length normalization ($k_1 = 1.2, b = 0.75$), and pre-tokenized query vectors for rapid snippet extraction.
-- **Unified SQL + Disk LRU Pruning**: `Cache::prune` collects surviving database rows and view file metadata in a single pass, executing LRU size-based eviction across both `cache.duckdb` tables and `views/` files.
-- **Transactional Database Safety**: ACID database transactions guarantee complete atomicity and rollback safety across library records and chat histories.
+Streaming responses use a zero-copy Server-Sent Events (SSE) parser that borrows string slices directly from network byte buffers (`Cow<str>`). Terminal flushes are batched per packet, completely eliminating the string reallocations and terminal redraw flicker common in naive CLI streaming implementations. For short documents, the chunker executes an $O(1)$ byte-length check that instantly approves texts that comfortably fit within budget, bypassing tokenizer passes altogether.
 
-#### UI & Terminal Rendering
-- **Cached Terminal Markdown Skin**: Terminal Markdown styles (`MadSkin`) are cached globally in a `LazyLock`, avoiding reallocating theme rules on each render or chat turn.
-- **Zero-Allocation TUI Search**: Live searching in `srz browse` matches queries on-the-fly via zero-copy ASCII case-insensitive comparison, short-circuiting on metadata before scanning summary bodies.
-- **Fast Chunk-Scanning HTML Escaping**: HTML rendering scans text in multi-byte chunks, returning borrowed slices (`Cow::Borrowed`) with zero allocations when no characters require escaping.
-- **GFM Markdown & Non-Blocking Browser Launch**: Generates clean HTML reader views with GitHub Flavored Markdown support (tables, task lists) via `pulldown-cmark` and opens them via detached, non-blocking browser processes (`open::that_detached`).
+#### High-Speed Ingestion and Content Normalization
+Raw web content is notoriously noisy, laden with navigation headers, advertisements, tracking pixels, and legal notices. `srz` runs scraped HTML through a pure-Rust implementation of Mozilla's Readability algorithm (`dom_smoothie`), scoring DOM container density to extract clean article text before prompting the language model. Syndication feeds and Google News queries are parsed via `feed-rs`, with direct URL scheme detection normalizing diverse feed formats without regex fragility.
+
+Document ingestion handles diverse formats through specialized, zero-copy pipelines. PDF files are parsed in a single memory-mapped pass with `pdf-extract`, extracting both text layers and trailer metadata simultaneously. YouTube video ingestion streams timed-text caption tracks via an event-driven XML pull parser (`quick-xml`), completely avoiding the overhead of loading full DOM trees into memory. When scraping live news topics, `srz` bounds parallel HTTP and RPC requests using a `tokio::sync::Semaphore` and immediately aborts superfluous background tasks once the desired article count is achieved.
+
+#### Embedded DuckDB Storage and Instant Search
+By consolidating all persistence into DuckDB, `srz` achieves transactional database reliability without the complexity of external database servers. The cache layer stores web pages, book metadata, and LLM summaries in `cache.duckdb`, replacing thousands of small files with structured tables indexed by SHA-256 hashes. This eliminates inode exhaustion, speeds up reads, and enables instant millisecond-accurate TTL pruning using standard SQL queries.
+
+Offline search in `srz find` operates directly against the normalized `library_terms` inverted index in `srz.duckdb`. Because term frequencies, title weights, and document lengths are computed at write time, BM25 relevance ranking is evaluated using pure SQL window functions and CTEs, delivering Google-style relevance ranking across your reading history in under two milliseconds.
+
+#### Responsive Terminal UI and Standalone Reader Views
+Terminal rendering is built for visual fluidity. Markdown theme styles (`MadSkin`) are instantiated once in a globally cached `LazyLock`, eliminating repeated style allocations during streaming or multi-turn chat sessions. When browsing your reading library in the full-screen Ratatui TUI (`srz browse`), search filtering compares queries on-the-fly using zero-copy ASCII case-insensitive scans, short-circuiting on document titles and authors before inspecting full summaries.
+
+For users who prefer reading in a browser, `srz` compiles GitHub Flavored Markdown into HTML5 reader views complete with responsive typography and light/dark theme toggles. Browser launching is handled through non-blocking detached processes (`open::that_detached`), allowing the CLI to terminate immediately without waiting for browser tabs to close.
 
 ---
 
 ## 7. Security, Privacy & System Hardening
 
-- **100% Safe Rust Guarantee**: The entire crate strictly enforces `#![forbid(unsafe_code)]` at `src/lib.rs` and `src/main.rs`. Zero `unsafe` blocks are permitted.
-- **Complete Local Privacy**: All inference, embedding, caching, and chat history remain 100% local on your machine. Zero tracking, zero telemetry, and zero third-party cloud requirements.
-- **Strict Local Isolation & Symlink Hardening**: Cache, configuration, and database files are created with owner-only Unix permissions (`0700` directories, `0600` files created atomically via `O_CREAT | O_EXCL` and `mode(0o600)`). Filesystem operations reject pre-planted symlink paths to prevent unauthorized directory traversal.
-- **Prompt Injection Defense & Unified Framing**: Untrusted source content is strictly quarantined inside tagged XML blocks (`<source_document>`) via centralized framing, with automated case-insensitive escaping of delimiter tags (`escape_closing_tag`).
-- **Terminal Escape Sequence & BiDi Sanitization**: Document titles, scraped metadata, and LLM streaming outputs are stripped of ANSI escape sequences, C1 control characters, and Unicode Bidirectional (BiDi) override codepoints (preventing Trojan Source spoofing and clipboard hijacking).
-- **Bounded Resource Limits & Client Timeouts**: Strict safety ceilings prevent denial-of-service from oversized inputs: 10 MB for web responses and stdin, 20 MB for local files, 50 MB for updates, paired with 5-second connection, 30-second scraping, and 300-second LLM streaming timeouts.
-- **Media Scraper & SSRF Defense**: YouTube video ingestion strictly validates host authority against official domains (`youtube.com`, `youtu.be`) and pins caption downloads to HTTPS `api/timedtext` endpoints to prevent Server-Side Request Forgery against internal networks.
-- **Content Security Policy (CSP)**: Generated HTML reader views enforce strict CSP headers blocking external network calls and inline script execution.
-- **Cryptographically Verified Upgrades**: `srz upgrade` and install scripts enforce mandatory SHA-256 cryptographic checksum validation and semver regex checks before executing binaries.
-- **Continuous Security CI Auditing**: Automated CI workflows run `cargo test`, `cargo clippy -- -D warnings`, and dependency vulnerability scanning via `cargo-audit` on every commit and PR across Ubuntu and macOS.
+Because `srz` processes untrusted content from the public internet, local documents, and generative AI models, defense-in-depth is integrated into every layer of the architecture.
+
+### Memory Safety and the Zero-Unsafe Guarantee
+The entire codebase strictly enforces `#![forbid(unsafe_code)]` at both crate roots (`src/lib.rs` and `src/main.rs`). Not a single `unsafe` block exists in the project. Memory safety, thread safety, and data-race freedom are mathematically guaranteed by the Rust compiler, eliminating entire classes of vulnerabilities including buffer overflows, use-after-free, and null-pointer dereferences.
+
+### Complete Local Privacy and Filesystem Sandboxing
+`srz` operates entirely on your local machine with zero telemetry, zero analytics tracking, and zero third-party cloud requirements. All cache files, database records, and configuration files are created with private Unix permissions (`0700` directories, `0600` files created atomically via `O_CREAT | O_EXCL` and `mode(0o600)`). Furthermore, filesystem handlers explicitly refuse pre-planted symlinks, preventing malicious directory traversal and symlink swap attacks.
+
+### Defensive Prompt Isolation and Tag Neutralization
+Untrusted content ingested from web pages, YouTube transcripts, or user documents is strictly quarantined inside `<source_document>` XML boundary tags. A centralized prompt framing engine performs case-insensitive scanning to escape any attempts by malicious web pages to prematurely close delimiter tags, neutralizing prompt injection attacks and preventing untrusted text from hijacking LLM system instructions.
+
+### Terminal Escape Sanitization and BiDi Shielding
+Displaying untrusted text in terminal emulators presents severe security risks, including clipboard hijacking (via OSC 52 sequences) and prompt spoofing. `srz` filters all document titles, metadata, and LLM streaming outputs through a robust sanitizer (`sanitize_terminal_text`). The sanitizer strips ANSI CSI sequences, OSC commands, C1 control codes, and Unicode Bidirectional (BiDi) override codepoints, rendering Trojan Source attacks completely inert.
+
+### Bounded Resource Ceilings and Supply-Chain Verification
+To prevent denial-of-service from oversized payloads, `srz` enforces strict byte limits: 10 MB for web responses and stdin streams, 20 MB for local documents, and 50 MB for update binaries, backed by strict connection and streaming timeouts. External media lookups validate host authority against official domains (`youtube.com`, `youtu.be`) to prevent Server-Side Request Forgery (SSRF). In addition, `srz upgrade` requires cryptographic SHA-256 validation and semver regex checks, and continuous integration pipelines enforce strict licensing and dependency advisory audits via `cargo-deny` and `cargo-audit`.
 
 ---
 

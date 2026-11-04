@@ -99,7 +99,7 @@ srz "https://news.ycombinator.com" --profile fast
 
 ## Precedence & Resolution Order
 
-When resolving runtime settings, `srz` applies the following priority (highest to lowest):
+Runtime configuration follows a predictable layered resolution model. Explicit command-line arguments always take top priority, overriding named profile settings from `config.toml`. Profile configurations, in turn, override standard environment variables like `OPENAI_BASE_URL` and root-level config options. If no configuration is provided at any layer, `srz` falls back to its safe, local-first engine defaults:
 
 1. **Explicit CLI flags** (e.g. `--model`, `--base-url`, `--style`, `--stream`, `--context-window`).
 2. **Profile settings** selected via `--profile <NAME>` in `config.toml`.

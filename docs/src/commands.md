@@ -40,7 +40,7 @@
 | | `srz recommend` | Recommends optimal model, context window, and ready launch commands for host hardware. |
 | | `srz doctor` | Tests backend reachability, latency, cache health, and database integrity. |
 | | `srz upgrade [--check\|--force]` | Safe, in-place binary self-updater with SHA-256 integrity verification. |
-| | `srz completions <SHELL>` | Generates autocomplete scripts for bash, zsh, fish, powershell, and elvish. |
+| | `srz completions <SHELL>` | Generates autocomplete scripts for bash, zsh, fish, and powershell. |
 
 ---
 
@@ -50,19 +50,13 @@
 srz <TARGET> [FLAGS]
 ```
 
-### Auto-Detection Rules
-* **URLs (`http://` or `https://`)**:
-  * If the domain is `youtube.com` or `youtu.be`: Routes to **YouTube Timed-Text Ingestion**.
-  * If the path or query matches a syndication feed (`.xml`, `.rss`, `.atom`, `/feed`, etc.): Routes to **Syndication Feed & News Aggregator**.
-  * Otherwise: Routes to **Web Scraper** (Mozilla Readability content extraction).
-* **Local Files**:
-  * If `<TARGET>` points to an existing file or has a recognizable document extension (`.pdf`, `.html`, `.md`, `.txt` up to 20 MB ceiling): Routes to **Local Document Loader**.
-* **Unix Standard Input**:
-  * If `<TARGET>` is `-`: Routes to **Unix Stdin Stream Reader** (10 MB ceiling).
-* **News Queries**:
-  * If `<TARGET>` begins with `news ` (e.g. `srz "news rust"`): Routes to **Google News RSS Aggregator**.
-* **Books**:
-  * Any other text target routes to the **Book Pipeline**, resolving metadata and synopses from Open Library and Wikipedia.
+### How Target Auto-Detection Works
+
+Instead of forcing you to memorize dedicated subcommands like `srz web`, `srz file`, or `srz book`, `srz` inspects the structure of your `<TARGET>` argument and dispatches it through specialized ingestion pipelines:
+
+When `<TARGET>` begins with `http://` or `https://`, the router analyzes the URL domain and path. Links pointing to `youtube.com` or `youtu.be` route directly to the YouTube timed-text caption client. If the URL path or query parameters indicate a syndication feed (such as `.rss`, `.xml`, `.atom`, or `/feed`), the target is parsed via the universal syndication engine. All other standard web links pass to the web scraper, where Mozilla Readability scores DOM container density to strip navigation bars, advertisements, and cookie notices.
+
+Local targets receive similarly intelligent routing. If `<TARGET>` matches an existing file path or ends with a standard document extension (`.pdf`, `.html`, `.md`, or `.txt`), the document loader reads and validates the file under a 20 MB ceiling. Passing a single hyphen (`-`) tells `srz` to ingest data from standard input, enabling seamless pipeline integration with commands like `git diff | srz -`. Queries beginning with `news ` route to the Google News RSS aggregator, while any remaining freeform text strings are treated as book titles, triggering concurrent metadata and synopsis resolution across Open Library and Wikipedia.
 
 ### Global Flags
 
@@ -242,21 +236,15 @@ srz doctor
 srz models
 ```
 
-### Hardware & LLM Advisor in `srz recommend` & `srz doctor`
-Running `srz recommend` or `srz doctor` automatically profiles host memory and suggests the optimal local configuration:
-* **Host Hardware Profile**: Displays detected host RAM (e.g. 24 GB RAM, `Tier32GB`) and CPU architecture.
-* **Hardware Steering Advisor**: Recommends high-fidelity Gemma 4 models using simplified Llama GUI conventions (e.g. `gemma-4` with size `E4B` or `26B-A4B`, `Q8_0` quant) and optimal context lengths (`8k ctx`, `32k ctx`, `64k ctx`, `128k ctx`).
-* **Llama GUI Selections**: Direct model card selections for the Llama GUI based on host RAM.
-* **Single-Pass Synthesis Ceiling**: Displays the token threshold (~70% of context window) before map-reduce chunking kicks in.
-* **Server Capabilities (`srz doctor`)**: Probes server `n_ctx` (context length) and `total_slots` (concurrency capacity) from `llama.cpp` (`/props`) or `Ollama` (`/api/show`).
-* **Sub-Optimal Context Alerts**: Warns if server context window is configured below 8,192 tokens or concurrency slots are bottlenecked.
+### Hardware Profiling & Diagnostic Advisories
 
-| Host Memory | Typical Devices | Model Name | Parameters | Quantization | Disk Size | Context Window (`n_ctx`) | Llama GUI Selection |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **8 GB RAM** | MacBook Air 8GB, Thin-and-light Laptops | `gemma-4` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`8k ctx`** (8,192) | `gemma-4 \| E4B \| Q8_0 \| 8k ctx` |
-| **16 GB RAM** | MacBook Pro/Air 16GB, Standard PC Laptops | `gemma-4` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`32k ctx`** (32,768) | `gemma-4 \| E4B \| Q8_0 \| 32k ctx` |
-| **24–36 GB RAM** | MacBook Pro M Pro / Max, 32GB PCs | `gemma-4` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`64k ctx`** (65,536) | `gemma-4 \| E4B \| Q8_0 \| 64k ctx` |
-| **64+ GB RAM** | MacBook Pro M Max, Mac Studio, Workstations | `gemma-4` | **26B Total / ~4B Active** (MoE) | **`Q8_0`** | **~28.0 GB** | **`128k ctx`** (131,072) | `gemma-4 \| 26B-A4B \| Q8_0 \| 128k ctx` |
+Running `srz recommend` or `srz doctor` profiles your physical machine without invasive C FFI bindings. By reading host kernel statistics (`sysctl` on macOS, `/proc/meminfo` on Linux, and PowerShell WMI on Windows), `srz` classifies your system into hardware tiers and suggests optimal model configurations:
+
+The advisor recommends high-fidelity Google Gemma 4 models tailored to your physical RAM, matching the exact selection cards shown in Llama GUI (such as `gemma-4` with size `E4B` or `26B-A4B` at `Q8_0` quantization). It calculates your single-pass token synthesis ceiling—the approximate 70% threshold of your context window—beyond which map-reduce chunking activates.
+
+When running `srz doctor`, the engine performs an active end-to-end audit: it pings the local LLM endpoint, probes operational context lengths (`n_ctx`) and concurrency slots (`total_slots`), and verifies the integrity of DuckDB databases and cache directories. If the connected runner is constrained by sub-optimal context sizing (under 8k tokens) or slot bottlenecks, `srz doctor` provides concrete terminal guidance to unlock maximum throughput.
+
+For the complete tier-by-tier hardware breakdown, refer to the canonical [Hardware Tier Reference Matrix](quickstart.md#hardware-tier-reference-matrix).
 
 ---
 
@@ -267,7 +255,7 @@ Running `srz recommend` or `srz doctor` automatically profiles host memory and s
 srz upgrade --check
 srz upgrade
 
-# Generate autocomplete scripts (bash, zsh, fish, powershell, elvish)
+# Generate autocomplete scripts (bash, zsh, fish, powershell)
 # Zsh (add to ~/.zshrc):
 eval "$(srz completions zsh)"
 

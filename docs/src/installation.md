@@ -126,7 +126,4 @@ srz completions fish | source
 
 # PowerShell
 srz completions powershell | Out-String | Invoke-Expression
-
-# Elvish
-eval (srz completions elvish)
 ```

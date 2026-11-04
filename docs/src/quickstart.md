@@ -107,15 +107,17 @@ Summary Synthesis Speed:
 
 ### Single-Pass vs. Map-Reduce Chunking
 
-- **1-Pass Mode**: When document token count $\le \sim 70\%$ of the configured server context window (`n_ctx`), `srz` synthesizes the document in one pass with complete cross-chapter coherence.
-- **Chunking Mode**: When documents exceed this threshold (e.g. 200+ page books or large document bundles on small context servers), `srz` automatically partitions the text into token-budgeted chunks, summarizes them in parallel up to the server's slot capacity (`total_slots`), and executes a final reduction pass.
+How `srz` processes your document depends on the relationship between the document length and the server's available context window (`n_ctx`).
 
-### Why We Recommend Google Gemma 4 (`Q8_0`) for Laptops
+When a document's token count is within approximately 70% of the active context window, `srz` synthesizes the text in a single pass (`1-Pass Mode`). This mode yields the highest-quality summaries because the model maintains complete narrative and thematic awareness across all chapters simultaneously.
 
-* **Battery & Compute Efficiency**: Gemma 4 is built for exceptional inference speed per watt, making it optimal for laptop battery life.
-* **High-Fidelity `Q8_0` Precision**: Heavy 4-bit quantizations (`Q4_K_M`) degrade summarization nuance and can cause hallucinations in complex documents. `Q8_0` maintains near-lossless reasoning fidelity while comfortably fitting into unified memory.
-* **Context Scaling Without Degraded Quality**: Gemma 4 supports up to 128k context windows natively.
-* **Zero-Drift Native Tokenization**: `srz` queries the server's native `/tokenize` endpoint, completely eliminating tokenizer drift between client chunking and server execution.
+When a document exceeds this 70% threshold—such as a 300-page book or a large collection of research papers—`srz` automatically transitions into `Chunking Mode`. The engine splits the text into token-budgeted chunks with overlapping margins, summarizes each chunk in parallel across available server worker slots (`total_slots`), and finally executes a reduction pass to produce a cohesive, unified synthesis without running out of memory.
+
+### Why Google Gemma 4 (`Q8_0`) on Laptops
+
+Selecting the appropriate local model requires balancing comprehension quality with battery efficiency and RAM usage. For everyday reading on laptops and workstations, `srz` recommends Google's Gemma 4 series with 8-bit quantization (`Q8_0`).
+
+Gemma 4 models offer exceptional reasoning density and instruction adherence per parameter, outperforming earlier-generation 7B and 8B models while drawing less electrical power. While 4-bit quantizations (`Q4_K_M`) reduce download sizes, they often degrade nuanced arguments and introduce hallucinations during long-form synthesis. In contrast, 8-bit `Q8_0` preserves near-lossless precision, fits comfortably in unified memory, and scales natively to 128k context windows without degradation. Furthermore, querying the runner's native `/tokenize` endpoint ensures zero tokenization drift between the CLI and the inference engine.
 
 ---
 
