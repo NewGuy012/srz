@@ -336,6 +336,14 @@ fn compute_tokens_per_second(completion_tokens: Option<u32>, elapsed: Duration) 
     })
 }
 
+#[inline]
+fn clamp_context_window(n: usize) -> usize {
+    n.clamp(
+        crate::budget::MIN_CONTEXT_WINDOW,
+        crate::budget::MAX_CONTEXT_WINDOW,
+    )
+}
+
 impl LlmClient {
     pub fn new(base_url: &str, model: &str, api_key: &str, max_tokens: u32) -> Result<Self> {
         let mut headers = HeaderMap::new();
@@ -487,15 +495,43 @@ impl LlmClient {
         .unwrap_or(false)
     }
 
+    async fn probe_standard_tokenize_endpoint(&self) -> bool {
+        let token_probed = if !self.model.is_empty() {
+            self.probe_tokenize_endpoint(
+                "/tokenize",
+                serde_json::json!({ "model": &self.model, "content": "test" }),
+            )
+            .await
+        } else {
+            false
+        };
+
+        token_probed
+            || self
+                .probe_tokenize_endpoint("/tokenize", serde_json::json!({ "content": "test" }))
+                .await
+    }
+
+    async fn fetch_root_json<B>(&self, path: &str, build_req: B) -> Option<serde_json::Value>
+    where
+        B: Fn(&reqwest::Client, String) -> reqwest::RequestBuilder,
+    {
+        let resp = self.send_root_request(path, build_req).await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let bytes = crate::scraper::read_response_bytes_limited(resp, MAX_HTTP_RESPONSE_BYTES)
+            .await
+            .ok()?;
+        serde_json::from_slice::<serde_json::Value>(&bytes).ok()
+    }
+
     /// Extracts operational capabilities from the backend server (context window, total slots, native tokenizer).
     pub async fn probe_server_capabilities(&self) -> ServerCapabilities {
         let mut caps = ServerCapabilities {
             endpoint: self.base_url.clone(),
             model_id: self.model.clone(),
-            n_ctx: self.context_window_override.unwrap_or(32_768).clamp(
-                crate::budget::MIN_CONTEXT_WINDOW,
-                crate::budget::MAX_CONTEXT_WINDOW,
-            ),
+            n_ctx: clamp_context_window(self.context_window_override.unwrap_or(32_768)),
             total_slots: 1,
             supports_tokenize: false,
             tokenize_endpoint: None,
@@ -504,19 +540,17 @@ impl LlmClient {
 
         // 1. Try llama.cpp GET /props (with model query param fallback for router/multi-model servers)
         let mut props_json: Option<serde_json::Value> = None;
+        let mut model_props_tried = false;
 
         if !self.model.is_empty() {
             let model_path = format!("/props?model={}", urlencoding::encode(&self.model));
-            if let Ok(resp) = self
-                .send_root_request(&model_path, |c, u| {
+            if let Some(json) = self
+                .fetch_root_json(&model_path, |c, u| {
                     c.get(u).timeout(Duration::from_millis(1500))
                 })
                 .await
-                && resp.status().is_success()
-                && let Ok(bytes) =
-                    crate::scraper::read_response_bytes_limited(resp, MAX_HTTP_RESPONSE_BYTES).await
-                && let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes)
             {
+                model_props_tried = true;
                 let n_ctx = json
                     .pointer("/default_generation_settings/n_ctx")
                     .and_then(|v| v.as_u64())
@@ -528,33 +562,24 @@ impl LlmClient {
         }
 
         if props_json.is_none()
-            && let Ok(resp) = self
-                .send_root_request("/props", |c, u| {
+            && let Some(json) = self
+                .fetch_root_json("/props", |c, u| {
                     c.get(u).timeout(Duration::from_millis(1500))
                 })
                 .await
-            && resp.status().is_success()
-            && let Ok(bytes) =
-                crate::scraper::read_response_bytes_limited(resp, MAX_HTTP_RESPONSE_BYTES).await
-            && let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes)
         {
             let is_router = json.get("role").and_then(|r| r.as_str()) == Some("router")
                 || json
                     .pointer("/default_generation_settings/n_ctx")
                     .and_then(|v| v.as_u64())
                     == Some(0);
-            if is_router && !self.model.is_empty() {
+            if is_router && !self.model.is_empty() && !model_props_tried {
                 let model_path = format!("/props?model={}", urlencoding::encode(&self.model));
-                if let Ok(m_resp) = self
-                    .send_root_request(&model_path, |c, u| {
+                if let Some(m_json) = self
+                    .fetch_root_json(&model_path, |c, u| {
                         c.get(u).timeout(Duration::from_millis(1500))
                     })
                     .await
-                    && m_resp.status().is_success()
-                    && let Ok(m_bytes) =
-                        crate::scraper::read_response_bytes_limited(m_resp, MAX_HTTP_RESPONSE_BYTES)
-                            .await
-                    && let Ok(m_json) = serde_json::from_slice::<serde_json::Value>(&m_bytes)
                 {
                     props_json = Some(m_json);
                 } else {
@@ -572,10 +597,7 @@ impl LlmClient {
                 .and_then(|v| v.as_u64())
                 .filter(|&v| v > 0)
             {
-                caps.n_ctx = (n_ctx as usize).clamp(
-                    crate::budget::MIN_CONTEXT_WINDOW,
-                    crate::budget::MAX_CONTEXT_WINDOW,
-                );
+                caps.n_ctx = clamp_context_window(n_ctx as usize);
             }
             if let Some(slots) = json
                 .get("total_slots")
@@ -585,22 +607,8 @@ impl LlmClient {
                 caps.total_slots = (slots as usize).clamp(1, crate::budget::MAX_CONCURRENCY);
             }
 
-            // Probe POST /tokenize on llama.cpp (send model name if available, fallback without)
-            let token_probed = if !self.model.is_empty() {
-                self.probe_tokenize_endpoint(
-                    "/tokenize",
-                    serde_json::json!({ "model": &self.model, "content": "test" }),
-                )
-                .await
-            } else {
-                false
-            };
-
-            if token_probed
-                || self
-                    .probe_tokenize_endpoint("/tokenize", serde_json::json!({ "content": "test" }))
-                    .await
-            {
+            // Probe POST /tokenize on llama.cpp
+            if self.probe_standard_tokenize_endpoint().await {
                 caps.supports_tokenize = true;
                 caps.tokenize_endpoint = Some("/tokenize".to_string());
             }
@@ -615,46 +623,33 @@ impl LlmClient {
                 && let Some(matching) = models.iter().find(|m| m.matches_model_id(&self.model))
                 && let Some(ctx) = matching.context_window()
             {
-                caps.n_ctx = ctx.clamp(
-                    crate::budget::MIN_CONTEXT_WINDOW,
-                    crate::budget::MAX_CONTEXT_WINDOW,
-                );
+                caps.n_ctx = clamp_context_window(ctx);
             }
 
             return caps;
         }
 
         // 2. Try Ollama POST /api/show
-        if let Ok(resp) = self
-            .send_root_request("/api/show", |c, u| {
+        if let Some(json) = self
+            .fetch_root_json("/api/show", |c, u| {
                 c.post(u)
                     .json(&serde_json::json!({ "name": &self.model }))
                     .timeout(Duration::from_millis(1500))
             })
             .await
-            && resp.status().is_success()
-            && let Ok(bytes) =
-                crate::scraper::read_response_bytes_limited(resp, MAX_HTTP_RESPONSE_BYTES).await
-            && let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes)
         {
             caps.backend_kind = "ollama".to_string();
             if let Some(ctx) = json
                 .pointer("/model_info/context_length")
                 .and_then(|v| v.as_u64())
             {
-                caps.n_ctx = (ctx as usize).clamp(
-                    crate::budget::MIN_CONTEXT_WINDOW,
-                    crate::budget::MAX_CONTEXT_WINDOW,
-                );
+                caps.n_ctx = clamp_context_window(ctx as usize);
             } else if let Some(params_str) = json.get("parameters").and_then(|v| v.as_str()) {
                 for line in params_str.lines() {
                     if let Some(rest) = line.strip_prefix("num_ctx")
                         && let Ok(parsed) = rest.trim().parse::<usize>()
                     {
-                        caps.n_ctx = parsed.clamp(
-                            crate::budget::MIN_CONTEXT_WINDOW,
-                            crate::budget::MAX_CONTEXT_WINDOW,
-                        );
+                        caps.n_ctx = clamp_context_window(parsed);
                         break;
                     }
                 }
@@ -681,27 +676,10 @@ impl LlmClient {
             if let Some(matching) = models.iter().find(|m| m.matches_model_id(&self.model))
                 && let Some(ctx) = matching.context_window()
             {
-                caps.n_ctx = ctx.clamp(
-                    crate::budget::MIN_CONTEXT_WINDOW,
-                    crate::budget::MAX_CONTEXT_WINDOW,
-                );
+                caps.n_ctx = clamp_context_window(ctx);
             }
 
-            let token_probed = if !self.model.is_empty() {
-                self.probe_tokenize_endpoint(
-                    "/tokenize",
-                    serde_json::json!({ "model": &self.model, "content": "test" }),
-                )
-                .await
-            } else {
-                false
-            };
-
-            if token_probed
-                || self
-                    .probe_tokenize_endpoint("/tokenize", serde_json::json!({ "content": "test" }))
-                    .await
-            {
+            if self.probe_standard_tokenize_endpoint().await {
                 caps.supports_tokenize = true;
                 caps.tokenize_endpoint = Some("/tokenize".to_string());
             }
@@ -760,35 +738,24 @@ impl LlmClient {
             })
         };
 
-        let mut resp = self
-            .send_root_request(path, |c, u| {
+        let mut json = self
+            .fetch_root_json(path, |c, u| {
                 c.post(u).json(&body).timeout(Duration::from_secs(3))
             })
-            .await
-            .ok()?;
+            .await;
 
-        if !resp.status().is_success() && !is_ollama && !self.model.is_empty() {
+        if json.is_none() && !is_ollama && !self.model.is_empty() {
             let fallback_body = serde_json::json!({ "content": text });
-            if let Ok(fb_resp) = self
-                .send_root_request(path, |c, u| {
+            json = self
+                .fetch_root_json(path, |c, u| {
                     c.post(u)
                         .json(&fallback_body)
                         .timeout(Duration::from_secs(3))
                 })
-                .await
-            {
-                resp = fb_resp;
-            }
+                .await;
         }
 
-        if !resp.status().is_success() {
-            return None;
-        }
-
-        let bytes = crate::scraper::read_response_bytes_limited(resp, MAX_HTTP_RESPONSE_BYTES)
-            .await
-            .ok()?;
-        let json: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        let json = json?;
         if let Some(tokens) = json.get("tokens").and_then(|t| t.as_array()) {
             return Some(tokens.len());
         }
