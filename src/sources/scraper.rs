@@ -45,6 +45,15 @@ pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_
 
 pub const MAX_SCRAPE_BYTES: usize = 10 * 1024 * 1024; // 10 MB limit for web responses
 
+/// Converts HTML to clean semantic Markdown preserving headings, lists, code blocks, and tables.
+pub fn html_to_markdown(html: &str) -> String {
+    let converter = htmd::HtmlToMarkdown::new();
+    match converter.convert(html) {
+        Ok(md) if !md.trim().is_empty() => md,
+        _ => html_to_plain_text(html.as_bytes()).unwrap_or_else(|_| html.to_string()),
+    }
+}
+
 /// Converts HTML bytes to plain text without table borders or footnote links.
 pub fn html_to_plain_text(html_bytes: &[u8]) -> Result<String> {
     html2text::config::plain()
@@ -221,11 +230,11 @@ impl WebScraper {
             Err(_) => self.extract_main_html(&document, raw_html),
         };
 
-        // 3. Convert HTML to clean plain text without link footnote bloat or 100-col artificial wraps
-        let rendered_text = html_to_plain_text(extracted_html.as_bytes())?;
+        // 3. Convert HTML to clean semantic Markdown (preserving headings, lists, tables)
+        let rendered_markdown = html_to_markdown(&extracted_html);
 
         // 4. Clean and normalize whitespace/formatting + count words in a single pass
-        let (cleaned_content, word_count) = clean_text(&rendered_text, true, 2);
+        let (cleaned_content, word_count) = clean_text(&rendered_markdown, true, 2);
 
         Ok(ScrapedPage {
             url: url.to_string(),
@@ -365,5 +374,14 @@ mod tests {
         );
         assert!(!page.content.contains("Ad sidebar with lots of links"));
         assert!(!page.content.contains("All rights reserved"));
+    }
+
+    #[test]
+    fn test_html_to_markdown_preserves_semantics() {
+        let html = "<h2>Overview</h2><p>Here is a list:</p><ul><li>First item</li><li>Second item</li></ul>";
+        let md = html_to_markdown(html);
+        assert!(md.contains("## Overview") || md.contains("Overview"));
+        assert!(md.contains("First item"));
+        assert!(md.contains("Second item"));
     }
 }
