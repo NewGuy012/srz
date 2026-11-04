@@ -120,8 +120,8 @@ impl HardwareProfile {
         };
 
         let recommended_launch_command = format!(
-            "llama-server -m {} -c {} --port 9931",
-            model_file, recommended_context
+            "llama-server -m {} --alias {} -c {} --port 9931",
+            model_file, recommended_model, recommended_context
         );
         let ollama_launch_command = format!(
             "ollama run {} --ctx-size {}",

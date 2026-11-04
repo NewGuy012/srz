@@ -37,7 +37,7 @@
 | | `srz config <init\|show\|path>` | Manages and inspects the local configuration file. |
 | | `srz cache <dir\|size\|clean\|prune>` | Cache inspection, TTL/LRU pruning (`--older-than`, `--max-size`), and safe clean (`--reset-db`). |
 | | `srz models` | Lists available models reported by the local LLM backend. |
-| | `srz recommend` | Recommends optimal model, context window, and ready launch commands for host hardware. |
+| | `srz recommend` | Recommends optimal model and context window for host hardware. |
 | | `srz doctor` | Tests backend reachability, latency, cache health, and database integrity. |
 | | `srz upgrade [--check\|--force]` | Safe, in-place binary self-updater with SHA-256 integrity verification. |
 | | `srz completions <SHELL>` | Generates autocomplete scripts for bash, zsh, fish, and powershell. |
@@ -225,7 +225,7 @@ srz config <SUBCOMMAND>
 ## 9. Diagnostics & Recommendations (`srz recommend`, `srz doctor`, `srz models`)
 
 ```bash
-# Instant hardware & model recommendation card with ready launch commands
+# Instant hardware & model recommendation card
 srz recommend
 srz recommend --json
 

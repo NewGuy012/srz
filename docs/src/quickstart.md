@@ -63,7 +63,7 @@ Before running your first summary, you can easily determine which model and cont
 
 ### 1-Command Auto-Advisor: `srz recommend`
 
-Run `srz recommend` to inspect your host hardware and receive a customized model, context length, and ready launch commands for both `llama.cpp` and `Ollama`:
+Run `srz recommend` to inspect your host hardware and receive customized model and context length recommendations:
 
 ```bash
 srz recommend
@@ -81,19 +81,6 @@ Recommended Local LLM Setup (Llama GUI / llama.cpp):
   • Size:    E4B
   • Quant:   Q8_0
   • Context: 64k ctx (65536 tokens, ~8.5 GB total)
-
-How to Load in Your Runner:
-  • Llama GUI (Llama-macOS / Llama-Windows - localhost:9931):
-      Open Llama GUI and select/download:
-      gemma-4  |  E4B  |  Q8_0  |  64k ctx
-  • llama.cpp CLI (headless llama-server):
-      llama-server -m gemma-4-E4B-it-Q8_0.gguf -c 65536 --port 9931
-  • Ollama:
-      ollama run gemma2:9b --ctx-size 65536
-
-Summary Synthesis Speed:
-  💡 Fast 1-Pass Summaries: Documents up to ~45k tokens (~183 pages) synthesize in a single pass.
-     Larger documents automatically use parallel map-reduce chunking without OOM crashes.
 ```
 
 ### Hardware Tier Reference Matrix

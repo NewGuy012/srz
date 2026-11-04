@@ -676,7 +676,13 @@ impl LlmClient {
             let err_text = crate::scraper::read_response_text_limited(resp, 64 * 1024)
                 .await
                 .unwrap_or_default();
-            anyhow::bail!("Server returned HTTP {} for /models: {}", status, err_text);
+            let clean_msg = Self::parse_error_body(&err_text).unwrap_or_else(|| {
+                status
+                    .canonical_reason()
+                    .unwrap_or("Server error")
+                    .to_string()
+            });
+            anyhow::bail!("Server returned HTTP {} for /models: {}", status, clean_msg);
         }
 
         let bytes = crate::scraper::read_response_bytes_limited(resp, MAX_HTTP_RESPONSE_BYTES)
@@ -686,6 +692,209 @@ impl LlmClient {
             .context("Failed to parse models JSON response from server")?;
 
         Ok(body.data)
+    }
+
+    /// Extracts a user-friendly error message from an LLM server HTTP response body.
+    /// Handles OpenAI-style JSON (`error.message`), Ollama JSON (`error`),
+    /// FastAPI/vLLM JSON (`detail`), generic JSON (`message`), or clean plain text.
+    pub fn parse_error_body(body: &str) -> Option<String> {
+        let trimmed = body.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            if let Some(msg) = val.pointer("/error/message").and_then(|v| v.as_str()) {
+                let msg = msg.trim();
+                if !msg.is_empty() {
+                    return Some(msg.to_string());
+                }
+            }
+            if let Some(msg) = val.get("error").and_then(|v| v.as_str()) {
+                let msg = msg.trim();
+                if !msg.is_empty() {
+                    return Some(msg.to_string());
+                }
+            }
+            if let Some(msg) = val.get("message").and_then(|v| v.as_str()) {
+                let msg = msg.trim();
+                if !msg.is_empty() {
+                    return Some(msg.to_string());
+                }
+            }
+            if let Some(msg) = val.get("detail").and_then(|v| v.as_str()) {
+                let msg = msg.trim();
+                if !msg.is_empty() {
+                    return Some(msg.to_string());
+                }
+            }
+            if let Some(code) = val.pointer("/error/code").and_then(|v| v.as_str()) {
+                return Some(format!("Error code: {}", code));
+            }
+        }
+
+        // Avoid dumping raw HTML error pages (e.g. 502 Bad Gateway from a reverse proxy)
+        if trimmed.starts_with('<') {
+            return None;
+        }
+
+        if trimmed.len() > 300 {
+            Some(format!("{}...", &trimmed[..300]))
+        } else {
+            Some(trimmed.to_string())
+        }
+    }
+
+    /// Determines if an HTTP error response indicates that the requested model was not found or not loaded.
+    pub fn is_model_not_found_error(
+        status: reqwest::StatusCode,
+        parsed_msg: Option<&str>,
+        raw_body: &str,
+        requested_model: &str,
+    ) -> bool {
+        let msg_lower = parsed_msg
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+        let raw_lower = raw_body.to_ascii_lowercase();
+        let model_lower = requested_model.to_ascii_lowercase();
+
+        let mentions_model = msg_lower.contains("model")
+            || raw_lower.contains("model")
+            || (!model_lower.is_empty()
+                && (msg_lower.contains(&model_lower) || raw_lower.contains(&model_lower)));
+
+        let has_not_found_phrase = msg_lower.contains("not found")
+            || raw_lower.contains("not found")
+            || msg_lower.contains("not loaded")
+            || raw_lower.contains("not loaded")
+            || msg_lower.contains("no model")
+            || raw_lower.contains("no model")
+            || msg_lower.contains("does not exist")
+            || raw_lower.contains("does not exist")
+            || msg_lower.contains("unknown model")
+            || raw_lower.contains("unknown model")
+            || msg_lower.contains("cannot find")
+            || raw_lower.contains("cannot find")
+            || msg_lower.contains("not detected")
+            || raw_lower.contains("not detected")
+            || raw_lower.contains("model_not_found")
+            || msg_lower.contains("invalid model")
+            || raw_lower.contains("invalid model");
+
+        if mentions_model && has_not_found_phrase {
+            return true;
+        }
+
+        if status == reqwest::StatusCode::NOT_FOUND && (has_not_found_phrase || mentions_model) {
+            return true;
+        }
+
+        if status == reqwest::StatusCode::BAD_REQUEST
+            && (msg_lower.contains("not found") || raw_lower.contains("not found"))
+            && mentions_model
+        {
+            return true;
+        }
+
+        false
+    }
+
+    /// Formats an HTTP error response into an obvious, user-friendly error message.
+    pub fn format_http_error(
+        status: reqwest::StatusCode,
+        err_body: &str,
+        parsed_msg: Option<&str>,
+        requested_model: &str,
+        base_url: &str,
+        available_models: Option<&[String]>,
+    ) -> String {
+        let clean_msg = parsed_msg
+            .map(|s| s.to_string())
+            .or_else(|| Self::parse_error_body(err_body));
+
+        if Self::is_model_not_found_error(status, clean_msg.as_deref(), err_body, requested_model) {
+            let mut msg = format!(
+                "Local model not detected: model '{}' was not found on LLM backend at '{}'.",
+                requested_model, base_url
+            );
+
+            if let Some(models) = available_models {
+                if models.is_empty() {
+                    msg.push_str(" (No models are currently loaded on this backend).");
+                } else {
+                    let best_match = models
+                        .iter()
+                        .map(|m| (m, strsim::jaro_winkler(requested_model, m)))
+                        .filter(|(_, sim)| *sim >= 0.72)
+                        .max_by(|(_, s1), (_, s2)| {
+                            s1.partial_cmp(s2).unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .map(|(m, _)| m);
+
+                    if let Some(suggestion) = best_match {
+                        msg.push_str(&format!(" Did you mean '{}'?", suggestion));
+                    }
+
+                    let safe_list: Vec<String> =
+                        models.iter().take(5).map(|m| format!("'{}'", m)).collect();
+                    msg.push_str(&format!(
+                        " (Available models on server: {})",
+                        safe_list.join(", ")
+                    ));
+                }
+            } else if let Some(clean) = &clean_msg {
+                let lower = clean.to_ascii_lowercase();
+                let standard_phrase =
+                    format!("model '{}' not found", requested_model.to_ascii_lowercase());
+                if lower != standard_phrase && lower != "model not found" && lower != "not found" {
+                    msg.push_str(&format!(" ({})", clean));
+                }
+            }
+
+            return msg;
+        }
+
+        let reason = status.canonical_reason().unwrap_or("Error");
+        let detail = clean_msg.unwrap_or_else(|| reason.to_string());
+
+        match status.as_u16() {
+            401 | 403 => {
+                format!(
+                    "LLM backend authentication error (HTTP {} {}): {}",
+                    status.as_u16(),
+                    reason,
+                    detail
+                )
+            }
+            404 => {
+                format!(
+                    "LLM endpoint not found (HTTP 404): endpoint at '{}' does not exist on server.",
+                    base_url
+                )
+            }
+            429 => {
+                format!(
+                    "LLM backend rate limit or capacity reached (HTTP 429 {}): {}",
+                    reason, detail
+                )
+            }
+            500..=599 => {
+                format!(
+                    "LLM server internal error (HTTP {} {}): {}",
+                    status.as_u16(),
+                    reason,
+                    detail
+                )
+            }
+            _ => {
+                format!(
+                    "LLM server returned HTTP {} ({}): {}",
+                    status.as_u16(),
+                    reason,
+                    detail
+                )
+            }
+        }
     }
 
     async fn send_completion_request(
@@ -716,7 +925,30 @@ impl LlmClient {
             let err_text = crate::scraper::read_response_text_limited(response, 64 * 1024)
                 .await
                 .unwrap_or_default();
-            anyhow::bail!("LLM server returned HTTP error {}: {}", status, err_text);
+
+            let clean_msg = Self::parse_error_body(&err_text);
+            let mut available_models = None;
+
+            if Self::is_model_not_found_error(status, clean_msg.as_deref(), &err_text, &self.model)
+            {
+                // If model was not detected, try querying the /models endpoint with a 1500ms timeout
+                // to report which models actually are available (if any).
+                if let Ok(Ok(models)) =
+                    tokio::time::timeout(Duration::from_millis(1500), self.list_models()).await
+                {
+                    available_models = Some(models.into_iter().map(|m| m.id).collect::<Vec<_>>());
+                }
+            }
+
+            let formatted = Self::format_http_error(
+                status,
+                &err_text,
+                clean_msg.as_deref(),
+                &self.model,
+                &self.base_url,
+                available_models.as_deref(),
+            );
+            anyhow::bail!("{}", formatted);
         }
 
         Ok(response)
@@ -1465,5 +1697,213 @@ mod tests {
         // 6. Non-data / malformed lines return false gracefully
         assert!(!state.process_line(b": ping", &pb, "Testing", StreamMode::Buffered));
         assert!(!state.process_line(b"data: {bad json", &pb, "Testing", StreamMode::Buffered));
+    }
+
+    #[test]
+    fn test_parse_error_body_formats() {
+        // OpenAI / llama.cpp format
+        let openai_err = r#"{"error":{"code":400,"message":"model 'gemma-4' not found","type":"invalid_request_error"}}"#;
+        assert_eq!(
+            LlmClient::parse_error_body(openai_err),
+            Some("model 'gemma-4' not found".to_string())
+        );
+
+        // Ollama format
+        let ollama_err = r#"{"error":"model 'gemma-4' not found, try pulling it first"}"#;
+        assert_eq!(
+            LlmClient::parse_error_body(ollama_err),
+            Some("model 'gemma-4' not found, try pulling it first".to_string())
+        );
+
+        // FastAPI / vLLM format
+        let fastapi_err = r#"{"detail":"Model 'gemma-4' does not exist"}"#;
+        assert_eq!(
+            LlmClient::parse_error_body(fastapi_err),
+            Some("Model 'gemma-4' does not exist".to_string())
+        );
+
+        // Generic JSON format
+        let generic_err = r#"{"message":"Unknown model specified"}"#;
+        assert_eq!(
+            LlmClient::parse_error_body(generic_err),
+            Some("Unknown model specified".to_string())
+        );
+
+        // Error code only
+        let code_err = r#"{"error":{"code":"model_not_found"}}"#;
+        assert_eq!(
+            LlmClient::parse_error_body(code_err),
+            Some("Error code: model_not_found".to_string())
+        );
+
+        // HTML response should be suppressed to avoid dumping raw tags
+        let html_err = "<html><body>502 Bad Gateway</body></html>";
+        assert_eq!(LlmClient::parse_error_body(html_err), None);
+
+        // Plain text error
+        let plain_err = "Server connection timeout while preparing request";
+        assert_eq!(
+            LlmClient::parse_error_body(plain_err),
+            Some("Server connection timeout while preparing request".to_string())
+        );
+
+        // Empty body
+        assert_eq!(LlmClient::parse_error_body("   "), None);
+    }
+
+    #[test]
+    fn test_is_model_not_found_error_detection() {
+        // llama.cpp 400 Bad Request
+        assert!(LlmClient::is_model_not_found_error(
+            reqwest::StatusCode::BAD_REQUEST,
+            Some("model 'gemma-4' not found"),
+            r#"{"error":{"code":400,"message":"model 'gemma-4' not found","type":"invalid_request_error"}}"#,
+            "gemma-4"
+        ));
+
+        // Ollama 404 Not Found
+        assert!(LlmClient::is_model_not_found_error(
+            reqwest::StatusCode::NOT_FOUND,
+            Some("model 'gemma-4' not found, try pulling it first"),
+            r#"{"error":"model 'gemma-4' not found, try pulling it first"}"#,
+            "gemma-4"
+        ));
+
+        // LM Studio "no model is loaded"
+        assert!(LlmClient::is_model_not_found_error(
+            reqwest::StatusCode::BAD_REQUEST,
+            Some("No model is loaded"),
+            r#"{"error":{"message":"No model is loaded"}}"#,
+            "gemma-4"
+        ));
+
+        // vLLM "Model 'gemma-4' does not exist"
+        assert!(LlmClient::is_model_not_found_error(
+            reqwest::StatusCode::NOT_FOUND,
+            Some("Model 'gemma-4' does not exist"),
+            r#"{"detail":"Model 'gemma-4' does not exist"}"#,
+            "gemma-4"
+        ));
+
+        // Unrelated 400 Bad Request (e.g. invalid parameter)
+        assert!(!LlmClient::is_model_not_found_error(
+            reqwest::StatusCode::BAD_REQUEST,
+            Some("temperature must be between 0.0 and 2.0"),
+            r#"{"error":{"message":"temperature must be between 0.0 and 2.0"}}"#,
+            "gemma-4"
+        ));
+
+        // Rate limit 429
+        assert!(!LlmClient::is_model_not_found_error(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            Some("Rate limit exceeded"),
+            r#"{"error":{"message":"Rate limit exceeded"}}"#,
+            "gemma-4"
+        ));
+    }
+
+    #[test]
+    fn test_format_http_error_messages() {
+        // Model not found - without available models
+        let raw_err = r#"{"error":{"code":400,"message":"model 'gemma-4' not found","type":"invalid_request_error"}}"#;
+        let formatted = LlmClient::format_http_error(
+            reqwest::StatusCode::BAD_REQUEST,
+            raw_err,
+            Some("model 'gemma-4' not found"),
+            "gemma-4",
+            "http://localhost:9931/v1",
+            None,
+        );
+        assert_eq!(
+            formatted,
+            "Local model not detected: model 'gemma-4' was not found on LLM backend at 'http://localhost:9931/v1'."
+        );
+
+        // Model not found - with available models on backend
+        let available = vec!["qwen2.5-coder-7b".to_string(), "llama3.2".to_string()];
+        let formatted_with_models = LlmClient::format_http_error(
+            reqwest::StatusCode::BAD_REQUEST,
+            raw_err,
+            Some("model 'gemma-4' not found"),
+            "gemma-4",
+            "http://localhost:9931/v1",
+            Some(&available),
+        );
+        assert_eq!(
+            formatted_with_models,
+            "Local model not detected: model 'gemma-4' was not found on LLM backend at 'http://localhost:9931/v1'. (Available models on server: 'qwen2.5-coder-7b', 'llama3.2')"
+        );
+
+        // Model not found - with fuzzy match suggestion
+        let similar_models = vec!["gemma-2-9b-it".to_string(), "llama3.2".to_string()];
+        let formatted_fuzzy = LlmClient::format_http_error(
+            reqwest::StatusCode::BAD_REQUEST,
+            raw_err,
+            Some("model 'gemma-2' not found"),
+            "gemma-2",
+            "http://localhost:9931/v1",
+            Some(&similar_models),
+        );
+        assert!(formatted_fuzzy.contains("Did you mean 'gemma-2-9b-it'?"));
+
+        // Model not found - 0 models loaded
+        let empty_available: Vec<String> = vec![];
+        let formatted_empty = LlmClient::format_http_error(
+            reqwest::StatusCode::BAD_REQUEST,
+            raw_err,
+            Some("model 'gemma-4' not found"),
+            "gemma-4",
+            "http://localhost:9931/v1",
+            Some(&empty_available),
+        );
+        assert_eq!(
+            formatted_empty,
+            "Local model not detected: model 'gemma-4' was not found on LLM backend at 'http://localhost:9931/v1'. (No models are currently loaded on this backend)."
+        );
+
+        // Model not found - Ollama extra instruction
+        let ollama_raw = r#"{"error":"model 'gemma-4' not found, try pulling it first"}"#;
+        let formatted_ollama = LlmClient::format_http_error(
+            reqwest::StatusCode::NOT_FOUND,
+            ollama_raw,
+            Some("model 'gemma-4' not found, try pulling it first"),
+            "gemma-4",
+            "http://localhost:11434",
+            None,
+        );
+        assert_eq!(
+            formatted_ollama,
+            "Local model not detected: model 'gemma-4' was not found on LLM backend at 'http://localhost:11434'. (model 'gemma-4' not found, try pulling it first)"
+        );
+
+        // Authentication error (401)
+        let auth_raw = r#"{"error":{"message":"Invalid API key"}}"#;
+        let formatted_auth = LlmClient::format_http_error(
+            reqwest::StatusCode::UNAUTHORIZED,
+            auth_raw,
+            Some("Invalid API key"),
+            "gemma-4",
+            "https://api.openai.com/v1",
+            None,
+        );
+        assert_eq!(
+            formatted_auth,
+            "LLM backend authentication error (HTTP 401 Unauthorized): Invalid API key"
+        );
+
+        // Server error (500)
+        let oom_raw = r#"{"error":{"message":"CUDA out of memory"}}"#;
+        let formatted_500 = LlmClient::format_http_error(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            oom_raw,
+            Some("CUDA out of memory"),
+            "gemma-4",
+            "http://localhost:9931/v1",
+            None,
+        );
+        assert_eq!(
+            formatted_500,
+            "LLM server internal error (HTTP 500 Internal Server Error): CUDA out of memory"
+        );
     }
 }

@@ -39,7 +39,7 @@ async fn main() -> Result<()> {
     let action = match args.resolve_action() {
         Ok(action) => action,
         Err(msg) => {
-            Ui::error(msg);
+            Ui::error(&msg);
             std::process::exit(1);
         }
     };
@@ -144,7 +144,7 @@ async fn main() -> Result<()> {
             )
             .await
             {
-                print_execution_error(&err);
+                print_execution_error("Ask failed", &err);
                 std::process::exit(1);
             }
             return Ok(());
@@ -250,7 +250,7 @@ async fn main() -> Result<()> {
             }
         }
         Err(err) => {
-            print_execution_error(&err);
+            print_execution_error("Summarization failed", &err);
             std::process::exit(1);
         }
     }
@@ -258,9 +258,13 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn print_execution_error(err: &anyhow::Error) {
+fn print_execution_error(action_label: &str, err: &anyhow::Error) {
     let err_msg = format!("{:#}", err);
-    Ui::error(&format!("Summarization failed: {}", err_msg));
+    if err_msg.starts_with(action_label) {
+        Ui::error(&err_msg);
+    } else {
+        Ui::error(&format!("{}: {}", action_label, err_msg));
+    }
 
     let is_connection_error = err_msg.contains("Failed to communicate with LLM endpoint")
         || err_msg.contains("Failed to reach LLM endpoint")
@@ -269,6 +273,25 @@ fn print_execution_error(err: &anyhow::Error) {
         || err_msg.contains("connection error")
         || err_msg.contains("error trying to connect")
         || err_msg.contains("is listening on port 9931");
+
+    let is_model_not_found = err_msg.contains("Local model not detected")
+        || err_msg.to_ascii_lowercase().contains("model not detected")
+        || (err_msg.to_ascii_lowercase().contains("model")
+            && (err_msg.to_ascii_lowercase().contains("not found")
+                || err_msg.to_ascii_lowercase().contains("not loaded")
+                || err_msg.to_ascii_lowercase().contains("does not exist")
+                || err_msg.to_ascii_lowercase().contains("no model is loaded")));
+
+    let is_context_error = err_msg.to_ascii_lowercase().contains("context length")
+        || err_msg.to_ascii_lowercase().contains("context window")
+        || err_msg.to_ascii_lowercase().contains("maximum context")
+        || err_msg.to_ascii_lowercase().contains("prompt is too long");
+
+    let is_oom_error = err_msg.to_ascii_lowercase().contains("out of memory")
+        || err_msg.to_ascii_lowercase().contains("cuda out of memory")
+        || err_msg
+            .to_ascii_lowercase()
+            .contains("ggml_metal_graph_compute");
 
     if is_connection_error {
         let hw = srz::system::hardware::HardwareProfile::detect();
@@ -287,5 +310,39 @@ fn print_execution_error(err: &anyhow::Error) {
         Ui::info(
             "Or run `srz recommend` to view alternative models, Ollama commands, and profiles.\n",
         );
+    } else if is_model_not_found {
+        let hw = srz::system::hardware::HardwareProfile::detect();
+        println!();
+        Ui::info("💡 Quick Start: Local model not detected on your LLM backend.");
+        Ui::info("Your LLM server is active, but could not find or load the configured model.");
+        Ui::info("How to resolve:");
+        Ui::info(&format!(
+            "  • In Llama GUI (localhost:9931): Download or select {} ({})",
+            hw.recommended_model, hw.recommended_context_display
+        ));
+        Ui::info("  • If using Ollama, pull or run the model:");
+        println!("    \x1b[1;32m{}\x1b[0m", hw.ollama_launch_command);
+        Ui::info("  • If using llama.cpp CLI (llama-server):");
+        println!("    \x1b[1;32m{}\x1b[0m", hw.recommended_launch_command);
+        Ui::info("  • Check models currently reported by your backend:");
+        println!("    \x1b[1;32msrz models\x1b[0m");
+        Ui::info("  • Diagnose backend connection & model status:");
+        println!("    \x1b[1;32msrz doctor\x1b[0m\n");
+    } else if is_context_error {
+        println!();
+        Ui::info("💡 Tip: The input exceeded the local LLM's context window.");
+        Ui::info(
+            "  • Increase the context window in your runner (e.g. `--ctx-size 65536` or in Llama GUI settings).",
+        );
+        Ui::info("  • Or pass `--context-window <TOKENS>` to configure srz to fit your runner.");
+        Ui::info(
+            "  • Run `srz recommend` to see optimal context recommendations for your machine.\n",
+        );
+    } else if is_oom_error {
+        println!();
+        Ui::info("💡 Tip: Your LLM backend ran out of memory (VRAM/RAM).");
+        Ui::info("  • Try a model with smaller quantization (e.g. Q4_K_M instead of Q8_0).");
+        Ui::info("  • Or lower the context length in your runner.");
+        Ui::info("  • Run `srz recommend` for hardware-optimized recommendations.\n");
     }
 }

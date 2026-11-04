@@ -26,6 +26,9 @@ pub async fn handle_models(args: &Cli, as_json: bool) -> Result<()> {
                     "Backend at {} reported 0 loaded models.",
                     llm.base_url()
                 ));
+                Ui::info(
+                    "Tip: Load or download a model in your runner (e.g. Llama GUI, Ollama, or llama-server).",
+                );
                 return Ok(());
             }
 
@@ -151,34 +154,22 @@ pub async fn handle_doctor(
 
     Ui::header("srz System & LLM Health Diagnostics");
 
-    // Print Hardware Profile & Steering
-    println!("Hardware Profile & Recommendations:");
+    // Print Hardware Profile
+    println!("Hardware:");
     println!(
-        "  • Host Device: {} ({:.1} GB RAM / {})",
+        "  • Device: {} ({:.1} GB RAM, {})",
         hw.chip_name,
         hw.total_memory_gb,
         hw.tier.display_name()
     );
     println!(
-        "  • Recommended Family: Google Gemma 4 (High fidelity Q8_0, laptop battery & memory optimized)"
-    );
-    println!(
-        "  • Recommended Model: {} [{} {}]",
-        hw.recommended_model, hw.recommended_size, hw.recommended_quant
-    );
-    println!(
-        "  • Recommended Context: {} ({} tokens, {})",
-        hw.recommended_context_display, hw.recommended_context, hw.ram_footprint
-    );
-    println!(
-        "  • Llama GUI Setup:     Select {} | {} | {} | {} in Llama app",
+        "  • Recommended: {} [{} {}] · {} ({})",
         hw.recommended_model,
         hw.recommended_size,
         hw.recommended_quant,
-        hw.recommended_context_display
+        hw.recommended_context_display,
+        hw.ram_footprint
     );
-    println!("  • llama.cpp Command:   {}", hw.recommended_launch_command);
-    println!("  • Ollama Command:      {}", hw.ollama_launch_command);
     println!();
 
     // Print LLM status
@@ -186,88 +177,82 @@ pub async fn handle_doctor(
     let safe_base_url = crate::ui::sanitize_terminal_text(&args.base_url);
     let safe_model = crate::ui::sanitize_title(&args.model);
     if endpoint_ok {
-        println!(
-            "  ✓ Reachable: {} (latency: {}ms)",
-            safe_base_url,
-            latency_ms.unwrap_or(0)
-        );
-        if model_found {
-            println!(
-                "  ✓ Configured Model: \"{}\" is loaded and ready",
-                safe_model
-            );
+        let latency = latency_ms.unwrap_or(0);
+        let backend_info = if let Some(caps) = &server_caps {
+            let safe_kind = crate::ui::sanitize_title(&caps.backend_kind);
+            format!("{}ms latency, {}", latency, safe_kind)
         } else {
-            println!(
-                "  ! Configured Model: \"{}\" was not reported by /models endpoint.",
-                safe_model
-            );
+            format!("{}ms latency", latency)
+        };
+        println!("  ✓ Reachable: {} ({})", safe_base_url, backend_info);
+
+        if model_found {
+            println!("  ✓ Model: \"{}\" loaded and ready", safe_model);
+        } else {
+            println!("  ! Model: \"{}\" not detected on backend", safe_model);
             if !available_models.is_empty() {
                 let safe_models: Vec<String> = available_models
                     .iter()
+                    .take(5)
                     .map(|m| crate::ui::sanitize_title(m))
                     .collect();
-                println!(
-                    "    Available models on backend: {}",
-                    safe_models.join(", ")
-                );
+                let suffix = if available_models.len() > 5 {
+                    format!(" (+{} more)", available_models.len() - 5)
+                } else {
+                    String::new()
+                };
+                println!("    Available: {}{}", safe_models.join(", "), suffix);
+            } else {
+                println!("    No models are currently loaded on this backend.");
             }
         }
+
         if let Some(caps) = &server_caps {
             let ctx_label = crate::system::hardware::format_context_tokens(caps.n_ctx);
-            println!(
-                "  ✓ Context Window (n_ctx): {} tokens ({})",
-                caps.n_ctx, ctx_label
-            );
-            println!(
-                "  ✓ Server Concurrency (total_slots): {} slot(s)",
-                caps.total_slots
-            );
-            println!(
-                "  ✓ Native Tokenizer: {}",
-                if caps.supports_tokenize {
-                    "Supported (POST /tokenize enabled, 0% token drift)"
-                } else {
-                    "Fallback (tiktoken-rs)"
-                }
-            );
-            let safe_kind = crate::ui::sanitize_title(&caps.backend_kind);
-            println!("  ✓ Backend Kind: {}", safe_kind);
-            if caps.n_ctx >= hw.recommended_context {
-                println!(
-                    "  ✓ Optimization Status: EXCELLENT (Fully optimized for single-pass summaries)"
-                );
+            let tok_label = if caps.supports_tokenize {
+                "native tokenizer"
             } else {
+                "fallback tokenizer"
+            };
+            println!(
+                "  ✓ Context: {} ({} tokens) · {} slot(s) · {}",
+                ctx_label, caps.n_ctx, caps.total_slots, tok_label
+            );
+
+            if caps.n_ctx < hw.recommended_context {
                 println!(
-                    "  ! Optimization Status: SUBOPTIMAL (Server context is {} [{}] vs {} [{}] recommended for your machine; set {} in Llama GUI or run: {})",
-                    caps.n_ctx,
-                    ctx_label,
-                    hw.recommended_context,
-                    hw.recommended_context_display,
-                    hw.recommended_context_display,
-                    hw.recommended_launch_command
+                    "  ! Notice: Server context ({}) is below recommended {} for single-pass summaries",
+                    ctx_label, hw.recommended_context_display
                 );
             }
         }
     } else {
-        println!("  ✗ Endpoint Unreachable: {}", safe_base_url);
-        if let Some(err) = endpoint_err {
-            let safe_err = crate::ui::sanitize_terminal_text(&err);
-            println!("    Reason: {}", safe_err);
+        println!("  ✗ Unreachable: {}", safe_base_url);
+        if let Some(err) = &endpoint_err {
+            let safe_err = crate::ui::sanitize_terminal_text(err);
+            if safe_err.contains("Server returned HTTP") {
+                println!("    Error: {}", safe_err);
+            } else {
+                println!(
+                    "    Ensure your local LLM runner (llama.cpp, Ollama, LM Studio) is running."
+                );
+            }
+        } else {
+            println!("    Ensure your local LLM runner (llama.cpp, Ollama, LM Studio) is running.");
         }
-        println!("    Check that llama.cpp / Ollama / LM Studio is running and listening.");
     }
     println!();
 
     // Print DuckDB status
-    println!("DuckDB Embedded Database:");
+    println!("DuckDB Database:");
     if db_ok {
         println!(
-            "  ✓ Healthy at: {} (tracking {} past summaries)",
+            "  ✓ Healthy: {} ({} summaries)",
             db_path.display(),
             db_entries_count
         );
     } else {
-        println!("  ✗ Could not open database at: {}", db_path.display());
+        println!("  ✗ Cannot open database at: {}", db_path.display());
     }
     println!();
 
@@ -275,33 +260,30 @@ pub async fn handle_doctor(
     println!("Cache & Storage:");
     if cache_ok {
         println!(
-            "  ✓ Storage directory: {} ({} in {} files)",
+            "  ✓ Directory: {} ({}, {} files)",
             cache_dir.display(),
             Cache::format_bytes(cache_stats.total_bytes),
             cache_stats.total_files
         );
         println!(
-            "  ✓ Retention policy: {}d pages, {}d search, {}d summaries, {} max budget",
+            "  ✓ Retention: {}d pages · {}d search · {}d summaries (max {})",
             cache.policy().pages_ttl.as_secs() / 86400,
             cache.policy().search_ttl.as_secs() / 86400,
             cache.policy().summaries_ttl.as_secs() / 86400,
             Cache::format_bytes(cache.policy().max_bytes)
         );
     } else {
-        println!(
-            "  ✗ Unable to access or create cache directory at: {}",
-            cache_dir.display()
-        );
+        println!("  ✗ Inaccessible directory: {}", cache_dir.display());
     }
     println!();
 
     // Print Config status
     println!("Configuration:");
     if let Some(cp) = config_path {
-        println!("  ✓ Active config file: {}", cp.display());
+        println!("  ✓ Active config: {}", cp.display());
     } else {
         println!(
-            "  • No config file found (using defaults at {})",
+            "  • Using defaults (no config at {})",
             Config::default_config_path().display()
         );
     }
@@ -322,14 +304,13 @@ fn print_host_device_info(hw: &crate::system::hardware::HardwareProfile) {
     );
 }
 
-/// Handles the `srz recommend` subcommand, outputting recommended model, context window,
-/// and ready launch commands based on detected host memory and hardware architecture.
+/// Handles the `srz recommend` subcommand, outputting recommended model and context window
+/// based on detected host memory and hardware architecture.
 pub fn handle_recommend(as_json: bool) -> Result<()> {
     let hw = crate::system::hardware::HardwareProfile::detect();
-    let one_pass_tokens = hw.one_pass_token_ceiling();
-    let one_pass_pages = (one_pass_tokens / 250).max(1);
 
     if as_json {
+        let one_pass_tokens = hw.one_pass_token_ceiling();
         let report = serde_json::json!({
             "hardware": {
                 "device": hw.chip_name,
@@ -371,38 +352,6 @@ pub fn handle_recommend(as_json: bool) -> Result<()> {
         "  • Context: {} ({} tokens, {})",
         hw.recommended_context_display, hw.recommended_context, hw.ram_footprint
     );
-    println!();
-
-    println!("How to Load in Your Runner:");
-    println!("  • Llama GUI (Llama-macOS / Llama-Windows - localhost:9931):");
-    println!(
-        "      Open Llama GUI and select/download:\n      {}",
-        hw.llama_gui_selection()
-    );
-    println!("  • llama.cpp CLI (headless llama-server):");
-    println!("      {}", hw.recommended_launch_command);
-    println!("  • Ollama:");
-    println!("      {}", hw.ollama_launch_command);
-    println!();
-
-    println!("Summary Synthesis Speed:");
-    println!(
-        "  💡 Fast 1-Pass Summaries: Documents up to ~{}k tokens (~{} pages) synthesize in a single pass.",
-        one_pass_tokens / 1000,
-        one_pass_pages
-    );
-    println!(
-        "     Larger documents automatically use parallel map-reduce chunking without OOM crashes."
-    );
-    println!();
-
-    println!("Next Steps:");
-    println!(
-        "  1. In Llama GUI, select {} ({}), or start your local LLM using a command above.",
-        hw.recommended_model, hw.recommended_context_display
-    );
-    println!("  2. Run `srz config init` to generate a config tailored to your machine.");
-    println!("  3. Summarize any target: srz \"<URL, file, or book>\"");
     println!();
 
     Ok(())

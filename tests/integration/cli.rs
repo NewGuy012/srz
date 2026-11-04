@@ -940,3 +940,43 @@ fn test_recommend_simplified_naming_for_llama_gui() {
     assert!(template.contains("model = \"gemma-4\""));
     assert!(template.contains("context_window = 32768"));
 }
+
+#[test]
+fn test_recommend_subcommand_execution() {
+    assert!(srz::commands::handle_recommend(false).is_ok());
+    assert!(srz::commands::handle_recommend(true).is_ok());
+}
+
+#[tokio::test]
+async fn test_doctor_subcommand_execution() {
+    let cli = Cli::parse_from(["srz", "doctor"]);
+    let config = srz::config::Config::default();
+    let temp_cache_dir = tempfile::tempdir().unwrap();
+    let cache = srz::storage::cache::Cache::with_dir(temp_cache_dir.path().to_path_buf(), true);
+
+    assert!(
+        srz::commands::handle_doctor(&cli, &config, None, &cache, false)
+            .await
+            .is_ok()
+    );
+    assert!(
+        srz::commands::handle_doctor(&cli, &config, None, &cache, true)
+            .await
+            .is_ok()
+    );
+}
+
+#[test]
+fn test_local_model_not_detected_error_formatting() {
+    let raw_resp = r#"{"error":{"code":400,"message":"model 'gemma-4' not found","type":"invalid_request_error"}}"#;
+    let err = srz::llm::LlmClient::format_http_error(
+        reqwest::StatusCode::BAD_REQUEST,
+        raw_resp,
+        Some("model 'gemma-4' not found"),
+        "gemma-4",
+        "http://localhost:9931/v1",
+        None,
+    );
+    assert!(err.contains("Local model not detected: model 'gemma-4' was not found"));
+    assert!(err.contains("http://localhost:9931/v1"));
+}

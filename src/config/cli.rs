@@ -394,7 +394,7 @@ impl Cli {
         }
     }
 
-    pub fn resolve_action(&self) -> Result<ResolvedAction<'_>, &'static str> {
+    pub fn resolve_action(&self) -> Result<ResolvedAction<'_>, String> {
         if let Some(cmd) = &self.command {
             match cmd {
                 Commands::Web { url } => Ok(ResolvedAction::Web { url: url.trim() }),
@@ -502,13 +502,19 @@ impl Cli {
                         timeframe: NewsTimeframe::Day,
                         limit: 5,
                     })
+                } else if let Some(suggestion) = suggest_command(trimmed) {
+                    Err(format!(
+                        "Unrecognized command '{trimmed}'.\n\n  \
+                         tip: a similar command exists: '{suggestion}'\n  \
+                         (To summarize a book with this title, run: srz book \"{trimmed}\")"
+                    ))
                 } else {
                     Ok(ResolvedAction::Book { title: trimmed })
                 }
             }
         } else {
             Err(
-                "Please provide a URL, local file, book title, or '-' for stdin. Run `srz --help` for details.",
+                "Please provide a URL, local file, book title, or '-' for stdin. Run `srz --help` for details.".to_string(),
             )
         }
     }
@@ -738,4 +744,90 @@ pub fn is_probable_question(s: &str) -> bool {
     QUESTION_PREFIXES
         .iter()
         .any(|prefix| first_word.eq_ignore_ascii_case(prefix))
+}
+
+/// Known top-level subcommands and user-facing aliases.
+pub const TOP_LEVEL_COMMANDS: &[&str] = &[
+    "ask",
+    "browse",
+    "cache",
+    "chat",
+    "completions",
+    "config",
+    "doctor",
+    "find",
+    "help",
+    "history",
+    "index",
+    "library",
+    "models",
+    "news",
+    "recommend",
+    "stats",
+    "tui",
+    "upgrade",
+    "version",
+];
+
+/// Suggests a command name if `input` is likely a misspelled top-level command.
+///
+/// Returns `Some(suggested_cmd)` if a command is sufficiently close, or `None`
+/// if `input` does not look like a typo of any known subcommand (e.g. multi-word
+/// book titles or unrelated inputs).
+pub fn suggest_command(input: &str) -> Option<&'static str> {
+    let trimmed = input.trim();
+
+    // Multi-word inputs, empty inputs, or inputs with paths/extensions are not command typos.
+    if trimmed.is_empty()
+        || trimmed.contains(char::is_whitespace)
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.len() < 3
+    {
+        return None;
+    }
+
+    let input_lower = trimmed.to_ascii_lowercase();
+
+    // Exact case-insensitive match (e.g. user typed "Doctor" or "DOCTOR").
+    for &cmd in TOP_LEVEL_COMMANDS {
+        if input_lower == cmd {
+            return Some(cmd);
+        }
+    }
+
+    let input_len = input_lower.chars().count();
+    let mut best_match: Option<(&'static str, f64, usize)> = None;
+
+    for &cmd in TOP_LEVEL_COMMANDS {
+        let cmd_len = cmd.chars().count();
+        let dist = strsim::damerau_levenshtein(&input_lower, cmd);
+        let jaro = strsim::jaro(&input_lower, cmd);
+
+        // Strict thresholds to avoid false positives with short book titles (e.g. "Dune"):
+        // 1. For 3-letter inputs, only allow 3-letter commands with edit distance 1 and high similarity.
+        // 2. For 4-letter inputs, edit distance must be at most 1.
+        // 3. For 5+ letter inputs, edit distance at most 2.
+        let is_candidate = match input_len {
+            3 => cmd_len == 3 && dist == 1 && jaro >= 0.80,
+            4 => dist <= 1 && jaro >= 0.80,
+            _ => dist <= 2 && jaro >= 0.80,
+        };
+
+        if is_candidate {
+            match best_match {
+                None => best_match = Some((cmd, jaro, dist)),
+                Some((_, best_jaro, best_dist)) => {
+                    // Prefer higher similarity score; tie-break on lower edit distance
+                    if jaro > best_jaro
+                        || ((jaro - best_jaro).abs() < f64::EPSILON && dist < best_dist)
+                    {
+                        best_match = Some((cmd, jaro, dist));
+                    }
+                }
+            }
+        }
+    }
+
+    best_match.map(|(cmd, _, _)| cmd)
 }
