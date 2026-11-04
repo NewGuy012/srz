@@ -67,7 +67,6 @@ fn test_disabled_cache_bypasses_reads() {
         author: None,
         style: SummaryStyle::Detailed,
         model: "gemma-4",
-        no_search: false,
         display_title: "\"Dune\"",
         summary: "Great sci-fi novel.",
         word_count: 420,
@@ -75,11 +74,11 @@ fn test_disabled_cache_bypasses_reads() {
 
     assert!(
         cache_disabled
-            .get_book_summary("Dune", None, SummaryStyle::Detailed, "gemma-4", false)
+            .get_book_summary("Dune", None, SummaryStyle::Detailed, "gemma-4")
             .is_none()
     );
     let hit = cache_enabled
-        .get_book_summary("Dune", None, SummaryStyle::Detailed, "gemma-4", false)
+        .get_book_summary("Dune", None, SummaryStyle::Detailed, "gemma-4")
         .expect("Should hit cache");
     assert_eq!(hit.word_count, 420);
 }
@@ -104,7 +103,6 @@ fn test_cache_stats_and_clean() {
         author: None,
         style: SummaryStyle::Concise,
         model: "gemma-4",
-        no_search: false,
         display_title: "\"Dune\"",
         summary: "Summary text",
         word_count: 100,

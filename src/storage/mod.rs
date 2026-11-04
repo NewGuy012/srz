@@ -5,4 +5,4 @@ pub use cache::{
     Cache, CacheNamespace, CachePolicy, CacheStats, PruneOptions, PruneStats, SetBookSummaryParams,
     parse_bytes, parse_duration,
 };
-pub use db::Database;
+pub use db::{Database, open_hardened_duckdb_file};

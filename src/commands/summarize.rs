@@ -461,7 +461,7 @@ pub async fn handle_book(
     };
 
     // 1. Check for a cached summary matching title + author + style + model
-    if let Some(cached) = cache.get_book_summary(title, author, args.style, &args.model, false) {
+    if let Some(cached) = cache.get_book_summary(title, author, args.style, &args.model) {
         Ui::info("Loaded book summary from local cache (pass `--no-cache` to refresh).");
         return Ok(SummaryOutcome::from_cached(
             "book",
@@ -485,7 +485,6 @@ pub async fn handle_book(
             author,
             style: args.style,
             model: &args.model,
-            no_search: false,
             display_title: &book_display,
             summary: &output.content,
             word_count,

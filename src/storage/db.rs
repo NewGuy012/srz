@@ -178,6 +178,32 @@ pub struct Database {
     conn: Connection,
 }
 
+/// Opens a file-backed DuckDB connection with security hardening: rejects symlinks,
+/// creates parent directory with private permissions if missing, sets private file permissions,
+/// and executes `DUCKDB_SECURITY_LOCKDOWN`.
+/// Returns `(Connection, already_existed_with_data)`.
+pub fn open_hardened_duckdb_file(path: &Path) -> Result<(Connection, bool)> {
+    if let Ok(meta) = std::fs::symlink_metadata(path)
+        && meta.file_type().is_symlink()
+    {
+        anyhow::bail!("Refusing to open DuckDB database: {:?} is a symlink", path);
+    }
+    let already_exists = path.exists()
+        && std::fs::metadata(path)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false);
+    if let Some(parent) = path.parent() {
+        let _ = fs_util::create_private_dir_all(parent);
+    }
+    let conn = Connection::open(path)
+        .with_context(|| format!("Failed to open DuckDB database at {:?}", path))?;
+    if path.exists() {
+        fs_util::set_private_file_perms(path);
+    }
+    let _ = conn.execute_batch(DUCKDB_SECURITY_LOCKDOWN);
+    Ok((conn, already_exists))
+}
+
 impl Database {
     /// Returns the default path for the DuckDB database (`~/.cache/srz/srz.duckdb`).
     pub fn default_path() -> PathBuf {
@@ -187,30 +213,12 @@ impl Database {
     /// Opens the default DuckDB database located at `~/.cache/srz/srz.duckdb`.
     pub fn open_default() -> Result<Self> {
         let db_path = Self::default_path();
-        if let Some(base_dir) = db_path.parent() {
-            fs_util::create_private_dir_all(base_dir)
-                .with_context(|| format!("Failed to create directory {:?}", base_dir))?;
-        }
         Self::open_at(&db_path)
     }
 
     /// Opens a DuckDB database at the specified file path.
     pub fn open_at(path: &Path) -> Result<Self> {
-        if let Ok(meta) = std::fs::symlink_metadata(path)
-            && meta.file_type().is_symlink()
-        {
-            anyhow::bail!("Refusing to open DuckDB database: {:?} is a symlink", path);
-        }
-        let exists = path.exists()
-            && std::fs::metadata(path)
-                .map(|m| m.len() > 0)
-                .unwrap_or(false);
-        let conn = Connection::open(path)
-            .with_context(|| format!("Failed to open DuckDB database at {:?}", path))?;
-        if path.exists() {
-            fs_util::set_private_file_perms(path);
-        }
-        let _ = conn.execute_batch(DUCKDB_SECURITY_LOCKDOWN);
+        let (conn, exists) = open_hardened_duckdb_file(path)?;
         let db = Self { conn };
         if !exists || !db.is_schema_initialized() {
             db.init_schema()?;
@@ -920,27 +928,22 @@ const SELECT_HISTORY_SQL: &str = "SELECT id, target_type, title, author, url, st
      FROM history
      ORDER BY id DESC";
 
-const SELECT_LIBRARY_ITEMS_SQL: &str = concat!(
-    "SELECT l.id, h.target_type, h.title, h.author, h.url, l.summary,
+macro_rules! select_library_base_sql {
+    () => {
+        "SELECT l.id, h.target_type, h.title, h.author, h.url, l.summary,
             coalesce(h.style, 'concise'), coalesce(h.model, 'unknown'),
             coalesce(h.word_count, 0), h.prompt_tokens, h.completion_tokens,
             coalesce(h.duration_ms, 0), h.tokens_per_second,
             strftime(h.created_at, '%Y-%m-%d %H:%M')
      FROM library l
-     JOIN history h ON l.id = h.id",
-    " ORDER BY l.id DESC"
-);
+     JOIN history h ON l.id = h.id"
+    };
+}
 
-const SELECT_LIBRARY_ITEM_BY_ID_SQL: &str = concat!(
-    "SELECT l.id, h.target_type, h.title, h.author, h.url, l.summary,
-            coalesce(h.style, 'concise'), coalesce(h.model, 'unknown'),
-            coalesce(h.word_count, 0), h.prompt_tokens, h.completion_tokens,
-            coalesce(h.duration_ms, 0), h.tokens_per_second,
-            strftime(h.created_at, '%Y-%m-%d %H:%M')
-     FROM library l
-     JOIN history h ON l.id = h.id",
-    " WHERE l.id = ? LIMIT 1"
-);
+const SELECT_LIBRARY_ITEMS_SQL: &str = concat!(select_library_base_sql!(), " ORDER BY l.id DESC");
+
+const SELECT_LIBRARY_ITEM_BY_ID_SQL: &str =
+    concat!(select_library_base_sql!(), " WHERE l.id = ? LIMIT 1");
 
 fn map_library_item_row(row: &duckdb::Row<'_>) -> duckdb::Result<LibraryItem> {
     Ok(LibraryItem {

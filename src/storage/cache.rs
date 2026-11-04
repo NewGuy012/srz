@@ -30,7 +30,6 @@ pub struct SetBookSummaryParams<'a> {
     pub author: Option<&'a str>,
     pub style: SummaryStyle,
     pub model: &'a str,
-    pub no_search: bool,
     pub display_title: &'a str,
     pub summary: &'a str,
     pub word_count: usize,
@@ -131,6 +130,14 @@ impl CacheNamespace {
             Self::Search => Some("cache_search"),
             Self::Summaries => Some("cache_summaries"),
             Self::Views => None,
+        }
+    }
+
+    pub fn db_size_expr(&self) -> &'static str {
+        match self {
+            Self::Pages => "strlen(url) + coalesce(strlen(title), 0) + strlen(content) + 32",
+            Self::Search | Self::Summaries => "strlen(data)",
+            Self::Views => "0",
         }
     }
 }
@@ -291,21 +298,7 @@ impl Cache {
         let mut guard = self.db_conn.lock().ok()?;
         if guard.is_none() {
             let db_path = self.base_dir.join("cache.duckdb");
-            if let Ok(meta) = fs::symlink_metadata(&db_path)
-                && meta.file_type().is_symlink()
-            {
-                return None;
-            }
-            let already_exists =
-                db_path.exists() && fs::metadata(&db_path).map(|m| m.len() > 0).unwrap_or(false);
-            if let Some(parent) = db_path.parent() {
-                let _ = create_private_dir_all(parent);
-            }
-            if let Ok(conn) = Connection::open(&db_path) {
-                if db_path.exists() {
-                    crate::fs_util::set_private_file_perms(&db_path);
-                }
-                let _ = conn.execute_batch(crate::db::DUCKDB_SECURITY_LOCKDOWN);
+            if let Ok((conn, already_exists)) = crate::db::open_hardened_duckdb_file(&db_path) {
                 let schema_ready = already_exists
                     && conn
                         .execute("SELECT 1 FROM cache_pages LIMIT 0", [])
@@ -382,6 +375,20 @@ impl Cache {
         self.policy = policy;
     }
 
+    fn query_table_stats(conn: &Connection, table: &str, size_expr: &str) -> (usize, u64) {
+        conn.query_row(
+            &format!("SELECT count(*)::BIGINT, coalesce(sum({size_expr}), 0)::BIGINT FROM {table}"),
+            [],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)? as usize,
+                    r.get::<_, i64>(1)?.max(0) as u64,
+                ))
+            },
+        )
+        .unwrap_or((0, 0))
+    }
+
     /// Computes entry counts and total disk usage across all cache namespaces.
     pub fn stats(&self) -> CacheStats {
         let (mut pages, mut pages_bytes) = Self::namespace_stats(&self.base_dir.join("pages"));
@@ -394,35 +401,26 @@ impl Cache {
             && let Some(guard) = self.get_or_init_db()
             && let Some(conn) = guard.as_ref()
         {
-            if let Ok((cnt, bytes)) = conn.query_row(
-                "SELECT count(*)::BIGINT, coalesce(sum(strlen(url) + coalesce(strlen(title), 0) + strlen(content) + 32), 0)::BIGINT FROM cache_pages",
-                [],
-                |r| Ok((r.get::<_, i64>(0)? as usize, r.get::<_, i64>(1)?.max(0) as u64)),
-            ) {
-                pages += cnt;
-                pages_bytes += bytes;
-            }
-            if let Ok((cnt, bytes)) = conn.query_row(
-                "SELECT count(*)::BIGINT, coalesce(sum(strlen(data)), 0)::BIGINT FROM cache_search",
-                [],
-                |r| {
-                    Ok((
-                        r.get::<_, i64>(0)? as usize,
-                        r.get::<_, i64>(1)?.max(0) as u64,
-                    ))
-                },
-            ) {
-                searches += cnt;
-                search_bytes += bytes;
-            }
-            if let Ok((cnt, bytes)) = conn.query_row(
-                "SELECT count(*)::BIGINT, coalesce(sum(strlen(data)), 0)::BIGINT FROM cache_summaries",
-                [],
-                |r| Ok((r.get::<_, i64>(0)? as usize, r.get::<_, i64>(1)?.max(0) as u64)),
-            ) {
-                summaries += cnt;
-                summary_bytes += bytes;
-            }
+            let (cnt, bytes) =
+                Self::query_table_stats(conn, "cache_pages", CacheNamespace::Pages.db_size_expr());
+            pages += cnt;
+            pages_bytes += bytes;
+
+            let (cnt, bytes) = Self::query_table_stats(
+                conn,
+                "cache_search",
+                CacheNamespace::Search.db_size_expr(),
+            );
+            searches += cnt;
+            search_bytes += bytes;
+
+            let (cnt, bytes) = Self::query_table_stats(
+                conn,
+                "cache_summaries",
+                CacheNamespace::Summaries.db_size_expr(),
+            );
+            summaries += cnt;
+            summary_bytes += bytes;
         }
 
         CacheStats {
@@ -504,11 +502,7 @@ impl Cache {
 
             for ns in &namespaces {
                 let Some(table) = ns.db_table() else { continue };
-                let size_expr = if table == "cache_pages" {
-                    "strlen(url) + coalesce(strlen(title), 0) + strlen(content) + 32"
-                } else {
-                    "strlen(data)"
-                };
+                let size_expr = ns.db_size_expr();
 
                 let ttl = match options.older_than {
                     Some(dur) => dur,
@@ -770,9 +764,19 @@ impl Cache {
         }
     }
 
+    fn delete_expired_entry(&self, conn: &Connection, table: &str, namespace_dir: &str, key: &str) {
+        let del_sql = format!("DELETE FROM {table} WHERE cache_key = ?");
+        let _ = conn.execute(&del_sql, params![key]);
+        let path = self
+            .base_dir
+            .join(namespace_dir)
+            .join(format!("{key}.json"));
+        let _ = fs::remove_file(path);
+    }
+
     fn read_entry_with_ttl<T: DeserializeOwned>(
         &self,
-        namespace: &str,
+        ns: CacheNamespace,
         key_hash: &str,
         ttl: Option<Duration>,
     ) -> Option<T> {
@@ -783,53 +787,38 @@ impl Cache {
         // 1. Try DuckDB cache first
         if let Some(guard) = self.get_or_init_db()
             && let Some(conn) = guard.as_ref()
+            && let Some(tbl) = ns.db_table()
         {
             let now_ms = now_epoch_ms();
-
-            let table = match namespace {
-                "search" => Some("cache_search"),
-                "summaries" => Some("cache_summaries"),
-                _ => None,
-            };
-
-            if let Some(tbl) = table {
-                let sql = format!(
-                    "SELECT data, epoch_ms(cached_at)::BIGINT
-                     FROM {}
-                     WHERE cache_key = ?",
-                    tbl
-                );
-                if let Ok(mut stmt) = conn.prepare(&sql)
-                    && let Ok(mut rows) = stmt.query(params![key_hash])
-                    && let Some(row) = rows.next().ok().flatten()
-                    && let (Ok(json_data), Ok(cached_ms)) =
-                        (row.get::<_, String>(0), row.get::<_, i64>(1))
+            let sql = format!(
+                "SELECT data, epoch_ms(cached_at)::BIGINT
+                 FROM {tbl}
+                 WHERE cache_key = ?"
+            );
+            if let Ok(mut stmt) = conn.prepare(&sql)
+                && let Ok(mut rows) = stmt.query(params![key_hash])
+                && let Some(row) = rows.next().ok().flatten()
+                && let (Ok(json_data), Ok(cached_ms)) =
+                    (row.get::<_, String>(0), row.get::<_, i64>(1))
+            {
+                if let Some(ttl_dur) = ttl
+                    && ttl_dur != Duration::MAX
+                    && (now_ms - cached_ms) > ttl_dur.as_millis() as i64
                 {
-                    if let Some(ttl_dur) = ttl
-                        && ttl_dur != Duration::MAX
-                        && (now_ms - cached_ms) > ttl_dur.as_millis() as i64
-                    {
-                        let del_sql = format!("DELETE FROM {} WHERE cache_key = ?", tbl);
-                        let _ = conn.execute(&del_sql, params![key_hash]);
-                        let path = self
-                            .base_dir
-                            .join(namespace)
-                            .join(format!("{}.json", key_hash));
-                        let _ = fs::remove_file(path);
-                        return None;
-                    }
-                    if let Ok(val) = serde_json::from_str(&json_data) {
-                        return Some(val);
-                    }
+                    self.delete_expired_entry(conn, tbl, ns.as_str(), key_hash);
+                    return None;
+                }
+                if let Ok(val) = serde_json::from_str(&json_data) {
+                    return Some(val);
                 }
             }
         }
 
         // 2. Fallback to file on disk
-        self.read_disk_entry(namespace, key_hash, ttl)
+        self.read_disk_entry(ns.as_str(), key_hash, ttl)
     }
 
-    fn write_entry<T: Serialize>(&self, namespace: &str, key_hash: &str, value: &T) {
+    fn write_entry<T: Serialize>(&self, ns: CacheNamespace, key_hash: &str, value: &T) {
         if !self.enabled {
             return;
         }
@@ -837,28 +826,20 @@ impl Cache {
         // Save into consolidated DuckDB cache (sole write target when available)
         if let Some(guard) = self.get_or_init_db()
             && let Some(conn) = guard.as_ref()
+            && let Some(tbl) = ns.db_table()
+            && let Ok(json_str) = serde_json::to_string(value)
         {
-            let table = match namespace {
-                "search" => Some("cache_search"),
-                "summaries" => Some("cache_summaries"),
-                _ => None,
-            };
-            if let Some(tbl) = table
-                && let Ok(json_str) = serde_json::to_string(value)
-            {
-                let sql = format!(
-                    "INSERT OR REPLACE INTO {} (cache_key, data, cached_at)
-                     VALUES (?, ?, current_timestamp)",
-                    tbl
-                );
-                if conn.execute(&sql, params![key_hash, json_str]).is_ok() {
-                    return;
-                }
+            let sql = format!(
+                "INSERT OR REPLACE INTO {tbl} (cache_key, data, cached_at)
+                 VALUES (?, ?, current_timestamp)"
+            );
+            if conn.execute(&sql, params![key_hash, json_str]).is_ok() {
+                return;
             }
         }
 
         // Fallback to private disk file only if DuckDB is unavailable
-        self.write_disk_entry(namespace, key_hash, value);
+        self.write_disk_entry(ns.as_str(), key_hash, value);
     }
 
     // --- Scraped Webpage Cache ---
@@ -898,10 +879,7 @@ impl Cache {
                 let cached_ms: i64 = row.get(4).unwrap_or(0);
 
                 if ttl != Duration::MAX && (now_ms - cached_ms) > ttl.as_millis() as i64 {
-                    let _ =
-                        conn.execute("DELETE FROM cache_pages WHERE cache_key = ?", params![&key]);
-                    let path = self.base_dir.join("pages").join(format!("{}.json", key));
-                    let _ = fs::remove_file(path);
+                    self.delete_expired_entry(conn, "cache_pages", "pages", &key);
                     return None;
                 }
 
@@ -959,7 +937,7 @@ impl Cache {
         author: Option<&str>,
     ) -> Option<Option<BookMetadata>> {
         let key = Self::metadata_key(title, author);
-        self.read_entry_with_ttl("search", &key, Some(self.policy.search_ttl))
+        self.read_entry_with_ttl(CacheNamespace::Search, &key, Some(self.policy.search_ttl))
     }
 
     pub fn set_book_metadata(
@@ -969,7 +947,7 @@ impl Cache {
         metadata: &Option<BookMetadata>,
     ) {
         let key = Self::metadata_key(title, author);
-        self.write_entry("search", &key, metadata);
+        self.write_entry(CacheNamespace::Search, &key, metadata);
     }
 
     fn search_key(title: &str, author: Option<&str>) -> String {
@@ -986,12 +964,12 @@ impl Cache {
         author: Option<&str>,
     ) -> Option<Vec<SearchResult>> {
         let key = Self::search_key(title, author);
-        self.read_entry_with_ttl("search", &key, Some(self.policy.search_ttl))
+        self.read_entry_with_ttl(CacheNamespace::Search, &key, Some(self.policy.search_ttl))
     }
 
     pub fn set_search_results(&self, title: &str, author: Option<&str>, results: &[SearchResult]) {
         let key = Self::search_key(title, author);
-        self.write_entry("search", &key, &results);
+        self.write_entry(CacheNamespace::Search, &key, &results);
     }
 
     // --- Generated Summary Cache ---
@@ -1002,7 +980,6 @@ impl Cache {
         author: Option<&str>,
         style: SummaryStyle,
         model: &str,
-        no_search: bool,
     ) -> String {
         let tuple = (
             kind,
@@ -1010,7 +987,7 @@ impl Cache {
             author.map(|a| AsciiLower(a.trim())),
             style,
             model.trim(),
-            no_search,
+            false,
         );
         Self::hash_key(&tuple)
     }
@@ -1021,8 +998,12 @@ impl Cache {
         style: SummaryStyle,
         model: &str,
     ) -> Option<CachedSummary> {
-        let key = Self::summary_key("web", url, None, style, model, false);
-        self.read_entry_with_ttl("summaries", &key, Some(self.policy.summaries_ttl))
+        let key = Self::summary_key("web", url, None, style, model);
+        self.read_entry_with_ttl(
+            CacheNamespace::Summaries,
+            &key,
+            Some(self.policy.summaries_ttl),
+        )
     }
 
     pub fn set_web_summary(
@@ -1045,9 +1026,9 @@ impl Cache {
         summary: &str,
         word_count: usize,
     ) {
-        let key = Self::summary_key("web", url, None, style, model, false);
+        let key = Self::summary_key("web", url, None, style, model);
         self.write_entry(
-            "summaries",
+            CacheNamespace::Summaries,
             &key,
             &CachedSummaryRef {
                 title,
@@ -1063,10 +1044,13 @@ impl Cache {
         author: Option<&str>,
         style: SummaryStyle,
         model: &str,
-        no_search: bool,
     ) -> Option<CachedSummary> {
-        let key = Self::summary_key("book", title, author, style, model, no_search);
-        self.read_entry_with_ttl("summaries", &key, Some(self.policy.summaries_ttl))
+        let key = Self::summary_key("book", title, author, style, model);
+        self.read_entry_with_ttl(
+            CacheNamespace::Summaries,
+            &key,
+            Some(self.policy.summaries_ttl),
+        )
     }
 
     pub fn set_book_summary(&self, params: SetBookSummaryParams<'_>) {
@@ -1076,10 +1060,9 @@ impl Cache {
             params.author,
             params.style,
             params.model,
-            params.no_search,
         );
         self.write_entry(
-            "summaries",
+            CacheNamespace::Summaries,
             &key,
             &CachedSummaryRef {
                 title: params.display_title,
