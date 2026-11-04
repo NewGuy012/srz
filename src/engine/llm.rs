@@ -700,28 +700,13 @@ impl LlmClient {
         }
 
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
-            if let Some(msg) = val.pointer("/error/message").and_then(|v| v.as_str()) {
-                let msg = msg.trim();
-                if !msg.is_empty() {
-                    return Some(msg.to_string());
-                }
-            }
-            if let Some(msg) = val.get("error").and_then(|v| v.as_str()) {
-                let msg = msg.trim();
-                if !msg.is_empty() {
-                    return Some(msg.to_string());
-                }
-            }
-            if let Some(msg) = val.get("message").and_then(|v| v.as_str()) {
-                let msg = msg.trim();
-                if !msg.is_empty() {
-                    return Some(msg.to_string());
-                }
-            }
-            if let Some(msg) = val.get("detail").and_then(|v| v.as_str()) {
-                let msg = msg.trim();
-                if !msg.is_empty() {
-                    return Some(msg.to_string());
+            const MESSAGE_POINTERS: &[&str] = &["/error/message", "/error", "/message", "/detail"];
+            for ptr in MESSAGE_POINTERS {
+                if let Some(msg) = val.pointer(ptr).and_then(|v| v.as_str()) {
+                    let msg = msg.trim();
+                    if !msg.is_empty() {
+                        return Some(msg.to_string());
+                    }
                 }
             }
             if let Some(code) = val.pointer("/error/code").and_then(|v| v.as_str()) {
@@ -748,34 +733,38 @@ impl LlmClient {
         raw_body: &str,
         requested_model: &str,
     ) -> bool {
-        let msg_lower = parsed_msg
-            .map(|s| s.to_ascii_lowercase())
-            .unwrap_or_default();
-        let raw_lower = raw_body.to_ascii_lowercase();
-        let model_lower = requested_model.to_ascii_lowercase();
+        let parsed = parsed_msg.unwrap_or_default();
+        let mentions_model =
+            crate::system::text_util::contains_ascii_case_insensitive(parsed, "model")
+                || crate::system::text_util::contains_ascii_case_insensitive(raw_body, "model")
+                || (!requested_model.is_empty()
+                    && (crate::system::text_util::find_ascii_case_insensitive(
+                        parsed,
+                        requested_model,
+                    )
+                    .is_some()
+                        || crate::system::text_util::find_ascii_case_insensitive(
+                            raw_body,
+                            requested_model,
+                        )
+                        .is_some()));
 
-        let mentions_model = msg_lower.contains("model")
-            || raw_lower.contains("model")
-            || (!model_lower.is_empty()
-                && (msg_lower.contains(&model_lower) || raw_lower.contains(&model_lower)));
+        const NOT_FOUND_PHRASES: &[&str] = &[
+            "not found",
+            "not loaded",
+            "no model",
+            "does not exist",
+            "unknown model",
+            "cannot find",
+            "not detected",
+            "model_not_found",
+            "invalid model",
+        ];
 
-        let has_not_found_phrase = msg_lower.contains("not found")
-            || raw_lower.contains("not found")
-            || msg_lower.contains("not loaded")
-            || raw_lower.contains("not loaded")
-            || msg_lower.contains("no model")
-            || raw_lower.contains("no model")
-            || msg_lower.contains("does not exist")
-            || raw_lower.contains("does not exist")
-            || msg_lower.contains("unknown model")
-            || raw_lower.contains("unknown model")
-            || msg_lower.contains("cannot find")
-            || raw_lower.contains("cannot find")
-            || msg_lower.contains("not detected")
-            || raw_lower.contains("not detected")
-            || raw_lower.contains("model_not_found")
-            || msg_lower.contains("invalid model")
-            || raw_lower.contains("invalid model");
+        let has_not_found_phrase = NOT_FOUND_PHRASES.iter().any(|&phrase| {
+            crate::system::text_util::contains_ascii_case_insensitive(parsed, phrase)
+                || crate::system::text_util::contains_ascii_case_insensitive(raw_body, phrase)
+        });
 
         if mentions_model && has_not_found_phrase {
             return true;
@@ -786,7 +775,8 @@ impl LlmClient {
         }
 
         if status == reqwest::StatusCode::BAD_REQUEST
-            && (msg_lower.contains("not found") || raw_lower.contains("not found"))
+            && (crate::system::text_util::contains_ascii_case_insensitive(parsed, "not found")
+                || crate::system::text_util::contains_ascii_case_insensitive(raw_body, "not found"))
             && mentions_model
         {
             return true;
