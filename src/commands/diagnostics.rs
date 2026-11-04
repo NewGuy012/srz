@@ -38,7 +38,7 @@ pub async fn handle_models(args: &Cli, as_json: bool) -> Result<()> {
                 models.len()
             ));
             for m in &models {
-                let is_active = m.id == args.model;
+                let is_active = m.matches_model_id(&args.model);
                 let active_badge = if is_active { " [ACTIVE]" } else { "" };
                 let safe_id = crate::ui::sanitize_title(&m.id);
                 let owner = m
@@ -84,8 +84,10 @@ pub async fn handle_doctor(
                 endpoint_ok = true;
                 latency_ms = Some(start.elapsed().as_millis() as u64);
                 available_models = models.iter().map(|m| m.id.clone()).collect();
-                model_found = available_models.contains(&args.model);
-                server_caps = Some(llm.probe_server_capabilities().await);
+                model_found = models.iter().any(|m| m.matches_model_id(&args.model));
+                let caps = llm.probe_server_capabilities().await;
+                cache.set_server_capabilities(&caps);
+                server_caps = Some(caps);
             }
             Err(e) => {
                 endpoint_err = Some(e.to_string());
