@@ -83,6 +83,31 @@ pub enum PagingMode {
     Never,
 }
 
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportFormat {
+    /// Markdown vault with Obsidian/Logseq frontmatter
+    #[default]
+    Markdown,
+    /// Structured JSON file
+    Json,
+    /// Comma-separated values (CSV)
+    Csv,
+    /// Apache Parquet binary file
+    Parquet,
+}
+
+impl ExportFormat {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Markdown => "markdown",
+            Self::Json => "json",
+            Self::Csv => "csv",
+            Self::Parquet => "parquet",
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "srz",
@@ -244,6 +269,25 @@ pub enum Commands {
     /// Launch the interactive terminal UI library explorer
     #[command(alias = "tui", alias = "library")]
     Browse,
+    /// Execute an analytical SQL query against your DuckDB database
+    Query {
+        /// SQL query string to execute (e.g. "SELECT model, count(*) FROM history GROUP BY model")
+        sql: String,
+
+        /// Format query results as CSV (default: formatted terminal table or --json)
+        #[arg(long)]
+        csv: bool,
+    },
+    /// Export summarized library to Markdown, JSON, CSV, or Parquet
+    Export {
+        /// Target export format (markdown, json, csv, parquet; default: markdown)
+        #[arg(short, long, value_enum, default_value = "markdown")]
+        format: ExportFormat,
+
+        /// Output destination path (directory for markdown vault; file for json/csv/parquet)
+        #[arg(short, long)]
+        output: PathBuf,
+    },
     /// Ask questions grounded on a document, URL, file, or the most recent read
     #[command(alias = "chat")]
     Ask {
@@ -366,6 +410,14 @@ pub enum ResolvedAction<'a> {
     Recommend,
     Index,
     Browse,
+    Query {
+        sql: String,
+        csv: bool,
+    },
+    Export {
+        format: ExportFormat,
+        output: PathBuf,
+    },
     Ask {
         target: Option<String>,
         question: Option<String>,
@@ -425,6 +477,14 @@ impl Cli {
                 Commands::Recommend => Ok(ResolvedAction::Recommend),
                 Commands::Index => Ok(ResolvedAction::Index),
                 Commands::Browse => Ok(ResolvedAction::Browse),
+                Commands::Query { sql, csv } => Ok(ResolvedAction::Query {
+                    sql: sql.trim().to_string(),
+                    csv: *csv,
+                }),
+                Commands::Export { format, output } => Ok(ResolvedAction::Export {
+                    format: *format,
+                    output: output.clone(),
+                }),
                 Commands::Ask {
                     first,
                     second,

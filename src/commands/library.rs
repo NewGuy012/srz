@@ -224,3 +224,147 @@ pub fn handle_index(db: &Database, cache: &Cache, open_browser: bool) -> Result<
     }
     Ok(())
 }
+
+/// Handles the `srz query` command to execute arbitrary SQL on DuckDB.
+pub fn handle_query(db: &Database, sql: &str, csv: bool, as_json: bool) -> Result<()> {
+    let res = db.query_raw(sql)?;
+    if as_json {
+        let objects: Vec<serde_json::Value> = res
+            .rows
+            .iter()
+            .map(|r| {
+                let mut map = serde_json::Map::new();
+                for (col, val) in res.columns.iter().zip(r.iter()) {
+                    map.insert(col.clone(), val.clone());
+                }
+                serde_json::Value::Object(map)
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&objects)?);
+        return Ok(());
+    }
+
+    if csv {
+        println!("{}", res.columns.join(","));
+        for row in &res.rows {
+            let row_strs: Vec<String> = row
+                .iter()
+                .map(|v| match v {
+                    serde_json::Value::String(s) => {
+                        if s.contains(',') || s.contains('"') || s.contains('\n') {
+                            format!("\"{}\"", s.replace('"', "\"\""))
+                        } else {
+                            s.clone()
+                        }
+                    }
+                    serde_json::Value::Null => String::new(),
+                    other => other.to_string(),
+                })
+                .collect();
+            println!("{}", row_strs.join(","));
+        }
+        return Ok(());
+    }
+
+    // Default: Formatted terminal table
+    if res.columns.is_empty() {
+        Ui::info("Query executed successfully (0 columns returned).");
+        return Ok(());
+    }
+
+    let mut col_widths: Vec<usize> = res.columns.iter().map(|c| c.len().max(4)).collect();
+
+    let string_rows: Vec<Vec<String>> = res
+        .rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .enumerate()
+                .map(|(idx, val)| {
+                    let s = match val {
+                        serde_json::Value::String(s) => s.replace('\n', " "),
+                        serde_json::Value::Null => "NULL".to_string(),
+                        other => other.to_string(),
+                    };
+                    if idx < col_widths.len() {
+                        col_widths[idx] = col_widths[idx].max(s.len()).min(50);
+                    }
+                    s
+                })
+                .collect()
+        })
+        .collect();
+
+    // Print header
+    let header_line = res
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(i, col)| {
+            let w = col_widths[i];
+            format!("{:width$}", col, width = w)
+        })
+        .collect::<Vec<_>>()
+        .join(" │ ");
+    println!("│ {} │", header_line);
+
+    // Print separator
+    let sep_line = col_widths
+        .iter()
+        .map(|w| "─".repeat(*w))
+        .collect::<Vec<_>>()
+        .join("─┼─");
+    println!("├─{}─┤", sep_line);
+
+    // Print rows
+    for row in string_rows {
+        let row_line = row
+            .iter()
+            .enumerate()
+            .map(|(i, cell)| {
+                let w = col_widths.get(i).copied().unwrap_or(cell.len());
+                if cell.len() > w {
+                    format!("{}…", &cell[..w.saturating_sub(1)])
+                } else {
+                    format!("{:width$}", cell, width = w)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" │ ");
+        println!("│ {} │", row_line);
+    }
+
+    println!("\n\x1b[2m({} row(s) returned)\x1b[0m", res.rows.len());
+
+    Ok(())
+}
+
+/// Handles the `srz export` command.
+pub fn handle_export(
+    db: &Database,
+    format: crate::config::cli::ExportFormat,
+    output: &std::path::Path,
+) -> Result<()> {
+    match format {
+        crate::config::cli::ExportFormat::Markdown => {
+            let count = db.export_markdown_vault(output)?;
+            Ui::success(&format!(
+                "Exported {} markdown summary files to {:?}",
+                count, output
+            ));
+        }
+        crate::config::cli::ExportFormat::Json => {
+            db.export_json(output)?;
+            Ui::success(&format!("Exported library JSON to {:?}", output));
+        }
+        crate::config::cli::ExportFormat::Csv => {
+            db.export_csv(output)?;
+            Ui::success(&format!("Exported library CSV to {:?}", output));
+        }
+        crate::config::cli::ExportFormat::Parquet => {
+            db.export_parquet(output)?;
+            Ui::success(&format!("Exported library Parquet to {:?}", output));
+        }
+    }
+    Ok(())
+}

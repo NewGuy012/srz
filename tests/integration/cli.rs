@@ -1048,3 +1048,33 @@ fn test_resolve_action_command_typo_error() {
         srz::cli::ResolvedAction::Book { title: "doctur" }
     );
 }
+
+#[test]
+fn test_query_and_export_cli_resolution() {
+    let query_cli = Cli::parse_from(["srz", "query", "SELECT count(*) FROM history"]);
+    assert_eq!(
+        query_cli.resolve_action().unwrap(),
+        ResolvedAction::Query {
+            sql: "SELECT count(*) FROM history".to_string(),
+            csv: false,
+        }
+    );
+
+    let query_csv_cli = Cli::parse_from(["srz", "query", "SELECT 1", "--csv"]);
+    assert_eq!(
+        query_csv_cli.resolve_action().unwrap(),
+        ResolvedAction::Query {
+            sql: "SELECT 1".to_string(),
+            csv: true,
+        }
+    );
+
+    let export_cli = Cli::parse_from(["srz", "export", "-f", "json", "-o", "/tmp/out.json"]);
+    assert_eq!(
+        export_cli.resolve_action().unwrap(),
+        ResolvedAction::Export {
+            format: srz::cli::ExportFormat::Json,
+            output: std::path::PathBuf::from("/tmp/out.json"),
+        }
+    );
+}

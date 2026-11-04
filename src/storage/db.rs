@@ -1,7 +1,28 @@
 use crate::cache::Cache;
 use crate::fs_util;
 use anyhow::{Context, Result};
+use duckdb::types::ValueRef;
 use duckdb::{Connection, params};
+
+pub fn value_ref_to_json(val: ValueRef<'_>) -> serde_json::Value {
+    match val {
+        ValueRef::Null => serde_json::Value::Null,
+        ValueRef::Boolean(b) => serde_json::Value::Bool(b),
+        ValueRef::TinyInt(i) => serde_json::json!(i),
+        ValueRef::SmallInt(i) => serde_json::json!(i),
+        ValueRef::Int(i) => serde_json::json!(i),
+        ValueRef::BigInt(i) => serde_json::json!(i),
+        ValueRef::HugeInt(i) => serde_json::json!(i.to_string()),
+        ValueRef::UTinyInt(i) => serde_json::json!(i),
+        ValueRef::USmallInt(i) => serde_json::json!(i),
+        ValueRef::UInt(i) => serde_json::json!(i),
+        ValueRef::UBigInt(i) => serde_json::json!(i),
+        ValueRef::Float(f) => serde_json::json!(f),
+        ValueRef::Double(d) => serde_json::json!(d),
+        ValueRef::Text(t) => serde_json::Value::String(String::from_utf8_lossy(t).into_owned()),
+        _ => serde_json::Value::String(format!("{:?}", val)),
+    }
+}
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -106,6 +127,12 @@ pub struct ChatMessage {
     pub role: String,
     pub content: String,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryResult {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -873,6 +900,113 @@ impl Database {
         }
 
         Ok(results)
+    }
+
+    /// Executes an arbitrary analytical SQL query against the DuckDB database.
+    pub fn query_raw(&self, sql: &str) -> Result<QueryResult> {
+        let mut stmt = self.conn.prepare(sql)?;
+        stmt.execute([])?;
+        let columns = stmt.column_names();
+        let col_count = columns.len();
+
+        let mut rows = Vec::new();
+        let mut query_rows = stmt.query([])?;
+        while let Some(row) = query_rows.next()? {
+            let mut row_vals = Vec::with_capacity(col_count);
+            for i in 0..col_count {
+                let val_ref = row.get_ref(i)?;
+                row_vals.push(value_ref_to_json(val_ref));
+            }
+            rows.push(row_vals);
+        }
+
+        Ok(QueryResult { columns, rows })
+    }
+
+    /// Exports the summarized library to a CSV file.
+    pub fn export_csv(&self, path: &Path) -> Result<()> {
+        let path_str = path.to_string_lossy();
+        let sql = format!(
+            "COPY (
+                SELECT h.id, h.target_type, h.title, coalesce(h.author, '') AS author,
+                       coalesce(h.url, '') AS url, h.style, h.model,
+                       h.word_count, coalesce(h.prompt_tokens, 0) AS prompt_tokens,
+                       coalesce(h.completion_tokens, 0) AS completion_tokens,
+                       h.duration_ms, coalesce(h.tokens_per_second, 0.0) AS tokens_per_second,
+                       strftime(h.created_at, '%Y-%m-%d %H:%M') AS created_at,
+                       l.summary
+                FROM history h
+                JOIN library l ON h.id = l.id
+                ORDER BY h.id ASC
+            ) TO '{}' (HEADER, DELIMITER ',');",
+            path_str.replace('\'', "''")
+        );
+        self.conn
+            .execute_batch(&sql)
+            .context("Failed to export library to CSV")?;
+        Ok(())
+    }
+
+    /// Exports the summarized library to Parquet.
+    pub fn export_parquet(&self, path: &Path) -> Result<()> {
+        let path_str = path.to_string_lossy();
+        let sql = format!(
+            "COPY (
+                SELECT h.id, h.target_type, h.title, h.author, h.url, h.style, h.model,
+                       h.word_count, h.prompt_tokens, h.completion_tokens, h.duration_ms,
+                       h.tokens_per_second, h.created_at, l.summary
+                FROM history h
+                JOIN library l ON h.id = l.id
+                ORDER BY h.id ASC
+            ) TO '{}' (FORMAT PARQUET);",
+            path_str.replace('\'', "''")
+        );
+        self.conn
+            .execute_batch(&sql)
+            .context("Failed to export library to Parquet (requires DuckDB parquet extension)")?;
+        Ok(())
+    }
+
+    /// Exports the summarized library to a single structured JSON file.
+    pub fn export_json(&self, path: &Path) -> Result<()> {
+        let items = self.get_all_library_items()?;
+        let json_bytes = serde_json::to_vec_pretty(&items)?;
+        fs_util::write_private_file(path, json_bytes)?;
+        Ok(())
+    }
+
+    /// Exports the summarized library to an Obsidian / Logseq compatible Markdown vault directory.
+    pub fn export_markdown_vault(&self, dir: &Path) -> Result<usize> {
+        let items = self.get_all_library_items()?;
+        fs_util::create_private_dir_all(dir)?;
+        let mut count = 0;
+        for item in items {
+            let slug = crate::render::slugify(&item.title);
+            let file_path = dir.join(format!("{}.md", slug));
+            let mut frontmatter = format!(
+                "---\ntitle: \"{}\"\ntarget_type: \"{}\"\nmodel: \"{}\"\nstyle: \"{}\"\nword_count: {}\ncreated_at: \"{}\"\n",
+                item.title.replace('"', "\\\""),
+                item.target_type,
+                item.model,
+                item.style,
+                item.word_count,
+                item.created_at
+            );
+            if let Some(author) = &item.author {
+                frontmatter.push_str(&format!("author: \"{}\"\n", author.replace('"', "\\\"")));
+            }
+            if let Some(url) = &item.url {
+                frontmatter.push_str(&format!("url: \"{}\"\n", url));
+            }
+            frontmatter.push_str("---\n\n");
+            frontmatter.push_str(&format!("# {}\n\n", item.title));
+            frontmatter.push_str(&item.summary);
+            frontmatter.push('\n');
+
+            fs_util::write_private_file(&file_path, frontmatter.as_bytes())?;
+            count += 1;
+        }
+        Ok(count)
     }
 }
 

@@ -116,6 +116,12 @@ async fn main() -> Result<()> {
             }
             return Ok(());
         }
+        ResolvedAction::Query { sql, csv } => {
+            return with_db(|db| commands::handle_query(db, &sql, csv, args.json));
+        }
+        ResolvedAction::Export { format, output } => {
+            return with_db(|db| commands::handle_export(db, format, &output));
+        }
         ResolvedAction::Completions { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "srz", &mut std::io::stdout());
             return Ok(());
@@ -176,6 +182,12 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
             return Ok(());
+        }
+        ResolvedAction::Query { sql, csv } => {
+            return with_db(|db| commands::handle_query(db, &sql, csv, args.json));
+        }
+        ResolvedAction::Export { format, output } => {
+            return with_db(|db| commands::handle_export(db, format, &output));
         }
         ResolvedAction::Web { url } => {
             commands::handle_web(url, &scraper, &llm, &cache, &args).await

@@ -31,6 +31,64 @@ fn test_database_record_and_history() {
 }
 
 #[test]
+fn test_database_query_raw_and_exports() {
+    let db = Database::open_in_memory().unwrap();
+
+    let record = NewSummaryRecord {
+        target_type: "book",
+        title: "Dune",
+        author: Some("Frank Herbert"),
+        url: Some("https://en.wikipedia.org/wiki/Dune_(novel)"),
+        style: "detailed",
+        model: "gemma-4",
+        word_count: 11106,
+        prompt_tokens: Some(5200),
+        completion_tokens: Some(1840),
+        duration_ms: 4200,
+        tokens_per_second: Some(43.8),
+        summary: "Dune is a 1965 epic sci-fi novel about Arrakis.",
+    };
+    db.record_summary(&record).unwrap();
+
+    // 1. query_raw
+    let q_res = db
+        .query_raw("SELECT target_type, count(*) as cnt FROM history GROUP BY target_type")
+        .unwrap();
+    assert_eq!(q_res.columns, vec!["target_type", "cnt"]);
+    assert_eq!(q_res.rows.len(), 1);
+    assert_eq!(q_res.rows[0][0], serde_json::json!("book"));
+    assert_eq!(q_res.rows[0][1], serde_json::json!(1));
+
+    // 2. export_json
+    let tmp = tempfile::tempdir().unwrap();
+    let json_path = tmp.path().join("export.json");
+    db.export_json(&json_path).unwrap();
+    assert!(json_path.exists());
+    let json_str = std::fs::read_to_string(&json_path).unwrap();
+    assert!(json_str.contains("Dune"));
+
+    // 3. export_markdown_vault
+    let vault_dir = tmp.path().join("vault");
+    let count = db.export_markdown_vault(&vault_dir).unwrap();
+    assert_eq!(count, 1);
+    let md_file = vault_dir.join("dune.md");
+    assert!(md_file.exists());
+    let md_content = std::fs::read_to_string(&md_file).unwrap();
+    assert!(md_content.starts_with("---\n"));
+    assert!(md_content.contains("author: \"Frank Herbert\""));
+    assert!(md_content.contains("# Dune"));
+    assert!(md_content.contains("Arrakis"));
+
+    // 4. export_csv
+    let csv_path = tmp.path().join("export.csv");
+    db.export_csv(&csv_path).unwrap();
+    assert!(csv_path.exists());
+    let csv_str = std::fs::read_to_string(&csv_path).unwrap();
+    assert!(csv_str.contains("Dune"));
+    assert!(csv_str.contains("Frank Herbert"));
+}
+
+#[test]
 fn test_database_stats() {
     let db = Database::open_in_memory().unwrap();
 
