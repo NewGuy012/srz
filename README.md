@@ -117,9 +117,9 @@ srz news "Rust language updates"            # Live news digest
 
 ### Ask & Chat
 ```bash
-srz ask "What are the main findings?"  # Ask latest read
-srz ask assets/document.pdf "Summary"  # Ask document
-srz ask -i                             # Interactive chat
+srz ask "What are the main findings?"              # Ask latest read
+srz ask assets/document.pdf "Summary"              # Ask document or URL (YouTube, PDF, web)
+srz ask -i                                         # Interactive chat
 ```
 
 ### Library, Search & Telemetry

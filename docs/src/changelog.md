@@ -36,6 +36,11 @@ All notable changes to `srz` are documented in this file.
 - **Seamless In-TUI Grounded Chat (`src/ui/tui.rs`, `src/main.rs`)**: Added the `a` keybinding in `srz browse` to launch an interactive grounded Q&A session (`srz ask`) directly on the highlighted document without exiting the browser, automatically returning to the library view upon exiting chat.
 - **User-Facing SQL Analytics CLI (`srz query`)**: Added the `srz query "<SQL>"` subcommand to execute arbitrary read-only analytical SQL queries on the offline DuckDB database, with output formatted as an aligned terminal table, `--csv`, or `--json`.
 - **Multi-Format Library Vault Export (`srz export`)**: Added the `srz export` subcommand supporting Obsidian and Logseq-compatible Markdown vaults with YAML frontmatter, structured JSON, spreadsheet-ready CSV, and compressed Apache Parquet.
+- **Unified URL Content Fetching (`src/commands/`)**: Unified URL content extraction across `summarize` and `ask`, enabling `srz ask <url>` to natively query YouTube video transcripts and remote PDF documents in addition to scraped web pages.
+- **RAG Context Selection Optimization (`src/engine/chunker.rs`, `src/commands/ask.rs`)**: Added `chunk_by_tokens_with_counts` and eliminated triple full-document BPE tokenization passes during context selection, cutting tokenization overhead by ~67%.
+- **Cache Initialization & Eviction Optimization (`src/storage/cache.rs`)**: Streamlined schema verification so initialized caches skip redundant DDL executions on startup, and batched Pass 2 LRU row evictions into a single DuckDB transaction.
+- **Allocation & Memory Reductions (`src/ui/render.rs`)**: Pre-allocated dashboard cards buffer and streamed HTML cards directly via `write!`, eliminating intermediate heap string allocations per library entry.
+- **Correctness & Output Hardening (`src/commands/library.rs`, `src/config/cli.rs`, `src/main.rs`)**: Sanitized terminal outputs and guarded against multi-byte UTF-8 slice panics in `handle_query`, registered missing `query` and `export` subcommands in typo suggestions, and removed duplicate unreachable CLI action match arms.
 
 ---
 

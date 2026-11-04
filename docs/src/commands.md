@@ -123,9 +123,10 @@ Performs question-answering grounded directly on document context, protected wit
   ```bash
   srz ask "What are the main findings?"
   ```
-* **Single-turn query against a specific document or URL**:
+* **Single-turn query against a specific document, web page, YouTube video, or remote PDF**:
   ```bash
   srz ask assets/document.pdf "What are the primary conclusions?"
+  srz ask "https://www.youtube.com/watch?v=5C_HPTJg5ek" "What are the key points in this talk?"
   ```
 * **Interactive multi-turn chat REPL**:
   ```bash
