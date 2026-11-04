@@ -299,7 +299,10 @@ impl Cache {
             if let Ok((conn, already_exists)) = crate::db::open_hardened_duckdb_file(&db_path) {
                 let schema_ready = already_exists
                     && conn
-                        .execute("SELECT 1 FROM cache_pages LIMIT 0", [])
+                        .execute(
+                            "SELECT 1 FROM cache_pages, cache_server_capabilities LIMIT 0",
+                            [],
+                        )
                         .is_ok();
                 if !schema_ready {
                     let _ = conn.execute_batch(
@@ -321,21 +324,19 @@ impl Cache {
                              data TEXT NOT NULL,
                              cached_at TIMESTAMP NOT NULL DEFAULT current_timestamp
                          );
-                         ALTER TABLE cache_summaries ADD COLUMN IF NOT EXISTS data TEXT;",
+                         ALTER TABLE cache_summaries ADD COLUMN IF NOT EXISTS data TEXT;
+                         CREATE TABLE IF NOT EXISTS cache_server_capabilities (
+                             endpoint VARCHAR PRIMARY KEY,
+                             model_id VARCHAR NOT NULL,
+                             n_ctx UBIGINT NOT NULL,
+                             total_slots UINTEGER NOT NULL DEFAULT 1,
+                             supports_tokenize BOOLEAN NOT NULL DEFAULT FALSE,
+                             tokenize_endpoint VARCHAR,
+                             backend_kind VARCHAR NOT NULL,
+                             cached_ms BIGINT NOT NULL DEFAULT 0
+                         );",
                     );
                 }
-                let _ = conn.execute_batch(
-                    "CREATE TABLE IF NOT EXISTS cache_server_capabilities (
-                         endpoint VARCHAR PRIMARY KEY,
-                         model_id VARCHAR NOT NULL,
-                         n_ctx UBIGINT NOT NULL,
-                         total_slots UINTEGER NOT NULL DEFAULT 1,
-                         supports_tokenize BOOLEAN NOT NULL DEFAULT FALSE,
-                         tokenize_endpoint VARCHAR,
-                         backend_kind VARCHAR NOT NULL,
-                         cached_ms BIGINT NOT NULL DEFAULT 0
-                     );",
-                );
                 *guard = Some(conn);
             }
         }
@@ -491,11 +492,15 @@ impl Cache {
         let mut surviving_entries = Vec::new();
         let mut total_size = 0u64;
 
+        let db_guard = if self.base_dir.join("cache.duckdb").exists() {
+            self.get_or_init_db()
+        } else {
+            None
+        };
+        let db_conn = db_guard.as_ref().and_then(|g| g.as_ref());
+
         // Pass 1a: Prune DuckDB cache entries by TTL & collect surviving DB rows for LRU size eviction
-        if self.base_dir.join("cache.duckdb").exists()
-            && let Some(guard) = self.get_or_init_db()
-            && let Some(conn) = guard.as_ref()
-        {
+        if let Some(conn) = db_conn {
             let now_ms = now_epoch_ms();
 
             for ns in &namespaces {
@@ -616,8 +621,12 @@ impl Cache {
                     ((max_budget as f64) * 0.85) as u64
                 };
 
-                let db_guard = self.get_or_init_db();
-                let db_conn = db_guard.as_ref().and_then(|g| g.as_ref());
+                let mut in_tx = false;
+                if let Some(conn) = db_conn
+                    && conn.execute_batch("BEGIN TRANSACTION;").is_ok()
+                {
+                    in_tx = true;
+                }
 
                 for entry in surviving_entries {
                     if total_size <= target_size {
@@ -639,6 +648,10 @@ impl Cache {
                         bytes_reclaimed += entry.len;
                         total_size = total_size.saturating_sub(entry.len);
                     }
+                }
+
+                if in_tx && let Some(conn) = db_conn {
+                    let _ = conn.execute_batch("COMMIT;");
                 }
             }
         }

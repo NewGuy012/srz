@@ -375,7 +375,8 @@ pub fn target_badge(target_type: &str) -> &'static str {
 
 /// Generates a standalone HTML5 dashboard index of all past summaries in the library.
 pub fn render_index_html(stats: &LibraryStats, entries: &[HistoryEntry]) -> String {
-    let mut cards_html = String::new();
+    use std::fmt::Write;
+    let mut cards_html = String::with_capacity(entries.len().max(1) * 640);
 
     if entries.is_empty() {
         cards_html.push_str(
@@ -409,7 +410,8 @@ pub fn render_index_html(stats: &LibraryStats, entries: &[HistoryEntry]) -> Stri
                 entry.target_type
             );
 
-            cards_html.push_str(&format!(
+            let _ = write!(
+                cards_html,
                 r#"    <div class="entry-card" data-type="{target_type}" data-search="{search_data}">
       <div class="entry-header">
         <a class="entry-title" href="./{slug}.html">{icon} {title}</a>
@@ -442,7 +444,7 @@ pub fn render_index_html(stats: &LibraryStats, entries: &[HistoryEntry]) -> Stri
                 words = entry.word_count,
                 speed_str = speed_str,
                 time_str = time_str
-            ));
+            );
         }
     }
 
