@@ -22,25 +22,19 @@ All notable changes to `srz` are documented in this file.
 
 ---
 
-## v0.8.0
+## v0.7.3
 
 ### Summary
 
-> Delivers major performance, UX, and architectural upgrades: in-process hardware detection with `sysinfo`, semantic HTML-to-Markdown scraping with `htmd`, crash-safe atomic file persistence, strict XDG data directory compliance, seamless in-TUI grounded chat (`a` in `srz browse`), user-facing DuckDB SQL analytics (`srz query`), and multi-format library vault exports (`srz export`).
+> Delivers major performance, UX, and architectural upgrades: in-process hardware profiling with `sysinfo`, semantic HTML-to-Markdown scraping with `htmd`, crash-safe atomic file persistence, strict XDG data directory compliance, seamless in-TUI grounded chat (`a` in `srz browse`), user-facing DuckDB SQL analytics (`srz query`), multi-format library vault exports (`srz export`), unified URL context fetching, and RAG/cache optimizations.
 
 ### Changes
-- **In-Process Hardware Profiling (`src/system/hardware.rs`)**: Integrated `sysinfo` to detect host memory and processor architecture in pure Rust, eliminating 500–1500ms startup latency on Windows from spawning `powershell.exe` and avoiding `sysctl` subprocess calls on macOS.
-- **Semantic HTML-to-Markdown Scraping (`src/sources/scraper.rs`)**: Integrated `htmd` to convert web articles into clean semantic Markdown (preserving `#` headings, bullet points, code fences, and tables), significantly enhancing document comprehension and summary structure for local LLMs.
-- **Crash-Safe Atomic File Writes (`src/system/fs_util.rs`)**: Implemented atomic persistence with `tempfile::NamedTempFile` and strict `0600` POSIX permissions, preventing corrupted or half-written cache entries and database files on sudden process interruption.
-- **Strict XDG Standard Directory Compliance (`src/system/fs_util.rs`, `src/storage/db.rs`)**: Separated persistent user data (`srz.duckdb` and chat histories now reside in `XDG_DATA_HOME` / `~/.local/share/srz`) from disposable web caches (`XDG_CACHE_HOME` / `~/.cache/srz`). Includes transparent automatic migration from legacy cache paths so existing users retain 100% of their reading history.
-- **Seamless In-TUI Grounded Chat (`src/ui/tui.rs`, `src/main.rs`)**: Added the `a` keybinding in `srz browse` to launch an interactive grounded Q&A session (`srz ask`) directly on the highlighted document without exiting the browser, automatically returning to the library view upon exiting chat.
-- **User-Facing SQL Analytics CLI (`srz query`)**: Added the `srz query "<SQL>"` subcommand to execute arbitrary read-only analytical SQL queries on the offline DuckDB database, with output formatted as an aligned terminal table, `--csv`, or `--json`.
-- **Multi-Format Library Vault Export (`srz export`)**: Added the `srz export` subcommand supporting Obsidian and Logseq-compatible Markdown vaults with YAML frontmatter, structured JSON, spreadsheet-ready CSV, and compressed Apache Parquet.
-- **Unified URL Content Fetching (`src/commands/`)**: Unified URL content extraction across `summarize` and `ask`, enabling `srz ask <url>` to natively query YouTube video transcripts and remote PDF documents in addition to scraped web pages.
-- **RAG Context Selection Optimization (`src/engine/chunker.rs`, `src/commands/ask.rs`)**: Added `chunk_by_tokens_with_counts` and eliminated triple full-document BPE tokenization passes during context selection, cutting tokenization overhead by ~67%.
-- **Cache Initialization & Eviction Optimization (`src/storage/cache.rs`)**: Streamlined schema verification so initialized caches skip redundant DDL executions on startup, and batched Pass 2 LRU row evictions into a single DuckDB transaction.
-- **Allocation & Memory Reductions (`src/ui/render.rs`)**: Pre-allocated dashboard cards buffer and streamed HTML cards directly via `write!`, eliminating intermediate heap string allocations per library entry.
-- **Correctness & Output Hardening (`src/commands/library.rs`, `src/config/cli.rs`, `src/main.rs`)**: Sanitized terminal outputs and guarded against multi-byte UTF-8 slice panics in `handle_query`, registered missing `query` and `export` subcommands in typo suggestions, and removed duplicate unreachable CLI action match arms.
+- **Hardware & Scraping Modernization (`src/system/`, `src/sources/`)**: Replaced subprocess inspection with pure-Rust `sysinfo` hardware profiling, and integrated `htmd` for semantic Markdown scraping preserving headings, tables, and code fences.
+- **Storage & XDG Architecture (`src/system/fs_util.rs`, `src/storage/db.rs`)**: Migrated user database and chats to `XDG_DATA_HOME` (`~/.local/share/srz`) with automatic migration from legacy cache paths, and hardened writes with atomic tempfiles and `0600` permissions.
+- **Interactive Tools & Analytics (`src/commands/`, `src/ui/tui.rs`)**: Added `srz query` for analytical SQL queries, `srz export` for Obsidian/Logseq Markdown vaults, JSON, CSV, and Parquet, and the `a` keybinding in `srz browse` for instant grounded chat.
+- **Unified Ingestion (`src/commands/`)**: Unified URL fetching so `srz ask <url>` natively supports YouTube video transcripts and remote PDFs alongside web articles.
+- **RAG & Cache Optimizations (`src/engine/chunker.rs`, `src/storage/cache.rs`, `src/ui/render.rs`)**: Eliminated redundant BPE passes during context selection (cutting tokenization passes by ~67%), bypassed startup DDL for existing caches, batched LRU evictions in a single transaction, and pre-allocated HTML card buffers.
+- **Correctness & Safety (`src/commands/library.rs`, `src/config/cli.rs`, `src/main.rs`)**: Sanitized terminal tables and guarded against multi-byte UTF-8 slice panics in `handle_query`, registered missing typo suggestions for `query`/`export`, and removed unreachable CLI match arms.
 
 ---
 
