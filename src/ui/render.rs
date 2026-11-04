@@ -223,6 +223,35 @@ pub fn render_html_document(title: &str, markdown: &str) -> String {
     )
 }
 
+/// Returns `true` if `url` is a safe web, mailto, or relative anchor URL for HTML rendering.
+/// Rejects dangerous schemes (`javascript:`, `vbscript:`, `data:`, `file:`) and control characters.
+pub fn is_safe_markdown_url(url: &str) -> bool {
+    let trimmed = url.trim();
+    if trimmed.is_empty() || trimmed.chars().any(|c| c.is_control()) {
+        return false;
+    }
+    if trimmed.starts_with('#') || trimmed.starts_with('/') {
+        return true;
+    }
+    if let Some(colon_pos) = trimmed.find(':') {
+        let slash_pos = trimmed.find('/');
+        let query_pos = trimmed.find('?');
+        let hash_pos = trimmed.find('#');
+        let first_delimiter = [slash_pos, query_pos, hash_pos]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(usize::MAX);
+        if colon_pos < first_delimiter {
+            let scheme = &trimmed[..colon_pos];
+            return scheme.eq_ignore_ascii_case("http")
+                || scheme.eq_ignore_ascii_case("https")
+                || scheme.eq_ignore_ascii_case("mailto");
+        }
+    }
+    true
+}
+
 /// Converts CommonMark / GFM Markdown into semantic HTML using `pulldown-cmark`.
 pub fn markdown_to_html(md: &str) -> String {
     let mut options = pulldown_cmark::Options::empty();
@@ -231,10 +260,47 @@ pub fn markdown_to_html(md: &str) -> String {
     options.insert(pulldown_cmark::Options::ENABLE_TASKLISTS);
     options.insert(pulldown_cmark::Options::ENABLE_HEADING_ATTRIBUTES);
 
-    // Sanitize raw HTML tags into escaped text to prevent HTML injection from untrusted sources
+    // Sanitize raw HTML tags into escaped text to prevent HTML injection from untrusted sources,
+    // and neutralize dangerous link/image schemes (javascript:, data:, vbscript:, file:).
     let parser = pulldown_cmark::Parser::new_ext(md, options).map(|event| match event {
         pulldown_cmark::Event::Html(text) => pulldown_cmark::Event::Text(text),
         pulldown_cmark::Event::InlineHtml(text) => pulldown_cmark::Event::Text(text),
+        pulldown_cmark::Event::Start(pulldown_cmark::Tag::Link {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) => {
+            let safe_dest = if is_safe_markdown_url(&dest_url) {
+                dest_url
+            } else {
+                pulldown_cmark::CowStr::Borrowed("#")
+            };
+            pulldown_cmark::Event::Start(pulldown_cmark::Tag::Link {
+                link_type,
+                dest_url: safe_dest,
+                title,
+                id,
+            })
+        }
+        pulldown_cmark::Event::Start(pulldown_cmark::Tag::Image {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) => {
+            let safe_dest = if is_safe_markdown_url(&dest_url) {
+                dest_url
+            } else {
+                pulldown_cmark::CowStr::Borrowed("#")
+            };
+            pulldown_cmark::Event::Start(pulldown_cmark::Tag::Image {
+                link_type,
+                dest_url: safe_dest,
+                title,
+                id,
+            })
+        }
         other => other,
     });
 
@@ -650,4 +716,41 @@ pub fn ensure_index_file(
     let index_path = views_dir.join("index.html");
     fs_util::write_private_file(&index_path, html)?;
     Ok(index_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_safe_markdown_url() {
+        assert!(is_safe_markdown_url("https://example.com"));
+        assert!(is_safe_markdown_url("http://example.com/page"));
+        assert!(is_safe_markdown_url("mailto:user@example.com"));
+        assert!(is_safe_markdown_url("#anchor-heading"));
+        assert!(is_safe_markdown_url("/relative/path"));
+        assert!(is_safe_markdown_url("relative/doc.html"));
+
+        // Dangerous schemes must be rejected
+        assert!(!is_safe_markdown_url("javascript:alert(1)"));
+        assert!(!is_safe_markdown_url("JAVASCRIPT:alert('xss')"));
+        assert!(!is_safe_markdown_url("vbscript:msgbox(1)"));
+        assert!(!is_safe_markdown_url(
+            "data:text/html,<script>alert(1)</script>"
+        ));
+        assert!(!is_safe_markdown_url("file:///etc/passwd"));
+        assert!(!is_safe_markdown_url(""));
+        assert!(!is_safe_markdown_url("   "));
+        assert!(!is_safe_markdown_url("http://example.com/\0evil"));
+    }
+
+    #[test]
+    fn test_markdown_to_html_neutralizes_xss_schemes() {
+        let md = "[Safe](https://example.com) and [Dangerous](javascript:alert(1)) and [Data](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)";
+        let html = markdown_to_html(md);
+        assert!(html.contains(r#"href="https://example.com""#));
+        assert!(!html.contains("javascript:"));
+        assert!(!html.contains("data:text/html"));
+        assert!(html.contains(r##"href="#"##));
+    }
 }
