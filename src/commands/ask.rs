@@ -131,8 +131,16 @@ pub const ASK_SYSTEM_PROMPT: &str = "You are an expert reading assistant. Answer
 
 /// Returns true if `word` is a common English stop word.
 pub fn is_stop_word(word: &str) -> bool {
+    if word.bytes().any(|b| b.is_ascii_uppercase()) {
+        is_stop_word_lower(&word.to_ascii_lowercase())
+    } else {
+        is_stop_word_lower(word)
+    }
+}
+
+fn is_stop_word_lower(word: &str) -> bool {
     matches!(
-        word.to_ascii_lowercase().as_str(),
+        word,
         "a" | "about"
             | "above"
             | "after"
@@ -379,16 +387,21 @@ pub fn select_relevant_context_with_budget<'a>(
     let total_tokens: usize = chunks_with_counts.iter().map(|(_, t)| *t).sum();
     let avgdl = (total_tokens as f64) / (n_docs as f64).max(1.0);
 
-    // Compute document frequency (number of chunks containing term) for each query term
-    let mut term_dfs = Vec::with_capacity(unique_q_terms.len());
-    for term in &unique_q_terms {
-        let df = chunks_with_counts
-            .iter()
-            .filter(|(chunk, _)| {
-                crate::system::text_util::contains_ascii_case_insensitive(chunk, term)
-            })
-            .count();
-        term_dfs.push(df);
+    let n_terms = unique_q_terms.len();
+    let mut term_dfs = vec![0usize; n_terms];
+    // Matrix of term frequencies: chunk_tfs[chunk_idx][term_idx] computed in a single pass
+    let mut chunk_tfs = Vec::with_capacity(n_docs);
+
+    for (chunk, _) in &chunks_with_counts {
+        let mut tfs = Vec::with_capacity(n_terms);
+        for (term_idx, term) in unique_q_terms.iter().enumerate() {
+            let tf = count_term_occurrences(chunk, term);
+            if tf > 0 {
+                term_dfs[term_idx] += 1;
+            }
+            tfs.push(tf);
+        }
+        chunk_tfs.push(tfs);
     }
 
     // Robertson-Sparck Jones BM25 parameters
@@ -398,18 +411,18 @@ pub fn select_relevant_context_with_budget<'a>(
     let mut scored: Vec<(usize, f64, usize)> = chunks_with_counts
         .iter()
         .enumerate()
-        .map(|(idx, (chunk, tokens))| {
+        .map(|(idx, (_, tokens))| {
             // Slight initial bias for opening chunk (document lead/context)
             let mut score = if idx == 0 { 0.5 } else { 0.0 };
             let doc_len = *tokens as f64;
             let norm_len = 1.0 - B + B * (doc_len / avgdl);
 
-            for (term_idx, term) in unique_q_terms.iter().enumerate() {
+            for (term_idx, _) in unique_q_terms.iter().enumerate() {
                 let df = term_dfs[term_idx];
                 if df == 0 {
                     continue;
                 }
-                let tf = count_term_occurrences(chunk, term) as f64;
+                let tf = chunk_tfs[idx][term_idx] as f64;
                 if tf > 0.0 {
                     // Robertson-Sparck Jones IDF: ln((N - n + 0.5)/(n + 0.5) + 1.0)
                     let idf = (((n_docs - df) as f64 + 0.5) / (df as f64 + 0.5) + 1.0).ln();

@@ -178,29 +178,53 @@ impl LibraryItem {
             return true;
         }
         if q.is_ascii() {
-            crate::system::text_util::contains_ascii_case_insensitive(&self.title, q)
-                || crate::system::text_util::contains_ascii_case_insensitive(&self.target_type, q)
-                || self.author.as_deref().is_some_and(|a| {
-                    crate::system::text_util::contains_ascii_case_insensitive(a, q)
-                })
-                || self.url.as_deref().is_some_and(|u| {
-                    crate::system::text_util::contains_ascii_case_insensitive(u, q)
-                })
-                || crate::system::text_util::contains_ascii_case_insensitive(&self.summary, q)
+            self.matches_ascii_query(q)
         } else {
             let q_lower = q.to_lowercase();
-            let matches_field = |field: &str| -> bool {
-                if field.is_ascii() {
-                    false
-                } else {
-                    field.to_lowercase().contains(&q_lower)
-                }
-            };
-
-            matches_field(&self.title)
-                || self.author.as_deref().is_some_and(matches_field)
-                || matches_field(&self.summary)
+            self.matches_unicode_query(&q_lower)
         }
+    }
+
+    /// Preprocessed match used in batch/TUI loops to avoid re-allocating `to_lowercase()` per item.
+    pub fn matches_query_preprocessed(&self, q: &str, q_lower: Option<&str>) -> bool {
+        if q.is_empty() {
+            return true;
+        }
+        if let Some(lower) = q_lower {
+            self.matches_unicode_query(lower)
+        } else {
+            self.matches_ascii_query(q)
+        }
+    }
+
+    fn matches_ascii_query(&self, q: &str) -> bool {
+        crate::system::text_util::contains_ascii_case_insensitive(&self.title, q)
+            || crate::system::text_util::contains_ascii_case_insensitive(&self.target_type, q)
+            || self
+                .author
+                .as_deref()
+                .is_some_and(|a| crate::system::text_util::contains_ascii_case_insensitive(a, q))
+            || self
+                .url
+                .as_deref()
+                .is_some_and(|u| crate::system::text_util::contains_ascii_case_insensitive(u, q))
+            || crate::system::text_util::contains_ascii_case_insensitive(&self.summary, q)
+    }
+
+    fn matches_unicode_query(&self, q_lower: &str) -> bool {
+        let matches_field = |field: &str| -> bool {
+            if field.is_ascii() {
+                false
+            } else {
+                field.to_lowercase().contains(q_lower)
+            }
+        };
+
+        matches_field(&self.title)
+            || matches_field(&self.target_type)
+            || self.author.as_deref().is_some_and(matches_field)
+            || self.url.as_deref().is_some_and(matches_field)
+            || matches_field(&self.summary)
     }
 }
 

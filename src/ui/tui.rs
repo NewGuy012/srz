@@ -77,8 +77,13 @@ impl AppState {
         if q.is_empty() {
             self.filtered_indices.extend(0..self.items.len());
         } else {
+            let q_lower = if q.is_ascii() {
+                None
+            } else {
+                Some(q.to_lowercase())
+            };
             for (idx, item) in self.items.iter().enumerate() {
-                if item.matches_query(q) {
+                if item.matches_query_preprocessed(q, q_lower.as_deref()) {
                     self.filtered_indices.push(idx);
                 }
             }
