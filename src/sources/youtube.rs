@@ -624,12 +624,29 @@ pub async fn fetch_innertube_player(
 
 /// Extracts the video description from YouTube watch page HTML.
 pub fn extract_video_description(html: &str) -> Option<String> {
-    if let Some(start) = html.find("\"shortDescription\":\"") {
-        let after = &html[start + "\"shortDescription\":\"".len()..];
-        if let Some(end) = after.find("\",\"") {
-            let desc = &after[..end];
-            let clean = desc.replace("\\n", "\n").replace("\\\"", "\"");
-            return Some(clean);
+    if let Some(start) = html.find("\"shortDescription\":") {
+        let after = html[start + "\"shortDescription\":".len()..].trim_start();
+        if !after.starts_with('"') {
+            return None;
+        }
+        // Scan JSON string literal respecting escape sequences
+        let mut in_escape = false;
+        let mut end_idx = None;
+        for (i, c) in after.char_indices().skip(1) {
+            if in_escape {
+                in_escape = false;
+            } else if c == '\\' {
+                in_escape = true;
+            } else if c == '"' {
+                end_idx = Some(i + 1);
+                break;
+            }
+        }
+        if let Some(end) = end_idx {
+            let json_str_slice = &after[..end];
+            if let Ok(parsed) = serde_json::from_str::<String>(json_str_slice) {
+                return Some(parsed);
+            }
         }
     }
     None
@@ -1060,5 +1077,16 @@ Thanks for watching!
         let parsed = parse_json3_timedtext_with_chapters(json, Some(&chapters)).unwrap();
         assert!(parsed.contains("[00:00] ## Introduction\nWelcome to the video."));
         assert!(parsed.contains("[01:45] ## Architecture\nNow exploring the architecture."));
+    }
+
+    #[test]
+    fn test_extract_video_description_handles_escapes_and_commas() {
+        // Description containing quotes, newlines, unicode, and internal comma-quote sequence `","`
+        let mock_html = r#"{"videoDetails":{"title":"Demo","shortDescription":"Line 1\nLine 2 with \"quotes\", and internal \",\" delimiter.\u00a0Unicode test","isLive":false}}"#;
+        let desc = extract_video_description(mock_html).expect("description extracted");
+        assert_eq!(
+            desc,
+            "Line 1\nLine 2 with \"quotes\", and internal \",\" delimiter.\u{00a0}Unicode test"
+        );
     }
 }

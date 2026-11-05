@@ -459,7 +459,7 @@ pub fn render_index_html(stats: &LibraryStats, entries: &[HistoryEntry]) -> Stri
     } else {
         for entry in entries {
             let icon = target_icon(&entry.target_type);
-            let slug = slugify(&entry.title);
+            let slug = slugify_unique(&entry.title, entry.url.as_deref());
             let author_line = if let Some(a) = &entry.author {
                 format!(
                     r#"<div class="entry-author">by {}</div>"#,

@@ -213,6 +213,12 @@ fn test_render_index_html() {
     assert!(html.contains("data-type=\"book\""));
     assert!(html.contains("data-type=\"web\""));
 
+    // Verify unique URL hashing for web entry matches view files
+    let expected_web_slug =
+        srz::render::slugify_unique("Rust 2026 Edition", Some("https://rust-lang.org"));
+    assert!(html.contains(&format!("href=\"./{}.html\"", expected_web_slug)));
+    assert!(html.contains(&format!("href=\"./{}.md\"", expected_web_slug)));
+
     let tmp = tempfile::tempdir().unwrap();
     let tmp_dir = tmp.path().to_path_buf();
     let index_file = ensure_index_file(&tmp_dir, &stats, &entries).unwrap();

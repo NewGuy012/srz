@@ -611,4 +611,85 @@ fn test_database_attach() {
         .unwrap();
     assert_eq!(query_res.rows.len(), 1);
     assert_eq!(query_res.rows[0][0], serde_json::json!("attached"));
+
+    // SQL identifier validation: aliases with illegal characters or SQL injection attempts must fail
+    assert!(db.attach_database(&cache_db, "invalid schema").is_err());
+    assert!(
+        db.attach_database(&cache_db, "schema; DROP TABLE x;")
+            .is_err()
+    );
+    assert!(db.attach_database(&cache_db, "123num_start").is_err());
+    assert!(db.attach_database(&cache_db, "").is_err());
+}
+
+#[test]
+fn test_export_markdown_vault_escaping_and_collisions() {
+    let db = Database::open_in_memory().unwrap();
+
+    // Insert record with potentially dangerous frontmatter characters
+    let record1 = NewSummaryRecord {
+        target_type: "web",
+        title: "Article with \"Quotes\" and \nNewlines and \\Backslash",
+        author: Some("Author \"Name\"\nInjectedField: \"true\""),
+        url: Some("https://example.com/page?a=1&b=\"2\"\nmalicious_key: true"),
+        style: "concise",
+        model: "gemma-4",
+        word_count: 500,
+        prompt_tokens: None,
+        completion_tokens: None,
+        duration_ms: 200,
+        tokens_per_second: None,
+        summary: "Summary content 1",
+        reasoning: None,
+    };
+    db.record_summary(&record1).unwrap();
+
+    // Insert another record with identical title to test collision disambiguation
+    let record2 = NewSummaryRecord {
+        target_type: "web",
+        title: "Article with \"Quotes\" and \nNewlines and \\Backslash",
+        author: Some("Author 2"),
+        url: Some("https://example.com/different"),
+        style: "concise",
+        model: "gemma-4",
+        word_count: 600,
+        prompt_tokens: None,
+        completion_tokens: None,
+        duration_ms: 250,
+        tokens_per_second: None,
+        summary: "Summary content 2",
+        reasoning: None,
+    };
+    db.record_summary(&record2).unwrap();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let vault_dir = tmp.path().join("vault");
+    let count = db.export_markdown_vault(&vault_dir).unwrap();
+    assert_eq!(count, 2);
+
+    // Both files must exist (collision did not overwrite earlier file)
+    let files: Vec<_> = std::fs::read_dir(&vault_dir)
+        .unwrap()
+        .map(|r| r.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(files.len(), 2);
+
+    let all_content: Vec<String> = files
+        .iter()
+        .map(|f| std::fs::read_to_string(vault_dir.join(f)).unwrap())
+        .collect();
+
+    for content in &all_content {
+        let frontmatter = content.split("---").nth(1).expect("frontmatter block");
+        assert!(!frontmatter.contains("\nInjectedField:"));
+        assert!(!frontmatter.contains("\nmalicious_key:"));
+        assert!(frontmatter.contains("\\\"Quotes\\\""));
+        assert!(frontmatter.contains("\\\\Backslash"));
+    }
+
+    assert!(
+        all_content
+            .iter()
+            .any(|c| c.contains("\\nmalicious_key: true"))
+    );
 }

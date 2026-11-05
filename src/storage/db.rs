@@ -318,6 +318,19 @@ impl Database {
 
     /// Attaches an external DuckDB database (such as cache.duckdb) as an attached schema.
     pub fn attach_database(&self, path: &Path, alias: &str) -> Result<()> {
+        if alias.is_empty()
+            || !alias.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            || !alias
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_alphabetic() || c == '_')
+                .unwrap_or(false)
+        {
+            anyhow::bail!(
+                "Invalid database alias '{}': must be a valid SQL identifier",
+                alias
+            );
+        }
         let path_str = path.to_string_lossy();
         let sql = format!(
             "ATTACH IF NOT EXISTS '{}' AS {};",
@@ -1030,26 +1043,35 @@ impl Database {
         let items = self.get_all_library_items()?;
         fs_util::create_private_dir_all(dir)?;
         let mut count = 0;
+        let mut used_filenames = std::collections::HashSet::new();
+
         for item in items {
-            let slug = crate::render::slugify(&item.title);
-            let file_path = dir.join(format!("{}.md", slug));
+            let base_slug = crate::render::slugify(&item.title);
+            let mut filename = format!("{}.md", base_slug);
+            if used_filenames.contains(&filename) || dir.join(&filename).exists() {
+                filename = format!("{}-{}.md", base_slug, item.id);
+            }
+            used_filenames.insert(filename.clone());
+            let file_path = dir.join(filename);
+
             let mut frontmatter = format!(
                 "---\ntitle: \"{}\"\ntarget_type: \"{}\"\nmodel: \"{}\"\nstyle: \"{}\"\nword_count: {}\ncreated_at: \"{}\"\n",
-                item.title.replace('"', "\\\""),
-                item.target_type,
-                item.model,
-                item.style,
+                escape_yaml_string(&item.title),
+                escape_yaml_string(&item.target_type),
+                escape_yaml_string(&item.model),
+                escape_yaml_string(&item.style),
                 item.word_count,
-                item.created_at
+                escape_yaml_string(&item.created_at)
             );
             if let Some(author) = &item.author {
-                frontmatter.push_str(&format!("author: \"{}\"\n", author.replace('"', "\\\"")));
+                frontmatter.push_str(&format!("author: \"{}\"\n", escape_yaml_string(author)));
             }
             if let Some(url) = &item.url {
-                frontmatter.push_str(&format!("url: \"{}\"\n", url));
+                frontmatter.push_str(&format!("url: \"{}\"\n", escape_yaml_string(url)));
             }
             frontmatter.push_str("---\n\n");
-            frontmatter.push_str(&format!("# {}\n\n", item.title));
+            let clean_title = item.title.replace('\n', " ").replace('\r', " ");
+            frontmatter.push_str(&format!("# {}\n\n", clean_title));
             frontmatter.push_str(&item.summary);
             frontmatter.push('\n');
 
@@ -1058,6 +1080,26 @@ impl Database {
         }
         Ok(count)
     }
+}
+
+/// Escapes characters in a string for safe embedding in a double-quoted YAML scalar.
+pub fn escape_yaml_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                use std::fmt::Write;
+                let _ = write!(out, "\\x{:02x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Tokenizes text into normalized lowercased terms for BM25 indexing and querying.

@@ -275,10 +275,12 @@ fn run_loop(
                         }
                         KeyCode::Enter | KeyCode::Char('b') => {
                             if let Some(item) = state.selected_item() {
-                                let files = render::ensure_view_files(
+                                let files = render::ensure_view_files_unique(
                                     &state.views_dir,
                                     &item.title,
                                     &item.summary,
+                                    item.url.as_deref(),
+                                    item.reasoning.as_deref(),
                                     false,
                                 );
                                 if let Ok(files) = files {
