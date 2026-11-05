@@ -659,21 +659,20 @@ fn clean_heading_candidate(line: &str) -> Option<String> {
     }
 
     // Standalone bold line: `**Analyze the Request:**`
-    if trimmed.starts_with("**") {
-        let after_start = &trimmed[2..];
-        if let Some(end_bold) = after_start.find("**") {
-            let bold_text = &after_start[..end_bold];
-            let cleaned = bold_text
-                .trim_matches(|c: char| c.is_whitespace() || c == ':' || c == '.' || c == '-');
-            let without_paren = if let Some(paren_pos) = cleaned.find('(') {
-                let before = cleaned[..paren_pos].trim();
-                if before.len() >= 10 { before } else { cleaned }
-            } else {
-                cleaned
-            };
-            if !without_paren.is_empty() {
-                return Some(truncate_headline(without_paren, 45));
-            }
+    if let Some(after_start) = trimmed.strip_prefix("**")
+        && let Some(end_bold) = after_start.find("**")
+    {
+        let bold_text = &after_start[..end_bold];
+        let cleaned =
+            bold_text.trim_matches(|c: char| c.is_whitespace() || c == ':' || c == '.' || c == '-');
+        let without_paren = if let Some(paren_pos) = cleaned.find('(') {
+            let before = cleaned[..paren_pos].trim();
+            if before.len() >= 10 { before } else { cleaned }
+        } else {
+            cleaned
+        };
+        if !without_paren.is_empty() {
+            return Some(truncate_headline(without_paren, 45));
         }
     }
 
@@ -699,10 +698,10 @@ pub fn extract_thought_headline(reasoning_text: &str) -> Option<String> {
 
     // Priority 1: Scan backwards for structured section/step headings:
     for line in lines.iter().rev() {
-        if let Some(candidate) = clean_heading_candidate(line) {
-            if is_meaningful_headline(&candidate) {
-                return Some(candidate);
-            }
+        if let Some(candidate) = clean_heading_candidate(line)
+            && is_meaningful_headline(&candidate)
+        {
+            return Some(candidate);
         }
     }
 
