@@ -210,9 +210,17 @@ pub struct Database {
 
 /// Opens a file-backed DuckDB connection with security hardening: rejects symlinks,
 /// creates parent directory with private permissions if missing, sets private file permissions,
-/// and executes `DUCKDB_SECURITY_LOCKDOWN`.
+/// retries with backoff if locked by a concurrent process, and executes `DUCKDB_SECURITY_LOCKDOWN`.
 /// Returns `(Connection, already_existed_with_data)`.
 pub fn open_hardened_duckdb_file(path: &Path) -> Result<(Connection, bool)> {
+    open_hardened_duckdb_file_with_retry(path, 5)
+}
+
+/// Opens a file-backed DuckDB connection with specified retry attempts on lock contention.
+pub fn open_hardened_duckdb_file_with_retry(
+    path: &Path,
+    max_retries: usize,
+) -> Result<(Connection, bool)> {
     if let Ok(meta) = std::fs::symlink_metadata(path)
         && meta.file_type().is_symlink()
     {
@@ -225,8 +233,31 @@ pub fn open_hardened_duckdb_file(path: &Path) -> Result<(Connection, bool)> {
     if let Some(parent) = path.parent() {
         let _ = fs_util::create_private_dir_all(parent);
     }
-    let conn = Connection::open(path)
-        .with_context(|| format!("Failed to open DuckDB database at {:?}", path))?;
+
+    let mut attempts = 0;
+    let mut backoff = std::time::Duration::from_millis(50);
+
+    let conn = loop {
+        match Connection::open(path) {
+            Ok(c) => break c,
+            Err(err) => {
+                let err_str = err.to_string();
+                let is_lock_error = err_str.contains("lock")
+                    || err_str.contains("busy")
+                    || err_str.contains("IO Error")
+                    || err_str.contains("Could not set lock");
+                if is_lock_error && attempts < max_retries {
+                    attempts += 1;
+                    std::thread::sleep(backoff);
+                    backoff = (backoff * 2).min(std::time::Duration::from_millis(400));
+                } else {
+                    return Err(err)
+                        .with_context(|| format!("Failed to open DuckDB database at {:?}", path));
+                }
+            }
+        }
+    };
+
     if path.exists() {
         fs_util::set_private_file_perms(path);
     }
@@ -283,6 +314,20 @@ impl Database {
         let db = Self { conn };
         db.init_schema()?;
         Ok(db)
+    }
+
+    /// Attaches an external DuckDB database (such as cache.duckdb) as an attached schema.
+    pub fn attach_database(&self, path: &Path, alias: &str) -> Result<()> {
+        let path_str = path.to_string_lossy();
+        let sql = format!(
+            "ATTACH IF NOT EXISTS '{}' AS {};",
+            path_str.replace('\'', "''"),
+            alias
+        );
+        self.conn
+            .execute_batch(&sql)
+            .with_context(|| format!("Failed to attach database {:?} as {}", path, alias))?;
+        Ok(())
     }
 
     fn is_schema_initialized(&self) -> bool {

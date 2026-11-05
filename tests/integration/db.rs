@@ -591,3 +591,24 @@ fn test_database_refuses_symlink() {
     let err = res.err().unwrap();
     assert!(err.to_string().contains("is a symlink"));
 }
+
+#[test]
+fn test_database_attach() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main_db = tmp.path().join("main.duckdb");
+    let cache_db = tmp.path().join("cache.duckdb");
+
+    let db = Database::open_at(&main_db).unwrap();
+    let (cache_conn, _) = srz::storage::open_hardened_duckdb_file(&cache_db).unwrap();
+    cache_conn
+        .execute_batch("CREATE TABLE cache_test (id INT, val TEXT); INSERT INTO cache_test VALUES (1, 'attached');")
+        .unwrap();
+    drop(cache_conn);
+
+    db.attach_database(&cache_db, "cache_schema").unwrap();
+    let query_res = db
+        .query_raw("SELECT val FROM cache_schema.cache_test WHERE id = 1")
+        .unwrap();
+    assert_eq!(query_res.rows.len(), 1);
+    assert_eq!(query_res.rows[0][0], serde_json::json!("attached"));
+}
