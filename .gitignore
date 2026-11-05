@@ -13,3 +13,8 @@ config.toml
 *.duckdb*
 *.db
 
+# mdBook build output and generated assets
+/site
+/mermaid.min.js
+/mermaid-init.js
+

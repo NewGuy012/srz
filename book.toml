@@ -8,14 +8,21 @@ src = "docs/src"
 [build]
 build-dir = "site"
 
+[preprocessor.katex]
+after = ["links"]
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
 [output.html]
 git-repository-url = "https://github.com/NewGuy012/srz"
 edit-url-template = "https://github.com/NewGuy012/srz/edit/master/docs/src/{path}"
 site-url = "/srz/"
 favicon-svg = "assets/logo.svg"
-mathjax-support = true
+mathjax-support = false
 preferred-dark-theme = "coal"
 default-theme = "coal"
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
 
 [output.html.fold]
 enable = true
