@@ -87,12 +87,19 @@ Recommended Local LLM Setup (Llama GUI / llama.cpp):
 
 ### Hardware Tier Reference Matrix
 
-| Host Memory | Typical Devices | Backend Model ID (Default) | Parameters | Quantization | Disk Size | Context Window (`n_ctx`) | Estimated RAM | Llama GUI Selection |
+<div class="wide-table" style="overflow-x: auto; width: 100%;">
+
+| Host Memory | Typical Devices | Backend Model ID (Default) | Parameters | Quantization | Disk Size | Context Window & RAM | Total RAM Usage (Total = Disk Size + Context Window) | Llama GUI Selection |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **8 GB RAM** | MacBook Air 8GB, Thin-and-light Laptops | `ggml-org/gemma-4-E4B-it-GGUF:Q8_0` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`8k ctx`** (8,192) | **~8.9 GB** | `gemma-4 \| E4B \| Q8_0 \| 8k ctx` |
-| **16 GB RAM** | MacBook Pro/Air 16GB, Standard PC Laptops | `ggml-org/gemma-4-E4B-it-GGUF:Q8_0` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`32k ctx`** (32,768) | **~9.4 GB** | `gemma-4 \| E4B \| Q8_0 \| 32k ctx` |
-| **24–36 GB RAM** | MacBook Pro M Pro / Max, 32GB PCs | `ggml-org/gemma-4-E4B-it-GGUF:Q8_0` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`64k ctx`** (65,536) | **~10 GB** | `gemma-4 \| E4B \| Q8_0 \| 64k ctx` |
-| **64+ GB RAM** | MacBook Pro M Max, Mac Studio, Workstations | `ggml-org/gemma-4-26B-A4B-it-GGUF:Q8_0` | **26B Total / ~4B Active** (MoE) | **`Q8_0`** | **~28.0 GB** | **`128k ctx`** (131,072) | **~30–32 GB** | `gemma-4 \| 26B-A4B \| Q8_0 \| 128k ctx` |
+| **8 GB RAM** | MacBook Air 8GB, Thin-and-light Laptops | `ggml-org/gemma-4-E4B-it-GGUF:Q8_0` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`8k ctx`** (~0.3 GB) | **~8.9 GB** | `gemma-4 \| E4B \| Q8_0 \| 8k ctx` |
+| **16 GB RAM** | MacBook Pro/Air 16GB, Standard PC Laptops | `ggml-org/gemma-4-E4B-it-GGUF:Q8_0` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`32k ctx`** (~0.8 GB) | **~9.4 GB** | `gemma-4 \| E4B \| Q8_0 \| 32k ctx` |
+| **24–36 GB RAM** | MacBook Pro M Pro / Max, 32GB PCs | `ggml-org/gemma-4-E4B-it-GGUF:Q8_0` | **~4B** (Effective) | **`Q8_0`** | **~8.6 GB** | **`64k ctx`** (~1.4 GB) | **~10.0 GB** | `gemma-4 \| E4B \| Q8_0 \| 64k ctx` |
+| **64+ GB RAM** | MacBook Pro M Max, Mac Studio, Workstations | `ggml-org/gemma-4-26B-A4B-it-GGUF:Q8_0` | **26B Total / ~4B Active** (MoE) | **`Q8_0`** | **~28.0 GB** | **`128k ctx`** (~2.0–4.0 GB) | **~30–32 GB** | `gemma-4 \| 26B-A4B \| Q8_0 \| 128k ctx` |
+
+</div>
+
+> 💡 **Total RAM Calculation**:  
+> `Total RAM Usage` = **Disk Size** (base model weights loaded into memory) + **Context RAM** (KV cache memory allocated for the active context window `n_ctx`). This reflects the actual physical memory footprint when running summaries in local LLM runners (Llama GUI / llama.cpp).
 
 ### Single-Pass vs. Map-Reduce Chunking
 
