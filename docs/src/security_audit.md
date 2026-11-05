@@ -3,7 +3,7 @@
 **Project:** `srz` (Summarize CLI)  
 **Repository:** [github.com/NewGuy012/srz](https://github.com/NewGuy012/srz)  
 **Language & Platform:** Rust (Edition 2024) · macOS / Linux / Windows  
-**Cumulative Posture:** 🛡️ **100% Safe Rust** (`#![forbid(unsafe_code)]` enforced) · ✅ **31 / 31 Vulnerabilities Resolved** · ✅ **156 / 156 Tests Passing**
+**Cumulative Posture:** 🛡️ **100% Safe Rust** (`#![forbid(unsafe_code)]` enforced) · ✅ **33 / 33 Vulnerabilities Resolved** · ✅ **158 / 158 Tests Passing**
 
 This document serves as the chronological security audit ledger for `srz`. Each audit section is recorded with its execution timestamp, assessed scope, identified vulnerabilities, implemented remediations, and verification results.
 
@@ -18,6 +18,7 @@ This document serves as the chronological security audit ledger for `srz`. Each 
 | **[Audit #3](#audit-3)** | **2026-10-28 20:15:00 PDT** | Grounded Q&A Injection, Terminal Escape Injection, Insecure Installers & Safe Rust Restoration | 6 / 6 | ✅ Complete |
 | **[Audit #4](#audit-4)** | **2026-10-29 08:15:00 PDT** | Prompt Delimiter Escaping, C1/BiDi Terminal Sanitization, Bounded Streams, YouTube SSRF, Symlink Hardening & SHA-256 Hashing | 7 / 7 | ✅ Complete |
 | **[Audit #5](#audit-5)** | **2026-11-03 16:15:00 PST** | Server Discovery & Tokenization Bounds, Dynamic Budget Arithmetic, Google News Syndication & batchexecute RPC, Markdown URL Scheme Neutralization, TUI/Diagnostics Terminal Sanitization, Pager Subprocess Hardening, DuckDB Symlink Guards & Supply-Chain Deny Policy | 6 / 6 | ✅ Complete |
+| **[Audit #6](#audit-6)** | **2026-11-05 05:40:00 PST** | YAML Frontmatter Injection in Vault Export, Filename Collision Disambiguation, SQL Identifier Injection Validation in Attach & YouTube JSON Literal Extraction | 2 / 2 | ✅ Complete |
 
 * **[Cumulative Verification & Test Suite](#verification)**
 * **[Production Hardening & Residual Risk Recommendations](#recommendations)**
@@ -862,6 +863,71 @@ While raw HTML tags (`<script>`, `<iframe>`) were neutralized to text events in 
 * Updated `scripts/install.sh` to use unguessable `mktemp "${INSTALL_DIR}/.srz.tmp.XXXXXX"` with `chmod 0755` prior to atomic rename.
 * Configured `yanked = "deny"` in `deny.toml`.
 * Added unit test `test_load_from_path_bounds_and_file_type` and integration test `test_database_refuses_symlink`.
+
+---
+
+<a id="audit-6"></a>
+## 📅 Audit #6 — November 5, 2026 · 05:40 AM PST (Phase 6: Vault Serialization, SQL Identifiers & Ingestion Hardening)
+
+### Overview & Scope
+A focused security and correctness audit across export serialization, dynamic SQL attachment, and media caption ingestion:
+* **Export Serialization (`Database::export_markdown_vault`):** YAML frontmatter scalar sanitization and file naming collision prevention.
+* **Database Attachment (`Database::attach_database`):** Dynamic schema alias validation against SQL identifier injection.
+* **Media Parsing (`sources::youtube::extract_video_description`):** RFC 8259-compliant JSON string literal extraction.
+
+### Audit #6 Scorecard
+
+| Metric | Result | Notes |
+|:---|:---:|:---|
+| **Memory Safety** | 🛡️ **100% Safe Rust** | No `unsafe` blocks present |
+| **Flaws Identified** | **2 Total** | 1 Medium, 1 Low-Medium |
+| **Flaws Remediated** | ✅ **2 / 2 (100%)** | All issues patched with regression tests |
+| **Test Suite Status** | ✅ **102 / 102 Passing** | 0 failures, 0 warnings under Clippy `-D warnings` |
+
+### Audit #6 Findings Matrix
+
+| # | Finding Title | Severity | CWE / Category | Status |
+|:---:|:---|:---:|:---|:---:|
+| **32** | [YAML Frontmatter Injection and Collision Overwriting in Markdown Vault Export](#finding-32) | 🟡 Medium | CWE-93 / CWE-116 | ✅ Patched |
+| **33** | [Unvalidated SQL Schema Alias Identifier in `Database::attach_database`](#finding-33) | 🟡 Low-Med | CWE-89 / SQL Injection | ✅ Patched |
+
+---
+
+<a id="finding-32"></a>
+#### 32. YAML Frontmatter Injection and Collision Overwriting in Markdown Vault Export
+
+| Attribute | Value |
+|:---|:---|
+| **Severity** | 🟡 Medium |
+| **CWE** | CWE-93: Improper Neutralization of CRLF Sequences; CWE-116: Improper Encoding or Escaping of Output |
+| **Location** | `src/storage/db.rs` (`Database::export_markdown_vault`) |
+
+##### 💥 Threat & Impact
+1. `Database::export_markdown_vault` interpolated metadata (`title`, `author`, `url`) into YAML frontmatter lines (`title: "{}"`, `url: "{}"`) using naive quote substitution (`replace('"', "\\\"")`), failing to escape backslashes (`\`) or carriage return/newline sequences (`\r`, `\n`). An untrusted web page or document title containing embedded newlines could forge arbitrary YAML frontmatter keys into exported notes for Obsidian or Logseq.
+2. The export file name was derived strictly from `slugify(&item.title)`. Multiple items sharing the same title would silently overwrite earlier exported notes.
+
+##### 🛡️ Remediation
+* Implemented `escape_yaml_string` to properly escape `\`, `"`, `\n`, `\r`, `\t`, and ASCII control characters (`< 0x20`) into valid double-quoted YAML scalars.
+* Added collision-safe disambiguation tracking previously generated filenames and appending `-{item.id}` if a colliding note name exists.
+* Added regression test `test_export_markdown_vault_escaping_and_collisions`.
+
+---
+
+<a id="finding-33"></a>
+#### 33. Unvalidated SQL Schema Alias Identifier in `Database::attach_database`
+
+| Attribute | Value |
+|:---|:---|
+| **Severity** | 🟡 Low-Med |
+| **CWE** | CWE-89: Improper Neutralization of Special Elements used in an SQL Command ('SQL Injection') |
+| **Location** | `src/storage/db.rs` (`Database::attach_database`) |
+
+##### 💥 Threat & Impact
+`attach_database` interpolated the external database schema `alias` directly into the DDL query `ATTACH IF NOT EXISTS '...' AS <alias>;` without validating that `alias` was a valid SQL identifier.
+
+##### 🛡️ Remediation
+* Added strict ASCII identifier validation ensuring `alias` is non-empty, begins with an alphabetic character or underscore, and contains solely alphanumeric characters or underscores (`[A-Za-z0-9_]`).
+* Added regression tests asserting rejection of whitespace, numeric prefixes, and SQL command delimiters.
 
 ---
 

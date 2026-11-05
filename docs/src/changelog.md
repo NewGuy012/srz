@@ -22,6 +22,21 @@ All notable changes to `srz` are documented in this file.
 
 ---
 
+## v0.7.4
+
+### Summary
+
+> Hardens Markdown vault exporting against frontmatter injection and slug collisions, validates SQL attachment identifiers, deduplicates parallel chunk distillation and tree reduction loops, optimizes BM25 scoring and TUI filtering, and ensures complete token usage telemetry across book and news digests.
+
+### Changes
+- **Security Hardening (`src/storage/db.rs`, `src/sources/youtube.rs`)**: Escaped double-quoted YAML frontmatter string scalars (`\`, `"`, `\n`, `\r`, `\t`, ASCII control codes) in `export_markdown_vault` to prevent metadata injection, disambiguated colliding vault filenames, validated `alias` as a strict SQL identifier in `attach_database`, and hardened YouTube video description extraction with standard RFC 8259 JSON escape handling.
+- **Engine Deduplication & Telemetry (`src/engine/llm.rs`)**: Consolidated parallel chunk map-reduction, book reference distillation, and multi-source news coverage into `run_parallel_chunk_completions`, eliminating ~180 lines of duplicated concurrency/retry/progress boilerplate while properly accumulating chunk tokens into the final `LlmOutput`.
+- **View Link Correctness (`src/ui/render.rs`, `src/ui/tui.rs`)**: Synchronized HTML library dashboard links in `render_index_html` with `slugify_unique` to resolve broken reader view links for summaries with URLs, and updated TUI browser opening to reuse unique view files and render reasoning blocks.
+- **Performance Optimizations (`src/commands/ask.rs`, `src/storage/db.rs`, `src/ui/tui.rs`, `src/engine/llm.rs`)**: Reduced BM25 chunk scoring to a single pass deriving document frequency from term occurrences, made `is_stop_word` allocation-free on lowercased inputs, pre-lowercased query strings once per TUI search pass, and reused precomputed token counts during tree reduction partitioning.
+- **Simplification & Cleanups (`src/sources/`, `src/storage/`, `src/commands/`)**: Unified case-insensitive PDF URL detection with fragment stripping into `is_pdf_url`, simplified verbose fetch status tuples, centralized `HardwareProfile::to_recommend_report_json`, and removed unused struct fields, obsolete helpers, and redundant DuckDB table DDL.
+
+---
+
 ## v0.7.3
 
 ### Summary
