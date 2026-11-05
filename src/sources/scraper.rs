@@ -216,18 +216,38 @@ impl WebScraper {
 
     /// Normalizes raw HTML into clean, readable text.
     pub fn normalize(&self, url: &str, raw_html: &str) -> Result<ScrapedPage> {
-        let document = Html::parse_document(raw_html);
+        let mut document: Option<Html> = None;
 
-        // 1. Extract Title
-        let title = self.extract_title(&document);
+        // 1. Attempt Readability extraction first (dom_smoothie) to avoid full DOM construction when possible
+        let (article_title, extracted_html) =
+            match dom_smoothie::Readability::new(raw_html, Some(url), None) {
+                Ok(mut readability) => match readability.parse() {
+                    Ok(article) => {
+                        let title = if !article.title.trim().is_empty() {
+                            Some(article.title.trim().to_string())
+                        } else {
+                            None
+                        };
+                        (title, std::borrow::Cow::Owned(article.content.to_string()))
+                    }
+                    Err(_) => {
+                        let doc = document.get_or_insert_with(|| Html::parse_document(raw_html));
+                        (None, self.extract_main_html(doc, raw_html))
+                    }
+                },
+                Err(_) => {
+                    let doc = document.get_or_insert_with(|| Html::parse_document(raw_html));
+                    (None, self.extract_main_html(doc, raw_html))
+                }
+            };
 
-        // 2. Extract article content using dom_smoothie readability
-        let extracted_html = match dom_smoothie::Readability::new(raw_html, Some(url), None) {
-            Ok(mut readability) => match readability.parse() {
-                Ok(article) => std::borrow::Cow::Owned(article.content.to_string()),
-                Err(_) => self.extract_main_html(&document, raw_html),
-            },
-            Err(_) => self.extract_main_html(&document, raw_html),
+        // 2. Extract or fallback Title
+        let title = match article_title {
+            Some(t) => Some(t),
+            None => {
+                let doc = document.get_or_insert_with(|| Html::parse_document(raw_html));
+                self.extract_title(doc)
+            }
         };
 
         // 3. Convert HTML to clean semantic Markdown (preserving headings, lists, tables)
