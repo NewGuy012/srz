@@ -181,6 +181,7 @@ struct SseStreamState {
     truncated: bool,
     last_usage: Option<TokenUsage>,
     needs_stdout_flush: bool,
+    stream_renderer: Option<crate::ui::StreamMarkdownRenderer>,
     last_spinner_update: std::time::Instant,
 }
 
@@ -199,6 +200,7 @@ impl SseStreamState {
             truncated: false,
             last_usage: None,
             needs_stdout_flush: false,
+            stream_renderer: None,
             last_spinner_update: start_time,
         }
     }
@@ -367,8 +369,14 @@ impl SseStreamState {
                     pb.finish_and_clear();
                     let safe_title = crate::ui::sanitize_title(header_title);
                     Ui::header(&format!("Summary: {}", safe_title));
+                    self.stream_renderer = Some(crate::ui::StreamMarkdownRenderer::new());
                 }
-                print!("{}", crate::ui::sanitize_terminal_text_cow(text_to_emit));
+                let clean_text = crate::ui::sanitize_terminal_text_cow(text_to_emit);
+                if let Some(ref mut renderer) = self.stream_renderer {
+                    renderer.feed(&clean_text);
+                } else {
+                    print!("{}", clean_text);
+                }
                 self.needs_stdout_flush = true;
             }
             StreamMode::Buffered => {
@@ -1260,6 +1268,11 @@ impl LlmClient {
             } else {
                 eprintln!("\n----------------");
             }
+        }
+
+        if let Some(ref mut renderer) = state.stream_renderer {
+            renderer.flush();
+            let _ = io::stdout().flush();
         }
 
         let streamed_to_stdout = matches!(mode, StreamMode::Stdout { .. }) && state.started_visible;

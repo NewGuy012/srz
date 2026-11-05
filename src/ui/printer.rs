@@ -47,6 +47,78 @@ pub fn render_markdown(markdown: &str, width: Option<usize>) -> String {
     SKIN.text(markdown, Some(term_width)).to_string()
 }
 
+/// Incremental line-buffered markdown stream renderer for real-time terminal output.
+/// Buffers streaming token chunks until line boundaries are reached, then applies Termimad ANSI styling.
+pub struct StreamMarkdownRenderer {
+    line_buf: String,
+    in_code_block: bool,
+    use_color: bool,
+    width: usize,
+}
+
+impl Default for StreamMarkdownRenderer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StreamMarkdownRenderer {
+    pub fn new() -> Self {
+        let use_color = Ui::use_color();
+        let width = crossterm::terminal::size()
+            .map(|(w, _)| w as usize)
+            .unwrap_or(80);
+        Self {
+            line_buf: String::with_capacity(256),
+            in_code_block: false,
+            use_color,
+            width,
+        }
+    }
+
+    /// Feeds a chunk of text into the streaming renderer, rendering completed lines.
+    pub fn feed(&mut self, chunk: &str) {
+        if !self.use_color {
+            print!("{}", chunk);
+            return;
+        }
+
+        self.line_buf.push_str(chunk);
+        while let Some(pos) = self.line_buf.find('\n') {
+            let line: String = self.line_buf.drain(..=pos).collect();
+            let line_trimmed = line.trim_end_matches(['\r', '\n']);
+
+            if line_trimmed.trim_start().starts_with("```") {
+                self.in_code_block = !self.in_code_block;
+                println!("\x1b[32m{}\x1b[0m", line_trimmed);
+            } else if self.in_code_block {
+                println!("\x1b[32m  {}\x1b[0m", line_trimmed);
+            } else if line_trimmed.is_empty() {
+                println!();
+            } else {
+                let rendered = render_markdown(line_trimmed, Some(self.width));
+                print!("{}", rendered);
+                if !rendered.ends_with('\n') {
+                    println!();
+                }
+            }
+        }
+    }
+
+    /// Flushes any remaining partial line at stream completion.
+    pub fn flush(&mut self) {
+        if !self.line_buf.is_empty() {
+            if !self.use_color {
+                print!("{}", self.line_buf);
+            } else {
+                let rendered = render_markdown(&self.line_buf, Some(self.width));
+                print!("{}", rendered);
+            }
+            self.line_buf.clear();
+        }
+    }
+}
+
 /// Prints formatted summary to terminal, launching a pager if the text exceeds terminal height.
 pub fn display_summary(
     title: &str,
@@ -194,5 +266,19 @@ mod tests {
             Some("💡 Context hint"),
         );
         assert!(res.is_ok());
+    }
+
+    #[test]
+    fn test_stream_markdown_renderer() {
+        let mut renderer = StreamMarkdownRenderer::new();
+        renderer.feed("# Heading 1\n");
+        renderer.feed("This is a paragraph with **bold** text.\n");
+        renderer.feed("```rust\n");
+        renderer.feed("let a = 42;\n");
+        renderer.feed("```\n");
+        renderer.feed("Trailing unclosed line without newline");
+        assert!(!renderer.line_buf.is_empty());
+        renderer.flush();
+        assert!(renderer.line_buf.is_empty());
     }
 }
