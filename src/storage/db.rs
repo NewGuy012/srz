@@ -1094,7 +1094,7 @@ impl Database {
                 frontmatter.push_str(&format!("url: \"{}\"\n", escape_yaml_string(url)));
             }
             frontmatter.push_str("---\n\n");
-            let clean_title = item.title.replace('\n', " ").replace('\r', " ");
+            let clean_title = item.title.replace(['\n', '\r'], " ");
             frontmatter.push_str(&format!("# {}\n\n", clean_title));
             frontmatter.push_str(&item.summary);
             frontmatter.push('\n');

@@ -255,26 +255,25 @@ impl GoogleNewsClient {
             }
 
             // 2. Offline protobuf decode and direct URL cache check
-            if let Some(direct) = decode_google_news_url(&item.google_link) {
-                if let Some(c) = cache
-                    && let Some(page) = c.get_page(&direct)
-                    && page.word_count > 60
-                {
-                    // Cache under google_link as well for sub-millisecond future hits
-                    c.set_page(&item.google_link, &page);
-                    sources.push(NewsDigestSource {
-                        title: page.title.unwrap_or(item.title),
-                        source_name: item.source_name.unwrap_or_else(|| "Source".to_string()),
-                        url: direct,
-                        pub_date: item.pub_date,
-                        content: page.content,
-                        word_count: page.word_count,
-                    });
-                    if sources.len() >= limit {
-                        return Ok(sources);
-                    }
-                    continue;
+            if let Some(direct) = decode_google_news_url(&item.google_link)
+                && let Some(c) = cache
+                && let Some(page) = c.get_page(&direct)
+                && page.word_count > 60
+            {
+                // Cache under google_link as well for sub-millisecond future hits
+                c.set_page(&item.google_link, &page);
+                sources.push(NewsDigestSource {
+                    title: page.title.unwrap_or(item.title),
+                    source_name: item.source_name.unwrap_or_else(|| "Source".to_string()),
+                    url: direct,
+                    pub_date: item.pub_date,
+                    content: page.content,
+                    word_count: page.word_count,
+                });
+                if sources.len() >= limit {
+                    return Ok(sources);
                 }
+                continue;
             }
 
             uncached_items.push(item);
@@ -553,14 +552,13 @@ fn extract_url_from_protobuf(raw: &[u8]) -> Option<String> {
                 let len = raw[pos - 1] as usize;
                 if len >= scheme.len() && pos + len <= raw.len() {
                     let slice = &raw[pos..pos + len];
-                    if let Ok(s) = std::str::from_utf8(slice) {
-                        if !s
+                    if let Ok(s) = std::str::from_utf8(slice)
+                        && !s
                             .chars()
                             .any(|c| c.is_control() || c == ' ' || c == '"' || c == '<' || c == '>')
-                            && crate::system::text_util::is_http_url(s)
-                        {
-                            return Some(s.to_string());
-                        }
+                        && crate::system::text_util::is_http_url(s)
+                    {
+                        return Some(s.to_string());
                     }
                 }
             }
@@ -575,10 +573,10 @@ fn extract_url_from_protobuf(raw: &[u8]) -> Option<String> {
                 }
             }
             let slice = &raw[pos..end];
-            if let Ok(s) = std::str::from_utf8(slice) {
-                if crate::system::text_util::is_http_url(s) {
-                    return Some(s.to_string());
-                }
+            if let Ok(s) = std::str::from_utf8(slice)
+                && crate::system::text_util::is_http_url(s)
+            {
+                return Some(s.to_string());
             }
         }
     }

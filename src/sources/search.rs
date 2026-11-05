@@ -507,9 +507,7 @@ pub fn extract_wikipedia_synopsis(markdown: &str) -> Option<String> {
         }
     }
 
-    let Some(start_idx) = plot_start else {
-        return None;
-    };
+    let start_idx = plot_start?;
 
     // Find where the plot section ends: the next `## ` heading after `start_idx`
     let section_body = &markdown[start_idx..];
