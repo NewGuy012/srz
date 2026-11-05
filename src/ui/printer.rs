@@ -68,6 +68,10 @@ impl StreamMarkdownRenderer {
         let width = crossterm::terminal::size()
             .map(|(w, _)| w as usize)
             .unwrap_or(80);
+        Self::with_options(use_color, width)
+    }
+
+    pub fn with_options(use_color: bool, width: usize) -> Self {
         Self {
             line_buf: String::with_capacity(256),
             in_code_block: false,
@@ -78,17 +82,14 @@ impl StreamMarkdownRenderer {
 
     /// Feeds a chunk of text into the streaming renderer, rendering completed lines.
     pub fn feed(&mut self, chunk: &str) {
-        if !self.use_color {
-            print!("{}", chunk);
-            return;
-        }
-
         self.line_buf.push_str(chunk);
         while let Some(pos) = self.line_buf.find('\n') {
             let line: String = self.line_buf.drain(..=pos).collect();
             let line_trimmed = line.trim_end_matches(['\r', '\n']);
 
-            if line_trimmed.trim_start().starts_with("```") {
+            if !self.use_color {
+                println!("{}", line_trimmed);
+            } else if line_trimmed.trim_start().starts_with("```") {
                 self.in_code_block = !self.in_code_block;
                 println!("\x1b[32m{}\x1b[0m", line_trimmed);
             } else if self.in_code_block {
@@ -115,6 +116,7 @@ impl StreamMarkdownRenderer {
                 print!("{}", rendered);
             }
             self.line_buf.clear();
+            let _ = io::stdout().flush();
         }
     }
 }
@@ -280,5 +282,16 @@ mod tests {
         assert!(!renderer.line_buf.is_empty());
         renderer.flush();
         assert!(renderer.line_buf.is_empty());
+    }
+
+    #[test]
+    fn test_stream_markdown_renderer_options() {
+        for use_color in [true, false] {
+            let mut renderer = StreamMarkdownRenderer::with_options(use_color, 80);
+            renderer.feed("Line 1\nLine 2\nPartial line");
+            assert_eq!(renderer.line_buf, "Partial line");
+            renderer.flush();
+            assert!(renderer.line_buf.is_empty());
+        }
     }
 }
