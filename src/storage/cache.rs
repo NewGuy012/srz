@@ -99,16 +99,6 @@ impl CacheNamespace {
         }
     }
 
-    pub fn from_str_name(s: &str) -> Option<Self> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "pages" | "page" | "web" => Some(Self::Pages),
-            "search" | "searches" | "meta" => Some(Self::Search),
-            "summaries" | "summary" => Some(Self::Summaries),
-            "views" | "view" | "html" => Some(Self::Views),
-            _ => None,
-        }
-    }
-
     pub fn all() -> &'static [Self] {
         &[Self::Pages, Self::Search, Self::Summaries, Self::Views]
     }
@@ -300,7 +290,7 @@ impl Cache {
                 let schema_ready = already_exists
                     && conn
                         .execute(
-                            "SELECT 1 FROM cache_pages, cache_server_capabilities LIMIT 0",
+                            "SELECT 1 FROM cache_pages, cache_search, cache_summaries, cache_server_capabilities LIMIT 0",
                             [],
                         )
                         .is_ok();
@@ -324,7 +314,6 @@ impl Cache {
                              data TEXT NOT NULL,
                              cached_at TIMESTAMP NOT NULL DEFAULT current_timestamp
                          );
-                         ALTER TABLE cache_summaries ADD COLUMN IF NOT EXISTS data TEXT;
                          CREATE TABLE IF NOT EXISTS cache_server_capabilities (
                              endpoint VARCHAR PRIMARY KEY,
                              model_id VARCHAR NOT NULL,
@@ -351,11 +340,6 @@ impl Cache {
     /// Returns the directory where rendered `.html` and `.md` view files are saved.
     pub fn views_dir(&self) -> PathBuf {
         self.base_dir.join("views")
-    }
-
-    /// Returns the path to the HTML view file for a given title.
-    pub fn html_view_path(&self, title: &str) -> PathBuf {
-        self.html_view_path_for(title, None)
     }
 
     /// Returns the collision-resistant path to the HTML view file for a given title and optional unique key.

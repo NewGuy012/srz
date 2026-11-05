@@ -59,8 +59,6 @@ struct InnertubeVideoDetails {
     title: Option<String>,
     #[serde(rename = "shortDescription")]
     short_description: Option<String>,
-    #[allow(dead_code)]
-    author: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -314,11 +312,6 @@ struct TimedTranscriptBuilder {
 }
 
 impl TimedTranscriptBuilder {
-    #[allow(dead_code)]
-    fn new(capacity: usize) -> Self {
-        Self::with_chapters(capacity, None)
-    }
-
     fn with_chapters(capacity: usize, chapters: Option<&[VideoChapter]>) -> Self {
         Self {
             result: String::with_capacity(capacity),

@@ -25,17 +25,6 @@ pub fn ensure_view_files(
     ensure_view_files_unique(views_dir, title, markdown, None, None, force_write)
 }
 
-/// Ensures both `.md` and `.html` view files exist in `views_dir`, embedding an optional model reasoning trace.
-pub fn ensure_view_files_with_reasoning(
-    views_dir: &Path,
-    title: &str,
-    markdown: &str,
-    reasoning: Option<&str>,
-    force_write: bool,
-) -> std::io::Result<RenderedFiles> {
-    ensure_view_files_unique(views_dir, title, markdown, None, reasoning, force_write)
-}
-
 /// Ensures both `.md` and `.html` view files exist in `views_dir` with collision-safe unique key support
 /// and an optional model reasoning trace.
 pub fn ensure_view_files_unique(
