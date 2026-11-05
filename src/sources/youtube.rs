@@ -57,6 +57,8 @@ struct InnertubePlayerResponse {
 #[derive(Deserialize, Debug)]
 struct InnertubeVideoDetails {
     title: Option<String>,
+    #[serde(rename = "shortDescription")]
+    short_description: Option<String>,
     #[allow(dead_code)]
     author: Option<String>,
 }
@@ -76,6 +78,14 @@ struct InnertubeTracklistRenderer {
 pub struct ParsedPlayerData {
     pub title: Option<String>,
     pub caption_tracks: Option<Vec<CaptionTrack>>,
+    pub description: Option<String>,
+}
+
+/// A timestamped chapter marker in a YouTube video.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VideoChapter {
+    pub seconds: u64,
+    pub title: String,
 }
 
 /// Checks if a URL is a YouTube video link and returns its 11-character video ID.
@@ -195,18 +205,127 @@ pub fn format_timestamp(seconds: u64) -> String {
 
 use crate::system::text_util::decode_html_entities;
 
+/// Extracts timestamped chapter markers from a video description.
+pub fn parse_chapters_from_description(desc: &str) -> Vec<VideoChapter> {
+    let mut chapters = Vec::new();
+
+    for line in desc.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // Try extracting timestamp from start of line, e.g. "00:00 Intro", "[01:30] Architecture"
+        if let Some((secs, title)) = parse_chapter_line_start(trimmed) {
+            chapters.push(VideoChapter {
+                seconds: secs,
+                title,
+            });
+            continue;
+        }
+
+        // Try extracting timestamp from end of line, e.g. "Architecture - 01:30"
+        if let Some((secs, title)) = parse_chapter_line_end(trimmed) {
+            chapters.push(VideoChapter {
+                seconds: secs,
+                title,
+            });
+        }
+    }
+
+    if chapters.len() < 2 {
+        return Vec::new();
+    }
+
+    chapters.sort_by_key(|c| c.seconds);
+    chapters.dedup_by_key(|c| c.seconds);
+
+    // YouTube chapters must start near 0:00 (<= 10s) to be valid video chapters
+    if chapters.first().map(|c| c.seconds <= 10).unwrap_or(false) {
+        chapters
+    } else {
+        Vec::new()
+    }
+}
+
+fn parse_chapter_line_start(line: &str) -> Option<(u64, String)> {
+    let first_token = line.split_whitespace().next()?;
+    let secs = parse_timestamp_token(first_token)?;
+    let remainder = line[first_token.len()..].trim();
+    let clean_title = remainder
+        .trim_start_matches(|c: char| {
+            c == '-' || c == '–' || c == '—' || c == ':' || c == '.' || c == ' '
+        })
+        .trim();
+    if !clean_title.is_empty() {
+        Some((secs, clean_title.to_string()))
+    } else {
+        None
+    }
+}
+
+fn parse_chapter_line_end(line: &str) -> Option<(u64, String)> {
+    let last_token = line.split_whitespace().last()?;
+    let secs = parse_timestamp_token(last_token)?;
+    let remainder = line[..line.len() - last_token.len()].trim();
+    let clean_title = remainder
+        .trim_end_matches(|c: char| {
+            c == '-' || c == '–' || c == '—' || c == ':' || c == '.' || c == ' '
+        })
+        .trim();
+    if !clean_title.is_empty() {
+        Some((secs, clean_title.to_string()))
+    } else {
+        None
+    }
+}
+
+fn parse_timestamp_token(token: &str) -> Option<u64> {
+    let clean = token.trim_matches(|c: char| {
+        c == '[' || c == ']' || c == '(' || c == ')' || c == '{' || c == '}'
+    });
+    let parts: Vec<&str> = clean.split(':').collect();
+    match parts.len() {
+        2 => {
+            let m: u64 = parts[0].parse().ok()?;
+            let s: u64 = parts[1].parse().ok()?;
+            if s < 60 { Some(m * 60 + s) } else { None }
+        }
+        3 => {
+            let h: u64 = parts[0].parse().ok()?;
+            let m: u64 = parts[1].parse().ok()?;
+            let s: u64 = parts[2].parse().ok()?;
+            if m < 60 && s < 60 {
+                Some(h * 3600 + m * 60 + s)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 struct TimedTranscriptBuilder {
     result: String,
     current_interval: u64,
     current_line: String,
+    chapters: Vec<VideoChapter>,
+    current_chapter_idx: usize,
 }
 
 impl TimedTranscriptBuilder {
+    #[allow(dead_code)]
     fn new(capacity: usize) -> Self {
+        Self::with_chapters(capacity, None)
+    }
+
+    fn with_chapters(capacity: usize, chapters: Option<&[VideoChapter]>) -> Self {
         Self {
             result: String::with_capacity(capacity),
             current_interval: u64::MAX,
             current_line: String::new(),
+            chapters: chapters.map(|c| c.to_vec()).unwrap_or_default(),
+            current_chapter_idx: usize::MAX,
         }
     }
 
@@ -221,21 +340,49 @@ impl TimedTranscriptBuilder {
             return;
         }
 
-        let interval = seconds / 60; // Group by ~1 minute cues
-        if interval != self.current_interval {
-            if !self.current_line.is_empty() {
-                self.result.push_str(&self.current_line);
-                self.result.push_str("\n\n");
-                self.current_line.clear();
+        if !self.chapters.is_empty() {
+            // Find active chapter index for current timestamp
+            let mut active_idx = 0;
+            while active_idx + 1 < self.chapters.len()
+                && seconds >= self.chapters[active_idx + 1].seconds
+            {
+                active_idx += 1;
             }
-            self.current_interval = interval;
-            self.current_line.push_str(&format_timestamp(seconds));
-            self.current_line.push(' ');
-        } else if !self.current_line.is_empty() && !self.current_line.ends_with(' ') {
-            self.current_line.push(' ');
-        }
 
-        self.current_line.push_str(trimmed);
+            if active_idx != self.current_chapter_idx {
+                if !self.current_line.is_empty() {
+                    self.result.push_str(&self.current_line);
+                    self.result.push_str("\n\n");
+                    self.current_line.clear();
+                }
+                self.current_chapter_idx = active_idx;
+                let ch = &self.chapters[active_idx];
+                self.result.push_str(&format!(
+                    "{} ## {}\n",
+                    format_timestamp(ch.seconds),
+                    ch.title
+                ));
+            } else if !self.current_line.is_empty() && !self.current_line.ends_with(' ') {
+                self.current_line.push(' ');
+            }
+            self.current_line.push_str(trimmed);
+        } else {
+            let interval = seconds / 60; // Group by ~1 minute cues
+            if interval != self.current_interval {
+                if !self.current_line.is_empty() {
+                    self.result.push_str(&self.current_line);
+                    self.result.push_str("\n\n");
+                    self.current_line.clear();
+                }
+                self.current_interval = interval;
+                self.current_line.push_str(&format_timestamp(seconds));
+                self.current_line.push(' ');
+            } else if !self.current_line.is_empty() && !self.current_line.ends_with(' ') {
+                self.current_line.push(' ');
+            }
+
+            self.current_line.push_str(trimmed);
+        }
     }
 
     fn finish(mut self) -> Option<String> {
@@ -253,12 +400,20 @@ impl TimedTranscriptBuilder {
 
 /// Parses JSON3 format timed text into formatted timestamped paragraphs.
 pub fn parse_json3_timedtext(json_str: &str) -> Option<String> {
+    parse_json3_timedtext_with_chapters(json_str, None)
+}
+
+/// Parses JSON3 format timed text with optional chapter marker boundaries.
+pub fn parse_json3_timedtext_with_chapters(
+    json_str: &str,
+    chapters: Option<&[VideoChapter]>,
+) -> Option<String> {
     let parsed: TimedTextJson = serde_json::from_str(json_str).ok()?;
     if parsed.events.is_empty() {
         return None;
     }
 
-    let mut builder = TimedTranscriptBuilder::new(json_str.len() / 2);
+    let mut builder = TimedTranscriptBuilder::with_chapters(json_str.len() / 2, chapters);
     let mut combined_buf = String::new();
 
     for ev in parsed.events {
@@ -281,13 +436,20 @@ pub fn parse_json3_timedtext(json_str: &str) -> Option<String> {
 
 /// Parses XML timed text format 1 `<text start="1.23" dur="4.56">...</text>` into formatted paragraphs.
 pub fn parse_xml_timedtext(xml_str: &str) -> Option<String> {
+    parse_xml_timedtext_with_chapters(xml_str, None)
+}
+
+/// Parses XML timed text format 1 with optional chapter marker boundaries.
+pub fn parse_xml_timedtext_with_chapters(
+    xml_str: &str,
+    chapters: Option<&[VideoChapter]>,
+) -> Option<String> {
     if !xml_str.contains("<text") {
         return None;
     }
 
     let mut reader = Reader::from_str(xml_str);
-
-    let mut builder = TimedTranscriptBuilder::new(xml_str.len() / 2);
+    let mut builder = TimedTranscriptBuilder::with_chapters(xml_str.len() / 2, chapters);
     let mut current_start = 0.0;
 
     loop {
@@ -317,13 +479,20 @@ pub fn parse_xml_timedtext(xml_str: &str) -> Option<String> {
 
 /// Parses XML timed text format 3 (`<p t="160" d="4000"><s>word</s>...</p>`) into formatted paragraphs.
 pub fn parse_xml_format3_timedtext(xml_str: &str) -> Option<String> {
+    parse_xml_format3_timedtext_with_chapters(xml_str, None)
+}
+
+/// Parses XML timed text format 3 with optional chapter marker boundaries.
+pub fn parse_xml_format3_timedtext_with_chapters(
+    xml_str: &str,
+    chapters: Option<&[VideoChapter]>,
+) -> Option<String> {
     if !xml_str.contains("<p") {
         return None;
     }
 
     let mut reader = Reader::from_str(xml_str);
-
-    let mut builder = TimedTranscriptBuilder::new(xml_str.len() / 2);
+    let mut builder = TimedTranscriptBuilder::with_chapters(xml_str.len() / 2, chapters);
     let mut current_sec = 0;
     let mut in_p = false;
     let mut p_text = String::new();
@@ -362,22 +531,30 @@ pub fn parse_xml_format3_timedtext(xml_str: &str) -> Option<String> {
 
 /// Dispatches timed text payloads to the appropriate parser based on payload structure.
 pub fn parse_timedtext(body: &str) -> Option<String> {
+    parse_timedtext_with_chapters(body, None)
+}
+
+/// Dispatches timed text payloads to the appropriate parser with optional chapter markers.
+pub fn parse_timedtext_with_chapters(
+    body: &str,
+    chapters: Option<&[VideoChapter]>,
+) -> Option<String> {
     let trimmed = body.trim();
     if trimmed.is_empty() {
         return None;
     }
     if trimmed.starts_with('{')
-        && let Some(res) = parse_json3_timedtext(trimmed)
+        && let Some(res) = parse_json3_timedtext_with_chapters(trimmed, chapters)
     {
         return Some(res);
     }
     if trimmed.contains("<p")
-        && let Some(res) = parse_xml_format3_timedtext(trimmed)
+        && let Some(res) = parse_xml_format3_timedtext_with_chapters(trimmed, chapters)
     {
         return Some(res);
     }
     if trimmed.contains("<text")
-        && let Some(res) = parse_xml_timedtext(trimmed)
+        && let Some(res) = parse_xml_timedtext_with_chapters(trimmed, chapters)
     {
         return Some(res);
     }
@@ -426,7 +603,14 @@ pub async fn fetch_innertube_player(
     let player: InnertubePlayerResponse =
         serde_json::from_str(&text).context("Failed to parse player JSON")?;
 
-    let title = player.video_details.and_then(|vd| vd.title);
+    let title = player
+        .video_details
+        .as_ref()
+        .and_then(|vd| vd.title.clone());
+    let description = player
+        .video_details
+        .as_ref()
+        .and_then(|vd| vd.short_description.clone());
     let tracks = player
         .captions
         .and_then(|c| c.renderer.map(|r| r.caption_tracks));
@@ -434,7 +618,21 @@ pub async fn fetch_innertube_player(
     Ok(ParsedPlayerData {
         title,
         caption_tracks: tracks,
+        description,
     })
+}
+
+/// Extracts the video description from YouTube watch page HTML.
+pub fn extract_video_description(html: &str) -> Option<String> {
+    if let Some(start) = html.find("\"shortDescription\":\"") {
+        let after = &html[start + "\"shortDescription\":\"".len()..];
+        if let Some(end) = after.find("\",\"") {
+            let desc = &after[..end];
+            let clean = desc.replace("\\n", "\n").replace("\\\"", "\"");
+            return Some(clean);
+        }
+    }
+    None
 }
 
 /// Validates that a caption track URL belongs to the official YouTube timedtext API to prevent SSRF.
@@ -452,7 +650,11 @@ pub fn is_safe_caption_url(url_str: &str) -> bool {
     is_youtube && parsed.path().starts_with("/api/timedtext")
 }
 
-async fn download_and_parse_captions(client: &Client, url: &str) -> Option<String> {
+async fn download_and_parse_captions(
+    client: &Client,
+    url: &str,
+    chapters: Option<&[VideoChapter]>,
+) -> Option<String> {
     if !is_safe_caption_url(url) {
         return None;
     }
@@ -465,7 +667,7 @@ async fn download_and_parse_captions(client: &Client, url: &str) -> Option<Strin
     let uas = [ANDROID_USER_AGENT, crate::scraper::DEFAULT_USER_AGENT];
     for u in &candidate_urls {
         for ua in uas {
-            if let Some(parsed) = fetch_single_caption_url(client, u, ua).await {
+            if let Some(parsed) = fetch_single_caption_url(client, u, ua, chapters).await {
                 return Some(parsed);
             }
         }
@@ -474,7 +676,12 @@ async fn download_and_parse_captions(client: &Client, url: &str) -> Option<Strin
     None
 }
 
-async fn fetch_single_caption_url(client: &Client, url: &str, user_agent: &str) -> Option<String> {
+async fn fetch_single_caption_url(
+    client: &Client,
+    url: &str,
+    user_agent: &str,
+    chapters: Option<&[VideoChapter]>,
+) -> Option<String> {
     let resp = client
         .get(url)
         .header("User-Agent", user_agent)
@@ -496,7 +703,7 @@ async fn fetch_single_caption_url(client: &Client, url: &str, user_agent: &str) 
         return None;
     }
 
-    parse_timedtext(&body)
+    parse_timedtext_with_chapters(&body, chapters)
 }
 
 /// Fetches and extracts transcript and metadata for a YouTube video.
@@ -506,12 +713,13 @@ pub async fn fetch_youtube_transcript(client: &Client, video_id: &str) -> Result
     // 1. Attempt to fetch video details and caption tracks via Innertube Player APIs (Android, then Web)
     let mut title: Option<String> = None;
     let mut tracks: Option<Vec<CaptionTrack>> = None;
+    let mut description: Option<String> = None;
 
     const INNERTUBE_CLIENTS: [(&str, &str); 2] =
         [("ANDROID", "20.10.38"), ("WEB", "2.20240101.00.00")];
 
     for (client_name, client_version) in INNERTUBE_CLIENTS {
-        if tracks.is_some() && title.is_some() {
+        if tracks.is_some() && title.is_some() && description.is_some() {
             break;
         }
         if let Ok(player_data) =
@@ -519,6 +727,9 @@ pub async fn fetch_youtube_transcript(client: &Client, video_id: &str) -> Result
         {
             if title.is_none() && player_data.title.is_some() {
                 title = player_data.title;
+            }
+            if description.is_none() && player_data.description.is_some() {
+                description = player_data.description;
             }
             if tracks.is_none()
                 && let Some(t_list) = player_data.caption_tracks
@@ -529,8 +740,8 @@ pub async fn fetch_youtube_transcript(client: &Client, video_id: &str) -> Result
         }
     }
 
-    // 2. Fallback to watch page HTML if tracks or title are still missing
-    if (tracks.is_none() || title.is_none())
+    // 2. Fallback to watch page HTML if tracks, title, or description are still missing
+    if (tracks.is_none() || title.is_none() || description.is_none())
         && let Ok(resp) = client
             .get(&watch_url)
             .header("User-Agent", crate::scraper::DEFAULT_USER_AGENT)
@@ -548,35 +759,70 @@ pub async fn fetch_youtube_transcript(client: &Client, video_id: &str) -> Result
         if tracks.is_none() {
             tracks = extract_caption_tracks(&html);
         }
+        if description.is_none() {
+            description = extract_video_description(&html);
+        }
     }
 
     let resolved_title = title.unwrap_or_else(|| format!("YouTube Video ({})", video_id));
 
-    // 4. Select the best caption track (preferring English, human-authored over ASR)
-    let chosen_url = if let Some(ref list) = tracks {
-        let best_track = list
+    // 3. Extract native chapters if available from description
+    let chapters = description
+        .as_deref()
+        .map(parse_chapters_from_description)
+        .filter(|c| !c.is_empty());
+
+    if let Some(ref chs) = chapters {
+        crate::ui::Ui::info(&format!(
+            "Parsed {} chapter marker(s) from YouTube video description.",
+            chs.len()
+        ));
+    }
+
+    // 4. Select the best caption track:
+    // Prefer English human captions, then English ASR, then auto-translated English (&tlang=en), then native
+    let mut chosen_url = None;
+    let mut is_auto_translated = false;
+
+    if let Some(ref list) = tracks {
+        if let Some(en_human) = list
             .iter()
             .find(|t| t.language_code.starts_with("en") && t.kind.as_deref() != Some("asr"))
-            .or_else(|| list.iter().find(|t| t.language_code.starts_with("en")))
-            .or_else(|| list.first());
-        best_track.map(|t| t.base_url.clone())
-    } else {
-        None
-    };
+        {
+            chosen_url = Some(en_human.base_url.clone());
+        } else if let Some(en_asr) = list.iter().find(|t| t.language_code.starts_with("en")) {
+            chosen_url = Some(en_asr.base_url.clone());
+        } else if let Some(foreign) = list.first() {
+            // Attempt auto-translated track to English first
+            let mut translated = foreign.base_url.clone();
+            if !translated.contains("tlang=") {
+                translated.push_str("&tlang=en");
+            }
+            chosen_url = Some(translated);
+            is_auto_translated = true;
+        }
+    }
 
-    // 5. Download and parse captions
-    let transcript = if let Some(base_url) = chosen_url {
-        download_and_parse_captions(client, &base_url).await
+    // 5. Download and parse captions (with auto-translation fallback)
+    let transcript = if let Some(ref base_url) = chosen_url {
+        let res = download_and_parse_captions(client, base_url, chapters.as_deref()).await;
+        if res.is_none() && is_auto_translated {
+            // If YouTube rejects auto-translation (&tlang=en), fall back to native track
+            let native_url = base_url.replace("&tlang=en", "");
+            download_and_parse_captions(client, &native_url, chapters.as_deref()).await
+        } else {
+            res
+        }
     } else {
         let fallback_url = format!(
             "https://www.youtube.com/api/timedtext?v={}&lang=en&fmt=json3",
             video_id
         );
-        download_and_parse_captions(client, &fallback_url).await
+        download_and_parse_captions(client, &fallback_url, chapters.as_deref()).await
     };
 
     let content = transcript.context(format!(
-        "No English closed captions or transcript found for YouTube video '{}' (ID: {}). The video creator may have disabled subtitles.",
+        "No closed captions or transcript found for YouTube video '{}' (ID: {}). The video creator may have disabled subtitles.",
         resolved_title, video_id
     ))?;
 
@@ -763,5 +1009,56 @@ mod tests {
             decode_html_entities("A &amp;lt; B &quot;ok&quot;"),
             "A &lt; B \"ok\""
         );
+    }
+
+    #[test]
+    fn test_parse_chapters_from_description() {
+        let desc = r#"
+Welcome to the channel!
+In this video we cover modern Rust.
+
+00:00 - Introduction & Motivation
+01:45 The Architecture Pipeline
+08:20 Benchmarks & Performance
+01:15:30 Q&A and Conclusion
+
+Thanks for watching!
+"#;
+
+        let chapters = parse_chapters_from_description(desc);
+        assert_eq!(chapters.len(), 4);
+        assert_eq!(chapters[0].seconds, 0);
+        assert_eq!(chapters[0].title, "Introduction & Motivation");
+        assert_eq!(chapters[1].seconds, 105);
+        assert_eq!(chapters[1].title, "The Architecture Pipeline");
+        assert_eq!(chapters[2].seconds, 500);
+        assert_eq!(chapters[2].title, "Benchmarks & Performance");
+        assert_eq!(chapters[3].seconds, 4530);
+        assert_eq!(chapters[3].title, "Q&A and Conclusion");
+    }
+
+    #[test]
+    fn test_parse_json3_timedtext_with_chapters() {
+        let json = r#"{
+            "events": [
+                {"tStartMs": 2000, "segs": [{"utf8": "Welcome to the video."}]},
+                {"tStartMs": 110000, "segs": [{"utf8": "Now exploring the architecture."}]}
+            ]
+        }"#;
+
+        let chapters = vec![
+            VideoChapter {
+                seconds: 0,
+                title: "Introduction".to_string(),
+            },
+            VideoChapter {
+                seconds: 105,
+                title: "Architecture".to_string(),
+            },
+        ];
+
+        let parsed = parse_json3_timedtext_with_chapters(json, Some(&chapters)).unwrap();
+        assert!(parsed.contains("[00:00] ## Introduction\nWelcome to the video."));
+        assert!(parsed.contains("[01:45] ## Architecture\nNow exploring the architecture."));
     }
 }
