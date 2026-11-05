@@ -1029,6 +1029,7 @@ impl Cache {
         self.set_web_summary_with_words(url, style, model, title, summary, 0, None);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn set_web_summary_with_words(
         &self,
         url: &str,
@@ -1066,6 +1067,7 @@ impl Cache {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn set_file_summary(
         &self,
         file_key: &str,
