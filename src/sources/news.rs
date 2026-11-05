@@ -12,6 +12,8 @@ pub struct NewsArticleItem {
     pub google_link: String,
     pub source_name: Option<String>,
     pub pub_date: Option<String>,
+    #[serde(default)]
+    pub snippet: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -88,9 +90,14 @@ impl GoogleNewsClient {
 
     /// Resolves an opaque Google News `/rss/articles/CBMi...` redirect link to the real publisher destination URL.
     pub async fn resolve_article_url(&self, google_url: &str) -> Option<String> {
+        // 1. Fast-path: attempt zero-network offline protobuf decoding for CBMi IDs
+        if let Some(direct) = decode_google_news_url(google_url) {
+            return Some(direct);
+        }
+
         let base64_id = extract_article_id(google_url)?;
 
-        // 1. Fetch intermediate Google News article page to extract ephemeral signature & timestamp
+        // 2. Fetch intermediate Google News article page to extract ephemeral signature & timestamp
         let page_url = format!("https://news.google.com/articles/{}", base64_id);
         let resp = self.client.get(&page_url).send().await.ok()?;
         let html =
@@ -228,8 +235,8 @@ impl GoogleNewsClient {
         let mut uncached_items = Vec::new();
 
         for item in feed_items {
-            if extract_article_id(&item.google_link).is_none()
-                && let Some(c) = cache
+            // 1. Direct cache check for feed link
+            if let Some(c) = cache
                 && let Some(page) = c.get_page(&item.google_link)
                 && page.word_count > 60
             {
@@ -246,6 +253,30 @@ impl GoogleNewsClient {
                 }
                 continue;
             }
+
+            // 2. Offline protobuf decode and direct URL cache check
+            if let Some(direct) = decode_google_news_url(&item.google_link) {
+                if let Some(c) = cache
+                    && let Some(page) = c.get_page(&direct)
+                    && page.word_count > 60
+                {
+                    // Cache under google_link as well for sub-millisecond future hits
+                    c.set_page(&item.google_link, &page);
+                    sources.push(NewsDigestSource {
+                        title: page.title.unwrap_or(item.title),
+                        source_name: item.source_name.unwrap_or_else(|| "Source".to_string()),
+                        url: direct,
+                        pub_date: item.pub_date,
+                        content: page.content,
+                        word_count: page.word_count,
+                    });
+                    if sources.len() >= limit {
+                        return Ok(sources);
+                    }
+                    continue;
+                }
+            }
+
             uncached_items.push(item);
         }
 
@@ -266,35 +297,51 @@ impl GoogleNewsClient {
                 };
 
                 let scraped: Result<ScrapedPage> = scraper_cloned.scrape(&direct_url).await;
-                if let Ok(page) = scraped
+                let (content, word_count, resolved_title) = if let Ok(page) = scraped
                     && page.word_count > 60
                 {
-                    Some(NewsDigestSource {
-                        title: page.title.unwrap_or(item.title),
+                    (
+                        page.content,
+                        page.word_count,
+                        page.title.unwrap_or(item.title),
+                    )
+                } else if let Some(snip) = &item.snippet
+                    && snip.split_whitespace().count() >= 20
+                {
+                    // Fall back to syndication feed description/content when scraping hits paywalls/403
+                    let wc = snip.split_whitespace().count();
+                    (snip.clone(), wc, item.title)
+                } else {
+                    return None;
+                };
+
+                Some((
+                    item.google_link,
+                    NewsDigestSource {
+                        title: resolved_title,
                         source_name: item.source_name.unwrap_or_else(|| "Source".to_string()),
                         url: direct_url,
                         pub_date: item.pub_date,
-                        content: page.content,
-                        word_count: page.word_count,
-                    })
-                } else {
-                    None
-                }
+                        content,
+                        word_count,
+                    },
+                ))
             });
         }
 
         while let Some(res) = join_set.join_next().await {
-            if let Ok(Some(source)) = res {
+            if let Ok(Some((google_link, source))) = res {
                 if let Some(c) = cache {
-                    c.set_page(
-                        &source.url,
-                        &ScrapedPage {
-                            url: source.url.clone(),
-                            title: Some(source.title.clone()),
-                            content: source.content.clone(),
-                            word_count: source.word_count,
-                        },
-                    );
+                    let page_record = ScrapedPage {
+                        url: source.url.clone(),
+                        title: Some(source.title.clone()),
+                        content: source.content.clone(),
+                        word_count: source.word_count,
+                    };
+                    c.set_page(&source.url, &page_record);
+                    if source.url != google_link {
+                        c.set_page(&google_link, &page_record);
+                    }
                 }
                 sources.push(source);
                 if sources.len() >= limit {
@@ -419,12 +466,23 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
                 .or_else(|| title.rsplit_once(" - ").map(|(_, s)| s.trim().to_string()))
                 .or_else(|| feed_source.clone());
 
+            let snippet = entry
+                .summary
+                .map(|s| clean_xml_text(&s.content))
+                .or_else(|| {
+                    entry
+                        .content
+                        .and_then(|c| c.body.map(|b| clean_xml_text(&b)))
+                })
+                .filter(|s| !s.is_empty());
+
             if !title.is_empty() && !link.is_empty() {
                 items.push(NewsArticleItem {
                     title,
                     google_link: link,
                     source_name,
                     pub_date,
+                    snippet,
                 });
             }
         }
@@ -435,6 +493,96 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
     }
 
     Vec::new()
+}
+
+/// Attempts zero-network offline decoding of an obfuscated Google News URL (`CBMi...`).
+///
+/// Google News article IDs starting with `CBMi` are URL-safe base64-encoded protobuf messages
+/// that contain the canonical destination URL in cleartext. Decoding them offline eliminates
+/// up to two HTTP roundtrips (page fetch + `batchexecute` RPC).
+pub fn decode_google_news_url(url: &str) -> Option<String> {
+    let id = extract_article_id(url)?;
+    decode_cbmi_id(id)
+}
+
+/// Decodes an obfuscated Google News article ID starting with `CBMi` into its target URL.
+pub fn decode_cbmi_id(id: &str) -> Option<String> {
+    if !id.starts_with("CBMi") {
+        return None;
+    }
+    let raw = decode_base64_url_safe(id)?;
+    extract_url_from_protobuf(&raw)
+}
+
+/// Decodes standard or URL-safe base64 strings into raw bytes without external crate dependencies.
+fn decode_base64_url_safe(input: &str) -> Option<Vec<u8>> {
+    let clean = input.trim_end_matches('=');
+    let mut out = Vec::with_capacity((clean.len() * 3) / 4 + 4);
+    let mut buf = 0u32;
+    let mut bits = 0;
+
+    for b in clean.bytes() {
+        let val = match b {
+            b'A'..=b'Z' => b - b'A',
+            b'a'..=b'z' => b - b'a' + 26,
+            b'0'..=b'9' => b - b'0' + 52,
+            b'-' | b'+' => 62,
+            b'_' | b'/' => 63,
+            b'=' => continue,
+            _ => return None,
+        } as u32;
+
+        buf = (buf << 6) | val;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+            buf &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
+}
+
+/// Scans decoded protobuf byte slices for an embedded `http://` or `https://` payload.
+fn extract_url_from_protobuf(raw: &[u8]) -> Option<String> {
+    const SCHEMES: &[&[u8]] = &[b"https://", b"http://"];
+    for scheme in SCHEMES {
+        if let Some(pos) = raw.windows(scheme.len()).position(|w| w == *scheme) {
+            // First check if a length byte immediately precedes the scheme
+            if pos > 0 {
+                let len = raw[pos - 1] as usize;
+                if len >= scheme.len() && pos + len <= raw.len() {
+                    let slice = &raw[pos..pos + len];
+                    if let Ok(s) = std::str::from_utf8(slice) {
+                        if !s
+                            .chars()
+                            .any(|c| c.is_control() || c == ' ' || c == '"' || c == '<' || c == '>')
+                            && crate::system::text_util::is_http_url(s)
+                        {
+                            return Some(s.to_string());
+                        }
+                    }
+                }
+            }
+            // Fallback: scan forward while encountering valid printable ASCII URL characters
+            let mut end = pos;
+            while end < raw.len() {
+                let b = raw[end];
+                if (33..=126).contains(&b) && b != b'"' && b != b'\'' && b != b'<' && b != b'>' {
+                    end += 1;
+                } else {
+                    break;
+                }
+            }
+            let slice = &raw[pos..end];
+            if let Ok(s) = std::str::from_utf8(slice) {
+                if crate::system::text_util::is_http_url(s) {
+                    return Some(s.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 pub fn extract_article_id(url: &str) -> Option<&str> {
@@ -682,5 +830,38 @@ mod tests {
             <item><title>File Link</title><link>file:///etc/passwd</link></item>
         </channel></rss>"#;
         assert_eq!(parse_rss_items(bad_rss, 5).len(), 0);
+    }
+
+    #[test]
+    fn test_decode_google_news_url_offline() {
+        let url = "https://news.google.com/rss/articles/CBMiWmh0dHBzOi8vd3d3LnNpdGVwb2ludC5jb20vamF2YXNjcmlwdC1uZXdzLw?oc=5";
+        assert_eq!(
+            decode_google_news_url(url),
+            Some("https://www.sitepoint.com/javascript-news/".to_string())
+        );
+
+        // Non-CBMi IDs return None to fall back to RPC
+        assert_eq!(
+            decode_google_news_url("https://news.google.com/articles/CBIi98765"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_parse_rss_items_extracts_snippet() {
+        let xml = r#"<rss version="2.0"><channel>
+            <item>
+                <title>Article with Summary</title>
+                <link>https://example.com/article</link>
+                <description><![CDATA[This is a descriptive summary of the breaking story.]]></description>
+            </item>
+        </channel></rss>"#;
+
+        let items = parse_rss_items(xml, 5);
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].snippet.as_deref(),
+            Some("This is a descriptive summary of the breaking story.")
+        );
     }
 }
