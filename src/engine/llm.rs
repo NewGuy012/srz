@@ -1178,7 +1178,11 @@ impl LlmClient {
             }
 
             if cursor > 0 {
-                line_buf.drain(..cursor);
+                if cursor == line_buf.len() {
+                    line_buf.clear();
+                } else {
+                    line_buf.drain(..cursor);
+                }
             }
             if state.needs_stdout_flush {
                 let _ = io::stdout().flush();
@@ -1338,11 +1342,17 @@ impl LlmClient {
                 let shared_title: std::sync::Arc<str> = safe_title.clone().into();
                 let mut handles = Vec::with_capacity(chunks_len);
 
+                let map_pb = Ui::spinner("Summarizing document chunks...");
+                let completed_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let map_pb_clone = map_pb.clone();
+
                 for (i, chunk) in chunks.into_iter().enumerate() {
                     let sem = semaphore.clone();
                     let client = client_arc.clone();
                     let doc_title = shared_title.clone();
                     let chunk_owned = chunk.into_owned();
+                    let counter = completed_count.clone();
+                    let pb = map_pb_clone.clone();
 
                     handles.push(tokio::spawn(async move {
                         let _permit = sem
@@ -1362,15 +1372,44 @@ impl LlmClient {
                             chunks_len,
                             untrusted_block
                         );
-                        client
-                            .complete_streaming(
-                                section_sys,
-                                &section_user,
-                                "Summarizing document chunk...",
-                                &format!("Chunk {}/{} summarized.", i + 1, chunks_len),
-                                StreamMode::Buffered,
-                            )
-                            .await
+
+                        // Resilient retry loop: retry up to 2 times with backoff on transient network drops
+                        let mut attempts = 0;
+                        let res = loop {
+                            attempts += 1;
+                            match client
+                                .complete_streaming(
+                                    section_sys,
+                                    &section_user,
+                                    "Summarizing document chunk...",
+                                    "",
+                                    StreamMode::Buffered,
+                                )
+                                .await
+                            {
+                                Ok(out) => break Ok(out),
+                                Err(_err) if attempts <= 2 => {
+                                    tokio::time::sleep(Duration::from_millis(
+                                        300 * attempts as u64,
+                                    ))
+                                    .await;
+                                }
+                                Err(err) => break Err(err),
+                            }
+                        };
+
+                        if res.is_ok() {
+                            let done =
+                                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                            pb.set_message(Ui::format_chunk_progress(
+                                "Summarizing document chunks",
+                                done,
+                                chunks_len,
+                                map_reduce_start.elapsed(),
+                            ));
+                        }
+
+                        res
                     }));
                 }
 
@@ -1386,6 +1425,8 @@ impl LlmClient {
                     total_completion_tokens += part.completion_tokens.unwrap_or(0);
                     section_summaries.push(part.content);
                 }
+
+                Ui::finish_spinner(&map_pb, &format!("All {} chunks summarized.", chunks_len));
 
                 // Hierarchical (Tree) Reduction:
                 // If the concatenated section summaries exceed single_pass_threshold, recursively
@@ -1411,12 +1452,18 @@ impl LlmClient {
 
                     let batch_count = batches.len();
                     let mut round_handles = Vec::with_capacity(batch_count);
+                    let round_pb = Ui::spinner("Consolidating intermediate section summaries...");
+                    let round_counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                    let round_pb_clone = round_pb.clone();
+                    let round_start = std::time::Instant::now();
 
                     for (b_idx, batch) in batches.into_iter().enumerate() {
                         let sem = semaphore.clone();
                         let client = client_arc.clone();
                         let doc_title = shared_title.clone();
                         let batch_combined = batch.join("\n\n---\n\n");
+                        let counter = round_counter.clone();
+                        let pb = round_pb_clone.clone();
 
                         round_handles.push(tokio::spawn(async move {
                             let _permit = sem
@@ -1438,19 +1485,43 @@ impl LlmClient {
                                 batch_count,
                                 untrusted_block
                             );
-                            client
-                                .complete_streaming(
-                                    reduce_sys,
-                                    &reduce_user,
-                                    "Consolidating intermediate section summaries...",
-                                    &format!(
-                                        "Intermediate batch {}/{} consolidated.",
-                                        b_idx + 1,
-                                        batch_count
-                                    ),
-                                    StreamMode::Buffered,
-                                )
-                                .await
+
+                            let mut attempts = 0;
+                            let res = loop {
+                                attempts += 1;
+                                match client
+                                    .complete_streaming(
+                                        reduce_sys,
+                                        &reduce_user,
+                                        "Consolidating intermediate section summaries...",
+                                        "",
+                                        StreamMode::Buffered,
+                                    )
+                                    .await
+                                {
+                                    Ok(out) => break Ok(out),
+                                    Err(_err) if attempts <= 2 => {
+                                        tokio::time::sleep(Duration::from_millis(
+                                            300 * attempts as u64,
+                                        ))
+                                        .await;
+                                    }
+                                    Err(err) => break Err(err),
+                                }
+                            };
+
+                            if res.is_ok() {
+                                let done =
+                                    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                                pb.set_message(Ui::format_chunk_progress(
+                                    "Consolidating intermediate section summaries",
+                                    done,
+                                    batch_count,
+                                    round_start.elapsed(),
+                                ));
+                            }
+
+                            res
                         }));
                     }
 
@@ -1461,6 +1532,14 @@ impl LlmClient {
                         total_completion_tokens += part.completion_tokens.unwrap_or(0);
                         next_summaries.push(part.content);
                     }
+
+                    Ui::finish_spinner(
+                        &round_pb,
+                        &format!(
+                            "Tree reduction round {} complete ({} batches consolidated).",
+                            tree_round, batch_count
+                        ),
+                    );
 
                     if next_summaries.len() >= section_summaries.len() {
                         // No progress made in reducing summary count

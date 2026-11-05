@@ -137,6 +137,22 @@ impl Ui {
         }
     }
 
+    /// Formats a multi-chunk map-reduce progress message with completed count, total, and elapsed time.
+    pub fn format_chunk_progress(
+        label: &str,
+        completed: usize,
+        total: usize,
+        elapsed: Duration,
+    ) -> String {
+        let elapsed_str = format_duration_short(elapsed);
+        let meta = format!("{}/{} complete · {}", completed, total, elapsed_str);
+        if Self::use_color() {
+            format!("{} \x1b[2m[{}]\x1b[0m", label, meta)
+        } else {
+            format!("{} [{}]", label, meta)
+        }
+    }
+
     /// Runs an async operation with a spinner, cleanly clearing the spinner before printing
     /// the completion message or propagating an error.
     pub async fn with_spinner<T, E, F>(
@@ -478,6 +494,19 @@ mod tests {
                 assert_eq!(owned, "This has color");
             }
         }
+    }
+
+    #[test]
+    fn test_format_chunk_progress() {
+        let text = Ui::format_chunk_progress(
+            "Summarizing document chunks",
+            3,
+            8,
+            Duration::from_millis(2500),
+        );
+        assert!(text.contains("Summarizing document chunks"));
+        assert!(text.contains("3/8 complete"));
+        assert!(text.contains("2.5s"));
     }
 
     #[test]
