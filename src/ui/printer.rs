@@ -1,5 +1,6 @@
 use std::env;
 use std::io::{self, IsTerminal, Write};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::LazyLock;
 use termimad::MadSkin;
@@ -53,6 +54,19 @@ pub fn display_summary(
     paging_mode: PagingMode,
     plain: bool,
 ) -> io::Result<()> {
+    display_summary_full(title, content, paging_mode, plain, None, None)
+}
+
+/// Prints a unified terminal summary document (including optional view file links and context hints),
+/// launching a pager if the combined document exceeds terminal height.
+pub fn display_summary_full(
+    title: &str,
+    content: &str,
+    paging_mode: PagingMode,
+    plain: bool,
+    view_files: Option<(&Path, &Path)>,
+    hint: Option<&str>,
+) -> io::Result<()> {
     let stdout_is_tty = io::stdout().is_terminal();
     let sanitized_title = crate::ui::sanitize_title(title);
     let sanitized_content = crate::ui::sanitize_terminal_text_cow(content);
@@ -72,7 +86,21 @@ pub fn display_summary(
         sanitized_title
     );
     let formatted_body = render_markdown(&sanitized_content, None);
-    let full_output = format!("{}{}\n", header, formatted_body);
+    let mut full_output = format!("{}{}\n", header, formatted_body);
+
+    // Append view file links if available
+    if let Some((html_path, md_path)) = view_files {
+        full_output.push_str(&format!(
+            "\n\x1b[32m✔\x1b[0m \x1b[2mStyled HTML view:\x1b[0m file://{}\n\x1b[32m✔\x1b[0m \x1b[2mMarkdown file:   \x1b[0m file://{}\n",
+            html_path.display(),
+            md_path.display()
+        ));
+    }
+
+    // Append hint if available
+    if let Some(h) = hint {
+        full_output.push_str(&format!("\n\x1b[2m{}\x1b[0m\n", h));
+    }
 
     let (_, term_height) = crossterm::terminal::size().unwrap_or((80, 24));
     let line_count = full_output.lines().count();
@@ -152,5 +180,19 @@ mod tests {
     fn test_create_skin() {
         let skin = create_skin();
         assert_eq!(skin.headers[0].compound_style.get_fg(), Some(Color::Cyan));
+    }
+
+    #[test]
+    fn test_display_summary_plain_and_full() {
+        // Plain mode should succeed without error
+        let res = display_summary_full(
+            "Test Title",
+            "Test Body Content",
+            PagingMode::Never,
+            true,
+            Some((Path::new("/tmp/test.html"), Path::new("/tmp/test.md"))),
+            Some("💡 Context hint"),
+        );
+        assert!(res.is_ok());
     }
 }

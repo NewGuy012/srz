@@ -10,6 +10,7 @@ use srz::db::NewSummaryRecord;
 use srz::render;
 use srz::scraper::WebScraper;
 use srz::ui::Ui;
+use std::io::IsTerminal;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -205,9 +206,10 @@ async fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&outcome)?);
             } else if let Some(output_path) = &args.output {
                 let content = if render::is_html_path(output_path) {
-                    std::borrow::Cow::Owned(render::render_html_document(
+                    std::borrow::Cow::Owned(render::render_html_document_with_reasoning(
                         &outcome.title,
                         &outcome.summary,
+                        outcome.reasoning.as_deref(),
                     ))
                 } else {
                     std::borrow::Cow::Borrowed(outcome.summary.as_str())
@@ -219,47 +221,78 @@ async fn main() -> Result<()> {
                     "Summary successfully saved to {}",
                     output_path.display()
                 ));
-            } else if !outcome.streamed_to_stdout {
-                srz::ui::display_summary(
-                    &outcome.title,
-                    &outcome.summary,
-                    args.effective_paging(),
-                    args.plain,
-                )?;
-            }
+            } else {
+                let is_tty = std::io::stdout().is_terminal();
+                let hint_ref = if !args.plain && !args.quiet {
+                    outcome.hint.as_deref()
+                } else {
+                    None
+                };
 
-            // Always ensure clickable styled HTML and Markdown view files exist (skipping re-render on cache hit)
-            if !args.json
-                && let Ok(files) = render::ensure_view_files_with_reasoning(
+                // Ensure clickable styled HTML and Markdown view files exist
+                let view_files = render::ensure_view_files_with_reasoning(
                     &cache.views_dir(),
                     &outcome.title,
                     &outcome.summary,
                     outcome.reasoning.as_deref(),
                     !outcome.cached,
                 )
-            {
-                Ui::success(&format!(
-                    "Styled HTML view: file://{}",
-                    files.html_path.display()
-                ));
-                Ui::success(&format!(
-                    "Markdown file:    file://{}",
-                    files.md_path.display()
-                ));
+                .ok();
 
                 if args.open
+                    && let Some(ref files) = view_files
                     && let Err(err) = render::open_in_browser(&files.html_path)
                 {
                     Ui::warn(&format!("Could not open browser: {}", err));
                 }
-            }
 
-            if !args.json
-                && !args.plain
-                && !args.quiet
-                && let Some(hint) = &outcome.hint
-            {
-                println!("\n\x1b[2m{}\x1b[0m", hint);
+                if outcome.streamed_to_stdout {
+                    if is_tty {
+                        if let Some(ref files) = view_files {
+                            Ui::success(&format!(
+                                "Styled HTML view: file://{}",
+                                files.html_path.display()
+                            ));
+                            Ui::success(&format!(
+                                "Markdown file:    file://{}",
+                                files.md_path.display()
+                            ));
+                        }
+                        if let Some(hint) = hint_ref {
+                            eprintln!("\n\x1b[2m{}\x1b[0m", hint);
+                        }
+                    }
+                } else {
+                    let view_pair = view_files
+                        .as_ref()
+                        .map(|f| (f.html_path.as_path(), f.md_path.as_path()));
+
+                    srz::ui::display_summary_full(
+                        &outcome.title,
+                        &outcome.summary,
+                        args.effective_paging(),
+                        args.plain,
+                        if is_tty { view_pair } else { None },
+                        if is_tty { hint_ref } else { None },
+                    )?;
+
+                    // When output is piped (!is_tty), print view file notices and hints strictly to stderr
+                    if !is_tty {
+                        if let Some(ref files) = view_files {
+                            Ui::success(&format!(
+                                "Styled HTML view: file://{}",
+                                files.html_path.display()
+                            ));
+                            Ui::success(&format!(
+                                "Markdown file:    file://{}",
+                                files.md_path.display()
+                            ));
+                        }
+                        if let Some(hint) = hint_ref {
+                            eprintln!("\n{}", hint);
+                        }
+                    }
+                }
             }
 
             // Record newly generated summaries in DuckDB history & library (lazily opened)
