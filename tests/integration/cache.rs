@@ -70,6 +70,7 @@ fn test_disabled_cache_bypasses_reads() {
         display_title: "\"Dune\"",
         summary: "Great sci-fi novel.",
         word_count: 420,
+        reasoning: Some("Thought process about Dune"),
     });
 
     assert!(
@@ -81,6 +82,7 @@ fn test_disabled_cache_bypasses_reads() {
         .get_book_summary("Dune", None, SummaryStyle::Detailed, "gemma-4")
         .expect("Should hit cache");
     assert_eq!(hit.word_count, 420);
+    assert_eq!(hit.reasoning.as_deref(), Some("Thought process about Dune"));
 }
 
 #[test]
@@ -106,6 +108,7 @@ fn test_cache_stats_and_clean() {
         display_title: "\"Dune\"",
         summary: "Summary text",
         word_count: 100,
+        reasoning: None,
     });
 
     let stats = cache.stats();

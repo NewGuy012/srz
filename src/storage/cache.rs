@@ -20,6 +20,8 @@ pub struct CachedSummary {
     pub summary: String,
     #[serde(default)]
     pub word_count: usize,
+    #[serde(default)]
+    pub reasoning: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -31,6 +33,7 @@ pub struct SetBookSummaryParams<'a> {
     pub display_title: &'a str,
     pub summary: &'a str,
     pub word_count: usize,
+    pub reasoning: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -38,6 +41,8 @@ struct CachedSummaryRef<'a> {
     title: &'a str,
     summary: &'a str,
     word_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1021,7 +1026,7 @@ impl Cache {
         title: &str,
         summary: &str,
     ) {
-        self.set_web_summary_with_words(url, style, model, title, summary, 0);
+        self.set_web_summary_with_words(url, style, model, title, summary, 0, None);
     }
 
     pub fn set_web_summary_with_words(
@@ -1032,6 +1037,7 @@ impl Cache {
         title: &str,
         summary: &str,
         word_count: usize,
+        reasoning: Option<&str>,
     ) {
         let key = Self::summary_key("web", url, None, style, model);
         self.write_entry(
@@ -1041,6 +1047,44 @@ impl Cache {
                 title,
                 summary,
                 word_count,
+                reasoning,
+            },
+        );
+    }
+
+    pub fn get_file_summary(
+        &self,
+        file_key: &str,
+        style: SummaryStyle,
+        model: &str,
+    ) -> Option<CachedSummary> {
+        let key = Self::summary_key("file", file_key, None, style, model);
+        self.read_entry_with_ttl(
+            CacheNamespace::Summaries,
+            &key,
+            Some(self.policy.summaries_ttl),
+        )
+    }
+
+    pub fn set_file_summary(
+        &self,
+        file_key: &str,
+        style: SummaryStyle,
+        model: &str,
+        title: &str,
+        summary: &str,
+        word_count: usize,
+        reasoning: Option<&str>,
+    ) {
+        let key = Self::summary_key("file", file_key, None, style, model);
+        self.write_entry(
+            CacheNamespace::Summaries,
+            &key,
+            &CachedSummaryRef {
+                title,
+                summary,
+                word_count,
+                reasoning,
             },
         );
     }
@@ -1075,6 +1119,7 @@ impl Cache {
                 title: params.display_title,
                 summary: params.summary,
                 word_count: params.word_count,
+                reasoning: params.reasoning,
             },
         );
     }

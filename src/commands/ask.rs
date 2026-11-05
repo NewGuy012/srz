@@ -505,21 +505,17 @@ pub fn format_grounded_context_with_budget(
     format!("Document: {safe_title}\n\n{untrusted_block}")
 }
 
-/// Handles the `srz ask` subcommand.
-#[allow(clippy::too_many_arguments)]
-pub async fn handle_ask(
-    target: Option<String>,
-    question: Option<String>,
-    interactive: bool,
+/// Handles offline chat management commands (`--chats`, `--show-chat`, `--delete-chat`) without initializing LLM or web clients.
+pub fn handle_ask_management(
     list_chats: bool,
-    resume: Option<i64>,
     show_chat: Option<i64>,
     delete_chat: Option<i64>,
-    scraper: &WebScraper,
-    llm: &LlmClient,
-    cache: &Cache,
-    args: &Cli,
-) -> Result<()> {
+    as_json: bool,
+) -> Result<bool> {
+    if !list_chats && show_chat.is_none() && delete_chat.is_none() {
+        return Ok(false);
+    }
+
     let db = open_db_or_warn();
 
     // 1. List saved chat sessions
@@ -528,15 +524,15 @@ pub async fn handle_ask(
             .as_ref()
             .context("DuckDB database unavailable to view chat sessions")?;
         let sessions = db_ref.get_chat_sessions(30)?;
-        if args.json {
+        if as_json {
             println!("{}", serde_json::to_string_pretty(&sessions)?);
-            return Ok(());
+            return Ok(true);
         }
         if sessions.is_empty() {
             Ui::info(
                 "No saved chat sessions found. Start an interactive session with `srz ask -i`!",
             );
-            return Ok(());
+            return Ok(true);
         }
         Ui::header(&format!("Saved Q&A Chat Sessions ({})", sessions.len()));
         for s in &sessions {
@@ -556,7 +552,7 @@ pub async fn handle_ask(
                 s.updated_at, s.id
             );
         }
-        return Ok(());
+        return Ok(true);
     }
 
     // 2. Delete a chat session
@@ -570,7 +566,7 @@ pub async fn handle_ask(
         } else {
             Ui::warn(&format!("Chat session #{} not found.", del_id));
         }
-        return Ok(());
+        return Ok(true);
     }
 
     // 3. Show past chat transcript
@@ -581,7 +577,7 @@ pub async fn handle_ask(
         let (session, msgs) = db_ref
             .get_chat_session(show_id)?
             .context(format!("Chat session #{} not found", show_id))?;
-        if args.json {
+        if as_json {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
@@ -589,7 +585,7 @@ pub async fn handle_ask(
                     "messages": msgs,
                 }))?
             );
-            return Ok(());
+            return Ok(true);
         }
         let safe_title = crate::ui::sanitize_title(&session.title);
         let safe_model = crate::ui::sanitize_title(&session.model);
@@ -615,8 +611,32 @@ pub async fn handle_ask(
             "\x1b[2mResume this session with: srz ask --resume {}\x1b[0m\n",
             session.id
         );
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
+/// Handles the `srz ask` subcommand.
+#[allow(clippy::too_many_arguments)]
+pub async fn handle_ask(
+    target: Option<String>,
+    question: Option<String>,
+    interactive: bool,
+    list_chats: bool,
+    resume: Option<i64>,
+    show_chat: Option<i64>,
+    delete_chat: Option<i64>,
+    scraper: &WebScraper,
+    llm: &LlmClient,
+    cache: &Cache,
+    args: &Cli,
+) -> Result<()> {
+    if handle_ask_management(list_chats, show_chat, delete_chat, args.json)? {
         return Ok(());
     }
+
+    let db = open_db_or_warn();
 
     // 4. Resolve document context & active session
     let mut chat_id: Option<i64> = resume;

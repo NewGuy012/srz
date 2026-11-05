@@ -72,7 +72,7 @@ impl SummaryOutcome {
             url,
             target_type,
             summary: cached.summary,
-            reasoning: None,
+            reasoning: cached.reasoning,
             word_count: cached.word_count,
             streamed_to_stdout: false,
             prompt_tokens: None,
@@ -220,12 +220,46 @@ pub async fn fetch_url_content(
     }
 }
 
+/// Generates a deterministic cache key for a local file based on canonical path, size, and mtime.
+pub fn file_cache_key(path: &std::path::Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    let mtime_ms = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    Some(format!(
+        "{}:{}:{}",
+        canonical.display(),
+        meta.len(),
+        mtime_ms
+    ))
+}
+
 pub async fn handle_file(
     path: &std::path::Path,
     scraper: &WebScraper,
     llm: &LlmClient,
+    cache: &Cache,
     args: &Cli,
 ) -> Result<SummaryOutcome> {
+    let path_str = path.display().to_string();
+    let file_key = file_cache_key(path);
+
+    if let Some(ref k) = file_key
+        && let Some(cached) = cache.get_file_summary(k, args.style, &args.model)
+    {
+        Ui::info("Loaded summary from local cache (pass `--no-cache` to refresh).");
+        return Ok(SummaryOutcome::from_cached(
+            "file",
+            cached,
+            None,
+            Some(path_str),
+        ));
+    }
+
     let doc = crate::sources::DocumentLoader::load_file(path, scraper)?;
 
     Ui::info(&format!(
@@ -235,7 +269,6 @@ pub async fn handle_file(
     ));
 
     let mode = args.stream_mode(&doc.title);
-    let path_str = path.display().to_string();
     let output = llm
         .summarize_document_counted(
             &doc.title,
@@ -246,6 +279,20 @@ pub async fn handle_file(
             mode,
         )
         .await?;
+
+    if !output.truncated
+        && let Some(ref k) = file_key
+    {
+        cache.set_file_summary(
+            k,
+            args.style,
+            &args.model,
+            &doc.title,
+            &output.content,
+            doc.word_count,
+            output.reasoning.as_deref(),
+        );
+    }
 
     Ok(SummaryOutcome::from_llm(
         "file",
@@ -367,6 +414,7 @@ pub async fn handle_web(
             &title_display,
             &output.content,
             page.word_count,
+            output.reasoning.as_deref(),
         );
     }
 
@@ -516,6 +564,7 @@ pub async fn handle_book(
             display_title: &book_display,
             summary: &output.content,
             word_count,
+            reasoning: output.reasoning.as_deref(),
         });
     }
 

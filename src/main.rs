@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use clap::{CommandFactory, FromArgMatches};
 use srz::cache::Cache;
 use srz::cli::{Cli, ResolvedAction};
-use srz::commands::{self, with_db};
+use srz::commands::{self, SummaryOutcome, with_db};
 use srz::config::Config;
 use srz::db::NewSummaryRecord;
 use srz::render;
@@ -53,6 +53,15 @@ async fn main() -> Result<()> {
     // Handle immediate utility subcommands without initializing scraping, LLM HTTP clients,
     // or opening DuckDB unless the subcommand actually requires database access.
     match action {
+        ResolvedAction::Ask {
+            list_chats,
+            show_chat,
+            delete_chat,
+            ..
+        } if list_chats || show_chat.is_some() || delete_chat.is_some() => {
+            commands::handle_ask_management(list_chats, show_chat, delete_chat, args.json)?;
+            return Ok(());
+        }
         ResolvedAction::Cache(cache_cmd) => {
             commands::handle_cache(cache_cmd, &cache)?;
             return Ok(());
@@ -142,6 +151,46 @@ async fn main() -> Result<()> {
 
     if args.no_cache {
         Ui::info("Cache bypassed (`--no-cache`). Forcing fresh fetch and generation.");
+    } else {
+        // Sub-millisecond cache fast-path: probe cache before initializing LLM/scraper clients
+        match &action {
+            ResolvedAction::Web { url } if !srz::cli::is_feed_url(url) => {
+                if let Some(cached) = cache.get_web_summary(url, args.style, &args.model) {
+                    Ui::info("Loaded summary from local cache (pass `--no-cache` to refresh).");
+                    let outcome = SummaryOutcome::from_cached(
+                        commands::target_type_for_url(url),
+                        cached,
+                        None,
+                        Some(url.to_string()),
+                    );
+                    return present_summary_outcome(outcome, &args, &cache);
+                }
+            }
+            ResolvedAction::Book { title } => {
+                if let Some(cached) = cache.get_book_summary(title, None, args.style, &args.model) {
+                    Ui::info(
+                        "Loaded book summary from local cache (pass `--no-cache` to refresh).",
+                    );
+                    let outcome = SummaryOutcome::from_cached("book", cached, None, None);
+                    return present_summary_outcome(outcome, &args, &cache);
+                }
+            }
+            ResolvedAction::File { path } => {
+                if let Some(k) = commands::summarize::file_cache_key(path)
+                    && let Some(cached) = cache.get_file_summary(&k, args.style, &args.model)
+                {
+                    Ui::info("Loaded summary from local cache (pass `--no-cache` to refresh).");
+                    let outcome = SummaryOutcome::from_cached(
+                        "file",
+                        cached,
+                        None,
+                        Some(path.display().to_string()),
+                    );
+                    return present_summary_outcome(outcome, &args, &cache);
+                }
+            }
+            _ => {}
+        }
     }
 
     let llm = commands::init_llm_with_capabilities_or_exit(&args, Some(&cache)).await;
@@ -187,7 +236,9 @@ async fn main() -> Result<()> {
         ResolvedAction::Web { url } => {
             commands::handle_web(url, &scraper, &llm, &cache, &args).await
         }
-        ResolvedAction::File { path } => commands::handle_file(&path, &scraper, &llm, &args).await,
+        ResolvedAction::File { path } => {
+            commands::handle_file(&path, &scraper, &llm, &cache, &args).await
+        }
         ResolvedAction::Stdin => commands::handle_stdin(&scraper, &llm, &args).await,
         ResolvedAction::Book { title } => {
             commands::handle_book(title, None, &scraper, &llm, &cache, &args).await
@@ -201,127 +252,133 @@ async fn main() -> Result<()> {
     };
 
     match summary_result {
-        Ok(outcome) => {
-            if args.json {
-                println!("{}", serde_json::to_string_pretty(&outcome)?);
-            } else if let Some(output_path) = &args.output {
-                let content = if render::is_html_path(output_path) {
-                    std::borrow::Cow::Owned(render::render_html_document_with_reasoning(
-                        &outcome.title,
-                        &outcome.summary,
-                        outcome.reasoning.as_deref(),
-                    ))
-                } else {
-                    std::borrow::Cow::Borrowed(outcome.summary.as_str())
-                };
-                srz::fs_util::write_private_file(output_path, content.as_bytes())
-                    .with_context(|| format!("Failed to write output to {:?}", output_path))?;
-
-                Ui::success(&format!(
-                    "Summary successfully saved to {}",
-                    output_path.display()
-                ));
-            } else {
-                let is_tty = std::io::stdout().is_terminal();
-                let hint_ref = if !args.plain && !args.quiet {
-                    outcome.hint.as_deref()
-                } else {
-                    None
-                };
-
-                // Ensure clickable styled HTML and Markdown view files exist with collision-safe unique key
-                let view_files = render::ensure_view_files_unique(
-                    &cache.views_dir(),
-                    &outcome.title,
-                    &outcome.summary,
-                    outcome.url.as_deref(),
-                    outcome.reasoning.as_deref(),
-                    !outcome.cached,
-                )
-                .ok();
-
-                if args.open
-                    && let Some(ref files) = view_files
-                    && let Err(err) = render::open_in_browser(&files.html_path)
-                {
-                    Ui::warn(&format!("Could not open browser: {}", err));
-                }
-
-                if outcome.streamed_to_stdout {
-                    if is_tty {
-                        if let Some(ref files) = view_files {
-                            Ui::success(&format!(
-                                "Styled HTML view: file://{}",
-                                files.html_path.display()
-                            ));
-                            Ui::success(&format!(
-                                "Markdown file:    file://{}",
-                                files.md_path.display()
-                            ));
-                        }
-                        if let Some(hint) = hint_ref {
-                            eprintln!("\n\x1b[2m{}\x1b[0m", hint);
-                        }
-                    }
-                } else {
-                    let view_pair = view_files
-                        .as_ref()
-                        .map(|f| (f.html_path.as_path(), f.md_path.as_path()));
-
-                    srz::ui::display_summary_full(
-                        &outcome.title,
-                        &outcome.summary,
-                        args.effective_paging(),
-                        args.plain,
-                        if is_tty { view_pair } else { None },
-                        if is_tty { hint_ref } else { None },
-                    )?;
-
-                    // When output is piped (!is_tty), print view file notices and hints strictly to stderr
-                    if !is_tty {
-                        if let Some(ref files) = view_files {
-                            Ui::success(&format!(
-                                "Styled HTML view: file://{}",
-                                files.html_path.display()
-                            ));
-                            Ui::success(&format!(
-                                "Markdown file:    file://{}",
-                                files.md_path.display()
-                            ));
-                        }
-                        if let Some(hint) = hint_ref {
-                            eprintln!("\n{}", hint);
-                        }
-                    }
-                }
-            }
-
-            // Record newly generated summaries in DuckDB history & library (lazily opened)
-            if !outcome.cached
-                && let Some(db) = commands::open_db_or_warn()
-            {
-                let record = NewSummaryRecord {
-                    target_type: outcome.target_type,
-                    title: &outcome.title,
-                    author: outcome.author.as_deref(),
-                    url: outcome.url.as_deref(),
-                    style: args.style.as_str(),
-                    model: &args.model,
-                    word_count: outcome.word_count,
-                    prompt_tokens: outcome.prompt_tokens,
-                    completion_tokens: outcome.completion_tokens,
-                    duration_ms: outcome.duration_ms,
-                    tokens_per_second: outcome.tokens_per_second,
-                    summary: &outcome.summary,
-                    reasoning: outcome.reasoning.as_deref(),
-                };
-                let _ = db.record_summary(&record);
-                let _ = commands::update_index_dashboard(&db, &cache);
-            }
-        }
+        Ok(outcome) => present_summary_outcome(outcome, &args, &cache)?,
         Err(err) => {
             print_execution_error("Summarization failed", &err);
             std::process::exit(1);
+        }
+    }
+
+    Ok(())
+}
+
+fn present_summary_outcome(outcome: SummaryOutcome, args: &Cli, cache: &Cache) -> Result<()> {
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&outcome)?);
+    } else if let Some(output_path) = &args.output {
+        let content = if render::is_html_path(output_path) {
+            std::borrow::Cow::Owned(render::render_html_document_with_reasoning(
+                &outcome.title,
+                &outcome.summary,
+                outcome.reasoning.as_deref(),
+            ))
+        } else {
+            std::borrow::Cow::Borrowed(outcome.summary.as_str())
+        };
+        srz::fs_util::write_private_file(output_path, content.as_bytes())
+            .with_context(|| format!("Failed to write output to {:?}", output_path))?;
+
+        Ui::success(&format!(
+            "Summary successfully saved to {}",
+            output_path.display()
+        ));
+    } else {
+        let is_tty = std::io::stdout().is_terminal();
+        let hint_ref = if !args.plain && !args.quiet {
+            outcome.hint.as_deref()
+        } else {
+            None
+        };
+
+        // Ensure clickable styled HTML and Markdown view files exist with collision-safe unique key
+        let view_files = render::ensure_view_files_unique(
+            &cache.views_dir(),
+            &outcome.title,
+            &outcome.summary,
+            outcome.url.as_deref(),
+            outcome.reasoning.as_deref(),
+            !outcome.cached,
+        )
+        .ok();
+
+        if args.open
+            && let Some(ref files) = view_files
+            && let Err(err) = render::open_in_browser(&files.html_path)
+        {
+            Ui::warn(&format!("Could not open browser: {}", err));
+        }
+
+        if outcome.streamed_to_stdout {
+            if is_tty {
+                if let Some(ref files) = view_files {
+                    Ui::success(&format!(
+                        "Styled HTML view: file://{}",
+                        files.html_path.display()
+                    ));
+                    Ui::success(&format!(
+                        "Markdown file:    file://{}",
+                        files.md_path.display()
+                    ));
+                }
+                if let Some(hint) = hint_ref {
+                    eprintln!("\n\x1b[2m{}\x1b[0m", hint);
+                }
+            }
+        } else {
+            let view_pair = view_files
+                .as_ref()
+                .map(|f| (f.html_path.as_path(), f.md_path.as_path()));
+
+            srz::ui::display_summary_full(
+                &outcome.title,
+                &outcome.summary,
+                args.effective_paging(),
+                args.plain,
+                if is_tty { view_pair } else { None },
+                if is_tty { hint_ref } else { None },
+            )?;
+
+            // When output is piped (!is_tty), print view file notices and hints strictly to stderr
+            if !is_tty {
+                if let Some(ref files) = view_files {
+                    Ui::success(&format!(
+                        "Styled HTML view: file://{}",
+                        files.html_path.display()
+                    ));
+                    Ui::success(&format!(
+                        "Markdown file:    file://{}",
+                        files.md_path.display()
+                    ));
+                }
+                if let Some(hint) = hint_ref {
+                    eprintln!("\n{}", hint);
+                }
+            }
+        }
+    }
+
+    // Record newly generated summaries in DuckDB history & library (lazily opened)
+    if !outcome.cached
+        && let Some(db) = commands::open_db_or_warn()
+    {
+        let record = NewSummaryRecord {
+            target_type: outcome.target_type,
+            title: &outcome.title,
+            author: outcome.author.as_deref(),
+            url: outcome.url.as_deref(),
+            style: args.style.as_str(),
+            model: &args.model,
+            word_count: outcome.word_count,
+            prompt_tokens: outcome.prompt_tokens,
+            completion_tokens: outcome.completion_tokens,
+            duration_ms: outcome.duration_ms,
+            tokens_per_second: outcome.tokens_per_second,
+            summary: &outcome.summary,
+            reasoning: outcome.reasoning.as_deref(),
+        };
+        let _ = db.record_summary(&record);
+        if args.open {
+            let _ = commands::update_index_dashboard(&db, cache);
         }
     }
 
