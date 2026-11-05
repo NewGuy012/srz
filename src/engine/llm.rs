@@ -442,6 +442,11 @@ impl LlmClient {
         &self.model
     }
 
+    /// Resolves the in-process tokenizer profile corresponding to this client's model.
+    pub fn tokenizer_kind(&self) -> crate::engine::chunker::TokenizerKind {
+        crate::engine::chunker::TokenizerKind::detect_from_model(&self.model)
+    }
+
     fn strip_v1(base: &str) -> &str {
         let clean = base.trim_end_matches('/');
         clean.strip_suffix("/v1").unwrap_or(clean)
@@ -1308,18 +1313,20 @@ impl LlmClient {
             .unwrap_or_default();
 
         let budget = self.budget();
+        let tok_kind = self.tokenizer_kind();
 
         // 1. Fast path: In BPE, 1 token is at least 1 byte, so if content.len() <= budget.single_pass_threshold,
         // it cannot exceed the single-pass limit.
         let (needs_chunking, doc_tokens) = if content.len() <= budget.single_pass_threshold {
             (false, None)
         } else {
+            // Authoritative server token query if supported (0% drift), otherwise model-aware embedded tokenizer
             let tokens = match self.tokenize_text(content).await {
                 Some(t) => t,
                 None => {
                     let wc = known_word_count.unwrap_or_else(|| content.split_whitespace().count());
                     if wc > (budget.single_pass_threshold * 3 / 4) {
-                        TextChunker::count_tokens(content)
+                        tok_kind.count_tokens(content)
                     } else {
                         wc
                     }
@@ -1330,8 +1337,42 @@ impl LlmClient {
 
         // If the document exceeds single_pass_threshold, chunk and map-reduce
         if needs_chunking {
-            let chunks =
-                TextChunker::chunk_by_tokens(content, budget.chunk_tokens, budget.chunk_overlap);
+            let initial_chunks = TextChunker::chunk_by_tokens_with_kind(
+                content,
+                budget.chunk_tokens,
+                budget.chunk_overlap,
+                tok_kind,
+            );
+            // Authoritative server boundary verification if supported
+            let chunks = if self
+                .capabilities
+                .as_ref()
+                .map(|c| c.supports_tokenize)
+                .unwrap_or(false)
+            {
+                let mut calibrated = Vec::with_capacity(initial_chunks.len());
+                for chunk in initial_chunks {
+                    if let Some(cnt) = self.tokenize_text(&chunk).await
+                        && cnt > budget.chunk_tokens + budget.chunk_overlap
+                    {
+                        let sub = TextChunker::chunk_by_tokens_with_kind(
+                            &chunk,
+                            budget.chunk_tokens * 8 / 10,
+                            budget.chunk_overlap,
+                            tok_kind,
+                        );
+                        for s in sub {
+                            calibrated.push(Cow::Owned(s.into_owned()));
+                        }
+                        continue;
+                    }
+                    calibrated.push(chunk);
+                }
+                calibrated
+            } else {
+                initial_chunks
+            };
+
             if chunks.len() > 1 {
                 let map_reduce_start = std::time::Instant::now();
                 let chunks_len = chunks.len();
