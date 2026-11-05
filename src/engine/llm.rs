@@ -166,6 +166,7 @@ pub struct LlmClient {
     concurrency: usize,
     context_window_override: Option<usize>,
     capabilities: Option<ServerCapabilities>,
+    show_thinking: bool,
 }
 
 struct SseStreamState {
@@ -183,10 +184,13 @@ struct SseStreamState {
     needs_stdout_flush: bool,
     stream_renderer: Option<crate::ui::StreamMarkdownRenderer>,
     last_spinner_update: std::time::Instant,
+    thinking_start: Option<std::time::Instant>,
+    show_thinking_stream: bool,
+    last_thought_headline: Option<String>,
 }
 
 impl SseStreamState {
-    fn new(start_time: std::time::Instant) -> Self {
+    fn new(start_time: std::time::Instant, show_thinking_stream: bool) -> Self {
         Self {
             content_buf: String::with_capacity(2048),
             reasoning_buf: String::with_capacity(1024),
@@ -202,13 +206,16 @@ impl SseStreamState {
             needs_stdout_flush: false,
             stream_renderer: None,
             last_spinner_update: start_time,
+            thinking_start: None,
+            show_thinking_stream,
+            last_thought_headline: None,
         }
     }
 }
 
 impl Default for SseStreamState {
     fn default() -> Self {
-        Self::new(std::time::Instant::now())
+        Self::new(std::time::Instant::now(), false)
     }
 }
 
@@ -305,26 +312,94 @@ impl SseStreamState {
     fn append_reasoning_delta(&mut self, text: &str, pb: &indicatif::ProgressBar) {
         self.thinking_tokens += 1;
         self.is_thinking = true;
+        if self.thinking_start.is_none() {
+            self.thinking_start = Some(std::time::Instant::now());
+        }
         self.reasoning_buf.push_str(text);
 
         if !Ui::is_quiet() {
-            if !self.streamed_thinking {
-                self.streamed_thinking = true;
-                pb.finish_and_clear();
+            if self.show_thinking_stream {
+                if !self.streamed_thinking {
+                    self.streamed_thinking = true;
+                    pb.finish_and_clear();
+                    if Ui::use_color() {
+                        eprint!("\x1b[2m💭 Thinking...\n  │ ");
+                    } else {
+                        eprintln!("--- Thinking ---");
+                    }
+                }
+                let safe_chunk = crate::ui::sanitize_terminal_text_cow(text);
                 if Ui::use_color() {
-                    eprint!("\x1b[2m💭 Thinking...\n  │ ");
+                    let indented = safe_chunk.replace('\n', "\n  │ ");
+                    eprint!("{}", indented);
                 } else {
-                    eprintln!("--- Thinking ---");
+                    eprint!("{}", safe_chunk);
+                }
+                let _ = io::stderr().flush();
+            } else {
+                let now = std::time::Instant::now();
+                if now.duration_since(self.last_spinner_update) >= Duration::from_millis(100) {
+                    self.last_spinner_update = now;
+                    let elapsed_s = self
+                        .thinking_start
+                        .map(|t| t.elapsed().as_secs_f64())
+                        .unwrap_or(0.0);
+                    if let Some(headline) = extract_thought_headline(&self.reasoning_buf) {
+                        self.last_thought_headline = Some(headline);
+                    }
+                    let duration_str = format_thinking_duration(elapsed_s);
+                    let msg = match &self.last_thought_headline {
+                        Some(step) if !step.is_empty() => {
+                            format!("💭 Thinking: {} ({})...", step, duration_str)
+                        }
+                        _ => format!("💭 Thinking ({})...", duration_str),
+                    };
+                    pb.set_message(msg);
                 }
             }
-            let safe_chunk = crate::ui::sanitize_terminal_text_cow(text);
-            if Ui::use_color() {
-                let indented = safe_chunk.replace('\n', "\n  │ ");
-                eprint!("{}", indented);
-            } else {
-                eprint!("{}", safe_chunk);
+        }
+    }
+
+    fn finish_thinking_ui(
+        &mut self,
+        pb: &indicatif::ProgressBar,
+        spinner_label: &str,
+        mode: StreamMode<'_>,
+    ) {
+        if self.finished_thinking_ui || !self.is_thinking {
+            return;
+        }
+        self.finished_thinking_ui = true;
+        self.is_thinking = false;
+
+        let elapsed_s = self
+            .thinking_start
+            .map(|t| t.elapsed().as_secs_f64())
+            .unwrap_or(0.0);
+
+        if !Ui::is_quiet() {
+            if self.show_thinking_stream {
+                if self.streamed_thinking {
+                    if Ui::use_color() {
+                        eprintln!("\n\x1b[0m");
+                    } else {
+                        eprintln!("\n----------------");
+                    }
+                }
+            } else if self.thinking_tokens > 0 {
+                pb.finish_and_clear();
+                let duration_str = format_thinking_duration(elapsed_s);
+                if Ui::use_color() {
+                    eprintln!("  \x1b[2m💭 Thought for {} ›\x1b[0m", duration_str);
+                } else {
+                    eprintln!("  Thought for {} >", duration_str);
+                }
             }
-            let _ = io::stderr().flush();
+
+            if matches!(mode, StreamMode::Buffered) && !spinner_label.is_empty() {
+                pb.set_message(format!("{}...", spinner_label));
+                pb.enable_steady_tick(Duration::from_millis(80));
+            }
         }
     }
 
@@ -335,18 +410,7 @@ impl SseStreamState {
         spinner_label: &str,
         mode: StreamMode<'_>,
     ) {
-        if self.streamed_thinking && !self.finished_thinking_ui {
-            self.finished_thinking_ui = true;
-            if Ui::use_color() {
-                eprintln!("\n\x1b[0m");
-            } else {
-                eprintln!("\n----------------");
-            }
-            if matches!(mode, StreamMode::Buffered) && !Ui::is_quiet() {
-                pb.set_message(format!("{}...", spinner_label));
-                pb.enable_steady_tick(Duration::from_millis(80));
-            }
-        }
+        self.finish_thinking_ui(pb, spinner_label, mode);
 
         let is_first = !self.started_visible;
         let text_to_emit = if is_first {
@@ -390,6 +454,282 @@ impl SseStreamState {
             }
         }
     }
+}
+
+/// Formats an elapsed thinking duration into a clean Antigravity/Gemini style string (e.g., "4s", "19s", "35s", "0.4s").
+pub fn format_thinking_duration(secs: f64) -> String {
+    if secs < 1.0 {
+        format!("{:.1}s", secs)
+    } else if secs < 10.0 {
+        if (secs * 10.0).round() % 10.0 == 0.0 {
+            format!("{}s", secs.round() as u64)
+        } else {
+            format!("{:.1}s", secs)
+        }
+    } else {
+        format!("{}s", secs.round() as u64)
+    }
+}
+
+/// Truncates a headline to `max_len` characters at a clean word boundary with an ellipsis.
+fn truncate_headline(s: &str, max_len: usize) -> String {
+    let trimmed = s.trim();
+    if trimmed.chars().count() <= max_len {
+        return trimmed.to_string();
+    }
+
+    let mut end = 0;
+    let mut last_space = 0;
+    for (i, ch) in trimmed.char_indices() {
+        if i >= max_len.saturating_sub(1) {
+            break;
+        }
+        if ch.is_whitespace() {
+            last_space = i;
+        }
+        end = i + ch.len_utf8();
+    }
+
+    let cut_point = if last_space > 10 { last_space } else { end };
+    let cut = trimmed[..cut_point]
+        .trim_end_matches(|c: char| c.is_whitespace() || c == ':' || c == '.' || c == '-');
+    format!("{}…", cut)
+}
+
+/// Strips markdown formatting characters (`*`, `_`, `#`, `` ` ``).
+fn strip_markdown_decorations(s: &str) -> String {
+    s.chars()
+        .filter(|&c| c != '*' && c != '_' && c != '#' && c != '`')
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Checks whether a candidate headline is substantive and not generic thinking filler.
+fn is_meaningful_headline(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    let trimmed = lower.trim();
+
+    if trimmed.len() < 3 {
+        return false;
+    }
+
+    // Reject generic prompt prefixes / meta phrases
+    if trimmed.starts_with("here's a thinking process")
+        || trimmed.starts_with("thinking process")
+        || trimmed.starts_with("thought process")
+        || trimmed.starts_with("let's think")
+        || trimmed.starts_with("let's see")
+        || trimmed == "okay"
+        || trimmed == "understood"
+        || trimmed == "sure"
+        || trimmed == "notes"
+        || trimmed == "constraints"
+        || trimmed == "constraint"
+        || trimmed == "the 'what'"
+        || trimmed == "the 'why'"
+        || trimmed == "the 'how'"
+        || trimmed == "core result"
+        || trimmed == "key drivers"
+        || trimmed == "role"
+        || trimmed == "output style"
+        || trimmed == "structure required"
+        || trimmed == "timeframe"
+        || trimmed == "topic"
+    {
+        return false;
+    }
+
+    true
+}
+
+/// Checks if a string starts with a common analytical action verb.
+fn is_action_verb_sentence(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    const VERB_PREFIXES: &[&str] = &[
+        "analyz",
+        "review",
+        "synthesiz",
+        "draft",
+        "structur",
+        "evaluat",
+        "check",
+        "extract",
+        "search",
+        "identif",
+        "summariz",
+        "process",
+        "understand",
+        "compar",
+        "read",
+        "investigat",
+        "gather",
+        "determin",
+        "verif",
+        "plan",
+        "outlin",
+        "examin",
+    ];
+
+    let first_word = lower.split_whitespace().next().unwrap_or("");
+    VERB_PREFIXES.iter().any(|v| first_word.starts_with(v))
+}
+
+/// Cleans a candidate heading line and extracts the core step title.
+fn clean_heading_candidate(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+
+    // Markdown heading: `# Heading`, `## Heading`, etc.
+    if trimmed.starts_with('#') {
+        let after_hash = trimmed.trim_start_matches('#').trim();
+        let stripped = strip_markdown_decorations(after_hash);
+        let after_num = stripped
+            .trim_start_matches(|c: char| {
+                c.is_ascii_digit() || c == '.' || c == ')' || c == ' ' || c == '\t'
+            })
+            .trim();
+        let cleaned =
+            after_num.trim_matches(|c: char| c.is_whitespace() || c == ':' || c == '.' || c == '-');
+        if !cleaned.is_empty() {
+            return Some(truncate_headline(cleaned, 45));
+        }
+    }
+
+    // Numbered step: `1. **Title:**`, `1) Title`, etc.
+    let is_numbered = trimmed.chars().take_while(|c| c.is_ascii_digit()).count() > 0
+        && (trimmed.contains(". ")
+            || trimmed.contains(") ")
+            || trimmed.starts_with(|c: char| c.is_ascii_digit()));
+
+    if is_numbered {
+        // Strip leading number and punctuation
+        let after_num = trimmed
+            .trim_start_matches(|c: char| {
+                c.is_ascii_digit() || c == '.' || c == ')' || c == ' ' || c == '\t'
+            })
+            .trim();
+
+        // If it starts with bold `**...**` or has bold title
+        if let Some(start_bold) = after_num.find("**") {
+            let after_start = &after_num[start_bold + 2..];
+            if let Some(end_bold) = after_start.find("**") {
+                let bold_text = &after_start[..end_bold];
+                let cleaned = bold_text
+                    .trim_matches(|c: char| c.is_whitespace() || c == ':' || c == '.' || c == '-');
+                let without_paren = if let Some(paren_pos) = cleaned.find('(') {
+                    let before = cleaned[..paren_pos].trim();
+                    if before.len() >= 10 { before } else { cleaned }
+                } else {
+                    cleaned
+                };
+                if !without_paren.is_empty() {
+                    return Some(truncate_headline(without_paren, 45));
+                }
+            }
+        }
+
+        let stripped = strip_markdown_decorations(after_num);
+        let cleaned =
+            stripped.trim_matches(|c: char| c.is_whitespace() || c == ':' || c == '.' || c == '-');
+        let without_paren = if let Some(paren_pos) = cleaned.find('(') {
+            let before = cleaned[..paren_pos].trim();
+            if before.len() >= 10 { before } else { cleaned }
+        } else {
+            cleaned
+        };
+        if !without_paren.is_empty() {
+            return Some(truncate_headline(without_paren, 45));
+        }
+    }
+
+    // Explicit step prefix: `Step 1: ...`, `Phase 2: ...`
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("step ")
+        || lower.starts_with("phase ")
+        || lower.starts_with("stage ")
+        || lower.starts_with("part ")
+    {
+        let stripped = strip_markdown_decorations(trimmed);
+        let cleaned =
+            stripped.trim_matches(|c: char| c.is_whitespace() || c == ':' || c == '.' || c == '-');
+        if !cleaned.is_empty() {
+            return Some(truncate_headline(cleaned, 45));
+        }
+    }
+
+    // Standalone bold line: `**Analyze the Request:**`
+    if trimmed.starts_with("**") {
+        let after_start = &trimmed[2..];
+        if let Some(end_bold) = after_start.find("**") {
+            let bold_text = &after_start[..end_bold];
+            let cleaned = bold_text
+                .trim_matches(|c: char| c.is_whitespace() || c == ':' || c == '.' || c == '-');
+            let without_paren = if let Some(paren_pos) = cleaned.find('(') {
+                let before = cleaned[..paren_pos].trim();
+                if before.len() >= 10 { before } else { cleaned }
+            } else {
+                cleaned
+            };
+            if !without_paren.is_empty() {
+                return Some(truncate_headline(without_paren, 45));
+            }
+        }
+    }
+
+    None
+}
+
+/// Extracts a concise, clean one-liner headline summarizing the active thought step or action
+/// from the accumulated reasoning buffer.
+pub fn extract_thought_headline(reasoning_text: &str) -> Option<String> {
+    if reasoning_text.trim().is_empty() {
+        return None;
+    }
+
+    let lines: Vec<&str> = reasoning_text
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    if lines.is_empty() {
+        return None;
+    }
+
+    // Priority 1: Scan backwards for structured section/step headings:
+    for line in lines.iter().rev() {
+        if let Some(candidate) = clean_heading_candidate(line) {
+            if is_meaningful_headline(&candidate) {
+                return Some(candidate);
+            }
+        }
+    }
+
+    // Priority 2: Scan backwards for action-oriented lines starting with active verbs:
+    for line in lines.iter().rev().take(15) {
+        let line_clean = strip_markdown_decorations(line);
+        let trimmed = line_clean
+            .trim_matches(|c: char| c.is_whitespace() || c == ':' || c == '.' || c == '-');
+        if is_action_verb_sentence(trimmed) && is_meaningful_headline(trimmed) {
+            return Some(truncate_headline(trimmed, 45));
+        }
+    }
+
+    // Priority 3: Fallback to the latest substantive non-bullet line if clean
+    for line in lines.iter().rev().take(10) {
+        if line.starts_with('*') || line.starts_with('-') || line.starts_with('+') {
+            continue;
+        }
+        let line_clean = strip_markdown_decorations(line);
+        let trimmed = line_clean
+            .trim_matches(|c: char| c.is_whitespace() || c == ':' || c == '.' || c == '-');
+        if trimmed.len() >= 8 && is_meaningful_headline(trimmed) {
+            return Some(truncate_headline(trimmed, 45));
+        }
+    }
+
+    None
 }
 
 fn compute_tokens_per_second(completion_tokens: Option<u32>, elapsed: Duration) -> Option<f64> {
@@ -448,6 +788,7 @@ impl LlmClient {
             concurrency: 1,
             context_window_override: None,
             capabilities: None,
+            show_thinking: false,
         })
     }
 
@@ -455,8 +796,14 @@ impl LlmClient {
         Ok(
             Self::new(&args.base_url, &args.model, &args.api_key, args.max_tokens)?
                 .with_concurrency(args.concurrency)
-                .with_context_window(args.context_window),
+                .with_context_window(args.context_window)
+                .with_show_thinking(args.show_thinking || args.verbose),
         )
+    }
+
+    pub fn with_show_thinking(mut self, show: bool) -> Self {
+        self.show_thinking = show;
+        self
     }
 
     pub fn with_context_window(mut self, cw: Option<usize>) -> Self {
@@ -1223,7 +1570,7 @@ impl LlmClient {
         }
 
         let mut line_buf: Vec<u8> = Vec::with_capacity(512);
-        let mut state = SseStreamState::new(start_time);
+        let mut state = SseStreamState::new(start_time, self.show_thinking);
 
         while let Some(chunk) = response.chunk().await.context("Error reading LLM stream")? {
             if line_buf.len().saturating_add(chunk.len()) > MAX_SSE_LINE_BYTES {
@@ -1261,14 +1608,7 @@ impl LlmClient {
             }
         }
 
-        if state.streamed_thinking && !state.finished_thinking_ui {
-            state.finished_thinking_ui = true;
-            if Ui::use_color() {
-                eprintln!("\n\x1b[0m");
-            } else {
-                eprintln!("\n----------------");
-            }
-        }
+        state.finish_thinking_ui(&pb, spinner_label, mode);
 
         if let Some(ref mut renderer) = state.stream_renderer {
             renderer.flush();
@@ -2552,5 +2892,118 @@ mod tests {
         let minimal_json = r#"{"id": "generic-model"}"#;
         let minimal_model: ModelInfo = serde_json::from_str(minimal_json).expect("failed to parse");
         assert_eq!(minimal_model.context_window(), None);
+    }
+
+    #[test]
+    fn test_format_thinking_duration() {
+        assert_eq!(format_thinking_duration(0.4), "0.4s");
+        assert_eq!(format_thinking_duration(4.0), "4s");
+        assert_eq!(format_thinking_duration(4.2), "4.2s");
+        assert_eq!(format_thinking_duration(19.0), "19s");
+        assert_eq!(format_thinking_duration(19.8), "20s");
+        assert_eq!(format_thinking_duration(35.2), "35s");
+    }
+
+    #[test]
+    fn test_extract_thought_headline_variations() {
+        // User's exact scenario from election news briefing
+        let step1 = "Here's a thinking process to construct the news briefing:\n\n1.  **Analyze the Request:**\n    *   **Topic:** USA election news (Midterms, Nov 2026).\n    *   **Timeframe:** Past Week";
+        assert_eq!(
+            extract_thought_headline(step1),
+            Some("Analyze the Request".to_string())
+        );
+
+        let step2 = format!(
+            "{}\n\n2.  **Source Material Review & Extraction (Thematic Grouping):**\n    *   **Core Result:** Democrats won control",
+            step1
+        );
+        assert_eq!(
+            extract_thought_headline(&step2),
+            Some("Source Material Review & Extraction".to_string())
+        );
+
+        let step3 = format!(
+            "{}\n\n3.  **Structuring and Drafting the Briefing (Applying Professional Tone):**\n    *   Drafting 1. Executive Overview",
+            step2
+        );
+        assert_eq!(
+            extract_thought_headline(&step3),
+            Some("Structuring and Drafting the Briefing".to_string())
+        );
+
+        let step4 = format!(
+            "{}\n\n4.  **Final Review:**\n    *   Check constraints",
+            step3
+        );
+        assert_eq!(
+            extract_thought_headline(&step4),
+            Some("Final Review".to_string())
+        );
+
+        // Markdown headings
+        let md_heading =
+            "### 1. Ownership and Borrowing\nExplaining how Rust guarantees memory safety.";
+        assert_eq!(
+            extract_thought_headline(md_heading),
+            Some("Ownership and Borrowing".to_string())
+        );
+
+        // Action verb sentence
+        let action_sentence = "Reviewing the 5 news articles.";
+        assert_eq!(
+            extract_thought_headline(action_sentence),
+            Some("Reviewing the 5 news articles".to_string())
+        );
+
+        // Long sentence truncated at 45 chars with ellipsis
+        let long_sentence =
+            "Reviewing the 5 articles to synthesize briefing and extract core developments.";
+        assert_eq!(
+            extract_thought_headline(long_sentence),
+            Some("Reviewing the 5 articles to synthesize…".to_string())
+        );
+
+        // Standalone bold
+        let standalone_bold = "**Synthesizing Main Takeaway**\nThe candidate won.";
+        assert_eq!(
+            extract_thought_headline(standalone_bold),
+            Some("Synthesizing Main Takeaway".to_string())
+        );
+
+        // Empty and generic filler
+        assert_eq!(extract_thought_headline(""), None);
+        assert_eq!(extract_thought_headline("   \n  \t  "), None);
+        assert_eq!(
+            extract_thought_headline("Here's a thinking process:\nOkay\nUnderstood"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_sse_stream_state_compact_vs_verbose_thinking() {
+        let pb = indicatif::ProgressBar::hidden();
+
+        // Compact mode (default)
+        let mut state_compact = SseStreamState::new(std::time::Instant::now(), false);
+        let reason_chunk = br#"data: {"choices":[{"delta":{"reasoning_content":"1. **Analyze the Request:**\nChecking parameters"}}]}"#;
+        assert!(!state_compact.process_line(reason_chunk, &pb, "Working", StreamMode::Buffered));
+        assert_eq!(state_compact.thinking_tokens, 1);
+        assert!(state_compact.is_thinking);
+        assert!(!state_compact.streamed_thinking);
+
+        // When content arrives, finish_thinking_ui runs and settles thinking
+        let content_chunk = br#"data: {"choices":[{"delta":{"content":"Summary result"}}]}"#;
+        assert!(!state_compact.process_line(content_chunk, &pb, "Working", StreamMode::Buffered));
+        assert!(!state_compact.is_thinking);
+        assert!(state_compact.finished_thinking_ui);
+        assert_eq!(state_compact.content_buf, "Summary result");
+        assert!(state_compact.reasoning_buf.contains("Analyze the Request"));
+
+        // Verbose / show_thinking_stream mode
+        let mut state_verbose = SseStreamState::new(std::time::Instant::now(), true);
+        assert!(!state_verbose.process_line(reason_chunk, &pb, "Working", StreamMode::Buffered));
+        assert_eq!(state_verbose.thinking_tokens, 1);
+        assert!(state_verbose.is_thinking);
+        assert!(state_verbose.streamed_thinking);
     }
 }

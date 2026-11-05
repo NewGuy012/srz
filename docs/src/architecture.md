@@ -155,7 +155,7 @@ sequenceDiagram
         CLI->>Scraper: Fetch & clean canonical reference article
         CLI->>LLM: POST /v1/chat/completions (stream: true)
         loop Zero-Copy SSE Stream
-            LLM-->>CLI: Live dimmed reasoning trace on stderr (💭 Thinking...)
+            LLM-->>CLI: Live one-liner spinner & collapsible dropdown on stderr (💭 Thought for Xs ›)
             Note over CLI,User: Incremental line-buffered Markdown on stdout (--stream)
         end
         CLI->>Cache: Persist to cache.duckdb & render collision-safe views
@@ -177,7 +177,7 @@ Every summarization request begins by constructing a deterministic cache key fro
 On a cache miss, the router dispatches the target to its specialized source pipeline. Network and filesystem reads enforce strict resource ceilings (10 MB for web payloads and stdin, 20 MB for local files). Scraped web pages are stripped of navigation menus, ads, and boilerplate via Mozilla's Readability algorithm (`dom_smoothie`), while book lookups concurrently fan out across Open Library and search endpoints to extract lead and plot synopses. All untrusted source text is then quarantined inside `<source_document>` XML boundary tags with case-insensitive delimiter escaping before reaching the prompt builder.
 
 #### Zero-Copy Streaming Inference
-With the prompt assembled and sized according to the server's active context window, `srz` initiates an HTTP POST request with Server-Sent Events enabled (`stream: true`). Incoming byte chunks are parsed zero-copy using borrowed string slices (`Cow<str>`). Model reasoning tokens (`reasoning_content` deltas or in-band `<think>` blocks) are routed directly to `stderr` as a dimmed chain-of-thought trace (`💭 Thinking...`), while content tokens are either rendered incrementally via `StreamMarkdownRenderer` when `--stream` is passed or buffered until completion.
+With the prompt assembled and sized according to the server's active context window, `srz` initiates an HTTP POST request with Server-Sent Events enabled (`stream: true`). Incoming byte chunks are parsed zero-copy using borrowed string slices (`Cow<str>`). Model reasoning tokens (`reasoning_content` deltas or in-band `<think>` blocks) dynamically update a live single-line spinner with the active step summary (e.g. `💭 Thinking: Analyzing the request (2.4s)...`) and settle into a dimmed collapsible dropdown indicator (`💭 Thought for 35s ›`), while content tokens are either rendered incrementally via `StreamMarkdownRenderer` when `--stream` is passed or buffered until completion. Full raw trace streaming to `stderr` can be opted into via `--show-thinking` or `--verbose`.
 
 #### Atomic Persistence & View Generation
 Once inference completes, `srz` persists the outcome across three storage tiers. The summary and token metrics are written to `cache.duckdb`, standalone HTML5 and Markdown reader views (`views/{slug}-{hash8}.html` and `.md`) are generated with collapsible reasoning drawers, and `srz.duckdb` is lazily opened with exponential lock-retry backoff to commit reading history, full summary text, and BM25 search terms in a single ACID transaction.

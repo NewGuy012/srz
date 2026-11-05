@@ -160,7 +160,7 @@ pub fn render_html_document_with_reasoning(
             let r_rendered = markdown_to_html(r);
             format!(
                 r#"    <details class="thought-drawer" style="margin-bottom: 2rem; padding: 1rem 1.25rem; background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;">
-      <summary style="cursor: pointer; font-weight: 600; color: var(--muted); user-select: none;">🧠 Model Reasoning &amp; Analytical Trace</summary>
+      <summary style="cursor: pointer; font-weight: 600; color: var(--muted); user-select: none;">💭 Thought Process &amp; Model Reasoning &amp; Analytical Trace &rsaquo;</summary>
       <div style="margin-top: 1rem; color: var(--text); font-size: 0.95rem; line-height: 1.6;">
         {r_rendered}
       </div>

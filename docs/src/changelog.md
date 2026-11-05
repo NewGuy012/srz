@@ -26,14 +26,16 @@ All notable changes to `srz` are documented in this file.
 
 ### Summary
 
-> Introduces native zero-dependency EPUB book extraction, sub-millisecond cache fast-paths and offline chat management, dynamic per-turn BM25 grounding in interactive Q&A, calibrated single-pass chunking, search index stop-word filtering, and comprehensive security hardening for vault exports and SQL attachments.
+> Introduces an Antigravity/Gemini-style compact thinking UI with live one-liner step summaries and collapsible dropdowns, native zero-dependency EPUB book extraction, sub-millisecond cache fast-paths and offline chat management, dynamic per-turn BM25 grounding in interactive Q&A, calibrated single-pass token chunking, and deterministic release CI builds.
 
 ### Changes
-- **Native EPUB Ingestion (`src/sources/epub.rs`, `src/sources/document.rs`)**: Added pure-Rust zero-dependency EPUB book extraction and chapter stitching in reading order using existing zip and XML dependencies.
+- **Compact Thinking UI (`src/engine/llm.rs`, `src/ui/render.rs`)**: Replaced multi-line raw thinking trace dumps with a live, real-time one-liner spinner summary (`💭 Thinking: <Step> (Xs)...`) and an Antigravity/Gemini-style collapsible dropdown indicator (`💭 Thought for Xs ›`), preserving the full chain-of-thought in HTML reader views and opt-in `--show-thinking` CLI streaming.
+- **Native EPUB Ingestion (`src/sources/epub.rs`, `src/sources/document.rs`)**: Pure-Rust zero-dependency EPUB book extraction and chapter stitching in reading order using existing zip and XML dependencies.
 - **Cache Fast-Paths & Offline Chat (`src/main.rs`, `src/commands/ask.rs`)**: Instantaneous sub-millisecond cache hit delivery for web, books, and local files before initializing network or LLM engines, complete reasoning trace preservation, and offline chat management (`--chats`, `--show-chat`, `--delete-chat`).
-- **Dynamic BM25 Grounding (`src/commands/ask.rs`, `src/storage/db.rs`)**: Re-ranks grounding context dynamically per turn in interactive Q&A, and filters stop words and short tokens in the library search index to prevent table bloat.
-- **Engine Optimization & Telemetry (`src/engine/llm.rs`)**: Replaced sequential N+1 HTTP `/tokenize` loops with single-pass calibration ratios, aligned tree reduction tokens with active model profiles, unified parallel completions, and eliminated redundant word bounding.
+- **Dynamic BM25 Grounding & Index Filtering (`src/commands/ask.rs`, `src/storage/db.rs`)**: Re-ranks grounding context dynamically per turn in interactive Q&A, optimizes single-pass BM25 chunk scoring, and filters stop words and short tokens in the library search index to prevent table bloat.
+- **Engine & Streaming Fixes (`src/engine/llm.rs`, `src/ui/printer.rs`)**: Calibrated single-pass tokenization ratios eliminating N+1 `/tokenize` loops, aligned tree reduction tokens with active profiles, and preserved line buffering in `StreamMarkdownRenderer` when color is disabled.
 - **Security Hardening (`src/storage/db.rs`, `src/sources/youtube.rs`)**: Sanitized YAML frontmatter scalars and filename collisions in Markdown vault exports, validated SQL attachment identifiers, and hardened YouTube transcript parsing against malformed escapes.
+- **Build & CI Pipeline (`.github/workflows/release.yml`)**: Streamlined release workflow using `rust-cache` for deterministic, reliable release artifact generation.
 
 ---
 

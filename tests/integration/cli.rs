@@ -511,6 +511,21 @@ fn test_stream_flag_and_mode_defaults() {
 }
 
 #[test]
+fn test_show_thinking_flag_and_alias() {
+    // Default: show_thinking is false
+    let default_cli = Cli::parse_from(["srz", "Dune"]);
+    assert!(!default_cli.show_thinking);
+
+    // --show-thinking
+    let show_cli = Cli::parse_from(["srz", "Dune", "--show-thinking"]);
+    assert!(show_cli.show_thinking);
+
+    // alias --thinking
+    let alias_cli = Cli::parse_from(["srz", "Dune", "--thinking"]);
+    assert!(alias_cli.show_thinking);
+}
+
+#[test]
 fn test_upgrade_subcommand_flags() {
     // Default srz upgrade
     let upgrade_cli = Cli::parse_from(["srz", "upgrade"]);
