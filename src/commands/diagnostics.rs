@@ -312,32 +312,7 @@ pub fn handle_recommend(as_json: bool) -> Result<()> {
     let hw = crate::system::hardware::HardwareProfile::detect();
 
     if as_json {
-        let one_pass_tokens = hw.one_pass_token_ceiling();
-        let report = serde_json::json!({
-            "hardware": {
-                "device": hw.chip_name,
-                "total_memory_bytes": hw.total_memory_bytes,
-                "total_memory_gb": hw.total_memory_gb,
-                "tier": hw.tier.display_name(),
-            },
-            "recommendations": {
-                "family": "Google Gemma 4",
-                "model": hw.concise_model,
-                "model_id": hw.recommended_model,
-                "size": hw.recommended_size,
-                "quantization": hw.recommended_quant,
-                "disk_size": hw.disk_size,
-                "context_window": hw.recommended_context,
-                "context_display": hw.recommended_context_display,
-                "ram_footprint": hw.ram_footprint,
-                "one_pass_token_ceiling": one_pass_tokens,
-            },
-            "launch_commands": {
-                "llama_gui": format!("In Llama GUI, select: {}", hw.llama_gui_selection()),
-                "llama_server": hw.recommended_launch_command,
-                "ollama": hw.ollama_launch_command,
-            }
-        });
+        let report = hw.to_recommend_report_json();
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
     }

@@ -130,11 +130,17 @@ pub async fn fetch_or_cache_page(
     .await
 }
 
+/// Returns true if the URL points to a remote PDF file (case-insensitive, ignoring query parameters and fragments).
+pub fn is_pdf_url(url: &str) -> bool {
+    let clean = url.split(['?', '#']).next().unwrap_or(url);
+    clean.ends_with(".pdf") || clean.ends_with(".PDF")
+}
+
 /// Determines the target type label ("youtube", "file", or "web") for a given URL.
 pub fn target_type_for_url(url: &str) -> &'static str {
     if crate::sources::youtube::extract_youtube_video_id(url).is_some() {
         "youtube"
-    } else if url.split('?').next().unwrap_or(url).ends_with(".pdf") {
+    } else if is_pdf_url(url) {
         "file"
     } else {
         "web"
@@ -150,18 +156,33 @@ pub async fn fetch_url_content(
     verbose: bool,
 ) -> Result<ScrapedPage> {
     let is_youtube = crate::sources::youtube::extract_youtube_video_id(url);
-    let is_pdf = url.split('?').next().unwrap_or(url).ends_with(".pdf");
+    let is_pdf = is_pdf_url(url);
 
-    if let Some(video_id) = is_youtube {
-        let (cache_msg, spinner_msg, done_msg) = if verbose {
+    let (cache_msg, spinner_msg, done_msg) = if verbose {
+        if is_youtube.is_some() {
             (
                 "Loaded YouTube transcript from local cache.",
                 "Fetching YouTube video metadata and captions...",
                 "YouTube transcript and metadata fetched.",
             )
+        } else if is_pdf {
+            (
+                "Loaded PDF content from local cache.",
+                "Downloading and extracting PDF text...",
+                "PDF text layer extracted.",
+            )
         } else {
-            ("", "", "")
-        };
+            (
+                "Loaded webpage content from local cache.",
+                "Scraping and normalizing webpage content...",
+                "Webpage content scraped and normalized.",
+            )
+        }
+    } else {
+        ("", "", "")
+    };
+
+    if let Some(video_id) = is_youtube {
         fetch_or_cache_page_with(
             url,
             cache,
@@ -172,15 +193,6 @@ pub async fn fetch_url_content(
         )
         .await
     } else if is_pdf {
-        let (cache_msg, spinner_msg, done_msg) = if verbose {
-            (
-                "Loaded PDF content from local cache.",
-                "Downloading and extracting PDF text...",
-                "PDF text layer extracted.",
-            )
-        } else {
-            ("", "", "")
-        };
         fetch_or_cache_page_with(url, cache, cache_msg, spinner_msg, done_msg, async {
             let resp = scraper
                 .client()
@@ -204,15 +216,6 @@ pub async fn fetch_url_content(
         })
         .await
     } else {
-        let (cache_msg, spinner_msg, done_msg) = if verbose {
-            (
-                "Loaded webpage content from local cache.",
-                "Scraping and normalizing webpage content...",
-                "Webpage content scraped and normalized.",
-            )
-        } else {
-            ("", "", "")
-        };
         fetch_or_cache_page(url, scraper, cache, cache_msg, spinner_msg, done_msg).await
     }
 }
@@ -856,6 +859,10 @@ mod tests {
         );
         assert_eq!(
             target_type_for_url("https://example.com/paper.pdf?token=123"),
+            "file"
+        );
+        assert_eq!(
+            target_type_for_url("https://example.com/paper.PDF#page=3"),
             "file"
         );
         assert_eq!(target_type_for_url("https://example.com/article"), "web");

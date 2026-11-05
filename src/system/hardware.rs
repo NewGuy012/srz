@@ -208,6 +208,35 @@ impl HardwareProfile {
             "llama_gui_selection": self.llama_gui_selection(),
         })
     }
+
+    /// Returns the structured recommendation report matching `srz recommend --json`.
+    pub fn to_recommend_report_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "hardware": {
+                "device": self.chip_name,
+                "total_memory_bytes": self.total_memory_bytes,
+                "total_memory_gb": self.total_memory_gb,
+                "tier": self.tier.display_name(),
+            },
+            "recommendations": {
+                "family": "Google Gemma 4",
+                "model": self.concise_model,
+                "model_id": self.recommended_model,
+                "size": self.recommended_size,
+                "quantization": self.recommended_quant,
+                "disk_size": self.disk_size,
+                "context_window": self.recommended_context,
+                "context_display": self.recommended_context_display,
+                "ram_footprint": self.ram_footprint,
+                "one_pass_token_ceiling": self.one_pass_token_ceiling(),
+            },
+            "launch_commands": {
+                "llama_gui": format!("In Llama GUI, select: {}", self.llama_gui_selection()),
+                "llama_server": self.recommended_launch_command,
+                "ollama": self.ollama_launch_command,
+            }
+        })
+    }
 }
 
 /// Formats a raw token context window (e.g. 32768) into a simplified label (e.g. "32k ctx")
