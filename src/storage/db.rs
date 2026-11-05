@@ -42,6 +42,7 @@ pub struct NewSummaryRecord<'a> {
     pub duration_ms: u64,
     pub tokens_per_second: Option<f64>,
     pub summary: &'a str,
+    pub reasoning: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,6 +157,8 @@ pub struct LibraryItem {
     pub author: Option<String>,
     pub url: Option<String>,
     pub summary: String,
+    #[serde(default)]
+    pub reasoning: Option<String>,
     pub style: String,
     pub model: String,
     pub word_count: u32,
@@ -314,8 +317,10 @@ impl Database {
 
              CREATE TABLE IF NOT EXISTS library (
                  id INTEGER PRIMARY KEY,
-                 summary TEXT NOT NULL
+                 summary TEXT NOT NULL,
+                 reasoning TEXT
              );
+             ALTER TABLE library ADD COLUMN IF NOT EXISTS reasoning TEXT;
              ALTER TABLE library DROP COLUMN IF EXISTS target_type;
              ALTER TABLE library DROP COLUMN IF EXISTS title;
              ALTER TABLE library DROP COLUMN IF EXISTS author;
@@ -454,8 +459,8 @@ impl Database {
                 conn.query_row("SELECT currval('history_id_seq')", [], |r| r.get(0))?;
 
             conn.execute(
-                "INSERT INTO library (id, summary) VALUES (?, ?)",
-                params![doc_id, record.summary],
+                "INSERT INTO library (id, summary, reasoning) VALUES (?, ?, ?)",
+                params![doc_id, record.summary, record.reasoning],
             )
             .context("Failed to record entry in DuckDB library table")?;
 
@@ -1088,7 +1093,7 @@ macro_rules! select_library_base_sql {
             coalesce(h.style, 'concise'), coalesce(h.model, 'unknown'),
             coalesce(h.word_count, 0), h.prompt_tokens, h.completion_tokens,
             coalesce(h.duration_ms, 0), h.tokens_per_second,
-            strftime(h.created_at, '%Y-%m-%d %H:%M')
+            strftime(h.created_at, '%Y-%m-%d %H:%M'), l.reasoning
      FROM library l
      JOIN history h ON l.id = h.id"
     };
@@ -1115,6 +1120,7 @@ fn map_library_item_row(row: &duckdb::Row<'_>) -> duckdb::Result<LibraryItem> {
         duration_ms: row.get::<_, u32>(11)? as u64,
         tokens_per_second: row.get(12)?,
         created_at: row.get(13)?,
+        reasoning: row.get(14).ok(),
     })
 }
 

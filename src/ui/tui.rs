@@ -603,6 +603,7 @@ mod tests {
                 duration_ms: 1200,
                 tokens_per_second: Some(41.6),
                 created_at: "2026-10-28 12:00".into(),
+                reasoning: None,
             },
             LibraryItem {
                 id: 2,
@@ -619,6 +620,7 @@ mod tests {
                 duration_ms: 1500,
                 tokens_per_second: Some(46.6),
                 created_at: "2026-10-28 13:00".into(),
+                reasoning: None,
             },
         ];
 
@@ -658,6 +660,7 @@ mod tests {
             duration_ms: 100,
             tokens_per_second: None,
             created_at: "2026-10-28\n12:00".into(),
+            reasoning: None,
         }];
 
         let state = AppState::new(malicious_items, std::path::PathBuf::from("/tmp"));

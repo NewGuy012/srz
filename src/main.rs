@@ -230,10 +230,11 @@ async fn main() -> Result<()> {
 
             // Always ensure clickable styled HTML and Markdown view files exist (skipping re-render on cache hit)
             if !args.json
-                && let Ok(files) = render::ensure_view_files(
+                && let Ok(files) = render::ensure_view_files_with_reasoning(
                     &cache.views_dir(),
                     &outcome.title,
                     &outcome.summary,
+                    outcome.reasoning.as_deref(),
                     !outcome.cached,
                 )
             {
@@ -278,6 +279,7 @@ async fn main() -> Result<()> {
                     duration_ms: outcome.duration_ms,
                     tokens_per_second: outcome.tokens_per_second,
                     summary: &outcome.summary,
+                    reasoning: outcome.reasoning.as_deref(),
                 };
                 let _ = db.record_summary(&record);
                 let _ = commands::update_index_dashboard(&db, &cache);

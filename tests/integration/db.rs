@@ -17,6 +17,7 @@ fn test_database_record_and_history() {
         duration_ms: 4200,
         tokens_per_second: Some(43.8),
         summary: "Dune is a 1965 epic sci-fi novel about Arrakis, ecology, and Melange spice.",
+        reasoning: Some("Analyzed Herbert's ecological themes."),
     };
 
     db.record_summary(&record).unwrap();
@@ -28,6 +29,13 @@ fn test_database_record_and_history() {
     assert_eq!(history[0].word_count, 11106);
     assert_eq!(history[0].prompt_tokens, Some(5200));
     assert_eq!(history[0].completion_tokens, Some(1840));
+
+    let items = db.get_all_library_items().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        items[0].reasoning.as_deref(),
+        Some("Analyzed Herbert's ecological themes.")
+    );
 }
 
 #[test]
@@ -47,6 +55,7 @@ fn test_database_query_raw_and_exports() {
         duration_ms: 4200,
         tokens_per_second: Some(43.8),
         summary: "Dune is a 1965 epic sci-fi novel about Arrakis.",
+        reasoning: None,
     };
     db.record_summary(&record).unwrap();
 
@@ -111,6 +120,7 @@ fn test_database_stats() {
         duration_ms: 3000,
         tokens_per_second: Some(50.0),
         summary: "Book summary 1",
+        reasoning: None,
     };
     db.record_summary(&r1).unwrap();
 
@@ -127,6 +137,7 @@ fn test_database_stats() {
         duration_ms: 1000,
         tokens_per_second: Some(50.0),
         summary: "Web summary 2",
+        reasoning: None,
     };
     db.record_summary(&r2).unwrap();
 
@@ -170,6 +181,7 @@ fn test_database_search_library() {
         duration_ms: 4200,
         tokens_per_second: Some(43.8),
         summary: "Set on the harsh desert planet Arrakis, the sole source of Melange spice in the known universe.",
+        reasoning: None,
     };
     db.record_summary(&record).unwrap();
 
@@ -200,6 +212,7 @@ fn test_database_search_multibyte_utf8_snippet_safety() {
         duration_ms: 800,
         tokens_per_second: Some(35.0),
         summary: "🌟 Voici mon secret. Il est très simple: on ne voit bien qu’avec le cœur. L’essentiel est invisible pour les yeux. 🚀🪐✨ 狐狸 and roses.",
+        reasoning: None,
     };
     db.record_summary(&record).unwrap();
 
@@ -229,6 +242,7 @@ fn test_database_search_bm25_relevance_ranking() {
         duration_ms: 1200,
         tokens_per_second: Some(40.0),
         summary: "The rust compiler achieves zero-cost abstractions and memory safety through borrow checker analysis. Rust compiler optimizations are extensive.",
+        reasoning: None,
     };
     db.record_summary(&doc_a).unwrap();
 
@@ -245,6 +259,7 @@ fn test_database_search_bm25_relevance_ranking() {
         duration_ms: 800,
         tokens_per_second: Some(40.0),
         summary: "Design patterns in systems programming. Briefly mentions rust compiler in passing.",
+        reasoning: None,
     };
     db.record_summary(&doc_b).unwrap();
 
@@ -275,6 +290,7 @@ fn test_database_library_items_and_deletion() {
         duration_ms: 1200,
         tokens_per_second: Some(45.0),
         summary: "Spice on Arrakis.",
+        reasoning: None,
     };
     db.record_summary(&record1).unwrap();
 
@@ -291,6 +307,7 @@ fn test_database_library_items_and_deletion() {
         duration_ms: 1000,
         tokens_per_second: Some(48.0),
         summary: "Modern systems programming.",
+        reasoning: None,
     };
     db.record_summary(&record2).unwrap();
 
@@ -328,6 +345,7 @@ fn test_database_reset() {
         duration_ms: 1500,
         tokens_per_second: Some(40.0),
         summary: "Dune summary text",
+        reasoning: None,
     };
     db.record_summary(&record).unwrap();
     assert_eq!(db.get_history(10).unwrap().len(), 1);
@@ -362,6 +380,7 @@ fn test_database_file_open_and_reopen() {
             duration_ms: 100,
             tokens_per_second: None,
             summary: "Reopen content",
+            reasoning: None,
         };
         db.record_summary(&record).unwrap();
     }
@@ -391,6 +410,7 @@ fn test_library_item_matches_query() {
         duration_ms: 100,
         tokens_per_second: None,
         summary: "The Mule attacks the Galactic Empire.",
+        reasoning: None,
     };
     db.record_summary(&record).unwrap();
     let items = db.get_all_library_items().unwrap();
@@ -424,6 +444,7 @@ fn test_library_item_matches_query() {
         duration_ms: 100,
         tokens_per_second: None,
         summary: "Jean Valjean and Cosette in 19th-century France.",
+        reasoning: None,
     };
     db.record_summary(&unicode_record).unwrap();
     let all_items = db.get_all_library_items().unwrap();
@@ -530,6 +551,7 @@ fn test_database_search_special_characters_and_sql_injection() {
         duration_ms: 100,
         tokens_per_second: None,
         summary: "Discussion of SQL injection vulnerabilities and escaping techniques.",
+        reasoning: None,
     };
     db.record_summary(&record).unwrap();
 

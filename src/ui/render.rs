@@ -22,6 +22,17 @@ pub fn ensure_view_files(
     markdown: &str,
     force_write: bool,
 ) -> std::io::Result<RenderedFiles> {
+    ensure_view_files_with_reasoning(views_dir, title, markdown, None, force_write)
+}
+
+/// Ensures both `.md` and `.html` view files exist in `views_dir`, embedding an optional model reasoning trace.
+pub fn ensure_view_files_with_reasoning(
+    views_dir: &Path,
+    title: &str,
+    markdown: &str,
+    reasoning: Option<&str>,
+    force_write: bool,
+) -> std::io::Result<RenderedFiles> {
     let slug = slugify(title);
     let md_path = views_dir.join(format!("{}.md", slug));
     let html_path = views_dir.join(format!("{}.html", slug));
@@ -33,7 +44,7 @@ pub fn ensure_view_files(
     fs_util::create_private_dir_all(views_dir)?;
     fs_util::write_private_file(&md_path, markdown)?;
 
-    let html_doc = render_html_document(title, markdown);
+    let html_doc = render_html_document_with_reasoning(title, markdown, reasoning);
     fs_util::write_private_file(&html_path, html_doc)?;
 
     Ok(RenderedFiles { html_path, md_path })
@@ -109,8 +120,32 @@ const SHARED_THEME_CSS: &str = r#"    :root {
 
 /// Renders a standalone HTML5 document with editorial typography and automatic light/dark mode.
 pub fn render_html_document(title: &str, markdown: &str) -> String {
+    render_html_document_with_reasoning(title, markdown, None)
+}
+
+/// Renders a standalone HTML5 document including an optional collapsible model reasoning trace.
+pub fn render_html_document_with_reasoning(
+    title: &str,
+    markdown: &str,
+    reasoning: Option<&str>,
+) -> String {
     let escaped_title = escape_html_cow(title);
     let body_html = markdown_to_html(markdown);
+    let reasoning_html = match reasoning {
+        Some(r) if !r.trim().is_empty() => {
+            let r_rendered = markdown_to_html(r);
+            format!(
+                r#"    <details class="thought-drawer" style="margin-bottom: 2rem; padding: 1rem 1.25rem; background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;">
+      <summary style="cursor: pointer; font-weight: 600; color: var(--muted); user-select: none;">🧠 Model Reasoning &amp; Analytical Trace</summary>
+      <div style="margin-top: 1rem; color: var(--text); font-size: 0.95rem; line-height: 1.6;">
+        {r_rendered}
+      </div>
+    </details>
+"#
+            )
+        }
+        _ => String::new(),
+    };
 
     format!(
         r#"<!DOCTYPE html>
@@ -213,12 +248,13 @@ pub fn render_html_document(title: &str, markdown: &str) -> String {
 <body>
   <main>
     <header class="meta">srz &bull; Summary: {escaped_title}</header>
-{body_html}  </main>
+{reasoning_html}{body_html}  </main>
 </body>
 </html>
 "#,
         SHARED_THEME_CSS = SHARED_THEME_CSS,
         escaped_title = escaped_title,
+        reasoning_html = reasoning_html,
         body_html = body_html,
     )
 }
@@ -748,5 +784,18 @@ mod tests {
         assert!(!html.contains("javascript:"));
         assert!(!html.contains("data:text/html"));
         assert!(html.contains(r##"href="#"##));
+    }
+
+    #[test]
+    fn test_render_html_document_with_reasoning() {
+        let doc = render_html_document_with_reasoning(
+            "Test Title",
+            "# Summary\nContent here.",
+            Some("Thinking about implications..."),
+        );
+        assert!(doc.contains("Summary: Test Title"));
+        assert!(doc.contains("thought-drawer"));
+        assert!(doc.contains("Model Reasoning &amp; Analytical Trace"));
+        assert!(doc.contains("Thinking about implications..."));
     }
 }

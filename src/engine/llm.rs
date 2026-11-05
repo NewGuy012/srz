@@ -91,6 +91,7 @@ pub enum StreamMode<'a> {
 /// Output returned by an LLM summarization call.
 pub struct LlmOutput {
     pub content: String,
+    pub reasoning: Option<String>,
     pub truncated: bool,
     pub warning: Option<String>,
     pub hint: Option<String>,
@@ -169,14 +170,17 @@ pub struct LlmClient {
 
 struct SseStreamState {
     content_buf: String,
+    reasoning_buf: String,
     thinking_tokens: usize,
     output_tokens: usize,
     started_visible: bool,
     is_thinking: bool,
+    streamed_thinking: bool,
+    finished_thinking_ui: bool,
+    in_think_tag: bool,
     truncated: bool,
     last_usage: Option<TokenUsage>,
     needs_stdout_flush: bool,
-    start_time: std::time::Instant,
     last_spinner_update: std::time::Instant,
 }
 
@@ -184,14 +188,17 @@ impl SseStreamState {
     fn new(start_time: std::time::Instant) -> Self {
         Self {
             content_buf: String::with_capacity(2048),
+            reasoning_buf: String::with_capacity(1024),
             thinking_tokens: 0,
             output_tokens: 0,
             started_visible: false,
             is_thinking: false,
+            streamed_thinking: false,
+            finished_thinking_ui: false,
+            in_think_tag: false,
             truncated: false,
             last_usage: None,
             needs_stdout_flush: false,
-            start_time,
             last_spinner_update: start_time,
         }
     }
@@ -245,27 +252,44 @@ impl SseStreamState {
             && !reasoning.is_empty()
             && !self.started_visible
         {
-            self.thinking_tokens += 1;
-            self.is_thinking = true;
-            let now = std::time::Instant::now();
-            if self.thinking_tokens == 1
-                || now.duration_since(self.last_spinner_update) >= Duration::from_millis(80)
-            {
-                self.last_spinner_update = now;
-                let elapsed = self.start_time.elapsed();
-                pb.set_message(Ui::format_llm_status(
-                    spinner_label,
-                    "thinking",
-                    self.thinking_tokens,
-                    elapsed,
-                    None,
-                ));
-            }
+            self.append_reasoning_delta(reasoning, pb);
         }
 
         if let Some(delta_text) = &choice.delta.content
             && !delta_text.is_empty()
         {
+            if !self.started_visible {
+                if let Some(think_start) = delta_text.find("<think>") {
+                    self.in_think_tag = true;
+                    let after_tag = &delta_text[think_start + 7..];
+                    if let Some(think_end) = after_tag.find("</think>") {
+                        let think_part = &after_tag[..think_end];
+                        self.append_reasoning_delta(think_part, pb);
+                        self.in_think_tag = false;
+                        let visible_part = &after_tag[think_end + 8..];
+                        if !visible_part.is_empty() {
+                            self.append_content_delta(visible_part, pb, spinner_label, mode);
+                        }
+                    } else {
+                        self.append_reasoning_delta(after_tag, pb);
+                    }
+                    return false;
+                } else if self.in_think_tag {
+                    if let Some(think_end) = delta_text.find("</think>") {
+                        let think_part = &delta_text[..think_end];
+                        self.append_reasoning_delta(think_part, pb);
+                        self.in_think_tag = false;
+                        let visible_part = &delta_text[think_end + 8..];
+                        if !visible_part.is_empty() {
+                            self.append_content_delta(visible_part, pb, spinner_label, mode);
+                        }
+                    } else {
+                        self.append_reasoning_delta(delta_text, pb);
+                    }
+                    return false;
+                }
+            }
+
             if self.content_buf.len().saturating_add(delta_text.len()) > MAX_CONTENT_BUFFER_BYTES {
                 self.truncated = true;
                 return true;
@@ -276,6 +300,32 @@ impl SseStreamState {
         false
     }
 
+    fn append_reasoning_delta(&mut self, text: &str, pb: &indicatif::ProgressBar) {
+        self.thinking_tokens += 1;
+        self.is_thinking = true;
+        self.reasoning_buf.push_str(text);
+
+        if !Ui::is_quiet() {
+            if !self.streamed_thinking {
+                self.streamed_thinking = true;
+                pb.finish_and_clear();
+                if Ui::use_color() {
+                    eprint!("\x1b[2m💭 Thinking...\n  │ ");
+                } else {
+                    eprintln!("--- Thinking ---");
+                }
+            }
+            let safe_chunk = crate::ui::sanitize_terminal_text_cow(text);
+            if Ui::use_color() {
+                let indented = safe_chunk.replace('\n', "\n  │ ");
+                eprint!("{}", indented);
+            } else {
+                eprint!("{}", safe_chunk);
+            }
+            let _ = io::stderr().flush();
+        }
+    }
+
     fn append_content_delta(
         &mut self,
         delta_text: &str,
@@ -283,6 +333,19 @@ impl SseStreamState {
         spinner_label: &str,
         mode: StreamMode<'_>,
     ) {
+        if self.streamed_thinking && !self.finished_thinking_ui {
+            self.finished_thinking_ui = true;
+            if Ui::use_color() {
+                eprintln!("\n\x1b[0m");
+            } else {
+                eprintln!("\n----------------");
+            }
+            if matches!(mode, StreamMode::Buffered) && !Ui::is_quiet() {
+                pb.set_message(format!("{}...", spinner_label));
+                pb.enable_steady_tick(Duration::from_millis(80));
+            }
+        }
+
         let is_first = !self.started_visible;
         let text_to_emit = if is_first {
             let clean = delta_text.trim_start();
@@ -311,18 +374,10 @@ impl SseStreamState {
             StreamMode::Buffered => {
                 let now = std::time::Instant::now();
                 if is_first
-                    || now.duration_since(self.last_spinner_update) >= Duration::from_millis(80)
+                    || now.duration_since(self.last_spinner_update) >= Duration::from_millis(150)
                 {
                     self.last_spinner_update = now;
-                    let elapsed = self.start_time.elapsed();
-                    let rate = compute_tokens_per_second(Some(self.output_tokens as u32), elapsed);
-                    pb.set_message(Ui::format_llm_status(
-                        spinner_label,
-                        "generating",
-                        self.output_tokens,
-                        elapsed,
-                        rate,
-                    ));
+                    pb.set_message(format!("{}...", spinner_label));
                 }
             }
         }
@@ -1109,6 +1164,7 @@ impl LlmClient {
 
         Ok(LlmOutput {
             content: choice.message.content.trim().to_string(),
+            reasoning: None,
             truncated,
             warning,
             hint: None,
@@ -1197,6 +1253,15 @@ impl LlmClient {
             }
         }
 
+        if state.streamed_thinking && !state.finished_thinking_ui {
+            state.finished_thinking_ui = true;
+            if Ui::use_color() {
+                eprintln!("\n\x1b[0m");
+            } else {
+                eprintln!("\n----------------");
+            }
+        }
+
         let streamed_to_stdout = matches!(mode, StreamMode::Stdout { .. }) && state.started_visible;
         if streamed_to_stdout {
             println!("\n");
@@ -1218,8 +1283,15 @@ impl LlmClient {
         let trimmed_len = state.content_buf.trim_end().len();
         state.content_buf.truncate(trimmed_len);
 
+        let reasoning = if state.reasoning_buf.trim().is_empty() {
+            None
+        } else {
+            Some(state.reasoning_buf.trim().to_string())
+        };
+
         Ok(LlmOutput {
             content: state.content_buf,
+            reasoning,
             truncated: state.truncated,
             warning,
             hint: None,
@@ -2266,6 +2338,7 @@ mod tests {
         assert!(!state.process_line(reason_chunk, &pb, "Testing", StreamMode::Buffered));
         assert_eq!(state.thinking_tokens, 1);
         assert!(state.is_thinking);
+        assert_eq!(state.reasoning_buf, "Step 1");
         assert_eq!(state.content_buf, "");
 
         // 2. Process regular delta content chunks
