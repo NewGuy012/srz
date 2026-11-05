@@ -17,6 +17,7 @@ flowchart TD
         Router -->|"YouTube URL"| YTFlow["YouTube Timed-Text Client"]
         Router -->|"Web URL (http://...)"| WebFlow["Web Scraper (dom_smoothie Readability)"]
         Router -->|"PDF File (.pdf)"| PDFFlow["Pure-Rust PDF Extractor"]
+        Router -->|"EPUB Book (.epub)"| EPUBFlow["Pure-Rust Zero-Dependency EPUB Extractor"]
         Router -->|"Local Path or Stdin (-)"| FileFlow["File / Stdin Reader"]
         Router -->|"Book Title"| BookFlow["Book Pipeline"]
         Router -->|"News Query, RSS or Atom"| NewsFlow["Universal Feed Parser (feed-rs)"]
@@ -41,6 +42,7 @@ flowchart TD
         YTCaptions --> Chunker
         WebFlow --> Chunker
         PDFFlow --> Chunker
+        EPUBFlow --> Chunker
         FileFlow --> Chunker
         RefScrape --> Chunker
         NewsScrape --> NewsBriefing["News Digest Synthesis"]
@@ -104,7 +106,8 @@ src/
 | **Engine** | [`src/engine/llm.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/llm.rs) | `engine::llm` | Zero-copy SSE client, server discovery (`/props`), native `/tokenize`, and rate tracking. |
 | | [`src/engine/budget.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/budget.rs) | `engine::budget` | Dynamic token budgeting (`DynamicBudget`) scaling chunks and worker slots. |
 | | [`src/engine/chunker.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/chunker.rs) | `engine::chunker` | BPE token counting (`tiktoken-rs`), $O(1)$ fast paths, and paragraph chunking. |
-| **Sources** | [`src/sources/document.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/document.rs) | `sources::document` | Local document validation (20 MB cap), text extraction, and sanitization. |
+| **Sources** | [`src/sources/document.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/document.rs) | `sources::document` | Local document validation (20 MB cap), format dispatch (PDF, EPUB, HTML, Markdown, plain text), and sanitization. |
+| | [`src/sources/epub.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/epub.rs) | `sources::epub` | Pure-Rust zero-dependency EPUB chapter & metadata extraction (`zip`, `quick-xml`, `htmd`). |
 | | [`src/sources/scraper.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/scraper.rs) | `sources::scraper` | HTTP client (10 MB cap), Mozilla Readability DOM parsing (`dom_smoothie`), and Markdown conversion. |
 | | [`src/sources/pdf.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/pdf.rs) | `sources::pdf` | Pure-Rust single-pass PDF text layer and metadata extraction (`pdf-extract`). |
 | | [`src/sources/youtube.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/youtube.rs) | `sources::youtube` | Video ID parsing, Innertube client, XML/JSON3 caption streaming, chapter cue grouping (`parse_chapters_from_description`), and auto-translate (`&tlang=en`) fallback. |
@@ -167,8 +170,8 @@ sequenceDiagram
 
 ### Execution Lifecycle Phases
 
-#### Sub-Millisecond Cache Fast-Path
-Every summarization request begins by constructing a deterministic cache key from the target identifier, model name, and summary style preset. `srz` probes the embedded `cache.duckdb` store first. On a cache hit, the stored summary is returned in under a millisecond and existing HTML/Markdown reader views on disk are verified. During this fast path, the permanent library database (`srz.duckdb`) is never opened, avoiding file lock acquisition and schema checks entirely.
+#### Sub-Millisecond Cache Fast-Path & Offline Dispatch
+Every summarization request begins by constructing a deterministic cache key from the target identifier (URLs, canonical book titles, or local file hashes/mtimes), model name, and summary style preset. `srz` probes the embedded `cache.duckdb` store first before initializing network clients or the LLM inference client. On a cache hit, the stored summary and preserved chain-of-thought reasoning are returned in under a millisecond, and existing HTML/Markdown reader views on disk are verified. Offline chat session management commands (`--chats`, `--show-chat`, `--delete-chat`) are similarly intercepted and served directly from DuckDB before any LLM connectivity check. During these fast paths, network connections and unnecessary database locks are avoided entirely.
 
 #### Quarantined Content Ingestion
 On a cache miss, the router dispatches the target to its specialized source pipeline. Network and filesystem reads enforce strict resource ceilings (10 MB for web payloads and stdin, 20 MB for local files). Scraped web pages are stripped of navigation menus, ads, and boilerplate via Mozilla's Readability algorithm (`dom_smoothie`), while book lookups concurrently fan out across Open Library and search endpoints to extract lead and plot synopses. All untrusted source text is then quarantined inside `<source_document>` XML boundary tags with case-insensitive delimiter escaping before reaching the prompt builder.
@@ -237,26 +240,29 @@ When `probe_server_capabilities` queries `GET /props` on `llama.cpp` routers or 
 
 ## 4. Storage & Cache Architecture
 
-All state resides under `~/.cache/srz/` (or `$XDG_CACHE_HOME/srz/`) with private `0700` directory and `0600` file permissions:
+`srz` adheres strictly to XDG Base Directory specifications, isolating ephemeral caches from permanent user data with private `0700` directory and `0600` file permissions:
 
 ```mermaid
-graph LR
-    subgraph Root["~/.cache/srz/ (0700)"]
-        subgraph CacheEngine["Consolidated Cache (cache.duckdb)"]
-            CP["cache_pages (7d TTL, 30d YouTube/PDF)"]
-            CS["cache_search (14d TTL)"]
-            CM["cache_summaries (90d TTL / persistent)"]
-            CC["cache_server_capabilities (24h TTL, model-change invalidation)"]
-        end
-        subgraph ViewsDir["Rendered Reader Views"]
-            V["views/"] --- V_desc["Collision-safe HTML5 ({slug}-{hash8}), .md & index.html (14d TTL)"]
-        end
+graph TD
+    subgraph DataRoot["~/.local/share/srz/ (XDG_DATA_HOME, 0700)"]
         subgraph LibraryDB["Analytics, Search & Sessions (srz.duckdb)"]
             D["srz.duckdb (Hardened Lock-Retry Backoff & ATTACH)"]
             D --> T1["history (metadata, words, tokens, latency)"]
             D --> T2["library (normalized id, summary & reasoning trace)"]
-            D --> T3["library_terms (BM25 inverted index)"]
+            D --> T3["library_terms (Stop-word filtered BM25 index)"]
             D --> T4["chat_sessions & chat_messages (multi-turn history)"]
+        end
+    end
+
+    subgraph CacheRoot["~/.cache/srz/ (XDG_CACHE_HOME, 0700)"]
+        subgraph CacheEngine["Consolidated Cache (cache.duckdb)"]
+            CP["cache_pages (7d TTL, 30d YouTube/PDF)"]
+            CS["cache_search (14d TTL)"]
+            CM["cache_summaries (90d TTL / persistent, with reasoning)"]
+            CC["cache_server_capabilities (24h TTL, model-change invalidation)"]
+        end
+        subgraph ViewsDir["Rendered Reader Views"]
+            V["views/"] --- V_desc["Collision-safe HTML5 ({slug}-{hash8}), .md (14d TTL)"]
         end
     end
 ```
@@ -310,9 +316,9 @@ $$
 | $b$ | Length Normalization | `0.75`: Penalizes verbose documents relative to average library length (`avgdl`). |
 | $N$, $n(t)$ | Document Counts | $N$ is total library documents; $n(t)$ is document frequency of term $t$. |
 
-### Vectorized SQL Evaluation
+### Vectorized SQL Evaluation & Index Hygiene
 
-Rather than relying on external search daemons or platform-specific C extensions, `srz` maintains an inverted index table (`library_terms`) populated transactionally whenever a summary is saved. During `srz find`, query tokens are evaluated through SQL Common Table Expressions (CTEs) that compute collection-wide document statistics, apply the $2.5\times$ title boost multiplier, and rank results alongside contextual preview snippets in under 2 milliseconds.
+Rather than relying on external search daemons or platform-specific C extensions, `srz` maintains an inverted index table (`library_terms`) populated transactionally whenever a summary is saved. During indexing, terms are filtered against an allocation-free English stop-word table and single-character ASCII tokens, cutting index storage footprint by up to 45% and eliminating low-entropy table bloat. During `srz find`, query tokens are evaluated through SQL Common Table Expressions (CTEs) that compute collection-wide document statistics, apply the $2.5\times$ title boost multiplier, and rank results alongside contextual preview snippets in under 2 milliseconds, falling back gracefully to case-insensitive substring matching when queries match stop words or short codes.
 
 ---
 
@@ -340,7 +346,7 @@ $$
 
 `DynamicBudget` divides the detected context window into three bounded regions: approximately **45% for the prompt chunk** (clamped between 1,024 and 65,536 tokens), **30% for completion reserve** (512 to 8,192 tokens), and **25% for safety headroom** (512 to 4,096 tokens) to absorb system prompt overhead.
 
-To eliminate the 15–25% token count drift typical when applying generic BPE tokenizers to non-OpenAI models, `srz` combines in-process model-aware profiles (`TokenizerKind` supporting Gemma SentencePiece 256k, Llama 3 128k, `o200k_base`, and `cl100k_base`) with authoritative queries to the server's native `/tokenize` or `/api/tokenize` endpoint, achieving 0% count discrepancy.
+To eliminate the 15–25% token count drift typical when applying generic BPE tokenizers to non-OpenAI models, `srz` combines in-process model-aware profiles (`TokenizerKind` supporting Gemma SentencePiece 256k, Llama 3 128k, `o200k_base`, and `cl100k_base`) with authoritative server queries. When chunking large documents, `srz` computes a single-pass calibration ratio between server `/tokenize` tokens and local BPE tokens to dynamically scale chunk boundaries, completely eliminating sequential N+1 HTTP tokenization loops. During hierarchical tree reduction, intermediate summary counts are consistently measured using the active model's tokenizer. In interactive Q&A (`srz ask`), grounded context is dynamically re-ranked via Robertson-Sparck Jones BM25 per conversational turn, providing discriminative section grounding tailored to each user query.
 
 ---
 
