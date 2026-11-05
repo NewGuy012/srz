@@ -1503,41 +1503,27 @@ impl LlmClient {
 
         // If the document exceeds single_pass_threshold, chunk and map-reduce
         if needs_chunking {
-            let initial_chunks = TextChunker::chunk_by_tokens_with_kind(
+            // Determine effective chunk budget calibrated against authoritative server tokens if available
+            let effective_chunk_tokens = if let Some(server_tokens) = doc_tokens {
+                let local_tokens = tok_kind.count_tokens(content);
+                if server_tokens > local_tokens && local_tokens > 0 {
+                    let calibrated = (budget.chunk_tokens as f64 * local_tokens as f64
+                        / server_tokens as f64)
+                        .floor() as usize;
+                    calibrated.max(128)
+                } else {
+                    budget.chunk_tokens
+                }
+            } else {
+                budget.chunk_tokens
+            };
+
+            let chunks = TextChunker::chunk_by_tokens_with_kind(
                 content,
-                budget.chunk_tokens,
+                effective_chunk_tokens,
                 budget.chunk_overlap,
                 tok_kind,
             );
-            // Authoritative server boundary verification if supported
-            let chunks = if self
-                .capabilities
-                .as_ref()
-                .map(|c| c.supports_tokenize)
-                .unwrap_or(false)
-            {
-                let mut calibrated = Vec::with_capacity(initial_chunks.len());
-                for chunk in initial_chunks {
-                    if let Some(cnt) = self.tokenize_text(&chunk).await
-                        && cnt > budget.chunk_tokens + budget.chunk_overlap
-                    {
-                        let sub = TextChunker::chunk_by_tokens_with_kind(
-                            &chunk,
-                            budget.chunk_tokens * 8 / 10,
-                            budget.chunk_overlap,
-                            tok_kind,
-                        );
-                        for s in sub {
-                            calibrated.push(Cow::Owned(s.into_owned()));
-                        }
-                        continue;
-                    }
-                    calibrated.push(chunk);
-                }
-                calibrated
-            } else {
-                initial_chunks
-            };
 
             if chunks.len() > 1 {
                 let map_reduce_start = std::time::Instant::now();
@@ -1594,7 +1580,7 @@ impl LlmClient {
                     }
                     let summary_counts: Vec<usize> = section_summaries
                         .iter()
-                        .map(|s| TextChunker::count_tokens(s))
+                        .map(|s| tok_kind.count_tokens(s))
                         .collect();
                     let separator_tokens = section_summaries.len().saturating_sub(1) * 4;
                     let total_tokens: usize =
@@ -1712,8 +1698,7 @@ impl LlmClient {
                     compute_tokens_per_second(Some(total_completion_tokens), wall_elapsed);
 
                 let hardware = crate::system::hardware::HardwareProfile::detect();
-                let doc_token_count =
-                    doc_tokens.unwrap_or_else(|| TextChunker::count_tokens(content));
+                let doc_token_count = doc_tokens.unwrap_or_else(|| tok_kind.count_tokens(content));
                 if chunks_len > 1
                     && budget.n_ctx < hardware.recommended_context
                     && doc_token_count <= (hardware.recommended_context * 7 / 10)
@@ -2210,17 +2195,11 @@ pub fn truncate_words_preserving_lines(text: &str, max_words: usize) -> Cow<'_, 
 }
 
 /// Wraps untrusted source text inside XML tags (`<tag>...</tag>`), escaping closing tag delimiters
-/// and enforcing both word and BPE token limits while preserving line breaks.
+/// and enforcing BPE token limits while preserving line breaks.
 pub fn format_untrusted_section(tag: &str, content: &str, max_tokens: Option<usize>) -> String {
-    let token_limit = max_tokens.unwrap_or(MAX_CONTEXT_TOKENS);
-    let word_bounded = match max_tokens {
-        Some(limit) => truncate_words_preserving_lines(content, limit),
+    let token_bounded = match max_tokens {
+        Some(limit) => TextChunker::truncate_by_tokens(content, limit),
         None => Cow::Borrowed(content),
-    };
-    let token_bounded = if max_tokens.is_some() {
-        TextChunker::truncate_by_tokens(&word_bounded, token_limit)
-    } else {
-        Cow::Borrowed(word_bounded.as_ref())
     };
     let closing_tag = format!("</{}>", tag);
     let escaped_closing = format!("&lt;/{tag}&gt;");
