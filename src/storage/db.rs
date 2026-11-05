@@ -885,7 +885,13 @@ impl Database {
             return Ok(Vec::new());
         }
 
-        let query_terms = tokenize_terms(trimmed);
+        let raw_query_terms = tokenize_terms(trimmed);
+        let query_terms: Vec<String> = raw_query_terms
+            .into_iter()
+            .filter(|t| {
+                !crate::system::text_util::is_stop_word(t) && !(t.len() <= 1 && t.is_ascii())
+            })
+            .collect();
         let mut results: Vec<LibrarySearchResult> = Vec::new();
         let mut seen_ids = std::collections::HashSet::new();
 
@@ -1141,12 +1147,18 @@ fn insert_doc_terms(conn: &Connection, doc_id: i64, title: &str, summary: &str) 
         std::collections::HashMap::new();
 
     for term in tokenize_terms(title) {
+        if crate::system::text_util::is_stop_word(&term) || (term.len() <= 1 && term.is_ascii()) {
+            continue;
+        }
         let entry = term_counts.entry(term).or_insert((0, true));
         entry.0 += 1;
         entry.1 = true;
     }
 
     for term in tokenize_terms(summary) {
+        if crate::system::text_util::is_stop_word(&term) || (term.len() <= 1 && term.is_ascii()) {
+            continue;
+        }
         let entry = term_counts.entry(term).or_insert((0, false));
         entry.0 += 1;
     }
