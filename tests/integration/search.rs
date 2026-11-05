@@ -76,3 +76,48 @@ fn test_shared_http_client_initialization() {
     assert!(searcher.client().get("https://example.com").build().is_ok());
     assert!(news.client().get("https://example.com").build().is_ok());
 }
+
+#[test]
+fn test_extract_wikipedia_synopsis() {
+    let wiki_markdown = r#"# Dune (novel)
+
+Dune is a 1965 epic science fiction novel by American author Frank Herbert. Set in the distant future.
+
+## Background
+Frank Herbert began researching in Oregon in 1957.
+
+## Plot
+Set in the distant future amidst a feudal interstellar society, Dune tells the story of young Paul Atreides, whose family accepts the stewardship of the desert planet Arrakis.
+
+### Arrakis
+Arrakis is the only source of the spice melange, the most valuable substance in the universe. The spice extends human life and provides higher levels of thought. Paul must navigate treacherous political alliances and survive the harsh desert sands.
+
+## Themes
+The novel explores the interplay between religion, politics, and ecology.
+
+## Adaptations
+A film adaptation was directed by David Lynch in 1984.
+
+## References
+[1] Herbert, Frank. Dune (1965).
+"#;
+
+    let extracted = srz::search::extract_wikipedia_synopsis(wiki_markdown);
+    assert!(extracted.is_some());
+    let text = extracted.unwrap();
+
+    // Verify lead overview is preserved
+    assert!(text.contains("Dune is a 1965 epic science fiction novel"));
+
+    // Verify plot and subsection are extracted
+    assert!(text.contains("## Plot"));
+    assert!(text.contains("Paul Atreides"));
+    assert!(text.contains("Arrakis is the only source of the spice"));
+
+    // Verify bloat sections (Background, Adaptations, References) are cleanly stripped
+    assert!(!text.contains("## Background"));
+    assert!(!text.contains("Frank Herbert began researching"));
+    assert!(!text.contains("## Adaptations"));
+    assert!(!text.contains("David Lynch"));
+    assert!(!text.contains("## References"));
+}

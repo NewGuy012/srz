@@ -531,39 +531,117 @@ struct BookQuery<'a> {
     author: Option<&'a str>,
 }
 
-async fn resolve_book_identity(
-    title: &str,
-    author: Option<&str>,
+async fn resolve_book_and_candidates_concurrently(
+    query_title: &str,
+    query_author: Option<&str>,
     cache: &Cache,
-    searcher: &mut BookSearcher,
-) -> (String, Option<String>) {
-    if let Some(auth) = author {
-        return (title.to_string(), Some(auth.to_string()));
+    searcher: &BookSearcher,
+) -> Result<(String, Option<String>, Vec<SearchResult>)> {
+    if let Some(auth) = query_author {
+        let effective_title = query_title.to_string();
+        let effective_author = Some(auth.to_string());
+        let mut searcher_mut = searcher.clone();
+        let candidates = fetch_or_cache_candidates(
+            &effective_title,
+            effective_author.as_deref(),
+            cache,
+            &mut searcher_mut,
+        )
+        .await?;
+        return Ok((effective_title, effective_author, candidates));
     }
 
-    let meta_opt = if let Some(cached_meta) = cache.get_book_metadata(title, None) {
-        cached_meta
-    } else {
-        let fetched = searcher.resolve_book_metadata(title, None).await;
-        cache.set_book_metadata(title, None, &fetched);
-        fetched
-    };
+    // Check if metadata is already cached
+    let cached_meta = cache.get_book_metadata(query_title, None);
+    if let Some(Some(meta)) = cached_meta {
+        let effective_title = meta.canonical_title;
+        let effective_author = meta.author;
+        let year_str = meta
+            .first_publish_year
+            .map(|y| format!(" ({})", y))
+            .unwrap_or_default();
+        if let Some(ref a) = effective_author {
+            Ui::info(&format!(
+                "Identified book: \"{}\" by {}{}",
+                effective_title, a, year_str
+            ));
+        }
+        let mut searcher_mut = searcher.clone();
+        let candidates = fetch_or_cache_candidates(
+            &effective_title,
+            effective_author.as_deref(),
+            cache,
+            &mut searcher_mut,
+        )
+        .await?;
+        return Ok((effective_title, effective_author, candidates));
+    }
 
-    if let Some(meta) = meta_opt {
+    // Check if candidates are already cached under the query title
+    if let Some(cached_candidates) = cache.get_search_results(query_title, None) {
+        Ui::info(&format!(
+            "Loaded {} search candidate(s) from local cache.",
+            cached_candidates.len()
+        ));
+        return Ok((query_title.to_string(), None, cached_candidates));
+    }
+
+    // Fan-out Open Library metadata resolution AND candidate search concurrently
+    let spinner = Ui::spinner(
+        "Searching web for book synopsis & metadata (Wikipedia / DDG / Open Library)...",
+    );
+    let meta_fut = searcher.resolve_book_metadata(query_title, None);
+    let candidates_fut = searcher.search_raw_candidates(query_title, None);
+
+    let (meta_opt, mut raw_candidates) = tokio::join!(meta_fut, candidates_fut);
+
+    let (effective_title, effective_author) = if let Some(meta) = meta_opt {
+        cache.set_book_metadata(query_title, None, &Some(meta.clone()));
         let year_str = meta
             .first_publish_year
             .map(|y| format!(" ({})", y))
             .unwrap_or_default();
         if let Some(ref a) = meta.author {
-            Ui::info(&format!(
-                "Identified book: \"{}\" by {}{}",
-                meta.canonical_title, a, year_str
-            ));
+            Ui::finish_spinner(
+                &spinner,
+                &format!(
+                    "Identified \"{}\" by {}{}",
+                    meta.canonical_title, a, year_str
+                ),
+            );
+        } else {
+            Ui::finish_spinner(
+                &spinner,
+                &format!("Identified \"{}\"", meta.canonical_title),
+            );
         }
         (meta.canonical_title, meta.author)
     } else {
-        (title.to_string(), None)
+        if !raw_candidates.is_empty() {
+            Ui::finish_spinner(
+                &spinner,
+                &format!("Found {} search candidate(s) online.", raw_candidates.len()),
+            );
+        } else {
+            Ui::finish_spinner(&spinner, "No web results found.");
+        }
+        (query_title.to_string(), None)
+    };
+
+    crate::search::rank_candidates(
+        &effective_title,
+        effective_author.as_deref(),
+        &mut raw_candidates,
+    );
+    if !raw_candidates.is_empty() {
+        cache.set_search_results(
+            &effective_title,
+            effective_author.as_deref(),
+            &raw_candidates,
+        );
     }
+
+    Ok((effective_title, effective_author, raw_candidates))
 }
 
 async fn fetch_or_cache_candidates(
@@ -649,15 +727,13 @@ async fn generate_book_summary(
     args: &Cli,
     mode: StreamMode<'_>,
 ) -> Result<(LlmOutput, usize, Option<String>)> {
-    let mut searcher = BookSearcher::with_client(scraper.client().clone());
-    let (resolved_title, resolved_author) =
-        resolve_book_identity(query.title, query.author, cache, &mut searcher).await;
+    let searcher = BookSearcher::with_client(scraper.client().clone());
+    let (resolved_title, resolved_author, mut candidates) =
+        resolve_book_and_candidates_concurrently(query.title, query.author, cache, &searcher)
+            .await?;
 
     let effective_title = resolved_title.as_str();
     let effective_author = resolved_author.as_deref().or(query.author);
-
-    let mut candidates =
-        fetch_or_cache_candidates(effective_title, effective_author, cache, &mut searcher).await?;
 
     if !candidates.is_empty() {
         disambiguate_candidates_if_needed(effective_title, &mut candidates, args);
@@ -683,9 +759,27 @@ async fn generate_book_summary(
 
             match page_result {
                 Ok(page) => {
+                    let (content_to_use, words_to_use) = if res.url.contains("wikipedia.org/wiki/")
+                    {
+                        if let Some(synopsis) =
+                            crate::search::extract_wikipedia_synopsis(&page.content)
+                        {
+                            let wc = synopsis.split_whitespace().count();
+                            Ui::info(&format!(
+                                "Extracted targeted plot synopsis: {} words (streamlined from {} full-page words)",
+                                wc, page.word_count
+                            ));
+                            (synopsis, wc)
+                        } else {
+                            (page.content, page.word_count)
+                        }
+                    } else {
+                        (page.content, page.word_count)
+                    };
+
                     Ui::info(&format!(
                         "Grounded reference text: {} words (budgeted up to {} words for 32k LLM context)",
-                        page.word_count,
+                        words_to_use,
                         llm::MAX_CONTEXT_WORDS
                     ));
 
@@ -694,12 +788,12 @@ async fn generate_book_summary(
                             effective_title,
                             effective_author,
                             &res.url,
-                            &page.content,
+                            &content_to_use,
                             args.style,
                             mode,
                         )
                         .await?;
-                    return Ok((output, page.word_count, Some(res.url.clone())));
+                    return Ok((output, words_to_use, Some(res.url.clone())));
                 }
                 Err(err) => {
                     Ui::warn(&format!(

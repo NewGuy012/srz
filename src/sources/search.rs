@@ -121,6 +121,18 @@ impl BookSearcher {
     /// Searches for candidate book synopses concurrently across Wikipedia (OpenSearch + fulltext) and DuckDuckGo,
     /// returning a deduplicated and scored/ranked list of candidates.
     pub async fn search_candidates(&self, title: &str, author: Option<&str>) -> Vec<SearchResult> {
+        let mut unique = self.search_raw_candidates(title, author).await;
+        rank_candidates(title, author, &mut unique);
+        unique
+    }
+
+    /// Fetches candidates concurrently across search backends without ranking yet,
+    /// enabling parallel execution alongside metadata resolution.
+    pub async fn search_raw_candidates(
+        &self,
+        title: &str,
+        author: Option<&str>,
+    ) -> Vec<SearchResult> {
         let (opensearch_res, fulltext_res, ddg_res) = tokio::join!(
             self.search_wikipedia_opensearch(title),
             self.search_wikipedia_fulltext(title, author),
@@ -138,9 +150,7 @@ impl BookSearcher {
             raw_candidates.extend(results);
         }
 
-        let mut unique = deduplicate_candidates(raw_candidates);
-        rank_candidates(title, author, &mut unique);
-        unique
+        deduplicate_candidates(raw_candidates)
     }
 
     /// Queries Wikipedia OpenSearch API (canonical exact/prefix title index)
@@ -466,4 +476,61 @@ fn normalize_title_for_comparison(title: &str) -> String {
         out.pop();
     }
     out
+}
+
+/// Extracts a focused narrative synopsis from a Wikipedia page's Markdown.
+///
+/// Looks for the introductory overview (lead section before the first `## `) along with
+/// the canonical narrative section (`## Plot`, `## Synopsis`, `## Summary`, or `## Premise`),
+/// discarding sprawling infoboxes, cast lists, discographies, adaptations, and publication tables.
+pub fn extract_wikipedia_synopsis(markdown: &str) -> Option<String> {
+    // 1. Identify lead section (text before the first `## ` heading)
+    let lead_end = markdown.find("\n## ").unwrap_or(markdown.len());
+    let lead = markdown[..lead_end].trim();
+
+    // 2. Search for plot/synopsis section
+    const SYNOPSIS_HEADINGS: &[&str] = &[
+        "## plot",
+        "## synopsis",
+        "## plot summary",
+        "## summary",
+        "## premise",
+        "## narrative",
+    ];
+
+    let lower = markdown.to_ascii_lowercase();
+    let mut plot_start = None;
+    for heading in SYNOPSIS_HEADINGS {
+        if let Some(pos) = lower.find(heading) {
+            plot_start = Some(pos);
+            break;
+        }
+    }
+
+    let Some(start_idx) = plot_start else {
+        return None;
+    };
+
+    // Find where the plot section ends: the next `## ` heading after `start_idx`
+    let section_body = &markdown[start_idx..];
+    let body_start = section_body.find('\n').unwrap_or(0);
+    let after_heading = &section_body[body_start..];
+    let end_idx = after_heading
+        .find("\n## ")
+        .map(|p| start_idx + body_start + p)
+        .unwrap_or(markdown.len());
+    let plot_content = markdown[start_idx..end_idx].trim();
+
+    if plot_content.split_whitespace().count() < 40 {
+        return None;
+    }
+
+    let mut result = String::with_capacity(lead.len() + plot_content.len() + 16);
+    if !lead.is_empty() {
+        result.push_str(lead);
+        result.push_str("\n\n---\n\n");
+    }
+    result.push_str(plot_content);
+
+    Some(result)
 }
