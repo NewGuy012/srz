@@ -154,7 +154,7 @@ sequenceDiagram
         alt Interactive TTY
             CLI-->>User: Unified document in pager (Header + Body + Links + Hint)
         else Piped / Redirected
-            CLI-->>User: Pure Markdown/JSON on stdout; view links & hints on stderr
+            CLI-->>User: Pure Markdown/JSON on stdout, view links & hints on stderr
         end
     end
 ```
