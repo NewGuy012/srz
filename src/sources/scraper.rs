@@ -321,7 +321,7 @@ pub fn clean_raw_text(text: &str) -> (String, usize) {
 
 /// Cleans lines, optionally strips trailing reference sections using zero-allocation ASCII comparison,
 /// and computes total word count in a single pass into one pre-sized `String`.
-fn clean_text(text: &str, strip_references: bool, max_empty_lines: usize) -> (String, usize) {
+pub fn clean_text(text: &str, strip_references: bool, max_empty_lines: usize) -> (String, usize) {
     let mut out = String::with_capacity(text.len());
     let mut word_count = 0;
     let mut empty_line_count = 0;

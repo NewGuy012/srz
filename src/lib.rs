@@ -14,6 +14,7 @@ pub use engine::budget;
 pub use engine::chunker;
 pub use engine::llm;
 pub use sources::document;
+pub use sources::epub;
 pub use sources::news;
 pub use sources::pdf;
 pub use sources::scraper;

@@ -4,6 +4,7 @@ use std::path::Path;
 
 use crate::render;
 use crate::scraper::WebScraper;
+use crate::sources::epub::EpubExtractor;
 use crate::sources::pdf::PdfExtractor;
 
 pub const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024; // 20 MB limit for local files
@@ -43,16 +44,6 @@ impl DocumentLoader {
     pub fn load_file(path: &Path, scraper: &WebScraper) -> Result<LocalDocument> {
         Self::validate_file(path)?;
 
-        if path
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("epub"))
-        {
-            anyhow::bail!(
-                "Document format not supported: {:?}. Supported formats include PDF, HTML, Markdown, and plain text.",
-                path
-            );
-        }
-
         let fallback_title = || {
             path.file_name()
                 .map(|n| n.to_string_lossy().into_owned())
@@ -64,6 +55,13 @@ impl DocumentLoader {
             .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
         {
             let page = PdfExtractor::extract_file(path)?;
+            let t = page.title.unwrap_or_else(fallback_title);
+            (page.content, page.word_count, t)
+        } else if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("epub"))
+        {
+            let page = EpubExtractor::extract_file(path)?;
             let t = page.title.unwrap_or_else(fallback_title);
             (page.content, page.word_count, t)
         } else {

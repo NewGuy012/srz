@@ -377,3 +377,116 @@ fn test_escape_closing_tag_case_insensitive_and_whitespace_variations() {
         std::borrow::Cow::Borrowed(_)
     ));
 }
+
+#[test]
+fn test_epub_extractor_and_document_loader() {
+    use srz::document::DocumentLoader;
+    use srz::epub::EpubExtractor;
+    use std::io::Write;
+
+    let mut zip_buf = std::io::Cursor::new(Vec::new());
+    {
+        let mut zip_writer = zip::ZipWriter::new(&mut zip_buf);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+
+        // 1. container.xml
+        zip_writer
+            .start_file("META-INF/container.xml", options)
+            .unwrap();
+        zip_writer
+            .write_all(
+                br#"<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>"#,
+            )
+            .unwrap();
+
+        // 2. content.opf
+        zip_writer.start_file("OEBPS/content.opf", options).unwrap();
+        zip_writer
+            .write_all(
+                br#"<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub-id">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>The Great Gatsby</dc:title>
+    <dc:creator>F. Scott Fitzgerald</dc:creator>
+  </metadata>
+  <manifest>
+    <item id="c1" href="chapters/ch1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c2" href="chapters/ch2.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="c1"/>
+    <itemref idref="c2"/>
+  </spine>
+</package>"#,
+            )
+            .unwrap();
+
+        // 3. ch1.xhtml
+        zip_writer
+            .start_file("OEBPS/chapters/ch1.xhtml", options)
+            .unwrap();
+        zip_writer
+            .write_all(
+                br#"<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Chapter 1</title></head>
+<body>
+  <h1>Chapter 1</h1>
+  <p>In my younger and more vulnerable years my father gave me some advice that I've been turning over in my mind ever since.</p>
+</body>
+</html>"#,
+            )
+            .unwrap();
+
+        // 4. ch2.xhtml
+        zip_writer
+            .start_file("OEBPS/chapters/ch2.xhtml", options)
+            .unwrap();
+        zip_writer
+            .write_all(
+                br#"<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Chapter 2</title></head>
+<body>
+  <h1>Chapter 2</h1>
+  <p>About half way between West Egg and New York the motor road hastily joins the railroad.</p>
+</body>
+</html>"#,
+            )
+            .unwrap();
+
+        zip_writer.finish().unwrap();
+    }
+
+    let epub_bytes = zip_buf.into_inner();
+
+    // In-memory extraction
+    let page = EpubExtractor::extract_from_bytes(&epub_bytes, None).unwrap();
+    assert_eq!(page.title.as_deref(), Some("The Great Gatsby"));
+    assert!(
+        page.content
+            .contains("In my younger and more vulnerable years")
+    );
+    assert!(page.content.contains("About half way between West Egg"));
+    assert!(page.word_count >= 20);
+
+    // File loading through DocumentLoader
+    let temp_dir = tempfile::tempdir().unwrap();
+    let epub_file = temp_dir.path().join("gatsby.epub");
+    std::fs::write(&epub_file, &epub_bytes).unwrap();
+
+    let scraper = WebScraper::new().unwrap();
+    let doc = DocumentLoader::load_file(&epub_file, &scraper).unwrap();
+    assert_eq!(doc.title, "The Great Gatsby");
+    assert!(
+        doc.content
+            .contains("In my younger and more vulnerable years")
+    );
+    assert_eq!(doc.word_count, page.word_count);
+}
