@@ -19,6 +19,7 @@ pub struct ProfileConfig {
     pub open: Option<bool>,
     pub concurrency: Option<usize>,
     pub stream: Option<bool>,
+    pub show_thinking: Option<bool>,
     pub context_window: Option<usize>,
 }
 
@@ -163,6 +164,9 @@ concurrency = 1
 
 # Stream tokens live to stdout (default: false)
 stream = false
+
+# Stream full raw model reasoning trace to stderr (default: false)
+# show_thinking = false
 
 # Storage budget and retention policies
 [cache]

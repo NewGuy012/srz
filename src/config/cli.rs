@@ -199,6 +199,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub stream: bool,
 
+    /// Stream full raw model reasoning trace to stderr (default: compact one-liner dropdown)
+    #[arg(long = "show-thinking", alias = "thinking", global = true)]
+    pub show_thinking: bool,
+
     /// Control terminal paging of summary output (auto, always, never)
     #[arg(long, global = true, value_enum, default_value = "auto")]
     pub paging: PagingMode,
@@ -636,6 +640,7 @@ impl Cli {
         apply_field!(open);
         apply_field!(concurrency);
         apply_field!(stream);
+        apply_field!(show_thinking);
         apply_opt_field!(context_window);
     }
 }
