@@ -185,7 +185,90 @@ As the final tokens arrive, `srz` performs atomic persistence across storage tie
 
 ---
 
-## 3. Storage & Cache Architecture
+## 3. Ingestion Router & Target Auto-Detection Subsystem
+
+Rather than requiring users to memorize discrete subcommands for different media types (such as `srz web <URL>`, `srz file <PATH>`, or `srz book <TITLE>`), `srz` employs an intelligent input router and auto-detection subsystem. When `<TARGET>` is provided as a root positional argument, `srz` inspects the structure, scheme, filesystem presence, and semantic characteristics of the argument to automatically dispatch it to the appropriate ingestion pipeline.
+
+### Target Classification Flowchart
+
+The decision hierarchy inside `Cli::resolve_action` (`src/config/cli.rs`) resolves raw CLI arguments into typed `ResolvedAction` variants:
+
+```mermaid
+flowchart TD
+    Start["srz &lt;TARGET&gt;"] --> StdinCheck{"Target is '-'?"}
+    StdinCheck -- Yes --> StdinFlow["ResolvedAction::Stdin<br/>(Unix pipes, git diffs, stdin stream)"]
+    StdinCheck -- No --> HttpCheck{"Starts with http:// or https://?"}
+
+    HttpCheck -- Yes --> FeedCheck{"is_feed_url(...)?"}
+    FeedCheck -- Yes --> NewsFeed["ResolvedAction::News<br/>(Syndication feed: RSS, Atom, JSON feed)"]
+    FeedCheck -- No --> WebFlow["ResolvedAction::Web<br/>(Dispatches to URL content sub-router)"]
+
+    HttpCheck -- No --> FileCheck{"is_file_like(...) or Path::is_file()?"}
+    FileCheck -- Yes --> FileFlow["ResolvedAction::File<br/>(Local document loader: PDF, MD, HTML, TXT)"]
+
+    FileCheck -- No --> NewsQueryCheck{"is_news_query(...)?"}
+    NewsQueryCheck -- Yes --> NewsSearch["ResolvedAction::News<br/>(Google News RSS aggregator)"]
+
+    NewsQueryCheck -- No --> TypoCheck{"suggest_command(...)?"}
+    TypoCheck -- Match Found --> TypoErr["Error with Suggestion<br/>('tip: a similar command exists: doctor')"]
+    TypoCheck -- No Match --> BookFlow["ResolvedAction::Book<br/>(Open Library &amp; Wikipedia resolution)"]
+```
+
+### Ingestion Dispatch Rules & Precedence
+
+1. **Standard Input Stream (`-`)**:
+   - If `<TARGET>` is exactly `"-"`, the router immediately selects `ResolvedAction::Stdin`. This integrates `srz` into UNIX command pipelines (e.g., `git diff | srz -`, `cat report.txt | srz -`).
+2. **Web URLs & Feed Detection (`is_http_url`, `is_feed_url`)**:
+   - URLs beginning with `http://` or `https://` are inspected for syndication feeds via `is_feed_url`.
+   - The detector checks URL path suffixes (`.rss`, `.atom`, `/feed`, `/rss`, `/atom`, `/feed.xml`, `/rss.xml`, `/atom.xml`, `/index.xml`, `/feed.json`, `/rss/`) and query parameters (`format=rss`, `format=atom`, `output=rss`, `feed=rss`).
+   - Matching feed URLs route to `ResolvedAction::News`, while standard web links route to `ResolvedAction::Web`.
+3. **Local Files & File-Like Paths (`is_file_like`)**:
+   - Non-URL targets are evaluated for local file characteristics:
+     - Physical existence on disk via `std::path::Path::is_file()`.
+     - Explicit path prefixes or separators (`./`, `../`, `/`, `~`, `\`).
+     - Standard document extensions (`.pdf`, `.md`, `.markdown`, `.txt`, `.text`, `.html`, `.htm`, `.epub`, `.json`).
+   - If matched, the target routes to `ResolvedAction::File`, where `DocumentLoader` enforces a 20 MB ceiling, extracts plain text and metadata, and quarantines content.
+4. **Natural News Queries (`is_news_query`)**:
+   - Freeform strings beginning with `news`, `headlines`, or phrases matching `"current ... updates"` / `"latest ... stories"` (e.g., `srz "news about quantum computing"`) are detected by `is_news_query`.
+   - `clean_news_query` strips common conversational stop words (`"news"`, `"latest"`, `"about"`, `"regarding"`), routing the normalized topic to `ResolvedAction::News` (querying Google News RSS).
+5. **Subcommand Typo Guardrail (`suggest_command`)**:
+   - To prevent typos of top-level subcommands from accidentally triggering book or web searches, `suggest_command` calculates edit distance against all known subcommands (`ask`, `browse`, `doctor`, `models`, `stats`, `history`, `config`, etc.).
+   - If the input closely resembles a known command (e.g., `srz doctur` or `srz modls`), `srz` aborts with a helpful suggestion (`tip: a similar command exists: 'doctor'`) and indicates how to summarize a book with that title if intended (`srz book "<TITLE>"`).
+6. **Fallback: Freeform Book Title Search**:
+   - Any query not intercepted by the preceding rules is treated as a book title (`ResolvedAction::Book`), launching concurrent Open Library and Wikipedia metadata and synopsis resolution.
+
+### Protocol & Content Sub-Routing
+
+Once an HTTP target enters the web workflow, `fetch_url_content` and `target_type_for_url` (`src/commands/summarize.rs`) apply secondary protocol-level auto-detection:
+
+* **YouTube Transcripts**: `extract_youtube_video_id` identifies YouTube URLs (`youtube.com/watch?v=...`, `youtu.be/...`, `/shorts/`, `/embed/`). Instead of downloading audio or video media, `srz` routes directly to the YouTube timed-text caption client to pull XML/JSON3 subtitle tracks and chapter cues with zero video bandwidth.
+* **Streaming Remote PDF Documents**: If the URL path ends with `.pdf` (even with query tokens), `srz` streams the file into memory and dispatches it directly to the pure-Rust PDF parser (`pdf.rs`).
+* **Standard Web Articles**: All other web targets are downloaded with a 10 MB ceiling and parsed via Mozilla's Readability algorithm (`dom_smoothie`), extracting clean article body text and stripping navigation, ads, and footers.
+
+### Interactive Q&A Auto-Detection (`srz ask`)
+
+In the grounded Q&A command (`srz ask [first] [second]`), arguments are dynamically disambiguated:
+
+* **Question Identification (`is_probable_question`)**:
+  - The detector checks if the string ends with a question mark (`?`) or begins with common interrogative words (`what`, `why`, `how`, `who`, `when`, `where`, `which`, `can`, `could`, `should`, `would`, `is`, `are`, `explain`, `summarize`, `tell`, `describe`, `clarify`).
+* **Implicit Context Fallback**:
+  - If a user passes only a question without a target (e.g., `srz ask "What was the conclusion?"`), the router sets target to `None`. The execution engine then automatically resolves context by retrieving the **most recent summary** stored in `srz.duckdb`.
+
+### Backend Capability & Multi-Model Router Auto-Detection
+
+In `src/engine/llm.rs`, `probe_server_capabilities` probes the local LLM server at startup to detect context limits, slot capacity, and server topology:
+
+* **Multi-Model Router / Proxy Detection**:
+  - Multi-model routers and proxies (such as llama.cpp router mode or OpenRouter gateways) often respond to root `GET /props` with `role: "router"` or `n_ctx: 0`.
+  - When this pattern is detected, `srz` automatically re-probes using a model-qualified endpoint: `GET /props?model=<ENCODED_MODEL>` to obtain accurate, model-specific `n_ctx` (context window) and `total_slots` values.
+* **Native Tokenizer Auto-Detection**:
+  - Probes server endpoints (`/tokenize` on llama.cpp, `/api/tokenize` on Ollama) to enable zero-drift token counting.
+* **Capability Caching**:
+  - Detected server capabilities are cached in `cache_server_capabilities` (in `cache.duckdb`), allowing subsequent CLI invocations to start in under a millisecond while auto-invalidating if the model changes.
+
+---
+
+## 4. Storage & Cache Architecture
 
 All state is isolated under `~/.cache/srz/` (or `$XDG_CACHE_HOME/srz/`), unified via `Cache::default_cache_dir()`, enforced with `0700`/`0600` owner-only Unix permissions, completely bypassable via `--no-cache`, and safely maintainable via `srz cache`:
 
@@ -239,7 +322,7 @@ Disk budgets are enforced through `Cache::prune`, which executes a unified pass 
 
 ---
 
-## 4. Offline BM25 Full-Text Search Algorithm
+## 5. Offline BM25 Full-Text Search Algorithm
 
 When executing `srz find <QUERY>`, `srz` computes relevance scores offline across the library using the Robertson-Sparck Jones BM25 ranking formula:
 
@@ -275,7 +358,7 @@ When a user executes `srz find`, query terms are tokenized and injected into a p
 
 ---
 
-## 5. Hardware-Aware Inference & Zero-Drift Tokenization
+## 6. Hardware-Aware Inference & Zero-Drift Tokenization
 
 To eliminate context length guesswork and prevent Out-of-Memory context truncation, `srz` incorporates intelligent host and server profiling:
 
@@ -319,7 +402,7 @@ Concurrency is similarly auto-scaled: `DynamicBudget` probes server worker slots
 
 ---
 
-## 6. Performance & Architectural Optimizations
+## 7. Performance & Architectural Optimizations
 
 ### Optimizations at a Glance
 
@@ -360,7 +443,7 @@ For users who prefer reading in a browser, `srz` compiles GitHub Flavored Markdo
 
 ---
 
-## 7. Security, Privacy & System Hardening
+## 8. Security, Privacy & System Hardening
 
 Because `srz` processes untrusted content from the public internet, local documents, and generative AI models, defense-in-depth is integrated into every layer of the architecture.
 
@@ -381,7 +464,7 @@ To prevent denial-of-service from oversized payloads, `srz` enforces strict byte
 
 ---
 
-## 8. Related Technical Guides & Resources
+## 9. Related Technical Guides & Resources
 
 - 🦀 [**Rust Learning Guide**](rust_learning_guide.md): Architectural deep-dive and systems programming concepts using `srz` as a case study.
 - 🛡️ [**Security Audit**](security_audit.md): In-depth security analysis, memory safety guarantees, and threat mitigations.
