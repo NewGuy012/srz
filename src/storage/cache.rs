@@ -355,8 +355,23 @@ impl Cache {
 
     /// Returns the path to the HTML view file for a given title.
     pub fn html_view_path(&self, title: &str) -> PathBuf {
-        self.views_dir()
-            .join(format!("{}.html", crate::render::slugify(title)))
+        self.html_view_path_for(title, None)
+    }
+
+    /// Returns the collision-resistant path to the HTML view file for a given title and optional unique key.
+    pub fn html_view_path_for(&self, title: &str, unique_key: Option<&str>) -> PathBuf {
+        let unique_slug = crate::render::slugify_unique(title, unique_key);
+        let unique_path = self.views_dir().join(format!("{}.html", unique_slug));
+        if unique_path.exists() {
+            return unique_path;
+        }
+        // Fallback to legacy path without hash if exists
+        let legacy_slug = crate::render::slugify(title);
+        let legacy_path = self.views_dir().join(format!("{}.html", legacy_slug));
+        if legacy_path.exists() {
+            return legacy_path;
+        }
+        unique_path
     }
 
     /// Returns the active retention and storage policy.

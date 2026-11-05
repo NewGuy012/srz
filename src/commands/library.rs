@@ -190,7 +190,7 @@ pub fn handle_find(db: &Database, query: &str, cache: &Cache, as_json: bool) -> 
         } else {
             println!("     \"{}\"", safe_snippet);
         }
-        let view_path = cache.html_view_path(&res.title);
+        let view_path = cache.html_view_path_for(&res.title, res.url.as_deref());
         if view_path.exists() {
             println!("     View: file://{}", view_path.display());
         }

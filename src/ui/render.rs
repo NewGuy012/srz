@@ -22,7 +22,7 @@ pub fn ensure_view_files(
     markdown: &str,
     force_write: bool,
 ) -> std::io::Result<RenderedFiles> {
-    ensure_view_files_with_reasoning(views_dir, title, markdown, None, force_write)
+    ensure_view_files_unique(views_dir, title, markdown, None, None, force_write)
 }
 
 /// Ensures both `.md` and `.html` view files exist in `views_dir`, embedding an optional model reasoning trace.
@@ -33,7 +33,20 @@ pub fn ensure_view_files_with_reasoning(
     reasoning: Option<&str>,
     force_write: bool,
 ) -> std::io::Result<RenderedFiles> {
-    let slug = slugify(title);
+    ensure_view_files_unique(views_dir, title, markdown, None, reasoning, force_write)
+}
+
+/// Ensures both `.md` and `.html` view files exist in `views_dir` with collision-safe unique key support
+/// and an optional model reasoning trace.
+pub fn ensure_view_files_unique(
+    views_dir: &Path,
+    title: &str,
+    markdown: &str,
+    unique_key: Option<&str>,
+    reasoning: Option<&str>,
+    force_write: bool,
+) -> std::io::Result<RenderedFiles> {
+    let slug = slugify_unique(title, unique_key);
     let md_path = views_dir.join(format!("{}.md", slug));
     let html_path = views_dir.join(format!("{}.html", slug));
 
@@ -87,6 +100,28 @@ pub fn slugify(title: &str) -> String {
         trimmed[..80].trim_end_matches('-').to_string()
     } else {
         trimmed.to_string()
+    }
+}
+
+/// Converts a title and an optional unique key (such as URL or source path) into a clean, collision-resistant ASCII slug.
+pub fn slugify_unique(title: &str, unique_key: Option<&str>) -> String {
+    let base_slug = slugify(title);
+    if let Some(key) = unique_key
+        && !key.is_empty()
+    {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(key.as_bytes());
+        let digest = hasher.finalize();
+        let hash = crate::system::text_util::format_hex(&digest);
+        let short_hash = &hash[..8];
+        if base_slug.is_empty() || base_slug == "summary" {
+            short_hash.to_string()
+        } else {
+            format!("{}-{}", base_slug, short_hash)
+        }
+    } else {
+        base_slug
     }
 }
 
@@ -797,5 +832,23 @@ mod tests {
         assert!(doc.contains("thought-drawer"));
         assert!(doc.contains("Model Reasoning &amp; Analytical Trace"));
         assert!(doc.contains("Thinking about implications..."));
+    }
+
+    #[test]
+    fn test_slugify_unique_prevents_collisions() {
+        let slug1 = slugify_unique(
+            "Getting Started",
+            Some("https://example.com/project-a/start"),
+        );
+        let slug2 = slugify_unique(
+            "Getting Started",
+            Some("https://example.com/project-b/start"),
+        );
+        assert_ne!(slug1, slug2);
+        assert!(slug1.starts_with("getting-started-"));
+        assert!(slug2.starts_with("getting-started-"));
+
+        let slug_no_key = slugify_unique("Getting Started", None);
+        assert_eq!(slug_no_key, "getting-started");
     }
 }

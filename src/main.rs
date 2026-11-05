@@ -229,11 +229,12 @@ async fn main() -> Result<()> {
                     None
                 };
 
-                // Ensure clickable styled HTML and Markdown view files exist
-                let view_files = render::ensure_view_files_with_reasoning(
+                // Ensure clickable styled HTML and Markdown view files exist with collision-safe unique key
+                let view_files = render::ensure_view_files_unique(
                     &cache.views_dir(),
                     &outcome.title,
                     &outcome.summary,
+                    outcome.url.as_deref(),
                     outcome.reasoning.as_deref(),
                     !outcome.cached,
                 )
