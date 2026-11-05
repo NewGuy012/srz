@@ -26,14 +26,14 @@ All notable changes to `srz` are documented in this file.
 
 ### Summary
 
-> Hardens Markdown vault exporting against frontmatter injection and slug collisions, validates SQL attachment identifiers, deduplicates parallel chunk distillation and tree reduction loops, optimizes BM25 scoring and TUI filtering, and ensures complete token usage telemetry across book and news digests.
+> Introduces native zero-dependency EPUB book extraction, sub-millisecond cache fast-paths and offline chat management, dynamic per-turn BM25 grounding in interactive Q&A, calibrated single-pass chunking, search index stop-word filtering, and comprehensive security hardening for vault exports and SQL attachments.
 
 ### Changes
-- **Security Hardening (`src/storage/db.rs`, `src/sources/youtube.rs`)**: Escaped double-quoted YAML frontmatter string scalars (`\`, `"`, `\n`, `\r`, `\t`, ASCII control codes) in `export_markdown_vault` to prevent metadata injection, disambiguated colliding vault filenames, validated `alias` as a strict SQL identifier in `attach_database`, and hardened YouTube video description extraction with standard RFC 8259 JSON escape handling.
-- **Engine Deduplication & Telemetry (`src/engine/llm.rs`)**: Consolidated parallel chunk map-reduction, book reference distillation, and multi-source news coverage into `run_parallel_chunk_completions`, eliminating ~180 lines of duplicated concurrency/retry/progress boilerplate while properly accumulating chunk tokens into the final `LlmOutput`.
-- **View Link Correctness (`src/ui/render.rs`, `src/ui/tui.rs`)**: Synchronized HTML library dashboard links in `render_index_html` with `slugify_unique` to resolve broken reader view links for summaries with URLs, and updated TUI browser opening to reuse unique view files and render reasoning blocks.
-- **Performance Optimizations (`src/commands/ask.rs`, `src/storage/db.rs`, `src/ui/tui.rs`, `src/engine/llm.rs`)**: Reduced BM25 chunk scoring to a single pass deriving document frequency from term occurrences, made `is_stop_word` allocation-free on lowercased inputs, pre-lowercased query strings once per TUI search pass, and reused precomputed token counts during tree reduction partitioning.
-- **Simplification & Cleanups (`src/sources/`, `src/storage/`, `src/commands/`)**: Unified case-insensitive PDF URL detection with fragment stripping into `is_pdf_url`, simplified verbose fetch status tuples, centralized `HardwareProfile::to_recommend_report_json`, and removed unused struct fields, obsolete helpers, and redundant DuckDB table DDL.
+- **Native EPUB Ingestion (`src/sources/epub.rs`, `src/sources/document.rs`)**: Added pure-Rust zero-dependency EPUB book extraction and chapter stitching in reading order using existing zip and XML dependencies.
+- **Cache Fast-Paths & Offline Chat (`src/main.rs`, `src/commands/ask.rs`)**: Instantaneous sub-millisecond cache hit delivery for web, books, and local files before initializing network or LLM engines, complete reasoning trace preservation, and offline chat management (`--chats`, `--show-chat`, `--delete-chat`).
+- **Dynamic BM25 Grounding (`src/commands/ask.rs`, `src/storage/db.rs`)**: Re-ranks grounding context dynamically per turn in interactive Q&A, and filters stop words and short tokens in the library search index to prevent table bloat.
+- **Engine Optimization & Telemetry (`src/engine/llm.rs`)**: Replaced sequential N+1 HTTP `/tokenize` loops with single-pass calibration ratios, aligned tree reduction tokens with active model profiles, unified parallel completions, and eliminated redundant word bounding.
+- **Security Hardening (`src/storage/db.rs`, `src/sources/youtube.rs`)**: Sanitized YAML frontmatter scalars and filename collisions in Markdown vault exports, validated SQL attachment identifiers, and hardened YouTube transcript parsing against malformed escapes.
 
 ---
 
