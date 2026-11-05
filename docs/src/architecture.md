@@ -41,17 +41,22 @@ flowchart TD
 
     subgraph LLMEngine["3. LLM Synthesis & Streaming"]
         Probe["Server Discovery (/props, /api/show)"] --> BudgetEngine["DynamicBudget (n_ctx, slots)"]
-        Tokenize["Native /tokenize (Zero-Drift)"] --> Chunker{"Tokens > Prompt Chunk?"}
+        BudgetEngine -.->|"Sets Context & Concurrency"| Chunker{"Tokens > Single Pass\nThreshold?"}
+        Tokenize["Model-Aware & Native /tokenize (Zero-Drift)"] --> Chunker
         YTCaptions --> Chunker
         WebFlow --> Chunker
         PDFFlow --> Chunker
         FileFlow --> Chunker
-        RefScrape --> Chunker
+        RefScrape --> RefDistill["Reference Context Distillation"] --> Chunker
+        NewsScrape --> NewsDistill["Multi-Article News Distillation"] --> NewsBriefing["News Digest Briefing Synthesis"]
         Grounding --> MultiTurn["Multi-Turn Chat / Q&A Prompt Framing"]
-        Chunker -->|"Yes"| MapReduce["Parallel Map-Reduce Chunk Summaries (tiktoken-rs Token Budget)"]
+        Chunker -->|"Yes"| MapWorkers["Parallel Map Workers (KV-Cache Prefix Optimized)"]
+        MapWorkers --> TreeCheck{"Intermediate >\nThreshold?"}
+        TreeCheck -->|"Yes"| TreeReduce["Hierarchical Tree Reduction"]
+        TreeReduce --> TreeCheck
+        TreeCheck -->|"No"| FinalSynthesis["Final Synthesis Pass (Grounded Markdown)"]
         Chunker -->|"No"| SinglePass["Direct Single Pass"]
-        NewsScrape --> NewsBriefing["News Digest Briefing Synthesis"]
-        MapReduce --> SSE["Zero-Copy OpenAI SSE Streaming Client (complete_chat / SseStreamState)"]
+        FinalSynthesis --> SSE["Zero-Copy OpenAI SSE Streaming Client (complete_chat / SseStreamState)"]
         SinglePass --> SSE
         NewsBriefing --> SSE
         MultiTurn --> SSE
@@ -382,11 +387,15 @@ The synthesis engine dynamically adapts its execution strategy based on the rati
 
 When the document's token count is within approximately 70% of the server's context window, `srz` synthesizes the document in a single inference pass. Single-pass synthesis is the optimal operational mode: because the entire document fits into the model's active attention window simultaneously, the LLM retains complete cross-chapter awareness, tracking narrative arcs and complex thematic relationships without contextual fragmentation.
 
-When a document exceeds the single-pass threshold—such as a 300-page book or a 100-page technical specification evaluated against an 8k context server—`srz` automatically transitions into Map-Reduce mode. The document chunker partitions the text into overlapping token windows sized strictly by `DynamicBudget`. These chunks are dispatched concurrently across the server's available inference slots (`total_slots`), and their individual intermediate syntheses are aggregated in a final reduction pass to produce a unified, comprehensive summary.
+When a document exceeds the single-pass threshold—such as a 300-page book or a 100-page technical specification evaluated against an 8k context server—`srz` automatically transitions into Map-Reduce mode. The document chunker partitions the text into overlapping token windows sized strictly by `DynamicBudget`. These chunks are dispatched concurrently across the server's available inference slots (`total_slots`) using KV-cache prefix-aligned prompt schemas and resilient per-chunk retries.
 
-### Zero-Drift Server-Native Tokenization
+To ensure long documents never overflow the context window during the reduction phase, `srz` implements **Hierarchical Tree Reduction**: if the concatenated intermediate section summaries exceed `budget.single_pass_threshold`, the engine recursively groups them into consolidation batches and reduces them in parallel before the final styled synthesis pass.
 
-Third-party BPE tokenizers (such as OpenAI's `cl100k_base`) drift by 15–25% when measuring tokens intended for Google Gemma or Meta Llama models. `srz` probes and uses the server's native `/tokenize` endpoint (`llama.cpp /tokenize` or `Ollama /api/tokenize`), ensuring 0% token count discrepancies between client chunking calculations and server KV cache allocations. When the server endpoint is unavailable, it gracefully falls back to `tiktoken-rs` (`cl100k_base`).
+### Model-Aware Tokenization & Zero-Drift Server Calibration
+
+Third-party BPE tokenizers (such as OpenAI's `cl100k_base`) drift by 15–25% when measuring tokens intended for Google Gemma or Meta Llama models. `srz` eliminates drift using a dual-layer strategy:
+1. **In-Process Model-Aware Profiles (`TokenizerKind`):** Directly implements token counting and paragraph chunking profiles for Google Gemma (SentencePiece 256k), Meta Llama 3 (128k BPE), OpenAI `o200k_base` (GPT-4o), and standard `cl100k_base` (GPT-4).
+2. **Authoritative Server Fallback & Calibration:** When connecting to local engines (`llama.cpp` or `Ollama`), `srz` probes the server's root `/tokenize` or `/api/tokenize` endpoint to verify full document counts and dynamically calibrate chunk boundaries with 0% token discrepancies.
 
 ### Dynamic Context Budgeting (`DynamicBudget`)
 
@@ -408,7 +417,7 @@ Concurrency is similarly auto-scaled: `DynamicBudget` probes server worker slots
 
 | Subsystem | Core Optimization | User Benefit |
 | :--- | :--- | :--- |
-| **LLM Inference** | Parallel Map-Reduce + exact BPE token budgeting (`tiktoken-rs`) | Summarizes long documents and books without context window truncation |
+| **LLM Inference** | Parallel Map-Reduce + Hierarchical Tree Reduction + Model-Aware & Server-Calibrated Tokenization | Arbitrary document scaling without context overflow or token drift |
 | **Streaming Output** | Zero-copy SSE parser with batched terminal flushes | Smooth, real-time typing output with minimal CPU and memory overhead |
 | **Content Ingestion** | Mozilla Readability algorithm (`dom_smoothie`) & streaming XML | Clean article text stripped of ads/sidebars; rapid YouTube caption extraction |
 | **Storage & Caching** | Consolidated embedded DuckDB (`cache.duckdb`) with SQL TTLs | Sub-millisecond cache hits, zero filesystem clutter, and automatic pruning |
