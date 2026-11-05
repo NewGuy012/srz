@@ -697,12 +697,6 @@ pub async fn handle_ask(
 
     let safe_title = crate::ui::sanitize_title(&title);
     let budget = llm.budget();
-    let grounded_context = format_grounded_context_with_budget(
-        &title,
-        &content,
-        question.as_deref(),
-        budget.ask_doc_budget,
-    );
     let is_interactive = interactive || question.is_none() || resume.is_some();
     let mut history_turn_tokens: Vec<usize> = history
         .iter()
@@ -724,6 +718,8 @@ pub async fn handle_ask(
     if !is_interactive {
         // Single question mode
         let q = question.unwrap();
+        let grounded_context =
+            format_grounded_context_with_budget(&title, &content, Some(&q), budget.ask_doc_budget);
         let mut prompt_buf = String::new();
         let messages = build_chat_messages(&grounded_context, &history, &q, &mut prompt_buf);
 
@@ -780,7 +776,9 @@ pub async fn handle_ask(
         let safe_q = crate::ui::sanitize_terminal_text(&initial_q);
         println!("\x1b[1;32mQuestion:\x1b[0m {}", safe_q);
         record_and_ask_turn(
-            &grounded_context,
+            &title,
+            &content,
+            budget.ask_doc_budget,
             &mut history,
             &mut history_turn_tokens,
             &initial_q,
@@ -816,7 +814,9 @@ pub async fn handle_ask(
                 let _ = rl.add_history_entry(trimmed);
 
                 record_and_ask_turn(
-                    &grounded_context,
+                    &title,
+                    &content,
+                    budget.ask_doc_budget,
                     &mut history,
                     &mut history_turn_tokens,
                     trimmed,
@@ -965,7 +965,9 @@ async fn ask_turn(
 
 #[allow(clippy::too_many_arguments)]
 async fn record_and_ask_turn(
-    grounded_context: &str,
+    title: &str,
+    content: &str,
+    doc_budget: usize,
     history: &mut Vec<(String, String)>,
     history_turn_tokens: &mut Vec<usize>,
     query: &str,
@@ -975,8 +977,10 @@ async fn record_and_ask_turn(
     chat_id: Option<i64>,
     db: Option<&Database>,
 ) -> Result<()> {
+    let grounded_context =
+        format_grounded_context_with_budget(title, content, Some(query), doc_budget);
     let (ans, turn_toks) = ask_turn(
-        grounded_context,
+        &grounded_context,
         history,
         history_turn_tokens,
         query,
