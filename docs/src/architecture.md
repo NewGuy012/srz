@@ -2,11 +2,13 @@
 
 `srz` (Summarize) is a modular, high-performance Rust CLI tool for extracting and synthesizing structured summaries from **webpages**, **YouTube video transcripts**, **PDFs & local documents**, **Unix stdin streams**, **books**, and **live news digests** using local OpenAI-compliant LLMs (`llama.cpp`, `Ollama`, `LM Studio`, `vLLM`).
 
-It is engineered for instantaneous responsiveness, low memory overhead, and 100% local privacy.
+Designed from the ground up as a local-first systems utility, `srz` pairs zero-copy network streaming and hardware-aware token budgeting with an embedded analytical database. Every subsystem is engineered for instantaneous startup, predictable memory ceilings, and complete local privacy.
 
 ---
 
 ## 1. High-Level Subsystem Architecture
+
+The diagram below illustrates how input targets flow through ingestion, resolution, token-budgeted synthesis, and persistence:
 
 ```mermaid
 flowchart TD
@@ -70,6 +72,8 @@ flowchart TD
 
 ### Subsystem Directory Organization
 
+The codebase is organized into seven domain modules under `src/`, separating command orchestration from low-level ingestion, inference, and storage engines:
+
 ```text
 src/
 ├── commands/     # CLI subcommand workflows (summarize, ask, library, diagnostics)
@@ -82,6 +86,8 @@ src/
 ├── lib.rs        # Library crate root and public module exports
 └── main.rs       # Binary entry point and CLI orchestration
 ```
+
+`src/lib.rs` exposes the core subsystems as a testable library crate, while `src/main.rs` serves as a thin binary entry point responsible for configuration merging, signal handling, and dispatching resolved actions.
 
 ### Module Responsibilities
 
@@ -119,7 +125,7 @@ src/
 
 ## 2. Request & Execution Lifecycle
 
-The sequence diagram below illustrates the end-to-end flow when summarizing a target:
+The sequence diagram below traces the end-to-end execution flow when summarizing a target:
 
 ```mermaid
 sequenceDiagram
@@ -161,17 +167,26 @@ sequenceDiagram
 
 ### Execution Lifecycle Phases
 
-1. **Sub-Millisecond Cache Fast-Path**: Probes embedded `cache.duckdb` using a deterministic key `(target, model, style)`. On a hit, cached content is returned immediately and reader view files on disk are verified. The permanent database (`srz.duckdb`) is bypassed entirely.
-2. **Quarantined Content Ingestion**: On a cache miss, source content is fetched under strict safety limits (10 MB web payload ceiling, 20 MB local file cap). Untrusted text is stripped of ads and navigation menus via Mozilla Readability, then quarantined inside `<source_document>` XML boundary tags.
-3. **Zero-Copy Streaming Inference**: Prompts are dispatched with Server-Sent Events (`stream: true`). Reasoning tokens (`<think>` or `reasoning_content`) are routed directly to `stderr` as a dimmed chain-of-thought trace (`💭 Thinking...`). Content tokens are rendered incrementally via line-buffered ANSI formatting (`StreamMarkdownRenderer`) when `--stream` is active, or buffered until completion.
-4. **Atomic Persistence**: The final summary is committed to `cache.duckdb`, deterministic reader views (`views/{slug}-{hash8}.html` and `.md`) are written with collapsible thought drawers, and `srz.duckdb` is opened using lock-retry exponential backoff to record history and BM25 search tokens.
-5. **Clean Unix Stream Separation**: When piped or in machine mode (`--plain`, `--json`), `stdout` receives pure text without ANSI escapes, URLs, or hints; diagnostics are routed to `stderr`. On interactive terminals, headers, styled Markdown, links, and hints are bundled into a single buffer and piped into `$PAGER` (`less -RFX`) if taller than the viewport.
+#### Sub-Millisecond Cache Fast-Path
+Every summarization request begins by constructing a deterministic cache key from the target identifier, model name, and summary style preset. `srz` probes the embedded `cache.duckdb` store first. On a cache hit, the stored summary is returned in under a millisecond and existing HTML/Markdown reader views on disk are verified. During this fast path, the permanent library database (`srz.duckdb`) is never opened, avoiding file lock acquisition and schema checks entirely.
+
+#### Quarantined Content Ingestion
+On a cache miss, the router dispatches the target to its specialized source pipeline. Network and filesystem reads enforce strict resource ceilings (10 MB for web payloads and stdin, 20 MB for local files). Scraped web pages are stripped of navigation menus, ads, and boilerplate via Mozilla's Readability algorithm (`dom_smoothie`), while book lookups concurrently fan out across Open Library and search endpoints to extract lead and plot synopses. All untrusted source text is then quarantined inside `<source_document>` XML boundary tags with case-insensitive delimiter escaping before reaching the prompt builder.
+
+#### Zero-Copy Streaming Inference
+With the prompt assembled and sized according to the server's active context window, `srz` initiates an HTTP POST request with Server-Sent Events enabled (`stream: true`). Incoming byte chunks are parsed zero-copy using borrowed string slices (`Cow<str>`). Model reasoning tokens (`reasoning_content` deltas or in-band `<think>` blocks) are routed directly to `stderr` as a dimmed chain-of-thought trace (`💭 Thinking...`), while content tokens are either rendered incrementally via `StreamMarkdownRenderer` when `--stream` is passed or buffered until completion.
+
+#### Atomic Persistence & View Generation
+Once inference completes, `srz` persists the outcome across three storage tiers. The summary and token metrics are written to `cache.duckdb`, standalone HTML5 and Markdown reader views (`views/{slug}-{hash8}.html` and `.md`) are generated with collapsible reasoning drawers, and `srz.duckdb` is lazily opened with exponential lock-retry backoff to commit reading history, full summary text, and BM25 search terms in a single ACID transaction.
+
+#### Clean Unix Stream Separation
+At the presentation boundary, `srz` strictly separates data streams from UI diagnostics. When standard output is piped or `--plain` / `--json` is active, `stdout` receives pure Markdown or JSON free of ANSI escape sequences, banners, or file links, while diagnostics are routed to `stderr`. On interactive terminals, the metadata header, styled Markdown body, clickable `file://` view links, and context hints are composed into a single buffer and piped into `$PAGER` (`less -RFX`) whenever the output exceeds the terminal viewport height.
 
 ---
 
 ## 3. Ingestion Router & Auto-Detection Subsystem
 
-Rather than requiring dedicated subcommands like `srz web`, `srz file`, or `srz book`, `srz <TARGET>` inspects input structure and semantics to dispatch targets automatically.
+Rather than requiring dedicated subcommands such as `srz web`, `srz file`, or `srz book`, `srz <TARGET>` inspects input structure, URL schemes, filesystem presence, and phrasing heuristics to dispatch targets automatically.
 
 ### Target Classification Decision Flow
 
@@ -196,26 +211,33 @@ flowchart TD
     TypoCheck -- No Match --> BookFlow["ResolvedAction::Book<br/>(Open Library &amp; Wikipedia)"]
 ```
 
-### Dispatch Rules & Sub-Routing
+### Input Classification & Precedence
 
-* **Standard Input (`-`)**: Targets equal to `"-"` route to `ResolvedAction::Stdin` for pipeline composability (`git diff | srz -`).
-* **Web & Feeds**: URLs starting with `http://` or `https://` are inspected by `is_feed_url` for feed suffixes (`.rss`, `.atom`, `/feed`, `/rss.xml`, `/feed.json`) or query parameters (`?format=rss`). Feeds route to `ResolvedAction::News`; standard links route to `ResolvedAction::Web`.
-* **Local Documents**: Checked via `is_file_like` and `Path::is_file()`. Recognizes paths starting with `./`, `../`, `/`, `~`, or containing path separators, as well as document extensions (`.pdf`, `.md`, `.txt`, `.html`, `.epub`, `.json`). Handled under a 20 MB ceiling.
-* **Natural News Queries**: Queries starting with `news`, `headlines`, or `"current/latest ... updates/stories"` route to Google News RSS via `clean_news_query`.
-* **Command Typo Guardrail**: Single-word inputs matching known subcommands within a small edit distance trigger an error with a suggestion (e.g. `srz doctur` $\rightarrow$ `doctor`), preventing mistyped commands from falling through to book search.
-* **Fallback (Books)**: All remaining freeform text is treated as a book title (`ResolvedAction::Book`), resolving metadata across Open Library and Wikipedia.
-* **URL Content Sub-Routing (`fetch_url_content`)**:
-  * **YouTube**: `extract_youtube_video_id` detects video URLs and routes to the timed-text caption client, downloading XML/JSON3 subtitles without video media.
-  * **Remote PDFs**: URLs ending in `.pdf` stream directly into the pure-Rust PDF parser.
-  * **Web Articles**: Scraped via `reqwest` and cleaned using Mozilla Readability (`dom_smoothie`).
-* **Interactive Q&A Disambiguation (`srz ask`)**: `is_probable_question` checks for question marks or interrogative prefixes (`what`, `how`, `why`, etc.). When only a question is provided, the target defaults to `None`, automatically grounding queries against the **most recent summary** in DuckDB.
-* **Multi-Model Router Detection**: When probing `llama.cpp`'s `GET /props`, proxy gateways often return `role: "router"` or `n_ctx: 0`. `srz` detects this and automatically re-probes `GET /props?model=<MODEL>` to acquire model-specific context and slot allocations.
+#### Standard Input, Web URLs & Syndication Feeds
+The router evaluates targets in order of structural specificity. An argument equal to `"-"` immediately routes to `ResolvedAction::Stdin` for Unix pipeline composability (such as `git diff | srz -`). Strings beginning with `http://` or `https://` are inspected by `is_feed_url` for syndication path suffixes (`.rss`, `.atom`, `/feed`, `/rss.xml`, `/feed.json`) or feed query parameters (`?format=rss`). Matching feed URLs route directly to the universal feed parser (`ResolvedAction::News`), whereas standard links proceed to the web workflow (`ResolvedAction::Web`).
+
+#### Local Documents & Natural News Queries
+Non-URL inputs are tested against `is_file_like` and `Path::is_file()`. Any existing file on disk, path prefix (`./`, `../`, `/`, `~`), or recognized document extension (`.pdf`, `.md`, `.txt`, `.html`, `.epub`, `.json`) routes to `ResolvedAction::File`. If the input is not a local path, `is_news_query` checks for topical news phrasing—such as strings starting with `news` or `headlines`, or matching `"current/latest ... updates/stories"`—and strips conversational filler via `clean_news_query` before querying Google News RSS.
+
+#### Command Typo Guardrail & Book Fallback
+Before treating remaining freeform text as a book title, `suggest_command` computes the edit distance between single-word inputs and known CLI subcommands (`doctor`, `models`, `browse`, `stats`, `history`, `ask`). If a close match is found (for example, `srz doctur`), execution aborts with a helpful suggestion rather than launching an unintended book search. All other freeform strings fall through to `ResolvedAction::Book`.
+
+### Protocol Sub-Routing & Context Disambiguation
+
+#### URL Content Sub-Routing
+Within the web workflow, `fetch_url_content` performs secondary protocol inspection. YouTube URLs (`youtube.com/watch`, `youtu.be/`, `/shorts/`) are intercepted by `extract_youtube_video_id` and routed to the Innertube timed-text client, which downloads XML/JSON3 subtitle tracks without fetching video streams. Remote links ending in `.pdf` stream directly into the pure-Rust PDF extractor, and all remaining web pages are fetched via `reqwest` and cleaned with `dom_smoothie`.
+
+#### Grounded Q&A Disambiguation (`srz ask`)
+The `srz ask` command accepts either a target paired with a question or a standalone question. `is_probable_question` identifies questions by trailing question marks or interrogative prefixes (`what`, `how`, `why`, `explain`, etc.). When a user provides only a question, the target defaults to `None` and automatically grounds the query against the most recent summary in `srz.duckdb`. If the underlying source page cache has expired, `srz ask` automatically re-fetches the live URL or local document before ranking relevant passages.
+
+#### Multi-Model Router & Proxy Probing
+When `probe_server_capabilities` queries `GET /props` on `llama.cpp` routers or proxy gateways, the server often responds with `role: "router"` or `n_ctx: 0`. `srz` detects this topology automatically and issues a follow-up request to `GET /props?model=<MODEL>` to retrieve accurate, model-specific context window (`n_ctx`) and concurrency slot (`total_slots`) allocations.
 
 ---
 
 ## 4. Storage & Cache Architecture
 
-All state is stored under `~/.cache/srz/` (or `$XDG_CACHE_HOME/srz/`) with private `0700`/`0600` permissions:
+All state resides under `~/.cache/srz/` (or `$XDG_CACHE_HOME/srz/`) with private `0700` directory and `0600` file permissions:
 
 ```mermaid
 graph LR
@@ -239,7 +261,7 @@ graph LR
     end
 ```
 
-### Retention Policies & Storage Engine Design
+### Retention Policies & Storage Schedule
 
 | Namespace / Asset | Retention Policy (TTL) | Eviction Trigger | Notes |
 | :--- | :--- | :--- | :--- |
@@ -252,16 +274,25 @@ graph LR
 | **Auto-Prune Schedule** | **Opportunistic (24h)** | Deferred past fast-exit commands | Throttled via `.last_prune` with sub-millisecond overhead. |
 | **Library (`srz.duckdb`)** | **Permanent** | Explicit `--reset-db` only | Normalized history, full summaries, reasoning traces, and BM25 index. |
 
-* **Single-Write Architecture**: All transient artifacts live inside embedded `cache.duckdb`, preventing filesystem inode exhaustion and enabling sub-millisecond SQL TTL evaluation via `epoch_ms(cached_at)`.
-* **Normalized Library & Reasoning**: `srz.duckdb` stores telemetry in `history` while summary text and complete reasoning traces reside in `library`, avoiding redundancy.
-* **Collision-Safe Slugs**: View files use `slugify_unique(title, key)` appending an 8-character SHA-256 hash (`{slug}-{hash8}.html`), preventing file collisions across pages with identical titles.
-* **Lock Contention Resilience**: Database connections use `open_hardened_duckdb_file_with_retry` with exponential backoff and jitter (up to 5 retries, 50–400ms) to safely support concurrent CLI processes.
+### Storage Engine Design
+
+#### Consolidated Single-Write Cache
+Instead of scattering thousands of small JSON files across the filesystem, `srz` consolidates all transient artifacts—scraped pages, search candidates, server capabilities, and cached summaries—into a single embedded DuckDB database (`cache.duckdb`). This design prevents inode exhaustion, keeps cache lookups under a millisecond, and allows TTL expiration and byte-budget accounting to run as fast SQL queries via `epoch_ms(cached_at)`.
+
+#### Normalized Library Schema & Reasoning Traces
+The permanent library database (`srz.duckdb`) separates lightweight reading telemetry from bulk text storage. Execution metrics (word counts, token rates, latency, and timestamps) are recorded in `history`, while full Markdown summaries and complete chain-of-thought reasoning traces reside in `library`. Fast-exit commands such as `srz models` or `srz config` bypass database initialization altogether.
+
+#### Collision-Safe Reader Views
+Standalone HTML5 and Markdown reader files in `views/` are named using `slugify_unique(title, key)`, which appends an 8-character SHA-256 digest of the source URL or file path (`{slug}-{hash8}.html`). This guarantees zero filename collisions when summarizing different pages that share generic titles like "Documentation" or "Home". Each HTML view embeds the model's reasoning trace inside a collapsible `<details class="thought-drawer">` element.
+
+#### Lock Contention Resilience & Unified Eviction
+Because DuckDB enforces single-writer file locks, concurrent CLI invocations could otherwise contend on database access. `srz` wraps database initialization in `open_hardened_duckdb_file_with_retry`, applying exponential backoff with random jitter (up to 5 retries between 50 ms and 400 ms) and supporting cross-database queries via DuckDB's `ATTACH` mechanism. When total storage approaches the 500 MB ceiling, `Cache::prune` performs a unified LRU eviction pass across both `cache.duckdb` tables and `views/` files down to 85% capacity.
 
 ---
 
 ## 5. Offline BM25 Full-Text Search
 
-When executing `srz find <QUERY>`, relevance scores are evaluated offline in pure DuckDB SQL using the Robertson-Sparck Jones BM25 formula:
+When executing `srz find <QUERY>`, relevance scores are evaluated offline in pure DuckDB SQL using the Robertson-Sparck Jones BM25 ranking formula:
 
 $$
 \text{Score}(D, Q) = \sum_{t \in Q} \text{IDF}(t) \cdot w(t) \cdot \frac{f(t, D) \cdot (k_1 + 1)}{f(t, D) + k_1 \cdot \left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}
@@ -279,7 +310,9 @@ $$
 | $b$ | Length Normalization | `0.75`: Penalizes verbose documents relative to average library length (`avgdl`). |
 | $N$, $n(t)$ | Document Counts | $N$ is total library documents; $n(t)$ is document frequency of term $t$. |
 
-The search executes using SQL Common Table Expressions (CTEs) directly against the inverted index table (`library_terms`). BM25 scores and preview snippets are computed in under 2 milliseconds without background search daemons.
+### Vectorized SQL Evaluation
+
+Rather than relying on external search daemons or platform-specific C extensions, `srz` maintains an inverted index table (`library_terms`) populated transactionally whenever a summary is saved. During `srz find`, query tokens are evaluated through SQL Common Table Expressions (CTEs) that compute collection-wide document statistics, apply the $2.5\times$ title boost multiplier, and rank results alongside contextual preview snippets in under 2 milliseconds.
 
 ---
 
@@ -287,27 +320,27 @@ The search executes using SQL Common Table Expressions (CTEs) directly against t
 
 ### Hardware Profiling & Gemma 4 Steering
 
-`srz` detects host RAM and CPU architecture across macOS (`sysctl`), Linux (`/proc/meminfo`), and Windows (WMI) without C FFI dependencies. It classifies machines into memory tiers to recommend optimal models and context windows:
+`srz` inspects host RAM and CPU architecture across macOS (`sysctl`), Linux (`/proc/meminfo`), and Windows (WMI) without unsafe C FFI bindings, classifying machines into memory tiers to recommend optimal models and context sizes.
 
-* **Google Gemma 4 (`Q8_0`) as Reference Profile**: Gemma 4 offers high parameter density and long-context coherence with low power consumption on battery. 8-bit `Q8_0` quantization avoids the semantic drift of aggressive 4-bit quantizations while fitting within modern unified RAM budgets. See the [Hardware Tier Reference Matrix](quickstart.md#hardware-tier-reference-matrix) for details.
+Across modern laptops and workstations, `srz` steers users toward **Google Gemma 4 at 8-bit quantization (`Q8_0`)** as its reference profile. Gemma 4 delivers high parameter density and strong instruction adherence across long context windows with low battery draw. Running at `Q8_0` preserves near-FP16 semantic fidelity and avoids the nuance degradation common in aggressive 4-bit quantizations while fitting comfortably within unified memory budgets. See the [Hardware Tier Reference Matrix](quickstart.md#hardware-tier-reference-matrix) for tier-by-tier recommendations.
 
 ### Synthesis Strategy: Single-Pass vs. Map-Reduce
 
-* **Single-Pass**: Used when the document's token count is within ~70% of the server's context window (`n_ctx`). Preserves complete cross-chapter attention without fragmentation.
-* **Map-Reduce & Hierarchical Tree Reduction**: When a document exceeds the single-pass threshold, `srz` partitions text into overlapping chunks sized strictly by `DynamicBudget`. Chunks are summarized in parallel across available inference slots (`total_slots`). If intermediate section summaries exceed the single-pass limit, `srz` groups them into consolidation batches and reduces them hierarchically before final synthesis.
+The synthesis engine chooses its execution strategy dynamically based on the ratio between document token length and the server's active context window (`n_ctx`). When a document fits within roughly 70% of `n_ctx`, `srz` executes a **Single-Pass** synthesis, keeping the entire text inside the model's attention window simultaneously to preserve cross-chapter narrative continuity.
+
+When a document exceeds the single-pass threshold, `srz` switches to **Parallel Map-Reduce with Hierarchical Tree Reduction**. The chunker splits text along paragraph boundaries into overlapping windows sized by `DynamicBudget`, dispatching chunks concurrently across the server's available worker slots (`total_slots`). If the resulting intermediate summaries still exceed the single-pass limit, `srz` recursively groups them into consolidation batches and reduces them in a tree hierarchy before performing the final synthesis pass.
 
 ### Dynamic Token Budgeting & Zero-Drift Calibration
 
-Hardcoded token limits lead to Out-of-Memory crashes or underutilized context. `srz` queries the backend server capabilities and enforces a runtime capacity invariant:
+Hardcoded token limits either crash small context servers with Out-of-Memory errors or leave large context windows underutilized. `srz` queries backend capabilities at runtime and enforces a strict capacity invariant:
 
 $$
 \text{effective\_ctx} = \text{prompt\_chunk} + \text{reserve\_completion} + \text{headroom} \le n_{\text{ctx}}
 $$
 
-* **Prompt Chunk**: ~45% of total context (bounded between 1,024 and 65,536 tokens).
-* **Reserve Completion**: ~30% of total context (bounded between 512 and 8,192 tokens).
-* **Safety Headroom**: ~25% (bounded between 512 and 4,096 tokens) for system prompt variance.
-* **Zero-Drift Tokenization**: To eliminate the 15–25% drift between third-party BPE tokenizers and model vocabularies, `srz` pairs in-process model profiles (`TokenizerKind`: Gemma SentencePiece 256k, Llama 3 128k, `o200k_base`, `cl100k_base`) with server-native `/tokenize` or `/api/tokenize` probing for 0% count error.
+`DynamicBudget` divides the detected context window into three bounded regions: approximately **45% for the prompt chunk** (clamped between 1,024 and 65,536 tokens), **30% for completion reserve** (512 to 8,192 tokens), and **25% for safety headroom** (512 to 4,096 tokens) to absorb system prompt overhead.
+
+To eliminate the 15–25% token count drift typical when applying generic BPE tokenizers to non-OpenAI models, `srz` combines in-process model-aware profiles (`TokenizerKind` supporting Gemma SentencePiece 256k, Llama 3 128k, `o200k_base`, and `cl100k_base`) with authoritative queries to the server's native `/tokenize` or `/api/tokenize` endpoint, achieving 0% count discrepancy.
 
 ---
 
@@ -323,28 +356,41 @@ $$
 | **Terminal & Pager** | Unified document composition piped directly into `$PAGER` (`less -RFX`) | Header, body, links, and hints kept together without viewport truncation. |
 | **Content Ingestion** | Mozilla Readability (`dom_smoothie`), streaming XML, chapters & auto-translation, and bounded semaphores | Clean text stripped of web noise; chapter-aligned caption pulls; bounded worker concurrency. |
 | **Storage & Caching** | Embedded DuckDB (`cache.duckdb`), lock-retry backoff, pre-scrape caching, and collision-safe slugs | Sub-millisecond hits, resilience across concurrent CLI runs, and collision-free reader views. |
-| **Resolution & Grounding** | Offline `CBMi` protobuf decoding, targeted Wikipedia synopsis extraction, and in-memory BM25 chunking | Zero-network Google News link resolution; 70% fewer prompt tokens for books; discriminatory Q&A retrieval. |
+| **Resolution & Grounding** | Offline `CBMi` protobuf decoding, targeted Wikipedia synopsis extraction, and in-memory BM25 chunking | Zero-network Google News link resolution; 70% fewer prompt tokens for books; discriminative Q&A retrieval. |
 | **Offline Search** | Inverted index (`library_terms`) evaluated with pure DuckDB SQL CTEs | Sub-2ms Google-style BM25 search without external search engines or daemons. |
 
-### Key Implementation Mechanisms
+### Core Performance Mechanisms
 
-* **Zero-Copy SSE Parsing**: The Server-Sent Events client parses payloads zero-copy from network byte slices (`Cow<str>`), batching terminal flushes to eliminate string reallocation overhead. Short documents execute an $O(1)$ byte check to bypass tokenization passes entirely.
-* **Offline Protobuf URL Decoding**: Google News `CBMi` article links are decoded directly offline from base64 protobuf wire bytes, eliminating two sequential network roundtrips per article and accelerating news aggregation by 60–90%.
-* **Targeted Wikipedia Synopsis Extraction**: `extract_wikipedia_synopsis` isolates lead introductions and `== Plot ==` / `== Synopsis ==` sections, stripping extraneous reference, cast, and publication tables to save up to 70% of LLM context tokens.
-* **Stop-Word Filtered BM25 Grounding**: Question answering ranks candidate chunks with the Robertson-Sparck Jones BM25 formula, filtering English stop words so rare keywords carry maximum discriminative retrieval weight.
-* **Native YouTube Chapter Markers**: Transcripts group cues by authored chapter boundaries extracted from video descriptions, preserving semantic continuity across paragraph chunking.
-* **Line-Buffered Streaming Markdown**: Rather than printing raw chunks that break Markdown styling mid-word, `StreamMarkdownRenderer` buffers incoming tokens by line, tracking multi-line code fences and applying ANSI themes only on complete syntax blocks.
-* **Bounded Parallelism**: News ingestion and map-reduce chunking bound background tasks with `tokio::sync::Semaphore`, terminating remaining background fetches as soon as the target count is satisfied.
+#### Zero-Copy SSE Parsing & Line-Buffered Rendering
+The Server-Sent Events client parses streaming JSON frames zero-copy from network buffers (`Cow<str>`) and batches terminal flushes per packet to avoid string reallocations. Short inputs pass an $O(1)$ byte-length check that skips tokenization entirely. When `--stream` is active, `StreamMarkdownRenderer` buffers incoming tokens by line and tracks multi-line code fences so ANSI styles are applied only to complete syntactic lines rather than breaking mid-word.
+
+#### Offline Protobuf Decoding & Bounded News Ingestion
+Google News RSS feeds wrap article URLs inside base64 `CBMi` protobuf payloads. Rather than issuing two sequential HTTP roundtrips per article to resolve redirects, `srz` decodes the target URL directly offline from the protobuf wire bytes—accelerating news ingestion by 60–90%—and falls back to `batchexecute` RPC only when needed. Concurrent article scraping is bounded by a `tokio::sync::Semaphore`, caches scraped pages prior to synthesis, and falls back to clean RSS summary snippets whenever publisher links are paywalled.
+
+#### Targeted Synopsis Extraction & Chapter-Aligned Transcripts
+During book resolution, `srz` fans out metadata and search queries concurrently across Open Library and Wikipedia. When scraping Wikipedia reference articles, `extract_wikipedia_synopsis` isolates the lead introduction and `== Plot ==` / `== Synopsis ==` sections while discarding bibliography, cast, and edition tables—reducing prompt token volume by up to 70%. Similarly, the YouTube pipeline parses chapter timestamps from video descriptions (`parse_chapters_from_description`) to group caption cues into semantic sections and automatically falls back to YouTube's `&tlang=en` auto-translation parameter when native English tracks are unavailable.
+
+#### Discriminative BM25 Grounding
+When answering questions in `srz ask`, candidate document chunks are scored in memory using a stop-word filtered Robertson-Sparck Jones BM25 ranker. Stripping high-frequency English stop words ensures that domain-specific keywords carry maximum inverse document frequency weight when selecting grounding passages for the prompt window.
 
 ---
 
 ## 8. Security, Privacy & System Hardening
 
-* **Zero-Unsafe Guarantee**: The entire codebase enforces `#![forbid(unsafe_code)]` at both `src/lib.rs` and `src/main.rs`. Memory and data-race safety are mathematically guaranteed by the Rust compiler.
-* **Filesystem Isolation & Local Privacy**: Zero telemetry, tracking, or cloud dependencies. Directories are created with `0700` and files with `0600` permissions via atomic tempfiles (`O_CREAT | O_EXCL`). Pre-planted symlinks are explicitly rejected.
-* **Defensive Prompt Quarantining**: Ingested content is isolated within `<source_document>` XML boundary tags with case-insensitive escaping to neutralize prompt injection attacks.
-* **Terminal Escape & BiDi Sanitization**: Titles, metadata, and streaming output pass through `sanitize_terminal_text`, stripping ANSI CSI/OSC control codes, C1 characters, and Unicode Bidirectional (BiDi) override codepoints to prevent clipboard hijacking and prompt spoofing.
-* **Bounded Resource Limits**: Strict ceilings prevent resource exhaustion: 10 MB for web bodies and stdin, 20 MB for local documents, 50 MB for update binaries, with connection timeouts on all external requests.
+### Memory Safety & Zero-Unsafe Guarantee
+The entire codebase enforces `#![forbid(unsafe_code)]` at both `src/lib.rs` and `src/main.rs`. Every parser, network stream, and database query is written in 100% safe Rust, providing compile-time mathematical guarantees against buffer overflows, use-after-free bugs, and data races.
+
+### Local Privacy & Atomic Filesystem Isolation
+`srz` operates with zero telemetry, analytics, or cloud dependencies. Cache and data directories are created with owner-only `0700` permissions, and files are written atomically using temporary files (`O_CREAT | O_EXCL` with `0600` permissions) while explicitly rejecting pre-planted symlinks to prevent directory traversal and symlink swap attacks.
+
+### Defensive Prompt Quarantining
+Because web pages and documents may contain adversarial instructions, all ingested content is isolated within `<source_document>` XML boundary tags. The prompt framing layer performs case-insensitive scanning to neutralize embedded closing tags, preventing untrusted text from escaping its quarantine container and hijacking system instructions.
+
+### Terminal Escape & BiDi Sanitization
+Rendering untrusted text in terminal emulators carries risks of clipboard hijacking (via OSC 52 sequences) and visual spoofing. `srz` passes all titles, metadata, and streaming LLM outputs through `sanitize_terminal_text`, stripping ANSI CSI/OSC control sequences, C1 control characters, and Unicode Bidirectional (BiDi) override codepoints.
+
+### Bounded Resource Ceilings & Verified Upgrades
+Strict byte ceilings protect the host from resource exhaustion: 10 MB for web responses and stdin streams, 20 MB for local documents, and 50 MB for release archives, reinforced by connection and read timeouts on all HTTP clients. Self-updates via `srz upgrade` verify release binaries against cryptographic SHA-256 checksums before performing an atomic binary swap.
 
 ---
 
