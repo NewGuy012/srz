@@ -290,16 +290,20 @@ fn present_summary_outcome(outcome: SummaryOutcome, args: &Cli, cache: &Cache) -
             None
         };
 
-        // Ensure clickable styled HTML and Markdown view files exist with collision-safe unique key
-        let view_files = render::ensure_view_files_unique(
-            &cache.views_dir(),
-            &outcome.title,
-            &outcome.summary,
-            outcome.url.as_deref(),
-            outcome.reasoning.as_deref(),
-            !outcome.cached,
-        )
-        .ok();
+        // Only generate rendered HTML and Markdown view files when the user explicitly requests opening in browser (--open)
+        let view_files = if args.open {
+            render::ensure_view_files_unique(
+                &cache.views_dir(),
+                &outcome.title,
+                &outcome.summary,
+                outcome.url.as_deref(),
+                outcome.reasoning.as_deref(),
+                !outcome.cached,
+            )
+            .ok()
+        } else {
+            None
+        };
 
         if args.open
             && let Some(ref files) = view_files
