@@ -100,20 +100,16 @@ fn test_cache_stats_and_clean() {
         word_count: 3,
     };
     cache.set_page("https://example.com", &page);
-    cache.set_book_summary(SetBookSummaryParams {
-        title: "Dune",
-        author: None,
-        style: SummaryStyle::Concise,
-        model: "gemma-4",
-        display_title: "\"Dune\"",
-        summary: "Summary text",
-        word_count: 100,
-        reasoning: None,
+    let meta = Some(BookMetadata {
+        canonical_title: "Dune".to_string(),
+        author: Some("Frank Herbert".to_string()),
+        first_publish_year: Some(1965),
     });
+    cache.set_book_metadata("Dune", None, &meta);
 
     let stats = cache.stats();
     assert_eq!(stats.pages, 1);
-    assert_eq!(stats.summaries, 1);
+    assert_eq!(stats.searches, 1);
     assert_eq!(stats.total_files, 2);
     assert!(stats.total_bytes > 0);
 
@@ -163,7 +159,7 @@ fn test_cache_file_permissions() {
     let dir_meta = fs::metadata(&dir).unwrap();
     assert_eq!(dir_meta.permissions().mode() & 0o777, 0o700);
 
-    let db_meta = fs::metadata(dir.join("cache.duckdb")).unwrap();
+    let db_meta = fs::metadata(dir.join("srz.duckdb")).unwrap();
     assert_eq!(db_meta.permissions().mode() & 0o777, 0o600);
 
     // Ensure no redundant legacy JSON files were written to pages/
@@ -394,8 +390,8 @@ fn test_cache_sha256_hash_keys() {
     // Explicitly drop cache to release DuckDB file locks before direct inspection (required on Windows)
     drop(cache);
 
-    // Query cache_pages in cache.duckdb and verify the key is 64 hex characters (SHA-256)
-    let conn = duckdb::Connection::open(dir.join("cache.duckdb")).unwrap();
+    // Query cache_pages in srz.duckdb and verify the key is 64 hex characters (SHA-256)
+    let conn = duckdb::Connection::open(dir.join("srz.duckdb")).unwrap();
     let key: String = conn
         .query_row("SELECT cache_key FROM cache_pages LIMIT 1", [], |r| {
             r.get(0)
@@ -427,8 +423,12 @@ fn test_cache_duckdb_consolidation() {
         "Consolidated cache in DuckDB",
     );
 
-    let db_path = dir.join("cache.duckdb");
-    assert!(db_path.exists(), "cache.duckdb database file must exist");
+    let db_path = dir.join("srz.duckdb");
+    assert!(db_path.exists(), "srz.duckdb database file must exist");
+    assert!(
+        !dir.join("cache.duckdb").exists(),
+        "legacy cache.duckdb should not exist"
+    );
 
     #[cfg(unix)]
     {
