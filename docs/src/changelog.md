@@ -26,14 +26,14 @@ All notable changes to `srz` are documented in this file.
 
 ### Summary
 
-> Unifies all caching and persistent storage into a single embedded DuckDB database (`srz.duckdb`), introduces zero-allocation pure SQL window function LRU pruning, adds short-lived 2-hour caching for live news feeds, makes HTML/Markdown view generation strictly opt-in, and introduces intuitive cache clearing aliases.
+> Unifies caching and persistence into a single DuckDB store (`srz.duckdb`), adds pure SQL windowed LRU pruning, shortens news caching to 2 hours, makes reader view file exports strictly opt-in, and adds intuitive cache clear aliases.
 
 ### Changes
-- **Unified DuckDB Storage & Redundancy Elimination (`src/storage/db.rs`, `src/storage/cache.rs`)**: Consolidated all ephemeral caching (pages, search, capabilities) into `srz.duckdb` and eliminated redundant duplicate summary tables (`cache_summaries`) in favor of indexed `(history, library)` lookups, eliminating cross-database synchronization and locking overhead.
-- **Pure SQL Window Function LRU Pruning (`src/storage/cache.rs`)**: Replaced pulling rows into memory for sorting in Rust with pure DuckDB windowed SQL aggregation (`SUM(...) OVER (ORDER BY cached_at DESC)`), executing atomic byte-budget evictions with zero in-memory allocations followed by immediate page reclaiming via `CHECKPOINT; VACUUM;`.
-- **Short-Lived News Caching (`src/sources/news.rs`, `src/storage/cache.rs`, `src/config/file.rs`)**: Implemented a 2-hour TTL for news and feed URLs (`news_ttl_hours`), preventing stale news consumption while maintaining fast repeat lookups.
-- **Opt-In View Generation (`src/main.rs`)**: Made standalone HTML and Markdown view file generation in `views/` strictly opt-in via `--open` or explicit output flags (`--output`), eliminating automatic filesystem clutter.
-- **Cache Management & Clear Aliases (`src/config/cli.rs`, `src/storage/cache.rs`)**: Added `clear`, `purge`, and `wipe` aliases to `srz cache clean`, and ensured `clean`/`clear` invalidates all cached summary keys and probed server capabilities while preserving user reading history and library records.
+- **Unified DuckDB Storage (`src/storage/`)**: Consolidated all caching into `srz.duckdb` and eliminated redundant cache tables in favor of indexed library lookups, removing cross-database locking overhead.
+- **Pure SQL LRU Pruning (`src/storage/cache.rs`)**: Replaced in-memory sorting with windowed SQL eviction in DuckDB, reclaiming disk space atomically with zero memory allocations.
+- **2-Hour News TTL (`src/sources/news.rs`, `src/config/file.rs`)**: Shortened news and feed caching to 2 hours (`news_ttl_hours`) to keep briefings fresh while preserving fast repeat lookups.
+- **Opt-In View Exports (`src/main.rs`)**: Made standalone HTML and Markdown file generation in `views/` strictly opt-in via `--open` or `--output`, keeping disk storage clean.
+- **Cache Clear Aliases (`src/config/cli.rs`, `src/storage/cache.rs`)**: Added `srz cache clear` (along with `purge` and `wipe`), invalidating cached summaries and server capabilities while keeping user reading history intact.
 
 ---
 
