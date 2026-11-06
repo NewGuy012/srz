@@ -22,6 +22,21 @@ All notable changes to `srz` are documented in this file.
 
 ---
 
+## v0.7.5
+
+### Summary
+
+> Unifies all caching and persistent storage into a single embedded DuckDB database (`srz.duckdb`), introduces zero-allocation pure SQL window function LRU pruning, adds short-lived 2-hour caching for live news feeds, makes HTML/Markdown view generation strictly opt-in, and introduces intuitive cache clearing aliases.
+
+### Changes
+- **Unified DuckDB Storage & Redundancy Elimination (`src/storage/db.rs`, `src/storage/cache.rs`)**: Consolidated all ephemeral caching (pages, search, capabilities) into `srz.duckdb` and eliminated redundant duplicate summary tables (`cache_summaries`) in favor of indexed `(history, library)` lookups, eliminating cross-database synchronization and locking overhead.
+- **Pure SQL Window Function LRU Pruning (`src/storage/cache.rs`)**: Replaced pulling rows into memory for sorting in Rust with pure DuckDB windowed SQL aggregation (`SUM(...) OVER (ORDER BY cached_at DESC)`), executing atomic byte-budget evictions with zero in-memory allocations followed by immediate page reclaiming via `CHECKPOINT; VACUUM;`.
+- **Short-Lived News Caching (`src/sources/news.rs`, `src/storage/cache.rs`, `src/config/file.rs`)**: Implemented a 2-hour TTL for news and feed URLs (`news_ttl_hours`), preventing stale news consumption while maintaining fast repeat lookups.
+- **Opt-In View Generation (`src/main.rs`)**: Made standalone HTML and Markdown view file generation in `views/` strictly opt-in via `--open` or explicit output flags (`--output`), eliminating automatic filesystem clutter.
+- **Cache Management & Clear Aliases (`src/config/cli.rs`, `src/storage/cache.rs`)**: Added `clear`, `purge`, and `wipe` aliases to `srz cache clean`, and ensured `clean`/`clear` invalidates all cached summary keys and probed server capabilities while preserving user reading history and library records.
+
+---
+
 ## v0.7.4
 
 ### Summary
@@ -29,9 +44,6 @@ All notable changes to `srz` are documented in this file.
 > Introduces an Antigravity/Gemini-style compact thinking UI with live one-liner step summaries and collapsible dropdowns, native zero-dependency EPUB book extraction, sub-millisecond cache fast-paths and offline chat management, dynamic per-turn BM25 grounding in interactive Q&A, calibrated single-pass token chunking, and deterministic release CI builds.
 
 ### Changes
-- **Single DuckDB Cache & SQL Window Pruning (`src/storage/db.rs`, `src/storage/cache.rs`)**: Unified all caching into `srz.duckdb`, eliminated redundant `cache_summaries` tables in favor of indexed `(history, library)` lookups, and implemented pure SQL windowed LRU eviction (`SUM(...) OVER (ORDER BY cached_at DESC)`) with zero in-memory row allocations.
-- **Short-Lived News Caching (`src/sources/news.rs`, `src/storage/cache.rs`, `src/config/file.rs`)**: Introduced a 2-hour TTL for news and feed URLs (`news_ttl_hours`), preventing stale news consumption while maintaining fast repeat lookups.
-- **Opt-In Reader View Generation (`src/main.rs`)**: Made standalone HTML and Markdown view file generation strictly opt-in via `--open` or explicit output flags (`--output`), eliminating automatic disk clutter in `views/`.
 - **Compact Thinking UI (`src/engine/llm.rs`, `src/ui/render.rs`)**: Replaced multi-line raw thinking trace dumps with a live, real-time one-liner spinner summary (`💭 Thinking: <Step> (Xs)...`) and an Antigravity/Gemini-style collapsible dropdown indicator (`💭 Thought for Xs ›`), preserving the full chain-of-thought in HTML reader views and opt-in `--show-thinking` CLI streaming.
 - **Native EPUB Ingestion (`src/sources/epub.rs`, `src/sources/document.rs`)**: Pure-Rust zero-dependency EPUB book extraction and chapter stitching in reading order using existing zip and XML dependencies.
 - **Cache Fast-Paths & Offline Chat (`src/main.rs`, `src/commands/ask.rs`)**: Instantaneous sub-millisecond cache hit delivery for web, books, and local files before initializing network or LLM engines, complete reasoning trace preservation, and offline chat management (`--chats`, `--show-chat`, `--delete-chat`).
