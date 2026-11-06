@@ -22,6 +22,19 @@ All notable changes to `srz` are documented in this file.
 
 ---
 
+## v0.7.6
+
+### Summary
+
+> Preserves each model thinking step on its own line during analytical reasoning, adds a live progress spinner with real-time generation metrics during buffered inference, and enables instant sub-millisecond caching for live news briefings with a 2-hour TTL.
+
+### Changes
+- **Multi-Line Thinking Trace (`src/engine/llm.rs`)**: Preserves intermediate thinking steps (`💭 Thinking: <Step> (Xs)`) on dedicated lines above the active spinner as reasoning transitions, settling cleanly into the collapsible dropdown indicator (`💭 Thought for Xs ›`).
+- **Live Buffered Generation Status (`src/engine/llm.rs`)**: Keeps the progress spinner active during buffered content accumulation with live metrics (token count, generation rate in `t/s`, and elapsed time), ensuring clear visual feedback throughout inference.
+- **News Briefing Caching & Fast-Path (`src/main.rs`, `src/commands/summarize.rs`, `src/storage/cache.rs`)**: Added sub-millisecond cache hits for news queries within the 2-hour news TTL (`news_ttl_hours`), eliminating redundant LLM re-synthesis on repeated invocations while preserving `--no-cache` refresh support.
+
+---
+
 ## v0.7.5
 
 ### Summary

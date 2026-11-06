@@ -187,6 +187,8 @@ struct SseStreamState {
     thinking_start: Option<std::time::Instant>,
     show_thinking_stream: bool,
     last_thought_headline: Option<String>,
+    current_step_start: Option<std::time::Instant>,
+    content_start: Option<std::time::Instant>,
 }
 
 impl SseStreamState {
@@ -209,6 +211,8 @@ impl SseStreamState {
             thinking_start: None,
             show_thinking_stream,
             last_thought_headline: None,
+            current_step_start: None,
+            content_start: None,
         }
     }
 }
@@ -312,8 +316,11 @@ impl SseStreamState {
     fn append_reasoning_delta(&mut self, text: &str, pb: &indicatif::ProgressBar) {
         self.thinking_tokens += 1;
         self.is_thinking = true;
-        if self.thinking_start.is_none() {
-            self.thinking_start = Some(std::time::Instant::now());
+        let now = std::time::Instant::now();
+        let is_first_thinking = self.thinking_start.is_none();
+        if is_first_thinking {
+            self.thinking_start = Some(now);
+            self.current_step_start = Some(now);
         }
         self.reasoning_buf.push_str(text);
 
@@ -336,26 +343,80 @@ impl SseStreamState {
                     eprint!("{}", safe_chunk);
                 }
                 let _ = io::stderr().flush();
-            } else {
-                let now = std::time::Instant::now();
-                if now.duration_since(self.last_spinner_update) >= Duration::from_millis(100) {
-                    self.last_spinner_update = now;
-                    let elapsed_s = self
-                        .thinking_start
-                        .map(|t| t.elapsed().as_secs_f64())
-                        .unwrap_or(0.0);
-                    if let Some(headline) = extract_thought_headline(&self.reasoning_buf) {
-                        self.last_thought_headline = Some(headline);
-                    }
-                    let duration_str = format_thinking_duration(elapsed_s);
-                    let msg = match &self.last_thought_headline {
-                        Some(step) if !step.is_empty() => {
-                            format!("💭 Thinking: {} ({})...", step, duration_str)
-                        }
-                        _ => format!("💭 Thinking ({})...", duration_str),
-                    };
-                    pb.set_message(msg);
+            } else if is_first_thinking
+                || now.duration_since(self.last_spinner_update) >= Duration::from_millis(100)
+            {
+                self.last_spinner_update = now;
+                let total_elapsed_s = self
+                    .thinking_start
+                    .map(|t| t.elapsed().as_secs_f64())
+                    .unwrap_or(0.0);
+
+                if let Some(headline) = extract_thought_headline(&self.reasoning_buf) {
+                    self.handle_thought_headline_update(&headline, pb);
                 }
+
+                let step_elapsed_s = self
+                    .current_step_start
+                    .map(|t| t.elapsed().as_secs_f64())
+                    .unwrap_or(total_elapsed_s);
+                let duration_str = format_thinking_duration(step_elapsed_s);
+                let msg = match &self.last_thought_headline {
+                    Some(step) if !step.is_empty() => {
+                        format!("💭 Thinking: {} ({})...", step, duration_str)
+                    }
+                    _ => format!(
+                        "💭 Thinking ({})...",
+                        format_thinking_duration(total_elapsed_s)
+                    ),
+                };
+                pb.set_message(msg);
+            }
+        }
+    }
+
+    fn handle_thought_headline_update(&mut self, new_headline: &str, pb: &indicatif::ProgressBar) {
+        let now = std::time::Instant::now();
+        match &self.last_thought_headline {
+            None => {
+                self.last_thought_headline = Some(new_headline.to_string());
+                if self.current_step_start.is_none() {
+                    self.current_step_start = self.thinking_start.or(Some(now));
+                }
+            }
+            Some(old_headline) => {
+                if is_same_or_growing_headline(old_headline, new_headline) {
+                    if new_headline.len() > old_headline.len() {
+                        self.last_thought_headline = Some(new_headline.to_string());
+                    }
+                    return;
+                }
+
+                // Completed previous thinking step! Print it to a new line above the spinner.
+                let step_elapsed_s = self
+                    .current_step_start
+                    .map(|t| t.elapsed().as_secs_f64())
+                    .unwrap_or(0.0);
+                let duration_str = format_thinking_duration(step_elapsed_s);
+                let step_line = if Ui::use_color() {
+                    format!(
+                        "  \x1b[2m💭 Thinking: {} ({})\x1b[0m",
+                        old_headline, duration_str
+                    )
+                } else {
+                    format!("  Thinking: {} ({})", old_headline, duration_str)
+                };
+
+                if pb.is_hidden() {
+                    if !Ui::is_quiet() {
+                        eprintln!("{}", step_line);
+                    }
+                } else {
+                    pb.println(step_line);
+                }
+
+                self.last_thought_headline = Some(new_headline.to_string());
+                self.current_step_start = Some(now);
             }
         }
     }
@@ -371,8 +432,12 @@ impl SseStreamState {
         }
         self.finished_thinking_ui = true;
         self.is_thinking = false;
+        let now = std::time::Instant::now();
+        if self.content_start.is_none() {
+            self.content_start = Some(now);
+        }
 
-        let elapsed_s = self
+        let total_elapsed_s = self
             .thinking_start
             .map(|t| t.elapsed().as_secs_f64())
             .unwrap_or(0.0);
@@ -387,17 +452,65 @@ impl SseStreamState {
                     }
                 }
             } else if self.thinking_tokens > 0 {
-                pb.finish_and_clear();
-                let duration_str = format_thinking_duration(elapsed_s);
-                if Ui::use_color() {
-                    eprintln!("  \x1b[2m💭 Thought for {} ›\x1b[0m", duration_str);
+                // Ensure latest reasoning is parsed for active headline before finalizing
+                if let Some(final_headline) = extract_thought_headline(&self.reasoning_buf) {
+                    self.handle_thought_headline_update(&final_headline, pb);
+                }
+
+                // Finalize and print the active thinking step if one exists
+                if let Some(active_step) = self.last_thought_headline.take() {
+                    let step_elapsed_s = self
+                        .current_step_start
+                        .map(|t| t.elapsed().as_secs_f64())
+                        .unwrap_or(total_elapsed_s);
+                    let duration_str = format_thinking_duration(step_elapsed_s);
+                    let step_line = if Ui::use_color() {
+                        format!(
+                            "  \x1b[2m💭 Thinking: {} ({})\x1b[0m",
+                            active_step, duration_str
+                        )
+                    } else {
+                        format!("  Thinking: {} ({})", active_step, duration_str)
+                    };
+
+                    if pb.is_hidden() {
+                        eprintln!("{}", step_line);
+                    } else {
+                        pb.println(step_line);
+                    }
+                }
+
+                // Settle thinking into Antigravity/Gemini dropdown indicator
+                let total_duration_str = format_thinking_duration(total_elapsed_s);
+                let thought_line = if Ui::use_color() {
+                    format!("  \x1b[2m💭 Thought for {} ›\x1b[0m", total_duration_str)
                 } else {
-                    eprintln!("  Thought for {} >", duration_str);
+                    format!("  Thought for {} >", total_duration_str)
+                };
+
+                if matches!(mode, StreamMode::Buffered) {
+                    if pb.is_hidden() {
+                        eprintln!("{}", thought_line);
+                    } else {
+                        pb.println(thought_line);
+                    }
+                } else {
+                    pb.finish_and_clear();
+                    eprintln!("{}", thought_line);
                 }
             }
 
             if matches!(mode, StreamMode::Buffered) && !spinner_label.is_empty() {
-                pb.set_message(format!("{}...", spinner_label));
+                if pb.is_finished() {
+                    pb.reset();
+                }
+                let clean_label = spinner_label.trim_end_matches('.');
+                let gen_label = if clean_label.eq_ignore_ascii_case("thinking") {
+                    "Generating response"
+                } else {
+                    clean_label
+                };
+                pb.set_message(format!("{}...", gen_label));
                 pb.enable_steady_tick(Duration::from_millis(80));
             }
         }
@@ -419,6 +532,9 @@ impl SseStreamState {
                 return;
             }
             self.started_visible = true;
+            if self.content_start.is_none() {
+                self.content_start = Some(std::time::Instant::now());
+            }
             clean
         } else {
             delta_text
@@ -449,11 +565,38 @@ impl SseStreamState {
                     || now.duration_since(self.last_spinner_update) >= Duration::from_millis(150)
                 {
                     self.last_spinner_update = now;
-                    pb.set_message(format!("{}...", spinner_label));
+                    let clean_label = spinner_label.trim_end_matches('.');
+                    let gen_label = if clean_label.eq_ignore_ascii_case("thinking") {
+                        "Generating response"
+                    } else {
+                        clean_label
+                    };
+                    let content_elapsed = self
+                        .content_start
+                        .map(|t| t.elapsed())
+                        .unwrap_or(Duration::from_secs(0));
+                    let rate =
+                        compute_tokens_per_second(Some(self.output_tokens as u32), content_elapsed);
+                    let status = Ui::format_llm_status(
+                        gen_label,
+                        "generating",
+                        self.output_tokens,
+                        content_elapsed,
+                        rate,
+                    );
+                    pb.set_message(status);
                 }
             }
         }
     }
+}
+
+/// Checks if two thought headlines are essentially identical or if one is an incremental continuation
+/// of the other as tokens stream in, preventing accidental premature step splitting.
+pub fn is_same_or_growing_headline(old_h: &str, new_h: &str) -> bool {
+    let old_norm = old_h.trim().to_ascii_lowercase();
+    let new_norm = new_h.trim().to_ascii_lowercase();
+    old_norm == new_norm || old_norm.starts_with(&new_norm) || new_norm.starts_with(&old_norm)
 }
 
 /// Formats an elapsed thinking duration into a clean Antigravity/Gemini style string (e.g., "4s", "19s", "35s", "0.4s").
@@ -1619,7 +1762,8 @@ impl LlmClient {
             println!("\n");
             Ui::success_with_elapsed(done_label, start_time.elapsed());
         } else {
-            Ui::finish_spinner(&pb, done_label);
+            pb.finish_and_clear();
+            Ui::success_with_elapsed(done_label, start_time.elapsed());
         }
 
         let elapsed = start_time.elapsed();
@@ -2976,6 +3120,108 @@ mod tests {
             extract_thought_headline("Here's a thinking process:\nOkay\nUnderstood"),
             None
         );
+    }
+
+    #[test]
+    fn test_is_same_or_growing_headline() {
+        assert!(is_same_or_growing_headline(
+            "Analyze the Request",
+            "Analyze the Request"
+        ));
+        assert!(is_same_or_growing_headline(
+            "Analyze",
+            "Analyze the Request"
+        ));
+        assert!(is_same_or_growing_headline(
+            "Analyze the Request",
+            "Analyze"
+        ));
+        assert!(is_same_or_growing_headline(
+            "Source Material Review",
+            "Source Material Review & Extraction"
+        ));
+        assert!(!is_same_or_growing_headline(
+            "Analyze the Request",
+            "Source Material Review & Extraction"
+        ));
+        assert!(!is_same_or_growing_headline(
+            "Structuring and Drafting the Briefing",
+            "Final Review"
+        ));
+    }
+
+    #[test]
+    fn test_sse_stream_state_multi_step_thinking_and_loading_spinner() {
+        let pb = indicatif::ProgressBar::hidden();
+        let mut state = SseStreamState::new(std::time::Instant::now(), false);
+
+        // Step 1: Analyze
+        let reason_1 = br#"data: {"choices":[{"delta":{"reasoning_content":"1. **Analyze Source Material:**\nReading articles"}}]}"#;
+        assert!(!state.process_line(
+            reason_1,
+            &pb,
+            "Synthesizing news briefing...",
+            StreamMode::Buffered
+        ));
+        assert_eq!(
+            state.last_thought_headline.as_deref(),
+            Some("Analyze Source Material")
+        );
+        assert!(state.is_thinking);
+        assert!(!state.finished_thinking_ui);
+
+        // Step 2: Synthesize - triggers headline update and step 1 completion
+        state.last_spinner_update -= std::time::Duration::from_millis(150);
+        let reason_2 = br#"data: {"choices":[{"delta":{"reasoning_content":"\n\n2. **Synthesize Key Developments:**\nGrouping stories"}}]}"#;
+        assert!(!state.process_line(
+            reason_2,
+            &pb,
+            "Synthesizing news briefing...",
+            StreamMode::Buffered
+        ));
+        assert_eq!(
+            state.last_thought_headline.as_deref(),
+            Some("Synthesize Key Developments")
+        );
+        assert!(state.is_thinking);
+
+        // Content generation starts: finishes thinking UI, keeps pb alive and transitions to loading status
+        let content_chunk =
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"# Executive News Briefing\\n\"}}]}\n";
+        assert!(!state.process_line(
+            content_chunk,
+            &pb,
+            "Synthesizing news briefing...",
+            StreamMode::Buffered
+        ));
+        assert!(state.finished_thinking_ui);
+        assert!(!state.is_thinking);
+        assert!(
+            !pb.is_finished(),
+            "ProgressBar must remain active during buffered content generation"
+        );
+        assert_eq!(state.output_tokens, 1);
+        assert!(state.content_buf.contains("Executive News Briefing"));
+
+        // Subsequent content chunk updates spinner progress
+        let content_chunk_2 = b"data: {\"choices\":[{\"delta\":{\"content\":\"Key developments in Python 3.13.\"}}]}\n";
+        assert!(!state.process_line(
+            content_chunk_2,
+            &pb,
+            "Synthesizing news briefing...",
+            StreamMode::Buffered
+        ));
+        assert_eq!(state.output_tokens, 2);
+        assert!(!pb.is_finished());
+    }
+
+    #[test]
+    fn test_pb_reset_resumes_spinner() {
+        let pb = indicatif::ProgressBar::new_spinner();
+        pb.finish_and_clear();
+        assert!(pb.is_finished());
+        pb.reset();
+        assert!(!pb.is_finished());
     }
 
     #[test]

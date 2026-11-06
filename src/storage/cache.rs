@@ -1011,13 +1011,29 @@ impl Cache {
         style: &str,
         model: &str,
     ) -> Option<CachedSummary> {
+        self.get_summary_from_db_with_ttl(
+            target_type,
+            identifier,
+            style,
+            model,
+            self.policy.summaries_ttl,
+        )
+    }
+
+    fn get_summary_from_db_with_ttl(
+        &self,
+        target_type: &str,
+        identifier: &str,
+        style: &str,
+        model: &str,
+        ttl: Duration,
+    ) -> Option<CachedSummary> {
         if !self.enabled {
             return None;
         }
         let guard = self.get_or_init_db()?;
         let conn = guard.as_ref()?;
         let now_ms = now_epoch_ms();
-        let ttl = self.policy.summaries_ttl;
 
         let trimmed_id = identifier.trim();
         let sql =
@@ -1209,6 +1225,56 @@ impl Cache {
         );
     }
 
+    pub fn get_news_summary(
+        &self,
+        topic: &str,
+        _timeframe: crate::cli::NewsTimeframe,
+        style: SummaryStyle,
+        model: &str,
+    ) -> Option<CachedSummary> {
+        let title_display = format!("News: {}", topic);
+        self.get_summary_from_db_with_ttl(
+            "news",
+            &title_display,
+            style.as_str(),
+            model,
+            self.policy.news_ttl,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_news_summary(
+        &self,
+        topic: &str,
+        _timeframe: crate::cli::NewsTimeframe,
+        style: SummaryStyle,
+        model: &str,
+        title: &str,
+        summary: &str,
+        word_count: usize,
+        reasoning: Option<&str>,
+    ) {
+        let search_url = if crate::system::text_util::is_http_url(topic) {
+            topic.to_string()
+        } else {
+            format!(
+                "https://news.google.com/search?q={}",
+                urlencoding::encode(topic)
+            )
+        };
+        self.set_summary_in_db(
+            "news",
+            title,
+            Some(&search_url),
+            title,
+            summary,
+            word_count,
+            reasoning,
+            style.as_str(),
+            model,
+        );
+    }
+
     // --- Server Capabilities Cache ---
 
     pub fn get_server_capabilities(
@@ -1297,9 +1363,14 @@ impl Cache {
         if let Some(guard) = self.get_or_init_db()
             && let Some(conn) = guard.as_ref()
         {
+            let col = if table == "history" {
+                "created_at"
+            } else {
+                "cached_at"
+            };
             let sql = format!(
-                "UPDATE {} SET cached_at = cached_at - INTERVAL {} SECOND WHERE {}",
-                table, delta_secs, where_clause
+                "UPDATE {} SET {} = {} - INTERVAL {} SECOND WHERE {}",
+                table, col, col, delta_secs, where_clause
             );
             let _ = conn.execute(&sql, []);
         }

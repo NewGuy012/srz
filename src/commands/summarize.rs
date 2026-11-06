@@ -437,8 +437,29 @@ pub async fn handle_news(
     cache: &Cache,
     args: &Cli,
 ) -> Result<SummaryOutcome> {
-    let news_client = crate::news::GoogleNewsClient::with_client(scraper.client().clone());
+    let title_display = format!("News: {}", topic);
     let is_direct_feed = crate::system::text_util::is_http_url(topic);
+    let search_url = if is_direct_feed {
+        topic.to_string()
+    } else {
+        format!(
+            "https://news.google.com/search?q={}",
+            urlencoding::encode(topic)
+        )
+    };
+
+    // 1. Check for a cached news briefing matching topic + timeframe + style + model within news TTL (default: 2h)
+    if let Some(cached) = cache.get_news_summary(topic, timeframe, args.style, &args.model) {
+        Ui::info("Loaded news briefing from local cache (pass `--no-cache` to refresh).");
+        return Ok(SummaryOutcome::from_cached(
+            "news",
+            cached,
+            None,
+            Some(search_url),
+        ));
+    }
+
+    let news_client = crate::news::GoogleNewsClient::with_client(scraper.client().clone());
 
     if is_direct_feed {
         Ui::info(&format!(
@@ -497,21 +518,24 @@ pub async fn handle_news(
         digest.push_str(&format!("\n{}\n\n---\n\n", src.content));
     }
 
-    let title_display = format!("News: {}", topic);
     let mode = args.stream_mode(&title_display);
     let author_str = format!("{} news sources", sources.len());
-    let search_url = if is_direct_feed {
-        topic.to_string()
-    } else {
-        format!(
-            "https://news.google.com/search?q={}",
-            urlencoding::encode(topic)
-        )
-    };
-
     let output = llm
         .summarize_news_digest(topic, timeframe.display_label(), &digest, args.style, mode)
         .await?;
+
+    if !output.truncated {
+        cache.set_news_summary(
+            topic,
+            timeframe,
+            args.style,
+            &args.model,
+            &title_display,
+            &output.content,
+            total_words,
+            output.reasoning.as_deref(),
+        );
+    }
 
     Ok(SummaryOutcome::from_llm(
         "news",

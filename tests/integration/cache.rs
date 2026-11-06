@@ -269,6 +269,68 @@ fn test_news_cache_short_ttl_expiration() {
 }
 
 #[test]
+fn test_news_summary_cache_and_short_ttl_expiration() {
+    use srz::cli::{NewsTimeframe, SummaryStyle};
+
+    let tmp = temp_test_dir("news_summary_ttl");
+    let dir = tmp.path().to_path_buf();
+    let cache = Cache::with_dir(dir.clone(), true);
+
+    // Initial cache is empty
+    assert!(
+        cache
+            .get_news_summary(
+                "python language news",
+                NewsTimeframe::Week,
+                SummaryStyle::Concise,
+                "default"
+            )
+            .is_none()
+    );
+
+    // Store news summary
+    cache.set_news_summary(
+        "python language news",
+        NewsTimeframe::Week,
+        SummaryStyle::Concise,
+        "default",
+        "News: python language news",
+        "# Python News Briefing\nPython 3.13 released.",
+        350,
+        Some("Model reasoning trace"),
+    );
+
+    // Immediate read hits
+    let cached = cache
+        .get_news_summary(
+            "python language news",
+            NewsTimeframe::Week,
+            SummaryStyle::Concise,
+            "default",
+        )
+        .expect("Cached news briefing should be present");
+    assert_eq!(cached.title, "News: python language news");
+    assert!(cached.summary.contains("Python 3.13 released."));
+    assert_eq!(cached.word_count, 350);
+    assert_eq!(cached.reasoning.as_deref(), Some("Model reasoning trace"));
+
+    // Backdate past 2 hours (e.g. 3 hours = 10800s)
+    cache.update_cached_at_for_test("history", "title = 'News: python language news'", 10800);
+
+    // Should expire under news TTL (default: 2 hours)
+    assert!(
+        cache
+            .get_news_summary(
+                "python language news",
+                NewsTimeframe::Week,
+                SummaryStyle::Concise,
+                "default"
+            )
+            .is_none()
+    );
+}
+
+#[test]
 fn test_cache_prune_by_age() {
     use srz::cache::{CacheNamespace, PruneOptions};
     use std::time::Duration;

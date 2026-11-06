@@ -189,6 +189,28 @@ async fn main() -> Result<()> {
                     return present_summary_outcome(outcome, &args, &cache);
                 }
             }
+            ResolvedAction::News {
+                topic, timeframe, ..
+            } => {
+                if let Some(cached) =
+                    cache.get_news_summary(topic, *timeframe, args.style, &args.model)
+                {
+                    Ui::info(
+                        "Loaded news briefing from local cache (pass `--no-cache` to refresh).",
+                    );
+                    let search_url = if srz::system::text_util::is_http_url(topic) {
+                        topic.to_string()
+                    } else {
+                        format!(
+                            "https://news.google.com/search?q={}",
+                            urlencoding::encode(topic)
+                        )
+                    };
+                    let outcome =
+                        SummaryOutcome::from_cached("news", cached, None, Some(search_url));
+                    return present_summary_outcome(outcome, &args, &cache);
+                }
+            }
             _ => {}
         }
     }
