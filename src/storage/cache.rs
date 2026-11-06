@@ -652,10 +652,9 @@ impl Cache {
                         && let Ok(elapsed) = mtime.elapsed()
                         && views_ttl != Duration::MAX
                         && elapsed > views_ttl
+                        && fs::remove_file(&path).is_ok()
                     {
-                        if fs::remove_file(&path).is_ok() {
-                            files_removed += 1;
-                        }
+                        files_removed += 1;
                     }
                 }
             }
@@ -1061,6 +1060,7 @@ impl Cache {
         None
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn set_summary_in_db(
         &self,
         target_type: &str,
