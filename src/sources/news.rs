@@ -235,9 +235,9 @@ impl GoogleNewsClient {
         let mut uncached_items = Vec::new();
 
         for item in feed_items {
-            // 1. Direct cache check for feed link
+            // 1. Direct cache check for feed link with short news TTL (default: 2h)
             if let Some(c) = cache
-                && let Some(page) = c.get_page(&item.google_link)
+                && let Some(page) = c.get_news_page(&item.google_link)
                 && page.word_count > 60
             {
                 sources.push(NewsDigestSource {
@@ -254,10 +254,10 @@ impl GoogleNewsClient {
                 continue;
             }
 
-            // 2. Offline protobuf decode and direct URL cache check
+            // 2. Offline protobuf decode and direct URL cache check with short news TTL
             if let Some(direct) = decode_google_news_url(&item.google_link)
                 && let Some(c) = cache
-                && let Some(page) = c.get_page(&direct)
+                && let Some(page) = c.get_news_page(&direct)
                 && page.word_count > 60
             {
                 // Cache under google_link as well for sub-millisecond future hits

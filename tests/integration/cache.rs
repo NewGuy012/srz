@@ -233,6 +233,46 @@ fn test_cache_ttl_expiration() {
 }
 
 #[test]
+fn test_news_cache_short_ttl_expiration() {
+    use std::time::Duration;
+
+    let tmp = temp_test_dir("news_ttl");
+    let dir = tmp.path().to_path_buf();
+    let cache = Cache::with_dir(dir.clone(), true);
+    // News TTL set to 2 hours (default)
+    assert_eq!(cache.policy().news_ttl, Duration::from_secs(2 * 3600));
+
+    let page = ScrapedPage {
+        url: "https://news.google.com/articles/123".to_string(),
+        title: Some("Breaking News".to_string()),
+        content: "Latest news update".to_string(),
+        word_count: 3,
+    };
+    cache.set_page("https://news.google.com/articles/123", &page);
+
+    // Immediate read hits
+    assert!(
+        cache
+            .get_news_page("https://news.google.com/articles/123")
+            .is_some()
+    );
+
+    // Backdate past 2 hours (e.g. 3 hours = 10800s)
+    cache.update_cached_at_for_test(
+        "cache_pages",
+        "url = 'https://news.google.com/articles/123'",
+        10800,
+    );
+
+    // Should expire under news TTL
+    assert!(
+        cache
+            .get_news_page("https://news.google.com/articles/123")
+            .is_none()
+    );
+}
+
+#[test]
 fn test_cache_prune_by_age() {
     use srz::cache::{CacheNamespace, PruneOptions};
     use std::time::Duration;

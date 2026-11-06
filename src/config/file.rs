@@ -27,6 +27,7 @@ pub struct ProfileConfig {
 pub struct CacheConfig {
     pub max_size_mb: Option<u64>,
     pub pages_ttl_days: Option<u64>,
+    pub news_ttl_hours: Option<u64>,
     pub search_ttl_days: Option<u64>,
     pub summaries_ttl_days: Option<u64>,
     pub views_ttl_days: Option<u64>,
@@ -41,6 +42,9 @@ impl CacheConfig {
         }
         if let Some(days) = self.pages_ttl_days {
             policy.pages_ttl = std::time::Duration::from_secs(days.saturating_mul(86400));
+        }
+        if let Some(hours) = self.news_ttl_hours {
+            policy.news_ttl = std::time::Duration::from_secs(hours.saturating_mul(3600));
         }
         if let Some(days) = self.search_ttl_days {
             policy.search_ttl = std::time::Duration::from_secs(days.saturating_mul(86400));

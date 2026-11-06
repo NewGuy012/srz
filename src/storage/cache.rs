@@ -60,6 +60,8 @@ pub struct CacheStats {
 pub struct CachePolicy {
     /// Time-to-live for scraped webpage DOM and text (default: 7 days)
     pub pages_ttl: Duration,
+    /// Time-to-live for scraped news articles (default: 2 hours)
+    pub news_ttl: Duration,
     /// Time-to-live for book metadata and search engine candidates (default: 14 days)
     pub search_ttl: Duration,
     /// Time-to-live for generated LLM summaries (default: 90 days)
@@ -76,6 +78,7 @@ impl Default for CachePolicy {
     fn default() -> Self {
         Self {
             pages_ttl: Duration::from_secs(7 * 86400),
+            news_ttl: Duration::from_secs(2 * 3600), // 2 hours
             search_ttl: Duration::from_secs(14 * 86400),
             summaries_ttl: Duration::from_secs(90 * 86400),
             views_ttl: Duration::from_secs(14 * 86400),
@@ -857,12 +860,23 @@ impl Cache {
     // --- Scraped Webpage Cache ---
 
     pub fn get_page(&self, url: &str) -> Option<ScrapedPage> {
-        let ttl = if url.contains("youtube.com") || url.contains("youtu.be") {
+        let ttl = if url.contains("news.google.com")
+            || url.contains("news.ycombinator.com")
+            || url.contains("/rss")
+            || url.contains("/feed")
+        {
+            self.policy.news_ttl
+        } else if url.contains("youtube.com") || url.contains("youtu.be") {
             self.policy.pages_ttl.max(Duration::from_secs(30 * 86400))
         } else {
             self.policy.pages_ttl
         };
         self.get_page_with_ttl(url, ttl)
+    }
+
+    /// Fetches a cached webpage specifically under the short news TTL (default: 2 hours).
+    pub fn get_news_page(&self, url: &str) -> Option<ScrapedPage> {
+        self.get_page_with_ttl(url, self.policy.news_ttl)
     }
 
     pub fn get_page_with_ttl(&self, url: &str, ttl: Duration) -> Option<ScrapedPage> {
