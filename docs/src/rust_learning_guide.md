@@ -869,7 +869,7 @@ Rust tasks spawned onto Tokio run cooperatively. An application can comfortably 
 <a id="126-model-aware-caching--invalidation-in-embedded-duckdb"></a>
 ### 12.6 Model-Aware Caching & Invalidation in Embedded DuckDB
 - 💡 **Simple Analogy:** A library card catalog that immediately updates a shelf note if a book is replaced with a revised edition.
-- 💡 **The "Click" Moment: Deterministic Schema Migration & Invalidation:** Probing server properties on every single CLI invocation would add 10–30ms of network latency. To eliminate this, `srz` caches server capabilities (`n_ctx`, `total_slots`, `model_name`) in embedded DuckDB (`cache.duckdb`). If the user switches models in Ollama or `llama.cpp`, the cached model string mismatches: DuckDB automatically invalidates the stale row and executes a fresh probe. All table creation uses `CREATE TABLE IF NOT EXISTS` with explicit column migrations, ensuring zero corrupted cache schemas across versions.
+- 💡 **The "Click" Moment: Deterministic Schema Migration & Invalidation:** Probing server properties on every single CLI invocation would add 10–30ms of network latency. To eliminate this, `srz` caches server capabilities (`n_ctx`, `total_slots`, `model_name`) in the unified embedded DuckDB (`srz.duckdb`). If the user switches models in Ollama or `llama.cpp`, the cached model string mismatches: DuckDB automatically invalidates the stale row and executes a fresh probe. All table creation uses `CREATE TABLE IF NOT EXISTS` with explicit column migrations, ensuring zero corrupted cache schemas across versions.
 - 🔍 **Real Code in `srz` ([src/storage/cache.rs](https://github.com/NewGuy012/srz/blob/master/src/storage/cache.rs#L1131-L1180)):**
   ```rust
   pub fn get_server_capabilities(

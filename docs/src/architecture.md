@@ -66,9 +66,8 @@ flowchart TD
         Orchestrator -->|"--output <PATH>"| FileSink["Direct File Sink (.html / .md)"]
         Orchestrator -->|"Piped / --plain / --json"| RawStdout["Clean stdout (No escapes / leaks)"]
         Orchestrator -->|"Interactive TTY (Buffered)"| UnifiedDoc["Unified Composite Pager (less -RFX)"]
-        Orchestrator -->|"Ephemeral Cache"| CacheStore["Consolidated Cache (cache.duckdb)"]
-        Orchestrator -->|"Collision-Safe Slugs"| Views["Rendered HTML & MD Views"]
-        Orchestrator -->|"Hardened Lock Retry"| DuckDBStore["Library & History Database (srz.duckdb)"]
+        Orchestrator -->|"Unified Storage & Cache"| DuckDBStore["Single Database (srz.duckdb)"]
+        Orchestrator -->|"--open / --output"| Views["Opt-In Reader Views (views/)"]
     end
 ```
 
@@ -113,7 +112,7 @@ src/
 | | [`src/sources/youtube.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/youtube.rs) | `sources::youtube` | Video ID parsing, Innertube client, XML/JSON3 caption streaming, chapter cue grouping (`parse_chapters_from_description`), and auto-translate (`&tlang=en`) fallback. |
 | | [`src/sources/search.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/search.rs) | `sources::search` | Concurrent fan-out Open Library metadata & search candidates, candidate ranking, and targeted Wikipedia synopsis extraction (`extract_wikipedia_synopsis`). |
 | | [`src/sources/news.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/news.rs) | `sources::news` | Syndication feeds (`feed-rs`), zero-network offline `CBMi` protobuf decoding, pre-scrape caching, RPC fallback, and RSS snippet fallback on paywalled links. |
-| **Storage** | [`src/storage/cache.rs`](https://github.com/NewGuy012/srz/blob/master/src/storage/cache.rs) | `storage::cache` | Single-write DuckDB cache (`cache.duckdb`), collision-safe views, and LRU pruning. |
+| **Storage** | [`src/storage/cache.rs`](https://github.com/NewGuy012/srz/blob/master/src/storage/cache.rs) | `storage::cache` | Unified DuckDB cache (`srz.duckdb`), 2h news TTL, opt-in views, and pure SQL windowed LRU pruning. |
 | | [`src/storage/db.rs`](https://github.com/NewGuy012/srz/blob/master/src/storage/db.rs) | `storage::db` | Embedded DuckDB database (`srz.duckdb`), BM25 index, lock-retry backoff, and chat tables. |
 | **UI & Render** | [`src/ui/terminal.rs`](https://github.com/NewGuy012/srz/blob/master/src/ui/terminal.rs) | `ui::terminal` | CLI progress spinners (`indicatif`) and terminal escape sanitization. |
 | | [`src/ui/printer.rs`](https://github.com/NewGuy012/srz/blob/master/src/ui/printer.rs) | `ui::printer` | `MadSkin` terminal Markdown, line-buffered stream rendering, and pager integration. |
@@ -135,31 +134,35 @@ sequenceDiagram
     autonumber
     actor User
     participant CLI as CLI & Router
-    participant Cache as Disk Cache (~/.cache/srz)
     participant Search as BookSearcher & Open Library
     participant Scraper as WebScraper
     participant LLM as LlmClient (SseStreamState)
-    participant DB as DuckDB (Lazy Init)
+    participant DB as Single Database (srz.duckdb)
 
     User->>CLI: srz "The Hobbit"
-    CLI->>Cache: Check summary cache (kind, title, style, model)
-    alt Cache Hit (srz.duckdb Bypassed)
-        Cache-->>CLI: Return cached summary
-        CLI->>Cache: Verify existing HTML/MD reader view files
-        CLI->>User: Print summary & clickable file:// links (<1ms)
+    CLI->>DB: Check summary cache (history & library via cache_key)
+    alt Cache Hit (Sub-millisecond)
+        DB-->>CLI: Return cached summary & reasoning
+        opt --open specified
+            CLI->>CLI: Ensure HTML reader view generated
+        end
+        CLI->>User: Print summary & clickable view link if opened (<1ms)
     else Cache Miss
         CLI->>Search: Resolve Open Library metadata & ranked candidates
         opt Ambiguous Top Candidates (Interactive TTY)
             CLI->>User: Prompt selection [1-4, Enter for 1]
         end
         CLI->>Scraper: Fetch & clean canonical reference article
+        CLI->>DB: Cache scraped page into cache_pages (srz.duckdb)
         CLI->>LLM: POST /v1/chat/completions (stream: true)
         loop Zero-Copy SSE Stream
             LLM-->>CLI: Live one-liner spinner & collapsible dropdown on stderr (💭 Thought for Xs ›)
             Note over CLI,User: Incremental line-buffered Markdown on stdout (--stream)
         end
-        CLI->>Cache: Persist to cache.duckdb & render collision-safe views
-        CLI->>DB: Lazily open srz.duckdb (lock-retry backoff) & transactional INSERT
+        CLI->>DB: Transactional INSERT into history & library (with cache_key)
+        opt --open or --output specified
+            CLI->>CLI: Generate HTML/MD reader view
+        end
         alt Interactive TTY
             CLI-->>User: Unified document in pager (Header + Body + Links + Hint)
         else Piped / Redirected
@@ -171,16 +174,16 @@ sequenceDiagram
 ### Execution Lifecycle Phases
 
 #### Sub-Millisecond Cache Fast-Path & Offline Dispatch
-Every summarization request begins by constructing a deterministic cache key from the target identifier (URLs, canonical book titles, or local file hashes/mtimes), model name, and summary style preset. `srz` probes the embedded `cache.duckdb` store first before initializing network clients or the LLM inference client. On a cache hit, the stored summary and preserved chain-of-thought reasoning are returned in under a millisecond, and existing HTML/Markdown reader views on disk are verified. Offline chat session management commands (`--chats`, `--show-chat`, `--delete-chat`) are similarly intercepted and served directly from DuckDB before any LLM connectivity check. During these fast paths, network connections and unnecessary database locks are avoided entirely.
+Every summarization request begins by constructing a deterministic cache key from the target identifier (URLs, canonical book titles, or local file hashes/mtimes), model name, and summary style preset. `srz` probes `srz.duckdb` directly (`history` joined with `library`) using `cache_key` before initializing network clients or the LLM inference client. On a cache hit, the stored summary and preserved chain-of-thought reasoning are returned in under a millisecond. If `--open` was supplied, existing HTML/Markdown reader views on disk are verified or generated on demand. Offline chat session management commands (`--chats`, `--show-chat`, `--delete-chat`) are similarly intercepted and served directly from DuckDB before any LLM connectivity check. During these fast paths, network connections and unnecessary database locks are avoided entirely.
 
 #### Quarantined Content Ingestion
-On a cache miss, the router dispatches the target to its specialized source pipeline. Network and filesystem reads enforce strict resource ceilings (10 MB for web payloads and stdin, 20 MB for local files). Scraped web pages are stripped of navigation menus, ads, and boilerplate via Mozilla's Readability algorithm (`dom_smoothie`), while book lookups concurrently fan out across Open Library and search endpoints to extract lead and plot synopses. All untrusted source text is then quarantined inside `<source_document>` XML boundary tags with case-insensitive delimiter escaping before reaching the prompt builder.
+On a cache miss, the router dispatches the target to its specialized source pipeline. Network and filesystem reads enforce strict resource ceilings (10 MB for web payloads and stdin, 20 MB for local files). Scraped web pages are cached in `cache_pages` (with news items adhering to a 2-hour TTL), stripped of navigation menus, ads, and boilerplate via Mozilla's Readability algorithm (`dom_smoothie`), while book lookups concurrently fan out across Open Library and search endpoints to extract lead and plot synopses. All untrusted source text is then quarantined inside `<source_document>` XML boundary tags with case-insensitive delimiter escaping before reaching the prompt builder.
 
 #### Zero-Copy Streaming Inference
 With the prompt assembled and sized according to the server's active context window, `srz` initiates an HTTP POST request with Server-Sent Events enabled (`stream: true`). Incoming byte chunks are parsed zero-copy using borrowed string slices (`Cow<str>`). Model reasoning tokens (`reasoning_content` deltas or in-band `<think>` blocks) dynamically update a live single-line spinner with the active step summary (e.g. `💭 Thinking: Analyzing the request (2.4s)...`) and settle into a dimmed collapsible dropdown indicator (`💭 Thought for 35s ›`), while content tokens are either rendered incrementally via `StreamMarkdownRenderer` when `--stream` is passed or buffered until completion. Full raw trace streaming to `stderr` can be opted into via `--show-thinking` or `--verbose`.
 
-#### Atomic Persistence & View Generation
-Once inference completes, `srz` persists the outcome across three storage tiers. The summary and token metrics are written to `cache.duckdb`, standalone HTML5 and Markdown reader views (`views/{slug}-{hash8}.html` and `.md`) are generated with collapsible reasoning drawers, and `srz.duckdb` is lazily opened with exponential lock-retry backoff to commit reading history, full summary text, and BM25 search terms in a single ACID transaction.
+#### Unified Persistence & Opt-In View Generation
+Once inference completes, `srz` persists the outcome into the unified `srz.duckdb` database. Reading telemetry, token metrics, and `cache_key` are committed to `history`, while full summary text and chain-of-thought reasoning traces reside in `library` within a single ACID transaction. Standalone HTML5 and Markdown reader views (`views/{slug}-{hash8}.html` and `.md`) are generated strictly on an opt-in basis via `--open` or explicit output flags (`--output`), avoiding disk file clutter.
 
 #### Clean Unix Stream Separation
 At the presentation boundary, `srz` strictly separates data streams from UI diagnostics. When standard output is piped or `--plain` / `--json` is active, `stdout` receives pure Markdown or JSON free of ANSI escape sequences, banners, or file links, while diagnostics are routed to `stderr`. On interactive terminals, the metadata header, styled Markdown body, clickable `file://` view links, and context hints are composed into a single buffer and piped into `$PAGER` (`less -RFX`) whenever the output exceeds the terminal viewport height.
@@ -240,29 +243,26 @@ When `probe_server_capabilities` queries `GET /props` on `llama.cpp` routers or 
 
 ## 4. Storage & Cache Architecture
 
-`srz` adheres strictly to XDG Base Directory specifications, isolating ephemeral caches from permanent user data with private `0700` directory and `0600` file permissions:
+`srz` adheres strictly to XDG Base Directory specifications, unifying all persistent data and caching into a single hardened DuckDB file in `XDG_DATA_HOME` with private `0700` directory and `0600` file permissions:
 
 ```mermaid
 graph TD
     subgraph DataRoot["~/.local/share/srz/ (XDG_DATA_HOME, 0700)"]
-        subgraph LibraryDB["Analytics, Search & Sessions (srz.duckdb)"]
-            D["srz.duckdb (Hardened Lock-Retry Backoff & ATTACH)"]
-            D --> T1["history (metadata, words, tokens, latency)"]
+        subgraph UnifiedDB["Unified DuckDB Database (srz.duckdb, 0600)"]
+            D["srz.duckdb (Hardened Lock-Retry Backoff & In-Process Concurrency)"]
+            D --> T1["history (metadata, words, tokens, latency, cache_key)"]
             D --> T2["library (normalized id, summary & reasoning trace)"]
             D --> T3["library_terms (Stop-word filtered BM25 index)"]
             D --> T4["chat_sessions & chat_messages (multi-turn history)"]
+            D --> T5["cache_pages (scraped web text, 2h news TTL, 7d/30d TTL)"]
+            D --> T6["cache_search (Open Library metadata & queries, 14d TTL)"]
+            D --> T7["cache_server_capabilities (backend probe, 24h TTL)"]
         end
     end
 
     subgraph CacheRoot["~/.cache/srz/ (XDG_CACHE_HOME, 0700)"]
-        subgraph CacheEngine["Consolidated Cache (cache.duckdb)"]
-            CP["cache_pages (7d TTL, 30d YouTube/PDF)"]
-            CS["cache_search (14d TTL)"]
-            CM["cache_summaries (90d TTL / persistent, with reasoning)"]
-            CC["cache_server_capabilities (24h TTL, model-change invalidation)"]
-        end
-        subgraph ViewsDir["Rendered Reader Views"]
-            V["views/"] --- V_desc["Collision-safe HTML5 ({slug}-{hash8}), .md (14d TTL)"]
+        subgraph ViewsDir["Opt-In Reader Views"]
+            V["views/"] --- V_desc["Collision-safe HTML5 ({slug}-{hash8}), .md (generated via --open)"]
         end
     end
 ```
@@ -271,28 +271,45 @@ graph TD
 
 | Namespace / Asset | Retention Policy (TTL) | Eviction Trigger | Notes |
 | :--- | :--- | :--- | :--- |
-| **`cache_pages`** | **7 days** | SQL TTL expiration / LRU | Scraped DOM and clean text; YouTube & PDFs retain 30 days. |
-| **`cache_search`** | **14 days** | SQL TTL expiration / LRU | Open Library and search metadata. |
-| **`cache_summaries`** | **90 days** | LRU past max budget | Deterministic for `(target, model, style)`. |
+| **`cache_pages`** | **7 days** (News: **2 hours**) | SQL TTL expiration / Pure SQL window LRU | Scraped DOM and clean text; news URLs expire in 2 hours; YouTube & PDFs retain 30 days. |
+| **`cache_search`** | **14 days** | SQL TTL expiration / Pure SQL window LRU | Open Library and search metadata. |
+| **`history` & `library`** | **Permanent** (Cache lookup: 90 days) | Explicit `--reset-db` only | Single source of truth. Summaries and reasoning traces are indexed by `cache_key`. |
 | **`cache_server_capabilities`**| **24 hours** | TTL / Model change | Probed `n_ctx`, `total_slots`, and model descriptors. |
-| **`views/`** | **14 days** | TTL expiration / LRU | `{slug}-{hash8}.html` and `.md` reader views with reasoning drawers. |
-| **Total Cache Budget** | **500 MB** (configurable) | Unified SQL + disk LRU eviction | Evicts oldest entries across DuckDB and `views/` to 85% headroom. |
+| **`views/`** | **14 days** | TTL expiration / Disk LRU | Opt-in via `--open` or explicit output flags. Includes collapsible reasoning drawers. |
+| **Total Cache Budget** | **500 MB** (configurable) | Pure SQL windowed eviction | Evicts oldest entries in DuckDB via `SUM(...) OVER (ORDER BY cached_at DESC)` without memory overhead. |
 | **Auto-Prune Schedule** | **Opportunistic (24h)** | Deferred past fast-exit commands | Throttled via `.last_prune` with sub-millisecond overhead. |
-| **Library (`srz.duckdb`)** | **Permanent** | Explicit `--reset-db` only | Normalized history, full summaries, reasoning traces, and BM25 index. |
 
 ### Storage Engine Design
 
-#### Consolidated Single-Write Cache
-Instead of scattering thousands of small JSON files across the filesystem, `srz` consolidates all transient artifacts—scraped pages, search candidates, server capabilities, and cached summaries—into a single embedded DuckDB database (`cache.duckdb`). This design prevents inode exhaustion, keeps cache lookups under a millisecond, and allows TTL expiration and byte-budget accounting to run as fast SQL queries via `epoch_ms(cached_at)`.
+#### Unified Single-File DuckDB Architecture
+Instead of maintaining separate databases (`cache.duckdb` and `srz.duckdb`) and redundant summary tables (`cache_summaries`), `srz` unifies all persistent library records, chat sessions, and transient cache tables into a single database file (`srz.duckdb`). Summaries and reasoning traces stored in `history` and `library` serve as the single source of truth for both user reading history and cache lookup hits via deterministic `cache_key` indexing. This eliminates cross-database lock contention, prevents schema drift, and avoids duplicate disk writes.
 
-#### Normalized Library Schema & Reasoning Traces
-The permanent library database (`srz.duckdb`) separates lightweight reading telemetry from bulk text storage. Execution metrics (word counts, token rates, latency, and timestamps) are recorded in `history`, while full Markdown summaries and complete chain-of-thought reasoning traces reside in `library`. Fast-exit commands such as `srz models` or `srz config` bypass database initialization altogether.
+#### Short-Lived News Caching (2-Hour TTL)
+Fast-moving news feeds and syndication channels require timely updates. To prevent readers from receiving stale briefings, web pages matching news patterns (`news.google.com`, `news.ycombinator.com`, `/rss`, `/feed`) automatically use a 2-hour TTL (`news_ttl`). Standard web articles retain a 7-day TTL, while YouTube transcripts and static PDF documents retain a 30-day TTL.
+
+#### Pure SQL Windowed LRU Pruning
+Cache eviction runs directly inside DuckDB using pure SQL window functions, avoiding the CPU and memory overhead of loading thousands of rows into Rust data structures to sort:
+```sql
+DELETE FROM cache_pages WHERE cache_key IN (
+    SELECT cache_key FROM (
+        SELECT cache_key, SUM(strlen(url) + coalesce(strlen(title), 0) + strlen(content) + 32)
+            OVER (ORDER BY cached_at DESC) AS running_bytes
+        FROM cache_pages
+    ) sub WHERE running_bytes > ?
+);
+CHECKPOINT;
+VACUUM;
+```
+When total cached bytes exceed the storage budget, the oldest entries past the budget are deleted in a single atomic SQL statement, followed immediately by `CHECKPOINT` and `VACUUM` to release physical disk pages back to the operating system.
+
+#### Opt-In View Generation
+Because modern terminal rendering is styled and formatted cleanly via `MadSkin`, automatic generation of standalone `.html` and `.md` view files on every run is disabled. View files in `views/` are generated strictly when requested via `--open` or explicit output flags (`--output`), eliminating disk clutter while preserving one-click browser viewing when desired.
 
 #### Collision-Safe Reader Views
 Standalone HTML5 and Markdown reader files in `views/` are named using `slugify_unique(title, key)`, which appends an 8-character SHA-256 digest of the source URL or file path (`{slug}-{hash8}.html`). This guarantees zero filename collisions when summarizing different pages that share generic titles like "Documentation" or "Home". Each HTML view embeds the model's reasoning trace inside a collapsible `<details class="thought-drawer">` element.
 
-#### Lock Contention Resilience & Unified Eviction
-Because DuckDB enforces single-writer file locks, concurrent CLI invocations could otherwise contend on database access. `srz` wraps database initialization in `open_hardened_duckdb_file_with_retry`, applying exponential backoff with random jitter (up to 5 retries between 50 ms and 400 ms) and supporting cross-database queries via DuckDB's `ATTACH` mechanism. When total storage approaches the 500 MB ceiling, `Cache::prune` performs a unified LRU eviction pass across both `cache.duckdb` tables and `views/` files down to 85% capacity.
+#### Lock Contention Resilience
+DuckDB enforces single-writer file locks across separate processes. `srz` wraps database initialization in `open_hardened_duckdb_file_with_retry`, applying exponential backoff with random jitter (up to 5 retries between 50 ms and 400 ms) and supporting cross-database queries via DuckDB's `ATTACH` mechanism. Within the same CLI process, multi-component connections share the underlying in-process database cleanly without locking conflicts.
 
 ---
 
@@ -361,7 +378,7 @@ To eliminate the 15–25% token count drift typical when applying generic BPE to
 | **Unix Stream Separation** | Strict stream routing: clean stdout for pipelines; diagnostics and links on `stderr` | Seamless piping into UNIX tools (`jq`, `cat`, files) without ANSI code contamination. |
 | **Terminal & Pager** | Unified document composition piped directly into `$PAGER` (`less -RFX`) | Header, body, links, and hints kept together without viewport truncation. |
 | **Content Ingestion** | Mozilla Readability (`dom_smoothie`), streaming XML, chapters & auto-translation, and bounded semaphores | Clean text stripped of web noise; chapter-aligned caption pulls; bounded worker concurrency. |
-| **Storage & Caching** | Embedded DuckDB (`cache.duckdb`), lock-retry backoff, pre-scrape caching, and collision-safe slugs | Sub-millisecond hits, resilience across concurrent CLI runs, and collision-free reader views. |
+| **Storage & Caching** | Unified DuckDB (`srz.duckdb`), SQL window pruning, 2h news TTL, and opt-in reader views | Sub-millisecond hits, zero cache duplication, instant SQL window pruning, and clean disk views. |
 | **Resolution & Grounding** | Offline `CBMi` protobuf decoding, targeted Wikipedia synopsis extraction, and in-memory BM25 chunking | Zero-network Google News link resolution; 70% fewer prompt tokens for books; discriminative Q&A retrieval. |
 | **Offline Search** | Inverted index (`library_terms`) evaluated with pure DuckDB SQL CTEs | Sub-2ms Google-style BM25 search without external search engines or daemons. |
 
