@@ -482,6 +482,8 @@ impl Cache {
             let _ = conn.execute_batch(
                 "DELETE FROM cache_pages;
                  DELETE FROM cache_search;
+                 DELETE FROM cache_server_capabilities;
+                 UPDATE history SET cache_key = NULL;
                  DROP TABLE IF EXISTS cache_summaries;
                  CHECKPOINT;
                  VACUUM;",
@@ -1023,6 +1025,7 @@ impl Cache {
                    FROM history h
                    JOIN library l ON h.id = l.id
                    WHERE h.target_type = ?
+                     AND h.cache_key IS NOT NULL
                      AND (h.cache_key = ? OR h.url = ? OR lower(trim(h.title)) = lower(trim(?)))
                      AND h.style = ?
                      AND h.model = ?

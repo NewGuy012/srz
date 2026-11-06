@@ -467,6 +467,16 @@ fn test_cache_duckdb_consolidation() {
     // Clean should clear the cache
     cache.clean().unwrap();
     assert!(cache.get_page("https://duckdb-cached.com").is_none());
+    assert!(
+        cache
+            .get_web_summary(
+                "https://duckdb-cached.com",
+                SummaryStyle::Concise,
+                "gemma-4",
+            )
+            .is_none(),
+        "Summary cache must be invalidated after clean"
+    );
 }
 
 #[test]

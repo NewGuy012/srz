@@ -361,6 +361,7 @@ pub enum CacheCommand {
     /// Show total disk usage and entry counts in the cache
     Size,
     /// Remove cached files (pages, search, summaries, views)
+    #[command(alias = "clear", alias = "purge", alias = "wipe")]
     Clean {
         /// Also reset and wipe the DuckDB analytics/history database
         #[arg(long)]

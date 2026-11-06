@@ -23,6 +23,12 @@ fn test_cache_subcommands() {
         ResolvedAction::Cache(CacheCommand::Clean { reset_db: false })
     );
 
+    let clear_cli = Cli::parse_from(["srz", "cache", "clear"]);
+    assert_eq!(
+        clear_cli.resolve_action().unwrap(),
+        ResolvedAction::Cache(CacheCommand::Clean { reset_db: false })
+    );
+
     let clean_db_cli = Cli::parse_from(["srz", "cache", "clean", "--reset-db"]);
     assert_eq!(
         clean_db_cli.resolve_action().unwrap(),
