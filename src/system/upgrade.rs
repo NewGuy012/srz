@@ -1,7 +1,7 @@
+use crate::system::sha256::Sha256;
 use anyhow::{Context, Result, bail};
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::env;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
@@ -267,10 +267,7 @@ pub fn parse_sha256_checksum(content: &str) -> Option<&str> {
 
 /// Computes the lowercase hex-encoded SHA-256 checksum of `bytes` in a single allocation.
 pub fn compute_sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let digest = hasher.finalize();
-    crate::system::text_util::format_hex(&digest)
+    Sha256::digest_hex(bytes)
 }
 
 /// Formats primary versioned asset name and fallback alias.

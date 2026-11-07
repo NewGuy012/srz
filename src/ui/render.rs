@@ -115,11 +115,7 @@ pub fn slugify_unique(title: &str, unique_key: Option<&str>) -> String {
     if let Some(key) = unique_key
         && !key.is_empty()
     {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(key.as_bytes());
-        let digest = hasher.finalize();
-        let hash = crate::system::text_util::format_hex(&digest);
+        let hash = crate::system::sha256::Sha256::digest_hex(key.as_bytes());
         let short_hash = &hash[..8];
         if base_slug.is_empty() || base_slug == "summary" {
             short_hash.to_string()
