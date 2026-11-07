@@ -168,7 +168,7 @@ impl TextChunker {
     where
         F: FnMut(&str) -> usize,
     {
-        let mut paragraphs: Vec<(&'a str, usize)> = Vec::new();
+        let mut raw_paragraphs: Vec<(&'a str, usize)> = Vec::new();
         let mut total_count = 0;
 
         for p in text.split("\n\n") {
@@ -176,30 +176,34 @@ impl TextChunker {
             if !trimmed.is_empty() {
                 let count = count_fn(trimmed);
                 total_count += count;
-                paragraphs.push((trimmed, count));
+                raw_paragraphs.push((trimmed, count));
             }
         }
 
-        if paragraphs.is_empty() || total_count <= max_limit {
+        if raw_paragraphs.is_empty() || total_count <= max_limit {
             return vec![(Cow::Borrowed(text), total_count)];
         }
 
+        let segments = Self::decompose_text_segments(raw_paragraphs, max_limit, &mut count_fn);
+        if segments.is_empty() {
+            return vec![(Cow::Borrowed(text), 0)];
+        }
+
         let mut chunks: Vec<(Cow<'a, str>, usize)> = Vec::new();
-        let mut current_chunk_paragraphs: Vec<(&'a str, usize)> = Vec::new();
+        let mut current_chunk_segments: Vec<(&'a str, usize)> = Vec::new();
         let mut current_count = 0;
 
-        for &(para, p_count) in &paragraphs {
-            if current_count + p_count > max_limit && !current_chunk_paragraphs.is_empty() {
-                chunks.push((
-                    Self::build_chunk(text, &current_chunk_paragraphs),
-                    current_count,
-                ));
+        for &(seg, s_count) in &segments {
+            if current_count + s_count > max_limit && !current_chunk_segments.is_empty() {
+                let chunk = Self::build_chunk(text, &current_chunk_segments);
+                let exact_count = count_fn(&chunk);
+                chunks.push((chunk, exact_count));
 
                 let mut retained = Vec::new();
                 let mut retained_count = 0;
-                for &(prev_p, c) in current_chunk_paragraphs.iter().rev() {
+                for &(prev_s, c) in current_chunk_segments.iter().rev() {
                     if retained_count + c <= overlap_limit {
-                        retained.push((prev_p, c));
+                        retained.push((prev_s, c));
                         retained_count += c;
                     } else {
                         break;
@@ -207,22 +211,176 @@ impl TextChunker {
                 }
                 retained.reverse();
 
-                current_chunk_paragraphs = retained;
+                current_chunk_segments = retained;
                 current_count = retained_count;
             }
 
-            current_chunk_paragraphs.push((para, p_count));
-            current_count += p_count;
+            current_chunk_segments.push((seg, s_count));
+            current_count += s_count;
         }
 
-        if !current_chunk_paragraphs.is_empty() {
-            chunks.push((
-                Self::build_chunk(text, &current_chunk_paragraphs),
-                current_count,
-            ));
+        if !current_chunk_segments.is_empty() {
+            let chunk = Self::build_chunk(text, &current_chunk_segments);
+            let exact_count = count_fn(&chunk);
+            chunks.push((chunk, exact_count));
         }
 
         chunks
+    }
+
+    fn decompose_text_segments<'a, F>(
+        raw_paragraphs: Vec<(&'a str, usize)>,
+        max_limit: usize,
+        count_fn: &mut F,
+    ) -> Vec<(&'a str, usize)>
+    where
+        F: FnMut(&str) -> usize,
+    {
+        let is_single_block = raw_paragraphs.len() <= 1;
+        // Allow up to 1.6x of max_limit to preserve intact paragraph boundaries when multiple paragraphs exist
+        let para_threshold = if is_single_block {
+            max_limit
+        } else {
+            max_limit.saturating_mul(16) / 10
+        };
+
+        let mut segments = Vec::new();
+        for (para, count) in raw_paragraphs {
+            if count <= para_threshold && !is_single_block {
+                segments.push((para, count));
+            } else {
+                Self::decompose_paragraph(para, max_limit, count_fn, &mut segments);
+            }
+        }
+        segments
+    }
+
+    fn decompose_paragraph<'a, F>(
+        para: &'a str,
+        max_limit: usize,
+        count_fn: &mut F,
+        out: &mut Vec<(&'a str, usize)>,
+    ) where
+        F: FnMut(&str) -> usize,
+    {
+        let mut has_lines = false;
+        for line in para.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            has_lines = true;
+            let count = count_fn(trimmed);
+            if count <= max_limit {
+                out.push((trimmed, count));
+            } else {
+                Self::decompose_line(trimmed, max_limit, count_fn, out);
+            }
+        }
+        if !has_lines {
+            Self::decompose_line(para, max_limit, count_fn, out);
+        }
+    }
+
+    fn decompose_line<'a, F>(
+        line: &'a str,
+        max_limit: usize,
+        count_fn: &mut F,
+        out: &mut Vec<(&'a str, usize)>,
+    ) where
+        F: FnMut(&str) -> usize,
+    {
+        let mut remaining = line;
+        while !remaining.is_empty() {
+            let r_count = count_fn(remaining);
+            if r_count <= max_limit {
+                out.push((remaining, r_count));
+                break;
+            }
+
+            let mut best_split = None;
+            for (i, c) in remaining.char_indices() {
+                if (c == '.' || c == '?' || c == '!' || c == ';')
+                    && remaining[i + c.len_utf8()..].starts_with(|ch: char| ch.is_whitespace())
+                {
+                    let cand = &remaining[..i + c.len_utf8()];
+                    if count_fn(cand) <= max_limit {
+                        best_split = Some(i + c.len_utf8());
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            if let Some(pos) = best_split {
+                let (head, tail) = remaining.split_at(pos);
+                let head_trimmed = head.trim();
+                if !head_trimmed.is_empty() {
+                    out.push((head_trimmed, count_fn(head_trimmed)));
+                }
+                remaining = tail.trim_start();
+            } else {
+                Self::decompose_words(remaining, max_limit, count_fn, out);
+                break;
+            }
+        }
+    }
+
+    fn decompose_words<'a, F>(
+        text: &'a str,
+        max_limit: usize,
+        count_fn: &mut F,
+        out: &mut Vec<(&'a str, usize)>,
+    ) where
+        F: FnMut(&str) -> usize,
+    {
+        let mut remaining = text;
+        while !remaining.is_empty() {
+            let r_count = count_fn(remaining);
+            if r_count <= max_limit {
+                out.push((remaining, r_count));
+                break;
+            }
+
+            let mut best_cut = None;
+            for (i, c) in remaining.char_indices() {
+                if c.is_whitespace() {
+                    let cand = &remaining[..i];
+                    if count_fn(cand) <= max_limit {
+                        best_cut = Some(i);
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            if let Some(pos) = best_cut {
+                let (head, tail) = remaining.split_at(pos);
+                let head_trimmed = head.trim();
+                if !head_trimmed.is_empty() {
+                    out.push((head_trimmed, count_fn(head_trimmed)));
+                }
+                remaining = tail.trim_start();
+            } else {
+                let mut cut = 0;
+                for (i, _) in remaining.char_indices() {
+                    if i > 0 && count_fn(&remaining[..i]) > max_limit {
+                        break;
+                    }
+                    cut = i;
+                }
+                if cut == 0 {
+                    cut = remaining
+                        .chars()
+                        .next()
+                        .map(|c| c.len_utf8())
+                        .unwrap_or(remaining.len());
+                }
+                let (head, tail) = remaining.split_at(cut);
+                out.push((head, count_fn(head)));
+                remaining = tail;
+            }
+        }
     }
 
     fn build_chunk<'a>(text: &'a str, paras: &[(&'a str, usize)]) -> Cow<'a, str> {
@@ -331,5 +489,89 @@ mod tests {
         let llama_count = TokenizerKind::Llama3.count_tokens(sample);
         assert!(gemma_count >= cl100k_count);
         assert!(llama_count >= cl100k_count);
+    }
+
+    #[test]
+    fn test_chunk_monolithic_block_without_double_newlines() {
+        // Monolithic text with NO \n\n (reproduces the unchunked fallthrough bug)
+        let sentence =
+            "This is a detailed analysis of the system architecture without any double newlines. ";
+        let monolithic = sentence.repeat(40); // ~560 tokens
+        let total_tokens = TextChunker::count_tokens(&monolithic);
+        assert!(total_tokens > 400);
+
+        let chunks = TextChunker::chunk_by_tokens(&monolithic, 100, 15);
+        assert!(
+            chunks.len() >= 4,
+            "Expected at least 4 chunks, got {}",
+            chunks.len()
+        );
+        for (i, c) in chunks.iter().enumerate() {
+            let tokens = TextChunker::count_tokens(c);
+            assert!(
+                tokens <= 125,
+                "Chunk #{} has {} tokens, exceeding limit of 125",
+                i,
+                tokens
+            );
+        }
+    }
+
+    #[test]
+    fn test_chunk_single_newline_separated_text() {
+        // Single \n separated lines (e.g. PDF text, code, log files)
+        let lines: Vec<String> = (0..50)
+            .map(|i| format!("Line #{}: system event telemetry metric logging item.", i))
+            .collect();
+        let text = lines.join("\n"); // strictly single \n, no \n\n
+        let total_tokens = TextChunker::count_tokens(&text);
+        assert!(total_tokens > 300);
+
+        let chunks = TextChunker::chunk_by_tokens(&text, 80, 10);
+        assert!(
+            chunks.len() >= 4,
+            "Expected >= 4 chunks, got {}",
+            chunks.len()
+        );
+        for c in &chunks {
+            let tokens = TextChunker::count_tokens(c);
+            assert!(
+                tokens <= 100,
+                "Chunk tokens {} exceeded expected budget",
+                tokens
+            );
+        }
+    }
+
+    #[test]
+    fn test_chunk_oversized_paragraph_in_multiparagraph_document() {
+        let p_intro = "Introductory context paragraph.";
+        let p_huge =
+            "Massive continuous detailed sentence repeating for testing paragraph decomposition. "
+                .repeat(30);
+        let p_outro = "Concluding summary paragraph.";
+        let text = format!("{}\n\n{}\n\n{}", p_intro, p_huge, p_outro);
+
+        let chunks = TextChunker::chunk_by_tokens(&text, 100, 15);
+        assert!(
+            chunks.len() >= 3,
+            "Expected >= 3 chunks for oversized paragraph, got {}",
+            chunks.len()
+        );
+        for c in &chunks {
+            let tokens = TextChunker::count_tokens(c);
+            assert!(tokens <= 130, "Chunk tokens {} exceeded budget", tokens);
+        }
+    }
+
+    #[test]
+    fn test_chunk_unbroken_giant_token() {
+        // Unbroken sequence with zero whitespace
+        let giant_token = "A".repeat(1000);
+        let chunks = TextChunker::chunk_by_tokens(&giant_token, 50, 5);
+        assert!(
+            chunks.len() >= 2,
+            "Expected unbroken string to be sliced into multiple chunks"
+        );
     }
 }

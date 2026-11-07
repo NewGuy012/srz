@@ -103,7 +103,22 @@ impl PdfExtractor {
         let mut lines = raw.lines().peekable();
 
         while let Some(line) = lines.next() {
-            let trimmed = line.trim();
+            let mut trimmed = line.trim();
+            if trimmed.is_empty() {
+                if !cleaned.ends_with("\n\n") && !cleaned.is_empty() {
+                    cleaned.push_str("\n\n");
+                }
+                continue;
+            }
+
+            let has_form_feed = trimmed.contains('\x0c');
+            let is_page_break = if has_form_feed {
+                trimmed = trimmed.trim_matches('\x0c').trim();
+                true
+            } else {
+                false
+            };
+
             if trimmed.is_empty() {
                 if !cleaned.ends_with("\n\n") && !cleaned.is_empty() {
                     cleaned.push_str("\n\n");
@@ -116,7 +131,13 @@ impl PdfExtractor {
                 cleaned.push_str(&trimmed[..trimmed.len() - 1]);
             } else {
                 cleaned.push_str(trimmed);
-                cleaned.push(' ');
+                if is_page_break {
+                    if !cleaned.ends_with("\n\n") {
+                        cleaned.push_str("\n\n");
+                    }
+                } else {
+                    cleaned.push(' ');
+                }
             }
         }
 
