@@ -56,11 +56,21 @@ pub fn html_to_markdown(html: &str) -> String {
 
 /// Converts HTML bytes to plain text without table borders or footnote links.
 pub fn html_to_plain_text(html_bytes: &[u8]) -> Result<String> {
-    html2text::config::plain()
-        .link_footnotes(false)
-        .no_table_borders()
-        .string_from_read(html_bytes, 10_000)
-        .context("Failed to convert HTML to text")
+    let html_str = std::str::from_utf8(html_bytes)
+        .map(std::borrow::Cow::Borrowed)
+        .unwrap_or_else(|_| String::from_utf8_lossy(html_bytes));
+    let fragment = scraper::Html::parse_document(&html_str);
+    let mut out = String::new();
+    for text in fragment.root_element().text() {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(trimmed);
+        }
+    }
+    Ok(out)
 }
 
 /// Reads response body bytes up to `max_bytes`, erroring if the content length or streamed bytes exceed `max_bytes`.
