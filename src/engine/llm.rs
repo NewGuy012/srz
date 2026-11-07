@@ -1,4 +1,4 @@
-use crate::chunker::TextChunker;
+use crate::chunker::{TextChunker, TokenizerKind};
 use crate::cli::SummaryStyle;
 use crate::engine::budget::{DynamicBudget, ServerCapabilities};
 use crate::ui::Ui;
@@ -1947,25 +1947,13 @@ impl LlmClient {
                 budget.chunk_tokens
             };
 
-            let mut chunks = TextChunker::chunk_by_tokens_with_kind(
+            let chunks = chunk_text_with_emergency_fallback(
                 content,
                 effective_chunk_tokens,
                 budget.chunk_overlap,
+                budget.single_pass_threshold,
                 tok_kind,
             );
-
-            // Defensive guard: If chunking returned 1 chunk despite needs_chunking == true,
-            // force smaller emergency chunk limit to ensure map-reduce is executed rather than falling through.
-            if chunks.len() <= 1 {
-                let emergency_chunk_size =
-                    (effective_chunk_tokens / 2).clamp(256, budget.single_pass_threshold / 2);
-                chunks = TextChunker::chunk_by_tokens_with_kind(
-                    content,
-                    emergency_chunk_size,
-                    budget.chunk_overlap / 2,
-                    tok_kind,
-                );
-            }
 
             if chunks.len() > 1 {
                 let map_reduce_start = std::time::Instant::now();
@@ -2002,15 +1990,8 @@ impl LlmClient {
                     )
                     .await?;
 
-                let mut section_summaries = Vec::with_capacity(chunks_len);
-                let mut total_prompt_tokens: u32 = 0;
-                let mut total_completion_tokens: u32 = 0;
-
-                for part in chunk_outputs {
-                    total_prompt_tokens += part.prompt_tokens.unwrap_or(0);
-                    total_completion_tokens += part.completion_tokens.unwrap_or(0);
-                    section_summaries.push(part.content);
-                }
+                let (mut total_prompt_tokens, mut total_completion_tokens, mut section_summaries) =
+                    accumulate_chunk_tokens(chunk_outputs);
 
                 // Hierarchical (Tree) Reduction:
                 // If the concatenated section summaries exceed single_pass_threshold, recursively
@@ -2216,20 +2197,13 @@ impl LlmClient {
             u32,
             u32,
         ) = if tokens_count > budget.single_pass_threshold {
-            let mut chunks = TextChunker::chunk_by_tokens(
+            let chunks = chunk_text_with_emergency_fallback(
                 web_context,
                 budget.chunk_tokens,
                 budget.chunk_overlap,
+                budget.single_pass_threshold,
+                TokenizerKind::Cl100k,
             );
-            if chunks.len() <= 1 {
-                let emergency_size =
-                    (budget.chunk_tokens / 2).clamp(256, budget.single_pass_threshold / 2);
-                chunks = TextChunker::chunk_by_tokens(
-                    web_context,
-                    emergency_size,
-                    budget.chunk_overlap / 2,
-                );
-            }
             if chunks.len() > 1 {
                 let chunks_len = chunks.len();
                 let shared_title: std::sync::Arc<str> = safe_title.clone().into();
@@ -2261,14 +2235,7 @@ impl LlmClient {
                         )
                         .await?;
 
-                let mut distilled = Vec::with_capacity(distilled_outputs.len());
-                let mut p_tokens: u32 = 0;
-                let mut c_tokens: u32 = 0;
-                for out in distilled_outputs {
-                    p_tokens += out.prompt_tokens.unwrap_or(0);
-                    c_tokens += out.completion_tokens.unwrap_or(0);
-                    distilled.push(out.content);
-                }
+                let (p_tokens, c_tokens, distilled) = accumulate_chunk_tokens(distilled_outputs);
 
                 (
                     Cow::Owned(distilled.join("\n\n---\n\n")),
@@ -2479,6 +2446,39 @@ pub fn partition_summaries_with_counts(
     }
 
     batches
+}
+
+fn chunk_text_with_emergency_fallback<'a>(
+    text: &'a str,
+    chunk_tokens: usize,
+    chunk_overlap: usize,
+    single_pass_threshold: usize,
+    tok_kind: TokenizerKind,
+) -> Vec<Cow<'a, str>> {
+    let mut chunks =
+        TextChunker::chunk_by_tokens_with_kind(text, chunk_tokens, chunk_overlap, tok_kind);
+    if chunks.len() <= 1 {
+        let emergency_size = (chunk_tokens / 2).clamp(256, single_pass_threshold / 2);
+        chunks = TextChunker::chunk_by_tokens_with_kind(
+            text,
+            emergency_size,
+            chunk_overlap / 2,
+            tok_kind,
+        );
+    }
+    chunks
+}
+
+fn accumulate_chunk_tokens(outputs: Vec<LlmOutput>) -> (u32, u32, Vec<String>) {
+    let mut p_tokens = 0u32;
+    let mut c_tokens = 0u32;
+    let mut contents = Vec::with_capacity(outputs.len());
+    for out in outputs {
+        p_tokens += out.prompt_tokens.unwrap_or(0);
+        c_tokens += out.completion_tokens.unwrap_or(0);
+        contents.push(out.content);
+    }
+    (p_tokens, c_tokens, contents)
 }
 
 fn format_author_line(author: Option<&str>) -> Cow<'_, str> {
