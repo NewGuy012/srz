@@ -298,19 +298,31 @@ impl TextChunker {
                 break;
             }
 
-            let mut best_split = None;
-            for (i, c) in remaining.char_indices() {
-                if (c == '.' || c == '?' || c == '!' || c == ';')
-                    && remaining[i + c.len_utf8()..].starts_with(|ch: char| ch.is_whitespace())
-                {
-                    let cand = &remaining[..i + c.len_utf8()];
-                    if count_fn(cand) <= max_limit {
-                        best_split = Some(i + c.len_utf8());
+            // Collect sentence boundary end-offsets and binary search the largest valid prefix
+            let candidates: Vec<usize> = remaining
+                .char_indices()
+                .filter_map(|(i, c)| {
+                    if (c == '.' || c == '?' || c == '!' || c == ';')
+                        && remaining[i + c.len_utf8()..].starts_with(|ch: char| ch.is_whitespace())
+                    {
+                        Some(i + c.len_utf8())
                     } else {
-                        break;
+                        None
                     }
+                })
+                .collect();
+
+            let best_split = if !candidates.is_empty() {
+                let idx =
+                    candidates.partition_point(|&pos| count_fn(&remaining[..pos]) <= max_limit);
+                if idx > 0 {
+                    Some(candidates[idx - 1])
+                } else {
+                    None
                 }
-            }
+            } else {
+                None
+            };
 
             if let Some(pos) = best_split {
                 let (head, tail) = remaining.split_at(pos);
@@ -342,17 +354,23 @@ impl TextChunker {
                 break;
             }
 
-            let mut best_cut = None;
-            for (i, c) in remaining.char_indices() {
-                if c.is_whitespace() {
-                    let cand = &remaining[..i];
-                    if count_fn(cand) <= max_limit {
-                        best_cut = Some(i);
-                    } else {
-                        break;
-                    }
+            // Collect whitespace boundary offsets and binary search the largest valid prefix
+            let candidates: Vec<usize> = remaining
+                .char_indices()
+                .filter_map(|(i, c)| if c.is_whitespace() { Some(i) } else { None })
+                .collect();
+
+            let best_cut = if !candidates.is_empty() {
+                let idx =
+                    candidates.partition_point(|&pos| count_fn(&remaining[..pos]) <= max_limit);
+                if idx > 0 {
+                    Some(candidates[idx - 1])
+                } else {
+                    None
                 }
-            }
+            } else {
+                None
+            };
 
             if let Some(pos) = best_cut {
                 let (head, tail) = remaining.split_at(pos);
@@ -362,13 +380,10 @@ impl TextChunker {
                 }
                 remaining = tail.trim_start();
             } else {
-                let mut cut = 0;
-                for (i, _) in remaining.char_indices() {
-                    if i > 0 && count_fn(&remaining[..i]) > max_limit {
-                        break;
-                    }
-                    cut = i;
-                }
+                let char_indices: Vec<usize> = remaining.char_indices().map(|(i, _)| i).collect();
+                let idx =
+                    char_indices.partition_point(|&pos| count_fn(&remaining[..pos]) <= max_limit);
+                let mut cut = if idx > 0 { char_indices[idx - 1] } else { 0 };
                 if cut == 0 {
                     cut = remaining
                         .chars()
