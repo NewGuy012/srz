@@ -377,6 +377,38 @@ async fn download_and_verify_archive(
 }
 
 /// Main entry point for executing `srz upgrade`.
+/// Safely replaces an executable binary with a staged new binary file.
+pub fn replace_binary(new_binary: &Path, target_exe: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        if let Err(e) = std::fs::rename(new_binary, target_exe) {
+            let _ = std::fs::remove_file(target_exe);
+            std::fs::rename(new_binary, target_exe).map_err(|_| e)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    {
+        let parent = target_exe.parent().unwrap_or_else(|| Path::new("."));
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let backup_path = parent.join(format!(".srz-old-{}-{:x}.tmp", std::process::id(), nonce));
+
+        std::fs::rename(target_exe, &backup_path)?;
+
+        if let Err(err) = std::fs::rename(new_binary, target_exe) {
+            let _ = std::fs::rename(&backup_path, target_exe);
+            return Err(err);
+        }
+
+        let _ = std::fs::remove_file(&backup_path);
+        Ok(())
+    }
+}
+
 pub async fn run_upgrade(
     check: bool,
     force: bool,
@@ -578,7 +610,7 @@ pub async fn run_upgrade(
 
     // 8. Swap binary
     let swap_pb = Ui::spinner(format!("Installing to {}...", current_exe.display()));
-    if let Err(err) = self_replace::self_replace(&temp_path) {
+    if let Err(err) = replace_binary(&temp_path, &current_exe) {
         let _ = std::fs::remove_file(&temp_path);
         swap_pb.finish_and_clear();
         bail!("Failed to replace binary at {:?}: {}", current_exe, err);
