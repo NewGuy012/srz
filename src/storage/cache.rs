@@ -1254,14 +1254,7 @@ impl Cache {
         word_count: usize,
         reasoning: Option<&str>,
     ) {
-        let search_url = if crate::system::text_util::is_http_url(topic) {
-            topic.to_string()
-        } else {
-            format!(
-                "https://news.google.com/search?q={}",
-                crate::system::text_util::url_encode(topic)
-            )
-        };
+        let search_url = crate::sources::news::GoogleNewsClient::search_url_for_topic(topic);
         self.set_summary_in_db(
             "news",
             title,

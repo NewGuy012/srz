@@ -438,15 +438,8 @@ pub async fn handle_news(
     args: &Cli,
 ) -> Result<SummaryOutcome> {
     let title_display = format!("News: {}", topic);
-    let is_direct_feed = crate::system::text_util::is_http_url(topic);
-    let search_url = if is_direct_feed {
-        topic.to_string()
-    } else {
-        format!(
-            "https://news.google.com/search?q={}",
-            crate::system::text_util::url_encode(topic)
-        )
-    };
+    let is_direct_feed = crate::sources::news::GoogleNewsClient::is_direct_feed(topic);
+    let search_url = crate::sources::news::GoogleNewsClient::search_url_for_topic(topic);
 
     // 1. Check for a cached news briefing matching topic + timeframe + style + model within news TTL (default: 2h)
     if let Some(cached) = cache.get_news_summary(topic, timeframe, args.style, &args.model) {

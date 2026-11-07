@@ -42,6 +42,24 @@ impl GoogleNewsClient {
         &self.client
     }
 
+    /// Returns whether the provided topic is a direct HTTP/HTTPS feed URL.
+    pub fn is_direct_feed(topic: &str) -> bool {
+        crate::system::text_util::is_http_url(topic.trim())
+    }
+
+    /// Returns the canonical search URL for a topic or direct feed URL.
+    pub fn search_url_for_topic(topic: &str) -> String {
+        let trimmed = topic.trim();
+        if Self::is_direct_feed(trimmed) {
+            trimmed.to_string()
+        } else {
+            format!(
+                "https://news.google.com/search?q={}",
+                crate::system::text_util::url_encode(trimmed)
+            )
+        }
+    }
+
     /// Queries Google News RSS for a topic/timeframe, or fetches a direct RSS/Atom/JSON feed URL.
     pub async fn fetch_feed(
         &self,

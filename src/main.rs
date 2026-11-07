@@ -198,14 +198,7 @@ async fn main() -> Result<()> {
                     Ui::info(
                         "Loaded news briefing from local cache (pass `--no-cache` to refresh).",
                     );
-                    let search_url = if srz::system::text_util::is_http_url(topic) {
-                        topic.to_string()
-                    } else {
-                        format!(
-                            "https://news.google.com/search?q={}",
-                            srz::system::text_util::url_encode(topic)
-                        )
-                    };
+                    let search_url = srz::news::GoogleNewsClient::search_url_for_topic(topic);
                     let outcome =
                         SummaryOutcome::from_cached("news", cached, None, Some(search_url));
                     return present_summary_outcome(outcome, &args, &cache);
