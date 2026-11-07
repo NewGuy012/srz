@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Cursor, Read, Seek};
 use std::path::Path;
@@ -11,6 +11,18 @@ use zip::ZipArchive;
 use crate::scraper::{ScrapedPage, clean_text, html_to_markdown};
 use crate::sources::document::DocumentLoader;
 use crate::system::text_util::{decode_html_entities, url_decode};
+
+/// Maximum bytes decompressed for XML metadata files (`container.xml`, `.opf`).
+pub const MAX_EPUB_XML_BYTES: u64 = 5 * 1024 * 1024; // 5 MB
+
+/// Maximum bytes decompressed per individual chapter HTML/XHTML entry.
+pub const MAX_EPUB_CHAPTER_BYTES: u64 = 15 * 1024 * 1024; // 15 MB
+
+/// Maximum cumulative uncompressed markdown bytes extracted from an EPUB archive.
+pub const MAX_EPUB_TOTAL_BYTES: usize = 50 * 1024 * 1024; // 50 MB
+
+/// Maximum number of chapters / spine items parsed from an EPUB.
+pub const MAX_EPUB_CHAPTER_COUNT: usize = 2000;
 
 pub struct EpubExtractor;
 
@@ -40,17 +52,43 @@ impl EpubExtractor {
         let (title, chapters) = parse_opf(&mut archive, &opf_path)?;
 
         let mut book_markdown = String::new();
+        let mut total_bytes: usize = 0;
+        let mut seen_chapters = HashSet::new();
+
         for chapter_path in chapters {
+            if !seen_chapters.insert(chapter_path.clone()) {
+                continue;
+            }
             if let Ok(mut file) = archive.by_name(&chapter_path) {
                 let mut html = String::new();
-                if file.read_to_string(&mut html).is_ok() {
+                if file
+                    .by_ref()
+                    .take(MAX_EPUB_CHAPTER_BYTES)
+                    .read_to_string(&mut html)
+                    .is_ok()
+                {
                     let md = html_to_markdown(&html);
                     let trimmed = md.trim();
                     if !trimmed.is_empty() {
+                        if total_bytes.saturating_add(trimmed.len()) > MAX_EPUB_TOTAL_BYTES {
+                            let remaining = MAX_EPUB_TOTAL_BYTES.saturating_sub(total_bytes);
+                            if remaining > 0 {
+                                let bound = trimmed.floor_char_boundary(remaining);
+                                let slice = &trimmed[..bound];
+                                if !slice.is_empty() {
+                                    if !book_markdown.is_empty() {
+                                        book_markdown.push_str("\n\n");
+                                    }
+                                    book_markdown.push_str(slice);
+                                }
+                            }
+                            break;
+                        }
                         if !book_markdown.is_empty() {
                             book_markdown.push_str("\n\n");
                         }
                         book_markdown.push_str(trimmed);
+                        total_bytes = total_bytes.saturating_add(trimmed.len());
                     }
                 }
             }
@@ -91,7 +129,11 @@ fn find_opf_path<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<String> 
     // 1. Standard EPUB path: check META-INF/container.xml
     if let Ok(mut container_file) = archive.by_name("META-INF/container.xml") {
         let mut xml = String::new();
-        if container_file.read_to_string(&mut xml).is_ok()
+        if container_file
+            .by_ref()
+            .take(MAX_EPUB_XML_BYTES)
+            .read_to_string(&mut xml)
+            .is_ok()
             && let Some(path) = parse_container_xml(&xml)
         {
             return Ok(path);
@@ -152,6 +194,8 @@ fn parse_opf<R: Read + Seek>(
         .with_context(|| format!("Failed to read OPF file at {}", opf_path))?;
     let mut opf_xml = String::new();
     opf_file
+        .by_ref()
+        .take(MAX_EPUB_XML_BYTES)
         .read_to_string(&mut opf_xml)
         .context("Failed to read OPF content")?;
 
@@ -206,6 +250,9 @@ fn parse_opf<R: Read + Seek>(
         if let Some((href, _)) = manifest.get(idref) {
             let resolved = resolve_epub_path(opf_dir, href);
             chapter_paths.push(resolved);
+            if chapter_paths.len() >= MAX_EPUB_CHAPTER_COUNT {
+                break;
+            }
         }
     }
 
@@ -221,6 +268,9 @@ fn parse_opf<R: Read + Seek>(
                 || lower_href.ends_with(".htm")
             {
                 chapter_paths.push(resolve_epub_path(opf_dir, href));
+                if chapter_paths.len() >= MAX_EPUB_CHAPTER_COUNT {
+                    break;
+                }
             }
         }
     }
@@ -253,6 +303,9 @@ fn parse_item_attr(
 }
 
 fn parse_itemref_attr(e: &quick_xml::events::BytesStart<'_>, spine: &mut Vec<String>) {
+    if spine.len() >= MAX_EPUB_CHAPTER_COUNT {
+        return;
+    }
     for attr in e.attributes().flatten() {
         if attr.key.local_name().as_ref().eq_ignore_ascii_case("idref") {
             let idref = attr.value.trim().to_string();
@@ -286,4 +339,62 @@ fn resolve_epub_path(base_dir: &str, href: &str) -> String {
         }
     }
     parts.join("/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+
+    #[test]
+    fn test_epub_deduplication_and_spine_limit() {
+        let mut zip_buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut zip_buf);
+            let opts = SimpleFileOptions::default();
+
+            writer.start_file("META-INF/container.xml", opts).unwrap();
+            writer
+                .write_all(
+                    br#"<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="content.opf"/></rootfiles>
+</container>"#,
+                )
+                .unwrap();
+
+            writer.start_file("content.opf", opts).unwrap();
+            // Create duplicate itemrefs in spine
+            writer
+                .write_all(
+                    br#"<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Bomb Test</dc:title></metadata>
+  <manifest>
+    <item id="c1" href="ch1.html" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="c1"/>
+    <itemref idref="c1"/>
+    <itemref idref="c1"/>
+  </spine>
+</package>"#,
+                )
+                .unwrap();
+
+            writer.start_file("ch1.html", opts).unwrap();
+            writer
+                .write_all(
+                    b"<html><body><p>Unique single chapter text content here.</p></body></html>",
+                )
+                .unwrap();
+
+            writer.finish().unwrap();
+        }
+
+        let bytes = zip_buf.into_inner();
+        let page = EpubExtractor::extract_from_bytes(&bytes, None).unwrap();
+        // The chapter text should appear exactly once due to deduplication
+        let occurrences = page.content.matches("Unique single chapter text").count();
+        assert_eq!(occurrences, 1);
+    }
 }
