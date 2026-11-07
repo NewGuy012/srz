@@ -1,6 +1,8 @@
 use crate::cli::NewsTimeframe;
 use crate::scraper::{ScrapedPage, WebScraper};
 use anyhow::{Context, Result};
+use quick_xml::events::Event;
+use quick_xml::reader::Reader;
 use serde::{Deserialize, Serialize};
 
 /// Maximum allowable limit of news articles to process in a single digest run.
@@ -406,95 +408,256 @@ fn extract_source_tags(xml: &str, limit: usize) -> Vec<String> {
     sources
 }
 
-/// Parses RSS 0.9/1.0/2.0, Atom, or JSON Feed items into a list of [`NewsArticleItem`].
+fn day_of_week(y: i32, m: i32, d: i32) -> &'static str {
+    static T: [i32; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+    let adj_y = if m < 3 { y - 1 } else { y };
+    let day = (adj_y + adj_y / 4 - adj_y / 100 + adj_y / 400 + T[(m - 1) as usize] + d) % 7;
+    match day {
+        0 => "Sun",
+        1 => "Mon",
+        2 => "Tue",
+        3 => "Wed",
+        4 => "Thu",
+        5 => "Fri",
+        6 => "Sat",
+        _ => "Sun",
+    }
+}
+
+fn format_iso8601_to_rfc2822(s: &str) -> Option<String> {
+    let s = s.trim();
+    if s.len() < 19 {
+        return None;
+    }
+    let year: i32 = s[0..4].parse().ok()?;
+    let month: usize = s[5..7].parse().ok()?;
+    let day: i32 = s[8..10].parse().ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let time_part = &s[11..19];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let month_name = MONTHS[month - 1];
+    let dow = day_of_week(year, month as i32, day);
+
+    Some(format!(
+        "{}, {:02} {} {} {} +0000",
+        dow, day, month_name, year, time_part
+    ))
+}
+
+fn normalize_feed_date(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(formatted) = format_iso8601_to_rfc2822(trimmed) {
+        return Some(formatted);
+    }
+    if let Some(stripped) = trimmed.strip_suffix(" GMT") {
+        return Some(format!("{} +0000", stripped));
+    }
+    if let Some(stripped) = trimmed.strip_suffix(" UTC") {
+        return Some(format!("{} +0000", stripped));
+    }
+    Some(trimmed.to_string())
+}
+
+/// Parses RSS 0.9/1.0/2.0 or Atom feed items into a list of [`NewsArticleItem`].
 pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
     if limit == 0 {
         return Vec::new();
     }
 
-    let normalized_xml;
-    let xml_to_parse = if let Some(rss_pos) = find_ascii_case_insensitive(xml, "<rss") {
-        let tag_close = xml[rss_pos..].find('>').map(|i| rss_pos + i);
-        let rss_tag_has_version = tag_close.is_some_and(|end| {
-            crate::system::text_util::contains_ascii_case_insensitive(
-                &xml[rss_pos..end],
-                "version=",
-            )
-        });
-        if !rss_tag_has_version {
-            normalized_xml = xml.replacen("<rss>", "<rss version=\"2.0\">", 1).replacen(
-                "<rss ",
-                "<rss version=\"2.0\" ",
-                1,
-            );
-            normalized_xml.as_str()
-        } else {
-            xml
-        }
-    } else {
-        xml
-    };
-
-    let parsed_feed = feed_rs::parser::parse(xml_to_parse.as_bytes()).ok();
     let source_tags = extract_source_tags(xml, limit);
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
 
-    if let Some(feed) = parsed_feed {
-        let mut items = Vec::new();
-        let feed_source = feed.title.as_ref().map(|t| t.content.clone());
+    let mut items = Vec::new();
+    let mut feed_source: Option<String> = None;
 
-        for (idx, entry) in feed.entries.into_iter().take(limit).enumerate() {
-            let title = entry.title.map(|t| t.content).unwrap_or_default();
-            let link = entry
-                .links
-                .into_iter()
-                .map(|l| l.href.trim().to_string())
-                .find(|href| crate::system::text_util::is_http_url(href))
-                .unwrap_or_else(|| {
-                    let id_trimmed = entry.id.trim();
-                    if crate::system::text_util::is_http_url(id_trimmed) {
-                        id_trimmed.to_string()
+    let mut in_entry = false;
+    let mut cur_title = String::new();
+    let mut cur_link = String::new();
+    let mut cur_id = String::new();
+    let mut cur_pub_date = None;
+    let mut cur_source = None;
+    let mut cur_author = None;
+    let mut cur_snippet = None;
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(ref e)) => {
+                let name = e.local_name().into_inner().to_ascii_lowercase();
+
+                if name == "item" || name == "entry" {
+                    in_entry = true;
+                    cur_title.clear();
+                    cur_link.clear();
+                    cur_id.clear();
+                    cur_pub_date = None;
+                    cur_source = None;
+                    cur_author = None;
+                    cur_snippet = None;
+                } else if in_entry {
+                    match name.as_str() {
+                        "title" => {
+                            if let Ok(text) = reader.read_text(e.name()) {
+                                if cur_title.is_empty() {
+                                    cur_title = clean_xml_text(text.as_ref());
+                                }
+                            }
+                        }
+                        "link" => {
+                            for attr in e.attributes().flatten() {
+                                if attr
+                                    .key
+                                    .local_name()
+                                    .into_inner()
+                                    .eq_ignore_ascii_case("href")
+                                {
+                                    let trimmed = attr.value.trim();
+                                    if crate::system::text_util::is_http_url(trimmed) {
+                                        cur_link = trimmed.to_string();
+                                    }
+                                }
+                            }
+                            if let Ok(text) = reader.read_text(e.name()) {
+                                let trimmed = text.trim();
+                                if cur_link.is_empty()
+                                    && crate::system::text_util::is_http_url(trimmed)
+                                {
+                                    cur_link = trimmed.to_string();
+                                }
+                            }
+                        }
+                        "guid" | "id" => {
+                            if let Ok(text) = reader.read_text(e.name()) {
+                                if cur_id.is_empty() {
+                                    cur_id = clean_xml_text(text.as_ref());
+                                }
+                            }
+                        }
+                        "pubdate" | "published" | "updated" => {
+                            if let Ok(text) = reader.read_text(e.name()) {
+                                if cur_pub_date.is_none() {
+                                    cur_pub_date = normalize_feed_date(text.as_ref());
+                                }
+                            }
+                        }
+                        "source" => {
+                            if let Ok(text) = reader.read_text(e.name()) {
+                                if cur_source.is_none() {
+                                    let cleaned = clean_xml_text(text.as_ref());
+                                    if !cleaned.is_empty() {
+                                        cur_source = Some(cleaned);
+                                    }
+                                }
+                            }
+                        }
+                        "author" | "name" => {
+                            if let Ok(text) = reader.read_text(e.name()) {
+                                if cur_author.is_none() {
+                                    let inner = if let Some(start) = text.find("<name>") {
+                                        if let Some(end) = text[start + 6..].find("</name>") {
+                                            &text[start + 6..start + 6 + end]
+                                        } else {
+                                            text.as_ref()
+                                        }
+                                    } else {
+                                        text.as_ref()
+                                    };
+                                    let cleaned = clean_xml_text(inner);
+                                    if !cleaned.is_empty() {
+                                        cur_author = Some(cleaned);
+                                    }
+                                }
+                            }
+                        }
+                        "description" | "summary" | "content" => {
+                            if let Ok(text) = reader.read_text(e.name()) {
+                                if cur_snippet.is_none() {
+                                    let cleaned = clean_xml_text(text.as_ref());
+                                    if !cleaned.is_empty() {
+                                        cur_snippet = Some(cleaned);
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                } else if name == "title" && feed_source.is_none() {
+                    if let Ok(text) = reader.read_text(e.name()) {
+                        feed_source = Some(clean_xml_text(text.as_ref()));
+                    }
+                }
+            }
+            Ok(Event::Empty(ref e)) => {
+                let name = e.local_name().into_inner().to_ascii_lowercase();
+                if in_entry && name == "link" && cur_link.is_empty() {
+                    for attr in e.attributes().flatten() {
+                        if attr
+                            .key
+                            .local_name()
+                            .into_inner()
+                            .eq_ignore_ascii_case("href")
+                        {
+                            let trimmed = attr.value.trim();
+                            if crate::system::text_util::is_http_url(trimmed) {
+                                cur_link = trimmed.to_string();
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Event::End(ref e)) => {
+                let name = e.local_name().into_inner().to_ascii_lowercase();
+                if name == "item" || name == "entry" {
+                    in_entry = false;
+                    let link = if !cur_link.is_empty() {
+                        cur_link.clone()
+                    } else if crate::system::text_util::is_http_url(cur_id.trim()) {
+                        cur_id.trim().to_string()
                     } else {
                         String::new()
+                    };
+
+                    let idx = items.len();
+                    let source_name = source_tags
+                        .get(idx)
+                        .cloned()
+                        .or(cur_source.take())
+                        .or(cur_author.take())
+                        .or_else(|| {
+                            cur_title
+                                .rsplit_once(" - ")
+                                .map(|(_, s)| s.trim().to_string())
+                        })
+                        .or_else(|| feed_source.clone());
+
+                    if !cur_title.is_empty() && !link.is_empty() {
+                        items.push(NewsArticleItem {
+                            title: cur_title.clone(),
+                            google_link: link,
+                            source_name,
+                            pub_date: cur_pub_date.take(),
+                            snippet: cur_snippet.take(),
+                        });
+                        if items.len() >= limit {
+                            break;
+                        }
                     }
-                });
-
-            let pub_date = entry.published.or(entry.updated).map(|dt| dt.to_rfc2822());
-
-            let source_name = source_tags
-                .get(idx)
-                .cloned()
-                .or(entry.source)
-                .or_else(|| entry.authors.first().and_then(|a| a.name.clone()))
-                .or_else(|| title.rsplit_once(" - ").map(|(_, s)| s.trim().to_string()))
-                .or_else(|| feed_source.clone());
-
-            let snippet = entry
-                .summary
-                .map(|s| clean_xml_text(&s.content))
-                .or_else(|| {
-                    entry
-                        .content
-                        .and_then(|c| c.body.map(|b| clean_xml_text(&b)))
-                })
-                .filter(|s| !s.is_empty());
-
-            if !title.is_empty() && !link.is_empty() {
-                items.push(NewsArticleItem {
-                    title,
-                    google_link: link,
-                    source_name,
-                    pub_date,
-                    snippet,
-                });
+                }
             }
-        }
-
-        if !items.is_empty() {
-            return items;
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
         }
     }
 
-    Vec::new()
+    items
 }
 
 /// Attempts zero-network offline decoding of an obfuscated Google News URL (`CBMi...`).
