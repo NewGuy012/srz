@@ -1,9 +1,94 @@
 use std::borrow::Cow;
 
-/// Decodes HTML entities in a single pass using `html_escape`, returning a zero-copy
+/// Decodes numeric and named HTML entities in a single pass, returning a zero-copy
 /// `Cow::Borrowed` when `s` contains no entities.
 pub fn decode_html_entities(s: &str) -> Cow<'_, str> {
-    html_escape::decode_html_entities(s)
+    if !s.contains('&') {
+        return Cow::Borrowed(s);
+    }
+
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b'&' {
+            // Check for entity termination ';' within reasonable distance (<= 12 bytes)
+            let mut end = i + 1;
+            while end < bytes.len()
+                && end - i <= 12
+                && bytes[end] != b';'
+                && bytes[end] != b'&'
+                && bytes[end] != b' '
+            {
+                end += 1;
+            }
+
+            if end < bytes.len() && bytes[end] == b';' {
+                let entity = &s[i + 1..end];
+                if let Some(rest) = entity.strip_prefix('#') {
+                    let code = if let Some(hex) =
+                        rest.strip_prefix('x').or_else(|| rest.strip_prefix('X'))
+                    {
+                        u32::from_str_radix(hex, 16).ok()
+                    } else {
+                        rest.parse::<u32>().ok()
+                    };
+                    if let Some(c) = code.and_then(char::from_u32) {
+                        out.push(c);
+                        i = end + 1;
+                        continue;
+                    }
+                } else if let Some(decoded) = decode_named_entity(entity) {
+                    out.push_str(decoded);
+                    i = end + 1;
+                    continue;
+                }
+            }
+        }
+
+        // Push character as utf-8 safely
+        let rest = &s[i..];
+        let ch = rest.chars().next().unwrap_or('\0');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+
+    Cow::Owned(out)
+}
+
+fn decode_named_entity(entity: &str) -> Option<&'static str> {
+    match entity {
+        "amp" => Some("&"),
+        "lt" => Some("<"),
+        "gt" => Some(">"),
+        "quot" => Some("\""),
+        "apos" => Some("'"),
+        "nbsp" => Some("\u{00A0}"),
+        "mdash" => Some("—"),
+        "ndash" => Some("–"),
+        "hellip" => Some("…"),
+        "lsquo" => Some("‘"),
+        "rsquo" => Some("’"),
+        "ldquo" => Some("“"),
+        "rdquo" => Some("”"),
+        "laquo" => Some("«"),
+        "raquo" => Some("»"),
+        "bull" => Some("•"),
+        "copy" => Some("©"),
+        "reg" => Some("®"),
+        "trade" => Some("™"),
+        "cent" => Some("¢"),
+        "pound" => Some("£"),
+        "yen" => Some("¥"),
+        "euro" => Some("€"),
+        "sect" => Some("§"),
+        "deg" => Some("°"),
+        "plusmn" => Some("±"),
+        "times" => Some("×"),
+        "divide" => Some("÷"),
+        _ => None,
+    }
 }
 
 /// Zero-allocation case-insensitive ASCII substring search returning the first byte index of `needle`.
