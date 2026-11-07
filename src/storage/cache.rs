@@ -1259,7 +1259,7 @@ impl Cache {
         } else {
             format!(
                 "https://news.google.com/search?q={}",
-                urlencoding::encode(topic)
+                crate::system::text_util::url_encode(topic)
             )
         };
         self.set_summary_in_db(

@@ -444,7 +444,7 @@ pub async fn handle_news(
     } else {
         format!(
             "https://news.google.com/search?q={}",
-            urlencoding::encode(topic)
+            crate::system::text_util::url_encode(topic)
         )
     };
 

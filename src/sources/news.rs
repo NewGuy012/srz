@@ -60,7 +60,7 @@ impl GoogleNewsClient {
 
             format!(
                 "https://news.google.com/rss/search?q={}&hl=en-US&gl=US&ceid=US:en",
-                urlencoding::encode(&query)
+                crate::system::text_util::url_encode(&query)
             )
         };
 
@@ -156,7 +156,10 @@ impl GoogleNewsClient {
         ]);
         let payload_str = payload_json.to_string();
         let envelope = serde_json::json!([[["Fbv4je", payload_str, null, "generic"]]]);
-        let form_body = format!("f.req={}", urlencoding::encode(&envelope.to_string()));
+        let form_body = format!(
+            "f.req={}",
+            crate::system::text_util::url_encode(&envelope.to_string())
+        );
 
         let rpc_resp = self
             .client

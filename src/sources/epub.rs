@@ -10,7 +10,7 @@ use zip::ZipArchive;
 
 use crate::scraper::{ScrapedPage, clean_text, html_to_markdown};
 use crate::sources::document::DocumentLoader;
-use crate::system::text_util::decode_html_entities;
+use crate::system::text_util::{decode_html_entities, url_decode};
 
 pub struct EpubExtractor;
 
@@ -266,7 +266,7 @@ fn parse_itemref_attr(e: &quick_xml::events::BytesStart<'_>, spine: &mut Vec<Str
 /// Resolves relative EPUB href path against base OPF directory and cleans ./ and ../ segments.
 fn resolve_epub_path(base_dir: &str, href: &str) -> String {
     let clean_href = href.split('#').next().unwrap_or(href);
-    let decoded = urlencoding::decode(clean_href).unwrap_or(std::borrow::Cow::Borrowed(clean_href));
+    let decoded = url_decode(clean_href).unwrap_or(std::borrow::Cow::Borrowed(clean_href));
 
     let full = if base_dir.is_empty() {
         decoded.to_string()

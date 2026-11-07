@@ -1100,7 +1100,10 @@ impl LlmClient {
         let mut model_props_tried = false;
 
         if !self.model.is_empty() {
-            let model_path = format!("/props?model={}", urlencoding::encode(&self.model));
+            let model_path = format!(
+                "/props?model={}",
+                crate::system::text_util::url_encode(&self.model)
+            );
             if let Some(json) = self
                 .fetch_root_json(&model_path, |c, u| {
                     c.get(u).timeout(Duration::from_millis(1500))
@@ -1131,7 +1134,10 @@ impl LlmClient {
                     .and_then(|v| v.as_u64())
                     == Some(0);
             if is_router && !self.model.is_empty() && !model_props_tried {
-                let model_path = format!("/props?model={}", urlencoding::encode(&self.model));
+                let model_path = format!(
+                    "/props?model={}",
+                    crate::system::text_util::url_encode(&self.model)
+                );
                 if let Some(m_json) = self
                     .fetch_root_json(&model_path, |c, u| {
                         c.get(u).timeout(Duration::from_millis(1500))

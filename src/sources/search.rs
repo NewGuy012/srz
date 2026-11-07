@@ -1,3 +1,4 @@
+use crate::system::text_util::{url_decode, url_encode};
 use anyhow::Result;
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
@@ -72,11 +73,11 @@ impl BookSearcher {
     ) -> Option<BookMetadata> {
         let mut endpoint = format!(
             "https://openlibrary.org/search.json?title={}&limit=3&fields=title,author_name,first_publish_year",
-            urlencoding::encode(title)
+            url_encode(title)
         );
         if let Some(auth) = author {
             endpoint.push_str("&author=");
-            endpoint.push_str(&urlencoding::encode(auth));
+            endpoint.push_str(&url_encode(auth));
         }
 
         let resp = self.get_with_timeout(&endpoint, 3).await?;
@@ -157,7 +158,7 @@ impl BookSearcher {
     async fn search_wikipedia_opensearch(&self, title: &str) -> Result<Vec<SearchResult>> {
         let endpoint = format!(
             "https://en.wikipedia.org/w/api.php?action=opensearch&search={}&limit=5&namespace=0&format=json",
-            urlencoding::encode(title)
+            url_encode(title)
         );
 
         let Some(resp) = self.get_with_timeout(&endpoint, 4).await else {
@@ -207,7 +208,7 @@ impl BookSearcher {
 
         let endpoint = format!(
             "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={}&format=json&utf8=",
-            urlencoding::encode(&query)
+            url_encode(&query)
         );
 
         let Some(resp) = self.get_with_timeout(&endpoint, 4).await else {
@@ -231,10 +232,7 @@ impl BookSearcher {
                         });
 
                     let url_title = page_title.replace(' ', "_");
-                    let url = format!(
-                        "https://en.wikipedia.org/wiki/{}",
-                        urlencoding::encode(&url_title)
-                    );
+                    let url = format!("https://en.wikipedia.org/wiki/{}", url_encode(&url_title));
 
                     results.push(SearchResult::new(
                         format!("{} (Wikipedia)", page_title),
@@ -259,10 +257,7 @@ impl BookSearcher {
             None => format!("\"{}\" book synopsis summary", title),
         };
 
-        let endpoint = format!(
-            "https://html.duckduckgo.com/html/?q={}",
-            urlencoding::encode(&query)
-        );
+        let endpoint = format!("https://html.duckduckgo.com/html/?q={}", url_encode(&query));
 
         let Some(resp) = self.get_with_timeout(&endpoint, 4).await else {
             return Ok(Vec::new());
@@ -312,7 +307,7 @@ pub fn extract_ddg_url(raw: &str) -> Cow<'_, str> {
     if let Some(pos) = raw.find("uddg=") {
         let remainder = &raw[pos + 5..];
         let encoded_url = remainder.split('&').next().unwrap_or(remainder);
-        if let Ok(decoded) = urlencoding::decode(encoded_url) {
+        if let Ok(decoded) = url_decode(encoded_url) {
             return decoded;
         }
     }
@@ -325,7 +320,7 @@ pub fn deduplicate_candidates(candidates: Vec<SearchResult>) -> Vec<SearchResult
     let mut unique = Vec::with_capacity(candidates.len());
 
     for item in candidates {
-        let decoded = urlencoding::decode(&item.url).unwrap_or(Cow::Borrowed(&item.url));
+        let decoded = url_decode(&item.url).unwrap_or(Cow::Borrowed(&item.url));
         let normalized = decoded.trim_end_matches('/').to_ascii_lowercase();
         if seen.insert(normalized) {
             unique.push(item);

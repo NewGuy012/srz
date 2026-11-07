@@ -91,6 +91,67 @@ fn decode_named_entity(entity: &str) -> Option<&'static str> {
     }
 }
 
+/// URL percent-encodes a string according to RFC 3986 (unreserved: a-z, A-Z, 0-9, -, _, ., ~).
+/// Returns a borrowed Cow if no characters need encoding.
+pub fn url_encode(s: &str) -> Cow<'_, str> {
+    let bytes = s.as_bytes();
+    if bytes
+        .iter()
+        .all(|&b| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~'))
+    {
+        return Cow::Borrowed(s);
+    }
+
+    const HEX_UPPER: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(s.len() * 3);
+    for &b in bytes {
+        if matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push('%');
+            out.push(HEX_UPPER[(b >> 4) as usize] as char);
+            out.push(HEX_UPPER[(b & 0x0F) as usize] as char);
+        }
+    }
+    Cow::Owned(out)
+}
+
+/// URL percent-decodes a string according to RFC 3986.
+/// Returns a borrowed Cow if no percent-encoded octets exist.
+pub fn url_decode(s: &str) -> Result<Cow<'_, str>, std::string::FromUtf8Error> {
+    if !s.as_bytes().contains(&b'%') {
+        return Ok(Cow::Borrowed(s));
+    }
+
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let h1 = match bytes[i + 1] {
+                b'0'..=b'9' => Some(bytes[i + 1] - b'0'),
+                b'a'..=b'f' => Some(bytes[i + 1] - b'a' + 10),
+                b'A'..=b'F' => Some(bytes[i + 1] - b'A' + 10),
+                _ => None,
+            };
+            let h2 = match bytes[i + 2] {
+                b'0'..=b'9' => Some(bytes[i + 2] - b'0'),
+                b'a'..=b'f' => Some(bytes[i + 2] - b'a' + 10),
+                b'A'..=b'F' => Some(bytes[i + 2] - b'A' + 10),
+                _ => None,
+            };
+            if let (Some(h1), Some(h2)) = (h1, h2) {
+                out.push((h1 << 4) | h2);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).map(Cow::Owned)
+}
+
 /// Zero-allocation case-insensitive ASCII substring search returning the first byte index of `needle`.
 pub fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
     let n_bytes = needle.as_bytes();
@@ -372,5 +433,21 @@ mod tests {
     fn test_format_hex() {
         assert_eq!(format_hex(&[]), "");
         assert_eq!(format_hex(&[0x00, 0x0f, 0x10, 0xff]), "000f10ff");
+    }
+
+    #[test]
+    fn test_url_encode_and_decode() {
+        assert_eq!(url_encode("hello_world-123.~"), "hello_world-123.~");
+        assert!(matches!(url_encode("simple"), Cow::Borrowed(_)));
+        assert_eq!(url_encode("hello world!"), "hello%20world%21");
+        assert_eq!(url_encode("Dune (novel)"), "Dune%20%28novel%29");
+
+        assert_eq!(url_decode("simple").unwrap(), "simple");
+        assert!(matches!(url_decode("simple").unwrap(), Cow::Borrowed(_)));
+        assert_eq!(url_decode("hello%20world%21").unwrap(), "hello world!");
+        assert_eq!(
+            url_decode("https://en.wikipedia.org/wiki/Dune_%28novel%29").unwrap(),
+            "https://en.wikipedia.org/wiki/Dune_(novel)"
+        );
     }
 }

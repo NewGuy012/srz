@@ -203,7 +203,7 @@ async fn main() -> Result<()> {
                     } else {
                         format!(
                             "https://news.google.com/search?q={}",
-                            urlencoding::encode(topic)
+                            srz::system::text_util::url_encode(topic)
                         )
                     };
                     let outcome =
