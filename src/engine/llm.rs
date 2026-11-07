@@ -633,6 +633,16 @@ fn is_action_verb_sentence(s: &str) -> bool {
     VERB_PREFIXES.iter().any(|v| first_word.starts_with(v))
 }
 
+fn strip_parenthetical_and_trim(s: &str) -> &str {
+    let cleaned = s.trim_matches(|c: char| c.is_whitespace() || c == ':' || c == '.' || c == '-');
+    if let Some(paren_pos) = cleaned.find('(') {
+        let before = cleaned[..paren_pos].trim();
+        if before.len() >= 10 { before } else { cleaned }
+    } else {
+        cleaned
+    }
+}
+
 /// Cleans a candidate heading line and extracts the core step title.
 fn clean_heading_candidate(line: &str) -> Option<String> {
     let trimmed = line.trim();
@@ -672,14 +682,7 @@ fn clean_heading_candidate(line: &str) -> Option<String> {
             let after_start = &after_num[start_bold + 2..];
             if let Some(end_bold) = after_start.find("**") {
                 let bold_text = &after_start[..end_bold];
-                let cleaned = bold_text
-                    .trim_matches(|c: char| c.is_whitespace() || c == ':' || c == '.' || c == '-');
-                let without_paren = if let Some(paren_pos) = cleaned.find('(') {
-                    let before = cleaned[..paren_pos].trim();
-                    if before.len() >= 10 { before } else { cleaned }
-                } else {
-                    cleaned
-                };
+                let without_paren = strip_parenthetical_and_trim(bold_text);
                 if !without_paren.is_empty() {
                     return Some(truncate_headline(without_paren, 45));
                 }
@@ -687,14 +690,7 @@ fn clean_heading_candidate(line: &str) -> Option<String> {
         }
 
         let stripped = strip_markdown_decorations(after_num);
-        let cleaned =
-            stripped.trim_matches(|c: char| c.is_whitespace() || c == ':' || c == '.' || c == '-');
-        let without_paren = if let Some(paren_pos) = cleaned.find('(') {
-            let before = cleaned[..paren_pos].trim();
-            if before.len() >= 10 { before } else { cleaned }
-        } else {
-            cleaned
-        };
+        let without_paren = strip_parenthetical_and_trim(&stripped);
         if !without_paren.is_empty() {
             return Some(truncate_headline(without_paren, 45));
         }
@@ -720,14 +716,7 @@ fn clean_heading_candidate(line: &str) -> Option<String> {
         && let Some(end_bold) = after_start.find("**")
     {
         let bold_text = &after_start[..end_bold];
-        let cleaned =
-            bold_text.trim_matches(|c: char| c.is_whitespace() || c == ':' || c == '.' || c == '-');
-        let without_paren = if let Some(paren_pos) = cleaned.find('(') {
-            let before = cleaned[..paren_pos].trim();
-            if before.len() >= 10 { before } else { cleaned }
-        } else {
-            cleaned
-        };
+        let without_paren = strip_parenthetical_and_trim(bold_text);
         if !without_paren.is_empty() {
             return Some(truncate_headline(without_paren, 45));
         }
