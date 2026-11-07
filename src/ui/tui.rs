@@ -267,12 +267,8 @@ fn run_loop(
                         }
                         KeyCode::Char('y') | KeyCode::Char('c') => {
                             if let Some(item) = state.selected_item() {
-                                if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                                    if clipboard.set_text(&item.summary).is_ok() {
-                                        state.set_status("✓ Summary copied to clipboard");
-                                    } else {
-                                        state.set_status("⚠ Failed to write to clipboard");
-                                    }
+                                if copy_to_clipboard(&item.summary).is_ok() {
+                                    state.set_status("✓ Summary copied to clipboard");
                                 } else {
                                     state.set_status("⚠ Clipboard unavailable");
                                 }
@@ -576,6 +572,72 @@ fn ui_draw(f: &mut Frame, state: &mut AppState) {
     };
     let footer_widget = Paragraph::new(status_text);
     f.render_widget(footer_widget, root_layout[2]);
+}
+
+/// Copies text to the system clipboard using the platform CLI.
+fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut child = std::process::Command::new("pbcopy")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            std::io::Write::write_all(&mut stdin, text.as_bytes())?;
+        }
+        let status = child.wait()?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(std::io::Error::other("pbcopy exited with error"));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut child = std::process::Command::new("clip")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            std::io::Write::write_all(&mut stdin, text.as_bytes())?;
+        }
+        let status = child.wait()?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(std::io::Error::other("clip exited with error"));
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        for (cmd, args) in [
+            ("wl-copy", &[][..]),
+            ("xclip", &["-selection", "clipboard"][..]),
+            ("xsel", &["--clipboard", "--input"][..]),
+        ] {
+            if let Ok(mut child) = std::process::Command::new(cmd)
+                .args(args)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = std::io::Write::write_all(&mut stdin, text.as_bytes());
+                }
+                if let Ok(status) = child.wait() {
+                    if status.success() {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        Err(std::io::Error::other(
+            "No clipboard tool found (tried wl-copy, xclip, xsel)",
+        ))
+    }
 }
 
 #[cfg(test)]

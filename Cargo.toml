@@ -38,7 +38,6 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 termimad = "0.35.5"
 ratatui = "0.30.2"
 crossterm = "0.29.0"
-arboard = "3.7.0"
 pdf-extract = "0.12.1"
 feed-rs = "3"
 dom_smoothie = "0.19"
