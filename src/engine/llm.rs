@@ -189,8 +189,6 @@ struct SseStreamState {
     thinking_start: Option<std::time::Instant>,
     show_thinking_stream: bool,
     last_thought_headline: Option<String>,
-    current_step_start: Option<std::time::Instant>,
-    content_start: Option<std::time::Instant>,
 }
 
 impl SseStreamState {
@@ -213,8 +211,6 @@ impl SseStreamState {
             thinking_start: None,
             show_thinking_stream,
             last_thought_headline: None,
-            current_step_start: None,
-            content_start: None,
         }
     }
 }
@@ -327,7 +323,6 @@ impl SseStreamState {
         let is_first_thinking = self.thinking_start.is_none();
         if is_first_thinking {
             self.thinking_start = Some(now);
-            self.current_step_start = Some(now);
         }
         self.reasoning_buf.push_str(text);
 
@@ -358,44 +353,26 @@ impl SseStreamState {
                 || now.duration_since(self.last_spinner_update) >= Duration::from_millis(100)
             {
                 self.last_spinner_update = now;
-                let total_elapsed_s = self
-                    .thinking_start
-                    .map(|t| t.elapsed().as_secs_f64())
-                    .unwrap_or(0.0);
 
                 if let Some(headline) = extract_thought_headline(&self.reasoning_buf) {
                     self.handle_thought_headline_update(&headline, pb);
                 }
 
-                if !pb.is_hidden() {
-                    let step_elapsed_s = self
-                        .current_step_start
-                        .map(|t| t.elapsed().as_secs_f64())
-                        .unwrap_or(total_elapsed_s);
-                    let duration_str = format_thinking_duration(step_elapsed_s);
-                    let msg = match &self.last_thought_headline {
-                        Some(step) if !step.is_empty() => {
-                            format!("💭 Thinking: {} ({})...", step, duration_str)
-                        }
-                        _ => format!(
-                            "💭 Thinking ({})...",
-                            format_thinking_duration(total_elapsed_s)
-                        ),
-                    };
-                    pb.set_message(msg);
-                }
+                let msg = match &self.last_thought_headline {
+                    Some(step) if !step.is_empty() => {
+                        format!("💭 Thinking: {}...", step)
+                    }
+                    _ => "💭 Thinking...".to_string(),
+                };
+                pb.set_message(msg);
             }
         }
     }
 
     fn handle_thought_headline_update(&mut self, new_headline: &str, _pb: &indicatif::ProgressBar) {
-        let now = std::time::Instant::now();
         match &self.last_thought_headline {
             None => {
                 self.last_thought_headline = Some(new_headline.to_string());
-                if self.current_step_start.is_none() {
-                    self.current_step_start = self.thinking_start.or(Some(now));
-                }
             }
             Some(old_headline) => {
                 if is_same_or_growing_headline(old_headline, new_headline) {
@@ -407,7 +384,6 @@ impl SseStreamState {
 
                 // Update active step headline in-place for live summary without dumping noisy lines to terminal
                 self.last_thought_headline = Some(new_headline.to_string());
-                self.current_step_start = Some(now);
             }
         }
     }
@@ -423,10 +399,6 @@ impl SseStreamState {
         }
         self.finished_thinking_ui = true;
         self.is_thinking = false;
-        let now = std::time::Instant::now();
-        if self.content_start.is_none() {
-            self.content_start = Some(now);
-        }
 
         if matches!(mode, StreamMode::Silent) || pb.is_hidden() || Ui::is_quiet() {
             return;
@@ -493,9 +465,6 @@ impl SseStreamState {
                 return;
             }
             self.started_visible = true;
-            if self.content_start.is_none() {
-                self.content_start = Some(std::time::Instant::now());
-            }
             clean
         } else {
             delta_text
@@ -522,34 +491,14 @@ impl SseStreamState {
                 self.needs_stdout_flush = true;
             }
             StreamMode::Buffered => {
-                let now = std::time::Instant::now();
-                if !pb.is_hidden()
-                    && !spinner_label.trim().is_empty()
-                    && (is_first
-                        || now.duration_since(self.last_spinner_update)
-                            >= Duration::from_millis(150))
-                {
-                    self.last_spinner_update = now;
+                if is_first && !spinner_label.trim().is_empty() {
                     let clean_label = spinner_label.trim_end_matches('.');
                     let gen_label = if clean_label.eq_ignore_ascii_case("thinking") {
                         "Generating response"
                     } else {
                         clean_label
                     };
-                    let content_elapsed = self
-                        .content_start
-                        .map(|t| t.elapsed())
-                        .unwrap_or(Duration::from_secs(0));
-                    let rate =
-                        compute_tokens_per_second(Some(self.output_tokens as u32), content_elapsed);
-                    let status = Ui::format_llm_status(
-                        gen_label,
-                        "generating",
-                        self.output_tokens,
-                        content_elapsed,
-                        rate,
-                    );
-                    pb.set_message(status);
+                    pb.set_message(format!("{}...", gen_label));
                 }
             }
         }
@@ -3357,5 +3306,65 @@ mod tests {
             state.last_thought_headline.as_deref(),
             Some("Step 3: Generating Output")
         );
+    }
+
+    #[test]
+    fn test_sse_stream_state_clean_terminal_spinner_without_telemetry() {
+        let pb =
+            indicatif::ProgressBar::with_draw_target(None, indicatif::ProgressDrawTarget::stderr());
+        let mut state = SseStreamState::new(std::time::Instant::now(), false);
+
+        // Initial thinking with whitespace / punctuation before headline emerges
+        let reason_initial = br#"data: {"choices":[{"delta":{"reasoning_content":"\n\n"}}]}"#;
+        assert!(!state.process_line(
+            reason_initial,
+            &pb,
+            "Generating summary with local LLM...",
+            StreamMode::Buffered
+        ));
+        assert_eq!(pb.message(), "💭 Thinking...");
+        assert!(!pb.message().contains('('));
+        assert!(!pb.message().contains('s'));
+
+        // Thinking with a headline extracted
+        state.last_spinner_update -= std::time::Duration::from_millis(150);
+        let reason_headline = br#"data: {"choices":[{"delta":{"reasoning_content":"1. **Identify Core Themes:**\nExtracting key points."}}]}"#;
+        assert!(!state.process_line(
+            reason_headline,
+            &pb,
+            "Generating summary with local LLM...",
+            StreamMode::Buffered
+        ));
+        assert_eq!(pb.message(), "💭 Thinking: Identify Core Themes...");
+        assert!(!pb.message().contains('('));
+        assert!(!pb.message().contains("tokens"));
+        assert!(!pb.message().contains("t/s"));
+
+        // Content generation starts
+        let content_chunk =
+            br#"data: {"choices":[{"delta":{"content":"This is the executive summary."}}]}"#;
+        assert!(!state.process_line(
+            content_chunk,
+            &pb,
+            "Generating summary with local LLM...",
+            StreamMode::Buffered
+        ));
+        assert_eq!(pb.message(), "Generating summary with local LLM...");
+        assert!(!pb.message().contains("tokens"));
+        assert!(!pb.message().contains("t/s"));
+        assert!(!pb.message().contains('['));
+
+        // Subsequent content chunks preserve clean label without live tokens or t/s telemetry
+        let content_chunk_2 =
+            br#"data: {"choices":[{"delta":{"content":" Additional details follow."}}]}"#;
+        assert!(!state.process_line(
+            content_chunk_2,
+            &pb,
+            "Generating summary with local LLM...",
+            StreamMode::Buffered
+        ));
+        assert_eq!(pb.message(), "Generating summary with local LLM...");
+        assert!(!pb.message().contains("tokens"));
+        assert!(!pb.message().contains("t/s"));
     }
 }
