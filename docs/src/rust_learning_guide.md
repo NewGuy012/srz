@@ -777,20 +777,10 @@ Rust tasks spawned onto Tokio run cooperatively. An application can comfortably 
 <a id="124-layered-host-hardware-profiling-without-ffi-or-unsafe"></a>
 ### 12.4 Layered Host Hardware Profiling Without FFI or `unsafe`
 - 💡 **Simple Analogy:** Looking at the speedometer on your car dashboard rather than taking the transmission apart while driving.
-- 💡 **The "Click" Moment: Zero-FFI Layered Resiliency:** Many C/C++ libraries query physical RAM or CPU architectures using complex Foreign Function Interfaces (FFI) with raw pointers and `libc` calls, which risk memory corruption if types mismatch across OS releases. In `srz`, because `#![forbid(unsafe_code)]` is strictly enforced across the codebase, hardware profiling must be 100% memory-safe. Instead of C FFI, `srz` layers pure-Rust system inspection (`sysinfo`) with safe subprocess execution fallbacks (`sysctl` on macOS, `/proc/meminfo` on Linux, PowerShell on Windows), parsing standard UTF-8 streams defensively.
+- 💡 **The "Click" Moment: Zero-FFI Layered Resiliency:** Many C/C++ libraries query physical RAM or CPU architectures using complex Foreign Function Interfaces (FFI) with raw pointers and `libc` calls, which risk memory corruption if types mismatch across OS releases. In `srz`, because `#![forbid(unsafe_code)]` is strictly enforced across the codebase, hardware profiling must be 100% memory-safe. Instead of complex C FFI bindings or heavy external dependencies, `srz` queries native host kernel interfaces and procfs directly (`sysctl` on macOS, `/proc/meminfo` on Linux, PowerShell/WMI on Windows), parsing standard UTF-8 streams defensively with zero `unsafe` code.
 - 🔍 **Real Code in `srz` ([src/system/hardware.rs](https://github.com/NewGuy012/srz/blob/master/src/system/hardware.rs#L254-L272)):**
   ```rust
   fn detect_total_memory() -> Option<u64> {
-      // 1. Primary pure-Rust detection via sysinfo crate
-      if let Ok(mut sys) = System::new() {
-          sys.refresh_memory();
-          let mem = sys.total_memory();
-          if mem > 0 {
-              return Some(mem);
-          }
-      }
-
-      // 2. Safe OS subprocess fallbacks without FFI or unsafe code
       #[cfg(target_os = "macos")]
       {
           if let Ok(output) = Command::new("sysctl").args(["-n", "hw.memsize"]).output()
@@ -801,7 +791,23 @@ Rust tasks spawned onto Tokio run cooperatively. An application can comfortably 
               return Some(bytes);
           }
       }
-      // ... Linux (/proc/meminfo) & Windows (Get-CimInstance) fallbacks ...
+
+      #[cfg(target_os = "linux")]
+      {
+          if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
+              for line in content.lines() {
+                  if let Some(rest) = line.strip_prefix("MemTotal:") {
+                      let parts: Vec<&str> = rest.split_whitespace().collect();
+                      if let Some(kb_str) = parts.first()
+                          && let Ok(kb) = kb_str.parse::<u64>()
+                      {
+                          return Some(kb * 1024);
+                      }
+                  }
+              }
+          }
+      }
+      // ... Windows (PowerShell/CIM) ...
       None
   }
   ```
@@ -969,7 +975,7 @@ flowchart TD
 <a id="132-end-to-end-data-flow"></a>
 ### 13.2 End-to-End Data Flow
 
-1. **System & Profiling Layer (`src/system/`)**: Detects physical host memory and CPU architecture via safe kernel sysctls/WMI and `sysinfo`, classifying machines into hardware tiers and recommending optimal high-fidelity Gemma 4 quantization presets (`Q8_0`).
+1. **System & Profiling Layer (`src/system/`)**: Detects physical host memory and CPU architecture via safe native kernel sysctls/WMI and procfs, classifying machines into hardware tiers and recommending optimal high-fidelity Gemma 4 quantization presets (`Q8_0`).
 2. **CLI Layer (`src/main.rs`, `src/config/`, `src/commands/`)**: Parses arguments with `clap`, merges defaults from `config.toml`, probes sub-millisecond cache fast-paths, and resolves user intentions into strongly typed `ResolvedAction` variants using exhaustive `match`—dispatching summaries, grounded Q&A (`srz ask`), model recommendations (`srz recommend`), health checks (`srz doctor`), or self-upgrades (`srz upgrade`).
 3. **Sources Layer (`src/sources/`)**: Fetches data from webpages, YouTube timed-text caption tracks (XML/JSON3), PDF documents, EPUB ebooks (.epub via `quick-xml` and `zip`), local text files, Unix stdin streams, Open Library book candidates, and live Google News RSS feeds. Uses `LazyLock` for regex/selectors and streams bytes defensively to avoid OOM crashes.
 4. **Engine Layer (`src/engine/`)**: Discovers OpenAI/llama.cpp/Ollama server capabilities (`n_ctx`, `total_slots`), eliminates tokenizer drift via native `/tokenize` APIs, and dynamically sizes chunk windows, grounding context, and completion headroom (`DynamicBudget`).
@@ -1003,7 +1009,7 @@ flowchart TD
 | **`#[cfg(unix)]`** | [`src/system/fs_util.rs#L50-L58`](https://github.com/NewGuy012/srz/blob/master/src/system/fs_util.rs#L50-L58) | **Packing for the weather**: Zero-overhead platform-specific file permissions compiled without runtime checks. | [Ch 14.1: Profiles](https://doc.rust-lang.org/book/ch14-01-release-profiles.html) |
 | **`#![forbid(unsafe_code)]`** | [`src/main.rs#L1`](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L1), [`src/lib.rs#L1`](https://github.com/NewGuy012/srz/blob/master/src/lib.rs#L1) | **Sealed cockpit door**: Mathematical compile-time guarantee of zero memory corruption or segfaults. | [Ch 19.1: Unsafe Rust](https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html) |
 | **Derive Macros** | [`src/config/cli.rs#L5-L14`](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs#L5-L14) | **3D architectural printer**: Generates hundreds of lines of type validation and `--help` CLI text at compile time. | [Ch 19.5: Macros](https://doc.rust-lang.org/book/ch19-06-macros.html#how-to-write-a-custom-derive-macro) |
-| **Safe Hardware Profiling** | [`src/system/hardware.rs#L254-L272`](https://github.com/NewGuy012/srz/blob/master/src/system/hardware.rs#L254-L272) | **Dashboard gauges**: Reads RAM/CPU metrics via layered `sysinfo` and isolated subprocesses with zero `unsafe`. | [Ch 19.1: Unsafe Rust](https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html) |
+| **Safe Hardware Profiling** | [`src/system/hardware.rs#L254-L272`](https://github.com/NewGuy012/srz/blob/master/src/system/hardware.rs#L254-L272) | **Dashboard gauges**: Reads RAM/CPU metrics via native kernel sysctls and procfs with zero `unsafe`. | [Ch 19.1: Unsafe Rust](https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html) |
 | **Dynamic Budgeting** | [`src/engine/budget.rs#L39-L97`](https://github.com/NewGuy012/srz/blob/master/src/engine/budget.rs#L39-L97) | **Vessel weight balancing**: Invariant math sizing prompt chunks and reserve headroom to eliminate OOMs. | [Ch 5.3: Method Syntax](https://doc.rust-lang.org/book/ch05-03-method-syntax.html) |
 | **Model Cache Invalidation** | [`src/storage/cache.rs#L1131-L1180`](https://github.com/NewGuy012/srz/blob/master/src/storage/cache.rs#L1131-L1180) | **Card catalog update**: Embedded DuckDB invalidates cached context size when server switches models. | [Ch 16.3: Shared-State](https://doc.rust-lang.org/book/ch16-03-shared-state.html) |
 

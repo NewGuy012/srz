@@ -291,7 +291,7 @@ srz models
 
 ### Hardware Profiling & Diagnostic Advisories
 
-Running `srz recommend` or `srz doctor` profiles your physical machine without invasive C FFI bindings. By inspecting host system characteristics via pure-Rust in-process hardware profiling (`sysinfo`), `srz` classifies your system into hardware tiers and suggests optimal model configurations:
+Running `srz recommend` or `srz doctor` profiles your physical machine without invasive C FFI bindings. By inspecting host system characteristics via native kernel and procfs hardware profiling, `srz` classifies your system into hardware tiers and suggests optimal model configurations:
 
 The advisor recommends high-fidelity Google Gemma 4 models tailored to your physical RAM, matching the exact selection cards shown in Llama GUI (such as `gemma-4` with size `E4B` or `26B-A4B` at `Q8_0` quantization) while configuring the full model ID (`ggml-org/gemma-4-E4B-it-GGUF:Q8_0`) for seamless backend API communication. It calculates your single-pass token synthesis ceiling—the approximate 70% threshold of your context window—beyond which map-reduce chunking activates.
 
