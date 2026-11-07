@@ -80,12 +80,14 @@ struct ResponseMessage {
 }
 
 /// Controls whether tokens are streamed live to stdout or buffered silently behind a spinner.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StreamMode<'a> {
     /// Stream visible content tokens directly to stdout as they arrive.
     Stdout { header_title: &'a str },
     /// Buffer tokens silently behind a spinner until complete (default).
     Buffered,
+    /// Execute completion completely silently with no spinner, no thinking logs, and no success checkmarks.
+    Silent,
 }
 
 /// Output returned by an LLM summarization call.
@@ -265,7 +267,7 @@ impl SseStreamState {
             && !reasoning.is_empty()
             && !self.started_visible
         {
-            self.append_reasoning_delta(reasoning, pb);
+            self.append_reasoning_delta(reasoning, pb, mode);
         }
 
         if let Some(delta_text) = &choice.delta.content
@@ -277,27 +279,27 @@ impl SseStreamState {
                     let after_tag = &delta_text[think_start + 7..];
                     if let Some(think_end) = after_tag.find("</think>") {
                         let think_part = &after_tag[..think_end];
-                        self.append_reasoning_delta(think_part, pb);
+                        self.append_reasoning_delta(think_part, pb, mode);
                         self.in_think_tag = false;
                         let visible_part = &after_tag[think_end + 8..];
                         if !visible_part.is_empty() {
                             self.append_content_delta(visible_part, pb, spinner_label, mode);
                         }
                     } else {
-                        self.append_reasoning_delta(after_tag, pb);
+                        self.append_reasoning_delta(after_tag, pb, mode);
                     }
                     return false;
                 } else if self.in_think_tag {
                     if let Some(think_end) = delta_text.find("</think>") {
                         let think_part = &delta_text[..think_end];
-                        self.append_reasoning_delta(think_part, pb);
+                        self.append_reasoning_delta(think_part, pb, mode);
                         self.in_think_tag = false;
                         let visible_part = &delta_text[think_end + 8..];
                         if !visible_part.is_empty() {
                             self.append_content_delta(visible_part, pb, spinner_label, mode);
                         }
                     } else {
-                        self.append_reasoning_delta(delta_text, pb);
+                        self.append_reasoning_delta(delta_text, pb, mode);
                     }
                     return false;
                 }
@@ -313,7 +315,12 @@ impl SseStreamState {
         false
     }
 
-    fn append_reasoning_delta(&mut self, text: &str, pb: &indicatif::ProgressBar) {
+    fn append_reasoning_delta(
+        &mut self,
+        text: &str,
+        pb: &indicatif::ProgressBar,
+        mode: StreamMode<'_>,
+    ) {
         self.thinking_tokens += 1;
         self.is_thinking = true;
         let now = std::time::Instant::now();
@@ -323,6 +330,10 @@ impl SseStreamState {
             self.current_step_start = Some(now);
         }
         self.reasoning_buf.push_str(text);
+
+        if matches!(mode, StreamMode::Silent) {
+            return;
+        }
 
         if !Ui::is_quiet() {
             if self.show_thinking_stream {
@@ -356,26 +367,28 @@ impl SseStreamState {
                     self.handle_thought_headline_update(&headline, pb);
                 }
 
-                let step_elapsed_s = self
-                    .current_step_start
-                    .map(|t| t.elapsed().as_secs_f64())
-                    .unwrap_or(total_elapsed_s);
-                let duration_str = format_thinking_duration(step_elapsed_s);
-                let msg = match &self.last_thought_headline {
-                    Some(step) if !step.is_empty() => {
-                        format!("💭 Thinking: {} ({})...", step, duration_str)
-                    }
-                    _ => format!(
-                        "💭 Thinking ({})...",
-                        format_thinking_duration(total_elapsed_s)
-                    ),
-                };
-                pb.set_message(msg);
+                if !pb.is_hidden() {
+                    let step_elapsed_s = self
+                        .current_step_start
+                        .map(|t| t.elapsed().as_secs_f64())
+                        .unwrap_or(total_elapsed_s);
+                    let duration_str = format_thinking_duration(step_elapsed_s);
+                    let msg = match &self.last_thought_headline {
+                        Some(step) if !step.is_empty() => {
+                            format!("💭 Thinking: {} ({})...", step, duration_str)
+                        }
+                        _ => format!(
+                            "💭 Thinking ({})...",
+                            format_thinking_duration(total_elapsed_s)
+                        ),
+                    };
+                    pb.set_message(msg);
+                }
             }
         }
     }
 
-    fn handle_thought_headline_update(&mut self, new_headline: &str, pb: &indicatif::ProgressBar) {
+    fn handle_thought_headline_update(&mut self, new_headline: &str, _pb: &indicatif::ProgressBar) {
         let now = std::time::Instant::now();
         match &self.last_thought_headline {
             None => {
@@ -392,29 +405,7 @@ impl SseStreamState {
                     return;
                 }
 
-                // Completed previous thinking step! Print it to a new line above the spinner.
-                let step_elapsed_s = self
-                    .current_step_start
-                    .map(|t| t.elapsed().as_secs_f64())
-                    .unwrap_or(0.0);
-                let duration_str = format_thinking_duration(step_elapsed_s);
-                let step_line = if Ui::use_color() {
-                    format!(
-                        "  \x1b[2m💭 Thinking: {} ({})\x1b[0m",
-                        old_headline, duration_str
-                    )
-                } else {
-                    format!("  Thinking: {} ({})", old_headline, duration_str)
-                };
-
-                if pb.is_hidden() {
-                    if !Ui::is_quiet() {
-                        eprintln!("{}", step_line);
-                    }
-                } else {
-                    pb.println(step_line);
-                }
-
+                // Update active step headline in-place for live summary without dumping noisy lines to terminal
                 self.last_thought_headline = Some(new_headline.to_string());
                 self.current_step_start = Some(now);
             }
@@ -437,82 +428,52 @@ impl SseStreamState {
             self.content_start = Some(now);
         }
 
+        if matches!(mode, StreamMode::Silent) || pb.is_hidden() || Ui::is_quiet() {
+            return;
+        }
+
         let total_elapsed_s = self
             .thinking_start
             .map(|t| t.elapsed().as_secs_f64())
             .unwrap_or(0.0);
 
-        if !Ui::is_quiet() {
-            if self.show_thinking_stream {
-                if self.streamed_thinking {
-                    if Ui::use_color() {
-                        eprintln!("\n\x1b[0m");
-                    } else {
-                        eprintln!("\n----------------");
-                    }
-                }
-            } else if self.thinking_tokens > 0 {
-                // Ensure latest reasoning is parsed for active headline before finalizing
-                if let Some(final_headline) = extract_thought_headline(&self.reasoning_buf) {
-                    self.handle_thought_headline_update(&final_headline, pb);
-                }
-
-                // Finalize and print the active thinking step if one exists
-                if let Some(active_step) = self.last_thought_headline.take() {
-                    let step_elapsed_s = self
-                        .current_step_start
-                        .map(|t| t.elapsed().as_secs_f64())
-                        .unwrap_or(total_elapsed_s);
-                    let duration_str = format_thinking_duration(step_elapsed_s);
-                    let step_line = if Ui::use_color() {
-                        format!(
-                            "  \x1b[2m💭 Thinking: {} ({})\x1b[0m",
-                            active_step, duration_str
-                        )
-                    } else {
-                        format!("  Thinking: {} ({})", active_step, duration_str)
-                    };
-
-                    if pb.is_hidden() {
-                        eprintln!("{}", step_line);
-                    } else {
-                        pb.println(step_line);
-                    }
-                }
-
-                // Settle thinking into Antigravity/Gemini dropdown indicator
-                let total_duration_str = format_thinking_duration(total_elapsed_s);
-                let thought_line = if Ui::use_color() {
-                    format!("  \x1b[2m💭 Thought for {} ›\x1b[0m", total_duration_str)
+        if self.show_thinking_stream {
+            if self.streamed_thinking {
+                if Ui::use_color() {
+                    eprintln!("\n\x1b[0m");
                 } else {
-                    format!("  Thought for {} >", total_duration_str)
-                };
-
-                if matches!(mode, StreamMode::Buffered) {
-                    if pb.is_hidden() {
-                        eprintln!("{}", thought_line);
-                    } else {
-                        pb.println(thought_line);
-                    }
-                } else {
-                    pb.finish_and_clear();
-                    eprintln!("{}", thought_line);
+                    eprintln!("\n----------------");
                 }
             }
+        } else if self.thinking_tokens > 0 {
+            // Settle thinking into Antigravity/Gemini dropdown indicator
+            let total_duration_str = format_thinking_duration(total_elapsed_s);
+            let thought_line = if Ui::use_color() {
+                format!("  \x1b[2m💭 Thought for {} ›\x1b[0m", total_duration_str)
+            } else {
+                format!("  Thought for {} >", total_duration_str)
+            };
 
-            if matches!(mode, StreamMode::Buffered) && !spinner_label.is_empty() {
-                if pb.is_finished() {
-                    pb.reset();
-                }
-                let clean_label = spinner_label.trim_end_matches('.');
-                let gen_label = if clean_label.eq_ignore_ascii_case("thinking") {
-                    "Generating response"
-                } else {
-                    clean_label
-                };
-                pb.set_message(format!("{}...", gen_label));
+            if matches!(mode, StreamMode::Buffered) {
+                pb.println(thought_line);
+            } else if matches!(mode, StreamMode::Stdout { .. }) {
+                pb.finish_and_clear();
+                eprintln!("{}", thought_line);
+            }
+        }
+
+        if matches!(mode, StreamMode::Buffered) && !spinner_label.trim().is_empty() {
+            if pb.is_finished() {
+                pb.reset();
                 pb.enable_steady_tick(Duration::from_millis(80));
             }
+            let clean_label = spinner_label.trim_end_matches('.');
+            let gen_label = if clean_label.eq_ignore_ascii_case("thinking") {
+                "Generating response"
+            } else {
+                clean_label
+            };
+            pb.set_message(format!("{}...", gen_label));
         }
     }
 
@@ -544,6 +505,7 @@ impl SseStreamState {
         self.content_buf.push_str(text_to_emit);
 
         match mode {
+            StreamMode::Silent => {}
             StreamMode::Stdout { header_title } => {
                 if is_first {
                     pb.finish_and_clear();
@@ -561,8 +523,11 @@ impl SseStreamState {
             }
             StreamMode::Buffered => {
                 let now = std::time::Instant::now();
-                if is_first
-                    || now.duration_since(self.last_spinner_update) >= Duration::from_millis(150)
+                if !pb.is_hidden()
+                    && !spinner_label.trim().is_empty()
+                    && (is_first
+                        || now.duration_since(self.last_spinner_update)
+                            >= Duration::from_millis(150))
                 {
                     self.last_spinner_update = now;
                     let clean_label = spinner_label.trim_end_matches('.');
@@ -1694,7 +1659,12 @@ impl LlmClient {
         mode: StreamMode<'_>,
     ) -> Result<LlmOutput> {
         let start_time = std::time::Instant::now();
-        let pb = Ui::spinner(spinner_label);
+        let is_silent = matches!(mode, StreamMode::Silent) || spinner_label.trim().is_empty();
+        let pb = if is_silent {
+            indicatif::ProgressBar::hidden()
+        } else {
+            Ui::spinner(spinner_label)
+        };
 
         let body = ChatCompletionRequest {
             model: &self.model,
@@ -1771,10 +1741,14 @@ impl LlmClient {
         let streamed_to_stdout = matches!(mode, StreamMode::Stdout { .. }) && state.started_visible;
         if streamed_to_stdout {
             println!("\n");
-            Ui::success_with_elapsed(done_label, start_time.elapsed());
+            if !done_label.trim().is_empty() && !matches!(mode, StreamMode::Silent) {
+                Ui::success_with_elapsed(done_label, start_time.elapsed());
+            }
         } else {
             pb.finish_and_clear();
-            Ui::success_with_elapsed(done_label, start_time.elapsed());
+            if !done_label.trim().is_empty() && !matches!(mode, StreamMode::Silent) {
+                Ui::success_with_elapsed(done_label, start_time.elapsed());
+            }
         }
 
         let elapsed = start_time.elapsed();
@@ -1897,7 +1871,7 @@ impl LlmClient {
                 let res = loop {
                     attempts += 1;
                     match client
-                        .complete_streaming(&sys_prompt, &user_prompt, "", "", StreamMode::Buffered)
+                        .complete_streaming(&sys_prompt, &user_prompt, "", "", StreamMode::Silent)
                         .await
                     {
                         Ok(out) => break Ok(out),
@@ -3261,5 +3235,53 @@ mod tests {
         assert_eq!(state_verbose.thinking_tokens, 1);
         assert!(state_verbose.is_thinking);
         assert!(state_verbose.streamed_thinking);
+    }
+
+    #[test]
+    fn test_sse_stream_state_silent_mode() {
+        let pb = indicatif::ProgressBar::hidden();
+        let mut state = SseStreamState::new(std::time::Instant::now(), false);
+
+        let reason_chunk = br#"data: {"choices":[{"delta":{"reasoning_content":"1. **Analyze:**\nSilent reasoning"}}]}"#;
+        assert!(!state.process_line(reason_chunk, &pb, "", StreamMode::Silent));
+        assert_eq!(state.thinking_tokens, 1);
+        assert!(state.is_thinking);
+        assert!(state.last_thought_headline.is_none());
+        assert!(!state.streamed_thinking);
+        assert!(state.reasoning_buf.contains("Silent reasoning"));
+
+        let content_chunk =
+            br#"data: {"choices":[{"delta":{"content":"Silent completion output"}}]}"#;
+        assert!(!state.process_line(content_chunk, &pb, "", StreamMode::Silent));
+        assert_eq!(state.output_tokens, 1);
+        assert!(!state.is_thinking);
+        assert!(state.finished_thinking_ui);
+        assert_eq!(state.content_buf, "Silent completion output");
+    }
+
+    #[test]
+    fn test_handle_thought_headline_update_in_place_tracking() {
+        let pb = indicatif::ProgressBar::hidden();
+        let mut state = SseStreamState::new(std::time::Instant::now(), false);
+
+        // First headline
+        state.handle_thought_headline_update("Step 1: Ingesting Data", &pb);
+        assert_eq!(
+            state.last_thought_headline.as_deref(),
+            Some("Step 1: Ingesting Data")
+        );
+
+        // Transition: updates active headline in-place without terminal noise
+        state.handle_thought_headline_update("Step 2: Processing Content", &pb);
+        assert_eq!(
+            state.last_thought_headline.as_deref(),
+            Some("Step 2: Processing Content")
+        );
+
+        state.handle_thought_headline_update("Step 3: Generating Output", &pb);
+        assert_eq!(
+            state.last_thought_headline.as_deref(),
+            Some("Step 3: Generating Output")
+        );
     }
 }

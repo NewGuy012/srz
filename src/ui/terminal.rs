@@ -71,14 +71,16 @@ impl Ui {
     }
 
     /// Creates a styled spinner on stderr with a status message,
-    /// or a hidden progress bar if quiet mode is enabled or stderr is not a terminal.
+    /// or a hidden progress bar if quiet mode is enabled, stderr is not a terminal,
+    /// or the message is empty.
     pub fn spinner(message: impl Into<std::borrow::Cow<'static, str>>) -> ProgressBar {
-        if Self::is_quiet() || !*STDERR_IS_TERMINAL {
+        let msg = message.into();
+        if Self::is_quiet() || !*STDERR_IS_TERMINAL || msg.trim().is_empty() {
             return ProgressBar::hidden();
         }
         let pb = ProgressBar::new_spinner();
         pb.set_style(SPINNER_STYLE.clone());
-        pb.set_message(message);
+        pb.set_message(msg);
         pb.enable_steady_tick(Duration::from_millis(80));
         pb
     }
@@ -87,12 +89,14 @@ impl Ui {
     pub fn finish_spinner(pb: &ProgressBar, message: &str) {
         let elapsed = pb.elapsed();
         pb.finish_and_clear();
-        Self::success_with_elapsed(message, elapsed);
+        if !message.trim().is_empty() {
+            Self::success_with_elapsed(message, elapsed);
+        }
     }
 
     /// Prints a success message to stderr, optionally appending formatted elapsed duration.
     pub fn success_with_elapsed(message: &str, elapsed: Duration) {
-        if Self::is_quiet() {
+        if Self::is_quiet() || message.trim().is_empty() {
             return;
         }
         let safe_msg = sanitize_terminal_text_cow(message);
@@ -198,7 +202,7 @@ impl Ui {
 
     /// Prints a success message to stderr.
     pub fn success(message: &str) {
-        if !Self::is_quiet() {
+        if !Self::is_quiet() && !message.trim().is_empty() {
             Self::print_styled("✔", "1;32", message);
         }
     }
@@ -518,5 +522,23 @@ mod tests {
         pb.set_style(style);
         pb.set_message("Testing spinner");
         pb.tick();
+    }
+
+    #[test]
+    fn test_spinner_empty_message_returns_hidden() {
+        assert!(Ui::spinner("").is_hidden());
+        assert!(Ui::spinner("   ").is_hidden());
+        assert!(Ui::spinner("\n\t").is_hidden());
+    }
+
+    #[test]
+    fn test_success_and_elapsed_empty_message_ignored() {
+        Ui::success("");
+        Ui::success("   ");
+        Ui::success_with_elapsed("", Duration::from_secs(5));
+        Ui::success_with_elapsed("   ", Duration::from_secs(5));
+        let pb = ProgressBar::hidden();
+        Ui::finish_spinner(&pb, "");
+        Ui::finish_spinner(&pb, "   ");
     }
 }
