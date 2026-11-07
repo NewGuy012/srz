@@ -395,7 +395,7 @@ fn present_summary_outcome(outcome: SummaryOutcome, args: &Cli, cache: &Cache) -
             summary: &outcome.summary,
             reasoning: outcome.reasoning.as_deref(),
         };
-        let _ = db.record_summary(&record);
+        let _ = db.record_summary_with_key(&record, outcome.cache_key.as_deref());
         if args.open {
             let _ = commands::update_index_dashboard(&db, cache);
         }

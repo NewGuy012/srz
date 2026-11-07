@@ -1,4 +1,4 @@
-use crate::cache::{Cache, CachedSummary, SetBookSummaryParams};
+use crate::cache::{Cache, CachedSummary};
 use crate::cli::Cli;
 use crate::llm::{self, LlmClient, LlmOutput, StreamMode};
 use crate::scraper::{ScrapedPage, WebScraper};
@@ -28,6 +28,7 @@ pub struct SummaryOutcome {
     pub tokens_per_second: Option<f64>,
     pub cached: bool,
     pub hint: Option<String>,
+    pub cache_key: Option<String>,
 }
 
 impl SummaryOutcome {
@@ -57,7 +58,13 @@ impl SummaryOutcome {
             tokens_per_second: output.tokens_per_second,
             cached: false,
             hint: output.hint,
+            cache_key: None,
         }
+    }
+
+    pub fn with_cache_key(mut self, key: impl Into<String>) -> Self {
+        self.cache_key = Some(key.into());
+        self
     }
 
     pub fn from_cached(
@@ -81,6 +88,7 @@ impl SummaryOutcome {
             tokens_per_second: None,
             cached: true,
             hint: None,
+            cache_key: None,
         }
     }
 }
@@ -280,28 +288,22 @@ pub async fn handle_file(
         )
         .await?;
 
-    if !output.truncated
-        && let Some(ref k) = file_key
-    {
-        cache.set_file_summary(
-            k,
-            args.style,
-            &args.model,
-            &doc.title,
-            &output.content,
-            doc.word_count,
-            output.reasoning.as_deref(),
-        );
-    }
-
-    Ok(SummaryOutcome::from_llm(
+    let is_truncated = output.truncated;
+    let outcome = SummaryOutcome::from_llm(
         "file",
         doc.title,
         None,
         Some(path_str),
         doc.word_count,
         output,
-    ))
+    );
+    let outcome = if !is_truncated && let Some(k) = file_key {
+        outcome.with_cache_key(k)
+    } else {
+        outcome
+    };
+
+    Ok(outcome)
 }
 
 pub async fn handle_stdin(
@@ -406,26 +408,22 @@ pub async fn handle_web(
         )
         .await?;
 
-    if !output.truncated {
-        cache.set_web_summary_with_words(
-            url,
-            args.style,
-            &args.model,
-            &title_display,
-            &output.content,
-            page.word_count,
-            output.reasoning.as_deref(),
-        );
-    }
-
-    Ok(SummaryOutcome::from_llm(
+    let is_truncated = output.truncated;
+    let outcome = SummaryOutcome::from_llm(
         target_type,
         title_display,
         None,
         Some(url.to_string()),
         page.word_count,
         output,
-    ))
+    );
+    let outcome = if !is_truncated {
+        outcome.with_cache_key(url)
+    } else {
+        outcome
+    };
+
+    Ok(outcome)
 }
 
 pub async fn handle_news(
@@ -527,27 +525,23 @@ pub async fn handle_news(
         .summarize_news_digest(topic, timeframe.display_label(), &digest, args.style, mode)
         .await?;
 
-    if !output.truncated {
-        cache.set_news_summary(
-            topic,
-            timeframe,
-            args.style,
-            &args.model,
-            &title_display,
-            &output.content,
-            total_words,
-            output.reasoning.as_deref(),
-        );
-    }
-
-    Ok(SummaryOutcome::from_llm(
+    let is_truncated = output.truncated;
+    let outcome = SummaryOutcome::from_llm(
         "news",
         title_display,
         Some(author_str),
         Some(search_url),
         total_words,
         output,
-    ))
+    );
+    let outcome = if !is_truncated {
+        let key = outcome.title.clone();
+        outcome.with_cache_key(key)
+    } else {
+        outcome
+    };
+
+    Ok(outcome)
 }
 
 pub async fn handle_book(
@@ -581,28 +575,22 @@ pub async fn handle_book(
     let (output, word_count, source_url) =
         generate_book_summary(&query, scraper, llm, cache, args, mode).await?;
 
-    // 3. Cache only complete, non-truncated summaries (zero-copy borrow of title & summary)
-    if !output.truncated {
-        cache.set_book_summary(SetBookSummaryParams {
-            title,
-            author,
-            style: args.style,
-            model: &args.model,
-            display_title: &book_display,
-            summary: &output.content,
-            word_count,
-            reasoning: output.reasoning.as_deref(),
-        });
-    }
-
-    Ok(SummaryOutcome::from_llm(
+    let is_truncated = output.truncated;
+    let outcome = SummaryOutcome::from_llm(
         "book",
         book_display,
         author.map(|a| a.to_string()),
         source_url,
         word_count,
         output,
-    ))
+    );
+    let outcome = if !is_truncated {
+        outcome.with_cache_key(title)
+    } else {
+        outcome
+    };
+
+    Ok(outcome)
 }
 
 struct BookQuery<'a> {

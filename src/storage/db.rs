@@ -368,112 +368,11 @@ impl Database {
     }
 
     fn is_schema_initialized(&self) -> bool {
-        self.conn
-            .execute(
-                "SELECT 1 FROM history, cache_pages, cache_search LIMIT 0",
-                [],
-            )
-            .is_ok()
-            && self
-                .conn
-                .execute("SELECT target_type FROM library LIMIT 0", [])
-                .is_err()
+        is_duckdb_schema_ready(&self.conn)
     }
 
     fn init_schema(&self) -> Result<()> {
-        self.conn
-            .execute_batch(
-                "CREATE SEQUENCE IF NOT EXISTS history_id_seq;
-             CREATE TABLE IF NOT EXISTS history (
-                 id INTEGER DEFAULT nextval('history_id_seq') PRIMARY KEY,
-                 target_type VARCHAR NOT NULL,
-                 title VARCHAR NOT NULL,
-                 author VARCHAR,
-                 url VARCHAR,
-                 style VARCHAR NOT NULL,
-                 model VARCHAR NOT NULL,
-                 word_count UINTEGER NOT NULL,
-                 prompt_tokens UINTEGER,
-                 completion_tokens UINTEGER,
-                 duration_ms UINTEGER NOT NULL,
-                 tokens_per_second FLOAT,
-                 created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-                 cache_key VARCHAR
-             );
-             ALTER TABLE history ADD COLUMN IF NOT EXISTS cache_key VARCHAR;
-
-             CREATE TABLE IF NOT EXISTS library (
-                 id INTEGER PRIMARY KEY,
-                 summary TEXT NOT NULL,
-                 reasoning TEXT
-             );
-             ALTER TABLE library ADD COLUMN IF NOT EXISTS reasoning TEXT;
-             ALTER TABLE library DROP COLUMN IF EXISTS target_type;
-             ALTER TABLE library DROP COLUMN IF EXISTS title;
-             ALTER TABLE library DROP COLUMN IF EXISTS author;
-             ALTER TABLE library DROP COLUMN IF EXISTS url;
-             ALTER TABLE library DROP COLUMN IF EXISTS created_at;
-             DROP SEQUENCE IF EXISTS library_id_seq;
-
-             -- Drop obsolete separate cache_summaries table if present from older versions
-             DROP TABLE IF EXISTS cache_summaries;
-
-             CREATE TABLE IF NOT EXISTS cache_pages (
-                 cache_key VARCHAR PRIMARY KEY,
-                 url VARCHAR NOT NULL,
-                 title VARCHAR,
-                 content TEXT NOT NULL,
-                 word_count UINTEGER NOT NULL,
-                 cached_at TIMESTAMP NOT NULL DEFAULT current_timestamp
-             );
-
-             CREATE TABLE IF NOT EXISTS cache_search (
-                 cache_key VARCHAR PRIMARY KEY,
-                 data TEXT NOT NULL,
-                 cached_at TIMESTAMP NOT NULL DEFAULT current_timestamp
-             );
-
-             CREATE TABLE IF NOT EXISTS cache_server_capabilities (
-                 endpoint VARCHAR PRIMARY KEY,
-                 model_id VARCHAR NOT NULL,
-                 n_ctx UBIGINT NOT NULL,
-                 total_slots UINTEGER NOT NULL DEFAULT 1,
-                 supports_tokenize BOOLEAN NOT NULL DEFAULT FALSE,
-                 tokenize_endpoint VARCHAR,
-                 backend_kind VARCHAR NOT NULL,
-                 cached_ms BIGINT NOT NULL DEFAULT 0
-             );
-
-             CREATE TABLE IF NOT EXISTS library_terms (
-                 doc_id INTEGER NOT NULL,
-                 term VARCHAR NOT NULL,
-                 term_freq INTEGER NOT NULL,
-                 in_title BOOLEAN NOT NULL DEFAULT FALSE,
-                 PRIMARY KEY (doc_id, term)
-             );
-
-             CREATE SEQUENCE IF NOT EXISTS chat_sessions_id_seq;
-             CREATE TABLE IF NOT EXISTS chat_sessions (
-                 id INTEGER DEFAULT nextval('chat_sessions_id_seq') PRIMARY KEY,
-                 title VARCHAR NOT NULL,
-                 target_type VARCHAR NOT NULL,
-                 target_url VARCHAR,
-                 model VARCHAR NOT NULL,
-                 created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-                 updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp
-             );
-
-             CREATE SEQUENCE IF NOT EXISTS chat_messages_id_seq;
-             CREATE TABLE IF NOT EXISTS chat_messages (
-                 id INTEGER DEFAULT nextval('chat_messages_id_seq') PRIMARY KEY,
-                 session_id INTEGER NOT NULL,
-                 role VARCHAR NOT NULL,
-                 content TEXT NOT NULL,
-                 created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
-             );",
-            )
-            .context("Failed to initialize DuckDB schema")?;
-
+        init_duckdb_schema(&self.conn)?;
         self.backfill_terms_if_needed()?;
         Ok(())
     }
@@ -552,14 +451,26 @@ impl Database {
 
     /// Records a newly generated summary into both the `history` and `library` tables within a single transaction.
     pub fn record_summary(&self, record: &NewSummaryRecord<'_>) -> Result<()> {
-        let cache_key = match record.target_type {
+        self.record_summary_with_key(record, None)
+    }
+
+    /// Records a newly generated summary with an optional explicit cache key.
+    pub fn record_summary_with_key(
+        &self,
+        record: &NewSummaryRecord<'_>,
+        explicit_cache_key: Option<&str>,
+    ) -> Result<()> {
+        let fallback_key = match record.target_type {
             "file" => record
                 .url
                 .and_then(|p| crate::commands::summarize::file_cache_key(std::path::Path::new(p))),
             "web" => record.url.map(|u| u.to_string()),
             _ => Some(record.title.to_string()),
         };
-        let effective_cache_key = cache_key.as_deref().or(record.url).unwrap_or(record.title);
+        let effective_cache_key = explicit_cache_key
+            .or(fallback_key.as_deref())
+            .or(record.url)
+            .unwrap_or(record.title);
 
         self.with_transaction(|conn| {
             conn.execute(
@@ -1194,7 +1105,12 @@ pub fn tokenize_terms(text: &str) -> Vec<String> {
 }
 
 /// Indexes document title and summary terms into `library_terms`.
-fn insert_doc_terms(conn: &Connection, doc_id: i64, title: &str, summary: &str) -> Result<()> {
+pub(crate) fn insert_doc_terms(
+    conn: &Connection,
+    doc_id: i64,
+    title: &str,
+    summary: &str,
+) -> Result<()> {
     let mut term_counts: std::collections::HashMap<String, (usize, bool)> =
         std::collections::HashMap::new();
 
@@ -1229,6 +1145,114 @@ fn insert_doc_terms(conn: &Connection, doc_id: i64, title: &str, summary: &str) 
         stmt.execute(params![doc_id, term, freq as i64, in_title])?;
     }
 
+    Ok(())
+}
+
+/// Checks whether the DuckDB schema has already been initialized on the given connection.
+pub fn is_duckdb_schema_ready(conn: &Connection) -> bool {
+    conn.execute(
+        "SELECT 1 FROM history, cache_pages, cache_search, cache_server_capabilities, chat_sessions LIMIT 0",
+        [],
+    )
+    .is_ok()
+        && conn
+            .execute("SELECT target_type FROM library LIMIT 0", [])
+            .is_err()
+}
+
+/// Initializes the unified DuckDB schema, tables, sequences, and indexes.
+pub fn init_duckdb_schema(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE SEQUENCE IF NOT EXISTS history_id_seq;
+         CREATE TABLE IF NOT EXISTS history (
+             id INTEGER DEFAULT nextval('history_id_seq') PRIMARY KEY,
+             target_type VARCHAR NOT NULL,
+             title VARCHAR NOT NULL,
+             author VARCHAR,
+             url VARCHAR,
+             style VARCHAR NOT NULL,
+             model VARCHAR NOT NULL,
+             word_count UINTEGER NOT NULL,
+             prompt_tokens UINTEGER,
+             completion_tokens UINTEGER,
+             duration_ms UINTEGER NOT NULL,
+             tokens_per_second FLOAT,
+             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+             cache_key VARCHAR
+         );
+         ALTER TABLE history ADD COLUMN IF NOT EXISTS cache_key VARCHAR;
+
+         CREATE TABLE IF NOT EXISTS library (
+             id INTEGER PRIMARY KEY,
+             summary TEXT NOT NULL,
+             reasoning TEXT
+         );
+         ALTER TABLE library ADD COLUMN IF NOT EXISTS reasoning TEXT;
+         ALTER TABLE library DROP COLUMN IF EXISTS target_type;
+         ALTER TABLE library DROP COLUMN IF EXISTS title;
+         ALTER TABLE library DROP COLUMN IF EXISTS author;
+         ALTER TABLE library DROP COLUMN IF EXISTS url;
+         ALTER TABLE library DROP COLUMN IF EXISTS created_at;
+         DROP SEQUENCE IF EXISTS library_id_seq;
+
+         -- Drop obsolete separate cache_summaries table if present from older versions
+         DROP TABLE IF EXISTS cache_summaries;
+
+         CREATE TABLE IF NOT EXISTS cache_pages (
+             cache_key VARCHAR PRIMARY KEY,
+             url VARCHAR NOT NULL,
+             title VARCHAR,
+             content TEXT NOT NULL,
+             word_count UINTEGER NOT NULL,
+             cached_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+         );
+
+         CREATE TABLE IF NOT EXISTS cache_search (
+             cache_key VARCHAR PRIMARY KEY,
+             data TEXT NOT NULL,
+             cached_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+         );
+
+         CREATE TABLE IF NOT EXISTS cache_server_capabilities (
+             endpoint VARCHAR PRIMARY KEY,
+             model_id VARCHAR NOT NULL,
+             n_ctx UBIGINT NOT NULL,
+             total_slots UINTEGER NOT NULL DEFAULT 1,
+             supports_tokenize BOOLEAN NOT NULL DEFAULT FALSE,
+             tokenize_endpoint VARCHAR,
+             backend_kind VARCHAR NOT NULL,
+             cached_ms BIGINT NOT NULL DEFAULT 0
+         );
+
+         CREATE TABLE IF NOT EXISTS library_terms (
+             doc_id INTEGER NOT NULL,
+             term VARCHAR NOT NULL,
+             term_freq INTEGER NOT NULL,
+             in_title BOOLEAN NOT NULL DEFAULT FALSE,
+             PRIMARY KEY (doc_id, term)
+         );
+
+         CREATE SEQUENCE IF NOT EXISTS chat_sessions_id_seq;
+         CREATE TABLE IF NOT EXISTS chat_sessions (
+             id INTEGER DEFAULT nextval('chat_sessions_id_seq') PRIMARY KEY,
+             title VARCHAR NOT NULL,
+             target_type VARCHAR NOT NULL,
+             target_url VARCHAR,
+             model VARCHAR NOT NULL,
+             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+             updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+         );
+
+         CREATE SEQUENCE IF NOT EXISTS chat_messages_id_seq;
+         CREATE TABLE IF NOT EXISTS chat_messages (
+             id INTEGER DEFAULT nextval('chat_messages_id_seq') PRIMARY KEY,
+             session_id INTEGER NOT NULL,
+             role VARCHAR NOT NULL,
+             content TEXT NOT NULL,
+             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+         );",
+    )
+    .context("Failed to initialize DuckDB schema")?;
     Ok(())
 }
 

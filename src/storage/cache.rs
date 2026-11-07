@@ -313,71 +313,10 @@ impl Cache {
 
             if let Ok((conn, already_exists)) = crate::db::open_hardened_duckdb_file(&self.db_path)
             {
-                let schema_ready = already_exists
-                    && conn
-                        .execute(
-                            "SELECT 1 FROM cache_pages, cache_search, cache_server_capabilities, history, library LIMIT 0",
-                            [],
-                        )
-                        .is_ok();
+                let schema_ready =
+                    already_exists && crate::storage::db::is_duckdb_schema_ready(&conn);
                 if !schema_ready {
-                    let _ = conn.execute_batch(
-                        "DROP TABLE IF EXISTS cache_summaries;
-                         CREATE TABLE IF NOT EXISTS cache_pages (
-                             cache_key VARCHAR PRIMARY KEY,
-                             url VARCHAR NOT NULL,
-                             title VARCHAR,
-                             content TEXT NOT NULL,
-                             word_count UINTEGER NOT NULL,
-                             cached_at TIMESTAMP NOT NULL DEFAULT current_timestamp
-                         );
-                         CREATE TABLE IF NOT EXISTS cache_search (
-                             cache_key VARCHAR PRIMARY KEY,
-                             data TEXT NOT NULL,
-                             cached_at TIMESTAMP NOT NULL DEFAULT current_timestamp
-                         );
-                         CREATE TABLE IF NOT EXISTS cache_server_capabilities (
-                             endpoint VARCHAR PRIMARY KEY,
-                             model_id VARCHAR NOT NULL,
-                             n_ctx UBIGINT NOT NULL,
-                             total_slots UINTEGER NOT NULL DEFAULT 1,
-                             supports_tokenize BOOLEAN NOT NULL DEFAULT FALSE,
-                             tokenize_endpoint VARCHAR,
-                             backend_kind VARCHAR NOT NULL,
-                             cached_ms BIGINT NOT NULL DEFAULT 0
-                         );
-                         CREATE SEQUENCE IF NOT EXISTS history_id_seq;
-                         CREATE TABLE IF NOT EXISTS history (
-                             id INTEGER DEFAULT nextval('history_id_seq') PRIMARY KEY,
-                             target_type VARCHAR NOT NULL,
-                             title VARCHAR NOT NULL,
-                             author VARCHAR,
-                             url VARCHAR,
-                             style VARCHAR NOT NULL,
-                             model VARCHAR NOT NULL,
-                             word_count UINTEGER NOT NULL,
-                             prompt_tokens UINTEGER,
-                             completion_tokens UINTEGER,
-                             duration_ms UINTEGER NOT NULL,
-                             tokens_per_second FLOAT,
-                             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-                             cache_key VARCHAR
-                         );
-                         ALTER TABLE history ADD COLUMN IF NOT EXISTS cache_key VARCHAR;
-                         CREATE TABLE IF NOT EXISTS library (
-                             id INTEGER PRIMARY KEY,
-                             summary TEXT NOT NULL,
-                             reasoning TEXT
-                         );
-                         ALTER TABLE library ADD COLUMN IF NOT EXISTS reasoning TEXT;
-                         CREATE TABLE IF NOT EXISTS library_terms (
-                             doc_id INTEGER NOT NULL,
-                             term VARCHAR NOT NULL,
-                             term_freq INTEGER NOT NULL,
-                             in_title BOOLEAN NOT NULL DEFAULT FALSE,
-                             PRIMARY KEY (doc_id, term)
-                         );",
-                    );
+                    let _ = crate::storage::db::init_duckdb_schema(&conn);
                 }
                 *guard = Some(conn);
             }
@@ -1120,6 +1059,7 @@ impl Cache {
                     "INSERT INTO library (id, summary, reasoning) VALUES (?, ?, ?)",
                     params![doc_id, summary, reasoning],
                 );
+                let _ = crate::storage::db::insert_doc_terms(conn, doc_id, title, summary);
             }
         }
     }

@@ -117,8 +117,9 @@ impl GoogleNewsClient {
 
         let base64_id = extract_article_id(google_url)?;
 
-        // 2. Fetch intermediate Google News article page to extract ephemeral signature & timestamp
-        let page_url = format!("https://news.google.com/articles/{}", base64_id);
+        // 2. Fetch intermediate Google News article page to extract ephemeral signature & timestamp.
+        // Must use /rss/articles/ because /articles/ triggers Google bot protection (HTTP 429 CAPTCHA).
+        let page_url = format!("https://news.google.com/rss/articles/{}", base64_id);
         let resp = self.client.get(&page_url).send().await.ok()?;
         let html =
             crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES)
@@ -262,11 +263,16 @@ impl GoogleNewsClient {
             if let Some(c) = cache
                 && let Some(page) = c.get_news_page(&item.google_link)
                 && page.word_count > 60
+                && !is_google_news_link(&page.url)
             {
                 sources.push(NewsDigestSource {
                     title: page.title.unwrap_or(item.title),
                     source_name: item.source_name.unwrap_or_else(|| "Source".to_string()),
-                    url: item.google_link,
+                    url: if is_google_news_link(&item.google_link) {
+                        page.url
+                    } else {
+                        item.google_link
+                    },
                     pub_date: item.pub_date,
                     content: page.content,
                     word_count: page.word_count,
@@ -282,6 +288,7 @@ impl GoogleNewsClient {
                 && let Some(c) = cache
                 && let Some(page) = c.get_news_page(&direct)
                 && page.word_count > 60
+                && !is_google_news_link(&page.url)
             {
                 // Cache under google_link as well for sub-millisecond future hits
                 c.set_page(&item.google_link, &page);
@@ -313,10 +320,41 @@ impl GoogleNewsClient {
             let sem = semaphore.clone();
             join_set.spawn(async move {
                 let _permit = sem.acquire().await.ok()?;
-                let direct_url = match client.resolve_article_url(&item.google_link).await {
+                let is_gnews = is_google_news_link(&item.google_link);
+                let resolved_url = client.resolve_article_url(&item.google_link).await;
+
+                let direct_url = match resolved_url {
                     Some(u) => u,
-                    None => item.google_link.clone(),
+                    None if !is_gnews => item.google_link.clone(),
+                    None => {
+                        // Could not resolve Google News redirect URL to real publisher.
+                        // Fall back to feed snippet if substantial; never scrape news.google.com!
+                        if let Some(snip) = &item.snippet
+                            && snip.split_whitespace().count() >= 20
+                        {
+                            let wc = snip.split_whitespace().count();
+                            return Some((
+                                item.google_link.clone(),
+                                NewsDigestSource {
+                                    title: item.title,
+                                    source_name: item
+                                        .source_name
+                                        .unwrap_or_else(|| "Source".to_string()),
+                                    url: item.google_link,
+                                    pub_date: item.pub_date,
+                                    content: snip.clone(),
+                                    word_count: wc,
+                                },
+                            ));
+                        }
+                        return None;
+                    }
                 };
+
+                // Safety guard: never attempt to scrape Google News redirect/tracking shells
+                if is_google_news_link(&direct_url) {
+                    return None;
+                }
 
                 let scraped: Result<ScrapedPage> = scraper_cloned.scrape(&direct_url).await;
                 let (content, word_count, resolved_title) = if let Ok(page) = scraped
@@ -360,9 +398,11 @@ impl GoogleNewsClient {
                         content: source.content.clone(),
                         word_count: source.word_count,
                     };
-                    c.set_page(&source.url, &page_record);
-                    if source.url != google_link {
-                        c.set_page(&google_link, &page_record);
+                    if !is_google_news_link(&source.url) {
+                        c.set_page(&source.url, &page_record);
+                        if source.url != google_link {
+                            c.set_page(&google_link, &page_record);
+                        }
                     }
                 }
                 sources.push(source);
@@ -768,6 +808,12 @@ fn extract_url_from_protobuf(raw: &[u8]) -> Option<String> {
     None
 }
 
+/// Returns whether the provided URL points to Google News redirect/syndication endpoints.
+pub fn is_google_news_link(url: &str) -> bool {
+    let clean = url.trim();
+    clean.starts_with("https://news.google.com/") || clean.starts_with("http://news.google.com/")
+}
+
 pub fn extract_article_id(url: &str) -> Option<&str> {
     let clean = url.trim();
     if !clean.starts_with("https://news.google.com/")
@@ -803,16 +849,50 @@ pub fn extract_attr_value<'a>(html: &'a str, attr_prefix: &str) -> Option<&'a st
 }
 
 pub fn parse_batchexecute_destination_url(text: &str) -> Option<String> {
-    let split_chunk = text.split("\n\n").nth(1)?;
-    let parsed: serde_json::Value = serde_json::from_str(split_chunk).ok()?;
-    let json_str = parsed.pointer("/0/2")?.as_str()?;
-    let inner_json: serde_json::Value = serde_json::from_str(json_str).ok()?;
-    let dest = inner_json.pointer("/1")?.as_str()?.trim();
-    if crate::system::text_util::is_http_url(dest) && !dest.chars().any(|c| c.is_control()) {
-        Some(dest.to_string())
-    } else {
-        None
+    let clean = text.trim();
+    let json_text = clean.strip_prefix(")]}'").unwrap_or(clean).trim();
+
+    // The response may be chunk-delimited by double newlines
+    let candidate = json_text
+        .split("\n\n")
+        .find(|chunk| chunk.trim().starts_with('['))
+        .unwrap_or(json_text);
+
+    let parsed: serde_json::Value = serde_json::from_str(candidate.trim()).ok()?;
+
+    // Search for the "Fbv4je" envelope
+    if let Some(arr) = parsed.as_array() {
+        for entry in arr {
+            if let Some(entry_arr) = entry.as_array()
+                && entry_arr.get(1).and_then(|v| v.as_str()) == Some("Fbv4je")
+                && let Some(payload_str) = entry_arr.get(2).and_then(|v| v.as_str())
+                && let Ok(inner) = serde_json::from_str::<serde_json::Value>(payload_str)
+                && let Some(dest) = inner.pointer("/1").and_then(|v| v.as_str())
+            {
+                let trimmed = dest.trim();
+                if crate::system::text_util::is_http_url(trimmed)
+                    && !trimmed.chars().any(|c| c.is_control())
+                {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
     }
+
+    // Fallback to legacy fixed pointer /0/2 -> /1
+    if let Some(json_str) = parsed.pointer("/0/2").and_then(|v| v.as_str())
+        && let Ok(inner) = serde_json::from_str::<serde_json::Value>(json_str)
+        && let Some(dest) = inner.pointer("/1").and_then(|v| v.as_str())
+    {
+        let trimmed = dest.trim();
+        if crate::system::text_util::is_http_url(trimmed)
+            && !trimmed.chars().any(|c| c.is_control())
+        {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -1027,6 +1107,29 @@ mod tests {
         assert_eq!(
             decode_google_news_url("https://news.google.com/articles/CBIi98765"),
             None
+        );
+    }
+
+    #[test]
+    fn test_is_google_news_link() {
+        assert!(is_google_news_link(
+            "https://news.google.com/rss/articles/CBMi123"
+        ));
+        assert!(is_google_news_link(
+            "http://news.google.com/articles/CBMi123"
+        ));
+        assert!(!is_google_news_link(
+            "https://www.infoworld.com/article/123"
+        ));
+        assert!(!is_google_news_link("https://example.com/feed"));
+    }
+
+    #[test]
+    fn test_parse_batchexecute_destination_url_live_format() {
+        let live_rpc = ")]}'\n\n[[\"wrb.fr\",\"Fbv4je\",\"[\\\"garturlres\\\",\\\"https://www.infoworld.com/article/4217735/rustup-1-29-1-brings-concurrency-improvements.html\\\",1]\",null,null,null,\"generic\"],[\"di\",16],[\"af.httprm\",16,\"-7664160711534798251\",10]]";
+        assert_eq!(
+            parse_batchexecute_destination_url(live_rpc),
+            Some("https://www.infoworld.com/article/4217735/rustup-1-29-1-brings-concurrency-improvements.html".to_string())
         );
     }
 
