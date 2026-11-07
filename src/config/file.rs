@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn test_load_from_path_lifecycle() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = crate::system::fs_util::tempdir().unwrap();
         let config_path = tmp.path().join("config.toml");
 
         // Missing file returns error
@@ -267,7 +267,7 @@ mod tests {
 
     #[test]
     fn test_load_from_path_bounds_and_file_type() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = crate::system::fs_util::tempdir().unwrap();
 
         // Directory path is rejected
         let dir_path = tmp.path().join("config_dir");

@@ -226,7 +226,7 @@ fn test_parse_clean_version_canonicalization_and_rejection() {
 
 #[test]
 fn test_upgrade_temp_file_creation_prevents_overwrite() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = srz::fs_util::tempdir().unwrap();
     let target_file = tmp.path().join(".srz-upgrade-existing");
     std::fs::write(&target_file, b"existing-content").unwrap();
 

@@ -4,10 +4,8 @@ use srz::scraper::ScrapedPage;
 use srz::search::{BookMetadata, SearchResult};
 use std::fs;
 
-fn temp_test_dir(label: &str) -> tempfile::TempDir {
-    tempfile::Builder::new()
-        .prefix(&format!("srz_test_{}_", label))
-        .tempdir()
+fn temp_test_dir(label: &str) -> srz::fs_util::TempDir {
+    srz::fs_util::TempDir::new_in(std::env::temp_dir(), &format!("srz_test_{}_", label))
         .expect("Failed to create temporary directory")
 }
 

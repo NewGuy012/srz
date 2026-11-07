@@ -69,7 +69,7 @@ fn test_database_query_raw_and_exports() {
     assert_eq!(q_res.rows[0][1], serde_json::json!(1));
 
     // 2. export_json
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = srz::fs_util::tempdir().unwrap();
     let json_path = tmp.path().join("export.json");
     db.export_json(&json_path).unwrap();
     assert!(json_path.exists());
@@ -361,7 +361,7 @@ fn test_database_reset() {
 
 #[test]
 fn test_database_file_open_and_reopen() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = srz::fs_util::tempdir().unwrap();
     let db_path = tmp.path().join("reopen.duckdb");
 
     // First open initializes schema
@@ -572,7 +572,7 @@ fn test_database_search_special_characters_and_sql_injection() {
 #[test]
 #[cfg(unix)]
 fn test_database_refuses_symlink() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = srz::fs_util::tempdir().unwrap();
     let real_db = tmp.path().join("real.duckdb");
     let symlink_db = tmp.path().join("symlink.duckdb");
 
@@ -594,7 +594,7 @@ fn test_database_refuses_symlink() {
 
 #[test]
 fn test_database_attach() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = srz::fs_util::tempdir().unwrap();
     let main_db = tmp.path().join("main.duckdb");
     let cache_db = tmp.path().join("cache.duckdb");
 
@@ -662,7 +662,7 @@ fn test_export_markdown_vault_escaping_and_collisions() {
     };
     db.record_summary(&record2).unwrap();
 
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = srz::fs_util::tempdir().unwrap();
     let vault_dir = tmp.path().join("vault");
     let count = db.export_markdown_vault(&vault_dir).unwrap();
     assert_eq!(count, 2);

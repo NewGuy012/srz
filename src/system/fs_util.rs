@@ -120,25 +120,96 @@ pub fn write_private_file(path: &Path, contents: impl AsRef<[u8]>) -> std::io::R
         create_private_dir_all(parent)?;
     }
 
-    let mut temp = tempfile::Builder::new()
-        .prefix(".srz-tmp-")
-        .tempfile_in(parent)?;
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp_name = format!(".srz-tmp-{}-{:x}-{}.tmp", std::process::id(), nonce, count);
+    let temp_path = parent.join(temp_name);
 
+    let mut open_opts = fs::OpenOptions::new();
+    open_opts.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = temp
-            .as_file()
-            .set_permissions(fs::Permissions::from_mode(0o600));
+        use std::os::unix::fs::OpenOptionsExt;
+        open_opts.mode(0o600);
     }
 
-    temp.write_all(contents.as_ref())?;
-    temp.flush()?;
+    let mut temp_file = open_opts.open(&temp_path)?;
+    if let Err(err) = temp_file
+        .write_all(contents.as_ref())
+        .and_then(|_| temp_file.flush())
+    {
+        let _ = fs::remove_file(&temp_path);
+        return Err(err);
+    }
+    drop(temp_file);
 
-    temp.persist(path).map_err(|e| e.error)?;
+    if let Err(err) = fs::rename(&temp_path, path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(err);
+    }
+
     set_private_file_perms(path);
-
     Ok(())
+}
+
+/// A RAII temporary directory that removes itself upon drop.
+#[derive(Debug)]
+pub struct TempDir {
+    path: PathBuf,
+}
+
+impl TempDir {
+    pub fn new() -> std::io::Result<Self> {
+        Self::new_in(std::env::temp_dir(), "srz-test")
+    }
+
+    pub fn new_in(parent: impl AsRef<Path>, prefix: &str) -> std::io::Result<Self> {
+        let parent = parent.as_ref();
+        if !parent.exists() {
+            fs::create_dir_all(parent)?;
+        }
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir_name = format!("{}-{}-{:x}-{}", prefix, std::process::id(), nonce, count);
+        let path = parent.join(dir_name);
+        create_private_dir_all(&path)?;
+        Ok(Self { path })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl AsRef<Path> for TempDir {
+    fn as_ref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl std::ops::Deref for TempDir {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+pub fn tempdir() -> std::io::Result<TempDir> {
+    TempDir::new()
 }
 
 #[cfg(test)]
@@ -159,7 +230,7 @@ mod tests {
 
     #[test]
     fn test_create_and_write_private_file() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempdir().unwrap();
         let dir = tmp.path().join("subdir");
         create_private_dir_all(&dir).unwrap();
         assert!(dir.is_dir());
@@ -175,7 +246,7 @@ mod tests {
     #[test]
     fn test_write_private_file_permissions() {
         use std::os::unix::fs::PermissionsExt;
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempdir().unwrap();
         let file_path = tmp.path().join("test.txt");
 
         write_private_file(&file_path, b"test private content").unwrap();
@@ -189,7 +260,7 @@ mod tests {
     fn test_fs_util_rejects_symlinks() {
         use std::os::unix::fs::symlink;
 
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempdir().unwrap();
         let dir = tmp.path();
 
         let target = dir.join("real_target.txt");

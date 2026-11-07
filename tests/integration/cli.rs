@@ -987,7 +987,7 @@ fn test_recommend_subcommand_execution() {
 async fn test_doctor_subcommand_execution() {
     let cli = Cli::parse_from(["srz", "doctor"]);
     let config = srz::config::Config::default();
-    let temp_cache_dir = tempfile::tempdir().unwrap();
+    let temp_cache_dir = srz::fs_util::tempdir().unwrap();
     let cache = srz::storage::cache::Cache::with_dir(temp_cache_dir.path().to_path_buf(), true);
 
     assert!(

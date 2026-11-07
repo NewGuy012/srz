@@ -109,7 +109,7 @@ fn test_markdown_to_styled_html_rendering() {
     assert!(escaped_quote.contains("<p>It's a test</p>"));
 
     // Verify ensure_view_files skips rewrite when force_write is false and files exist
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = srz::fs_util::tempdir().unwrap();
     let tmp_dir = tmp.path().to_path_buf();
     let rendered = ensure_view_files(&tmp_dir, "Dune", "Initial summary", true).unwrap();
     assert_eq!(
@@ -219,7 +219,7 @@ fn test_render_index_html() {
     assert!(html.contains(&format!("href=\"./{}.html\"", expected_web_slug)));
     assert!(html.contains(&format!("href=\"./{}.md\"", expected_web_slug)));
 
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = srz::fs_util::tempdir().unwrap();
     let tmp_dir = tmp.path().to_path_buf();
     let index_file = ensure_index_file(&tmp_dir, &stats, &entries).unwrap();
     assert!(index_file.exists());
@@ -477,7 +477,7 @@ fn test_epub_extractor_and_document_loader() {
     assert!(page.word_count >= 20);
 
     // File loading through DocumentLoader
-    let temp_dir = tempfile::tempdir().unwrap();
+    let temp_dir = srz::fs_util::tempdir().unwrap();
     let epub_file = temp_dir.path().join("gatsby.epub");
     std::fs::write(&epub_file, &epub_bytes).unwrap();
 
