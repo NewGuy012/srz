@@ -497,10 +497,20 @@ pub async fn handle_news(
         }
     };
 
+    // Cap each article's content to concise lead coverage (~600 words),
+    // avoiding sidebar/footer boilerplate while keeping total digest lightweight for single-pass synthesis.
+    const MAX_NEWS_ARTICLE_WORDS: usize = 600;
+
     let mut digest = String::new();
     let mut total_words = 0;
     for (i, src) in sources.iter().enumerate() {
-        total_words += src.word_count;
+        let trimmed_content = crate::engine::llm::truncate_words_preserving_lines(
+            &src.content,
+            MAX_NEWS_ARTICLE_WORDS,
+        );
+        let article_words = trimmed_content.split_whitespace().count();
+        total_words += article_words;
+
         let safe_title = crate::ui::sanitize_title(&src.title);
         let safe_publisher = crate::ui::sanitize_title(&src.source_name);
         let safe_url = crate::ui::sanitize_title(&src.url);
@@ -515,7 +525,7 @@ pub async fn handle_news(
             let safe_date = crate::ui::sanitize_title(date);
             digest.push_str(&format!("- Published: {}\n", safe_date));
         }
-        digest.push_str(&format!("\n{}\n\n---\n\n", src.content));
+        digest.push_str(&format!("\n{}\n\n---\n\n", trimmed_content));
     }
 
     let mode = args.stream_mode(&title_display);
