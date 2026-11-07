@@ -1,7 +1,7 @@
 use srz::upgrade::{
-    ArchiveFormat, InstallOrigin, compute_sha256_hex, detect_install_origin, detect_target_from,
-    extract_binary_from_tar_gz, extract_binary_from_zip, format_asset_names, parse_clean_version,
-    parse_sha256_checksum,
+    ArchiveFormat, InstallOrigin, Version, compute_sha256_hex, detect_install_origin,
+    detect_target_from, extract_binary_from_tar_gz, extract_binary_from_zip, format_asset_names,
+    parse_clean_version, parse_sha256_checksum,
 };
 use std::io::Write;
 use std::path::Path;
@@ -95,10 +95,10 @@ fn test_detect_install_origin() {
 #[test]
 fn test_parse_clean_version() {
     let v1 = parse_clean_version("v0.1.0").unwrap();
-    assert_eq!(v1, semver::Version::new(0, 1, 0));
+    assert_eq!(v1, Version::new(0, 1, 0));
 
     let v2 = parse_clean_version("0.2.5").unwrap();
-    assert_eq!(v2, semver::Version::new(0, 2, 5));
+    assert_eq!(v2, Version::new(0, 2, 5));
 
     let v3 = parse_clean_version("  v1.3.4-alpha.1 \n").unwrap();
     assert_eq!(v3.major, 1);
@@ -211,11 +211,11 @@ fn test_sha256_verification_computation() {
 fn test_parse_clean_version_canonicalization_and_rejection() {
     assert_eq!(
         parse_clean_version("v0.7.1").unwrap(),
-        semver::Version::new(0, 7, 1)
+        Version::new(0, 7, 1)
     );
     assert_eq!(
         parse_clean_version(" 0.7.1 ").unwrap(),
-        semver::Version::new(0, 7, 1)
+        Version::new(0, 7, 1)
     );
     // Malicious or invalid tags must fail to parse as semver
     assert!(parse_clean_version("../../../evil").is_err());

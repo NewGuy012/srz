@@ -100,10 +100,161 @@ pub fn detect_install_origin(exe_path: &Path) -> InstallOrigin {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Version {
+    pub major: u64,
+    pub minor: u64,
+    pub patch: u64,
+    pub pre: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionError(pub String);
+
+impl std::fmt::Display for VersionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Invalid semver: {}", self.0)
+    }
+}
+
+impl std::error::Error for VersionError {}
+
+impl Version {
+    pub const fn new(major: u64, minor: u64, patch: u64) -> Self {
+        Self {
+            major,
+            minor,
+            patch,
+            pre: None,
+        }
+    }
+
+    pub fn parse(v: &str) -> Result<Self, VersionError> {
+        let trimmed = v.trim();
+        let s = trimmed
+            .strip_prefix('v')
+            .or_else(|| trimmed.strip_prefix('V'))
+            .unwrap_or(trimmed);
+
+        // Disallow path traversal, shell characters, whitespace
+        if s.contains('/') || s.contains('\\') || s.contains(';') || s.contains(' ') {
+            return Err(VersionError(format!(
+                "Illegal characters in version: {}",
+                s
+            )));
+        }
+
+        // Strip build metadata (+...)
+        let (version_pre, _build) = match s.split_once('+') {
+            Some((vp, b)) => {
+                if b.is_empty()
+                    || !b
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+                {
+                    return Err(VersionError(format!("Invalid build metadata: {}", b)));
+                }
+                (vp, Some(b))
+            }
+            None => (s, None),
+        };
+
+        // Split core version from pre-release
+        let (core, pre) = match version_pre.split_once('-') {
+            Some((c, p)) => {
+                if p.is_empty()
+                    || !p
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+                {
+                    return Err(VersionError(format!(
+                        "Invalid prerelease identifier: {}",
+                        p
+                    )));
+                }
+                (c, Some(p.to_string()))
+            }
+            None => (version_pre, None),
+        };
+
+        let parts: Vec<&str> = core.split('.').collect();
+        if parts.len() != 3 {
+            return Err(VersionError(format!(
+                "Expected major.minor.patch, got: {}",
+                core
+            )));
+        }
+
+        let major = parts[0]
+            .parse::<u64>()
+            .map_err(|_| VersionError(format!("Invalid major version: {}", parts[0])))?;
+        let minor = parts[1]
+            .parse::<u64>()
+            .map_err(|_| VersionError(format!("Invalid minor version: {}", parts[1])))?;
+        let patch = parts[2]
+            .parse::<u64>()
+            .map_err(|_| VersionError(format!("Invalid patch version: {}", parts[2])))?;
+
+        Ok(Self {
+            major,
+            minor,
+            patch,
+            pre,
+        })
+    }
+}
+
+impl std::fmt::Display for Version {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)?;
+        if let Some(ref pre) = self.pre {
+            write!(f, "-{}", pre)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::str::FromStr for Version {
+    type Err = VersionError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
+impl PartialOrd for Version {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Version {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match self.major.cmp(&other.major) {
+            std::cmp::Ordering::Equal => {}
+            ord => return ord,
+        }
+        match self.minor.cmp(&other.minor) {
+            std::cmp::Ordering::Equal => {}
+            ord => return ord,
+        }
+        match self.patch.cmp(&other.patch) {
+            std::cmp::Ordering::Equal => {}
+            ord => return ord,
+        }
+        match (&self.pre, &other.pre) {
+            (None, None) => std::cmp::Ordering::Equal,
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (Some(a), Some(b)) => a.cmp(b),
+        }
+    }
+}
+
 /// Strips optional leading 'v' and parses a semantic version.
-pub fn parse_clean_version(v: &str) -> Result<semver::Version, semver::Error> {
-    let clean = v.trim().strip_prefix('v').unwrap_or(v.trim());
-    semver::Version::parse(clean)
+pub fn parse_clean_version(v: &str) -> Result<Version, VersionError> {
+    let clean = v.trim().trim_start_matches('v').trim_matches('/');
+    Version::parse(clean)
 }
 
 /// Extracts the hex digest from a standard sha256sum line (e.g. "a1b2...  srz.tar.gz").
