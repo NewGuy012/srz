@@ -629,10 +629,10 @@ fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
                 if let Some(mut stdin) = child.stdin.take() {
                     let _ = std::io::Write::write_all(&mut stdin, text.as_bytes());
                 }
-                if let Ok(status) = child.wait() {
-                    if status.success() {
-                        return Ok(());
-                    }
+                if let Ok(status) = child.wait()
+                    && status.success()
+                {
+                    return Ok(());
                 }
             }
         }
