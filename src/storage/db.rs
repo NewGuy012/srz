@@ -1066,6 +1066,7 @@ impl Database {
 
     /// Exports the summarized library to a CSV file.
     pub fn export_csv(&self, path: &Path) -> Result<()> {
+        prepare_export_file(path)?;
         let path_str = path.to_string_lossy();
         let sql = format!(
             "COPY (
@@ -1085,11 +1086,13 @@ impl Database {
         self.conn
             .execute_batch(&sql)
             .context("Failed to export library to CSV")?;
+        fs_util::set_private_file_perms(path);
         Ok(())
     }
 
     /// Exports the summarized library to Parquet.
     pub fn export_parquet(&self, path: &Path) -> Result<()> {
+        prepare_export_file(path)?;
         let path_str = path.to_string_lossy();
         let sql = format!(
             "COPY (
@@ -1105,6 +1108,7 @@ impl Database {
         self.conn
             .execute_batch(&sql)
             .context("Failed to export library to Parquet (requires DuckDB parquet extension)")?;
+        fs_util::set_private_file_perms(path);
         Ok(())
     }
 
@@ -1225,6 +1229,19 @@ fn insert_doc_terms(conn: &Connection, doc_id: i64, title: &str, summary: &str) 
         stmt.execute(params![doc_id, term, freq as i64, in_title])?;
     }
 
+    Ok(())
+}
+
+fn prepare_export_file(path: &Path) -> Result<()> {
+    if let Ok(meta) = std::fs::symlink_metadata(path)
+        && meta.file_type().is_symlink()
+    {
+        anyhow::bail!("Refusing to export to symlink: {}", path.display());
+    }
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    if !parent.as_os_str().is_empty() && !parent.exists() {
+        fs_util::create_private_dir_all(parent)?;
+    }
     Ok(())
 }
 
