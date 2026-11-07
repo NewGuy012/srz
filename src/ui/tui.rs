@@ -588,9 +588,10 @@ fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
         }
         let status = child.wait()?;
         if status.success() {
-            return Ok(());
+            Ok(())
+        } else {
+            Err(std::io::Error::other("pbcopy exited with error"))
         }
-        return Err(std::io::Error::other("pbcopy exited with error"));
     }
 
     #[cfg(target_os = "windows")]
@@ -605,9 +606,10 @@ fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
         }
         let status = child.wait()?;
         if status.success() {
-            return Ok(());
+            Ok(())
+        } else {
+            Err(std::io::Error::other("clip exited with error"))
         }
-        return Err(std::io::Error::other("clip exited with error"));
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]

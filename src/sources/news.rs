@@ -504,10 +504,10 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
                 } else if in_entry {
                     match name.as_str() {
                         "title" => {
-                            if let Ok(text) = reader.read_text(e.name()) {
-                                if cur_title.is_empty() {
-                                    cur_title = clean_xml_text(text.as_ref());
-                                }
+                            if let Ok(text) = reader.read_text(e.name())
+                                && cur_title.is_empty()
+                            {
+                                cur_title = clean_xml_text(text.as_ref());
                             }
                         }
                         "link" => {
@@ -534,64 +534,65 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
                             }
                         }
                         "guid" | "id" => {
-                            if let Ok(text) = reader.read_text(e.name()) {
-                                if cur_id.is_empty() {
-                                    cur_id = clean_xml_text(text.as_ref());
-                                }
+                            if let Ok(text) = reader.read_text(e.name())
+                                && cur_id.is_empty()
+                            {
+                                cur_id = clean_xml_text(text.as_ref());
                             }
                         }
                         "pubdate" | "published" | "updated" => {
-                            if let Ok(text) = reader.read_text(e.name()) {
-                                if cur_pub_date.is_none() {
-                                    cur_pub_date = normalize_feed_date(text.as_ref());
-                                }
+                            if let Ok(text) = reader.read_text(e.name())
+                                && cur_pub_date.is_none()
+                            {
+                                cur_pub_date = normalize_feed_date(text.as_ref());
                             }
                         }
                         "source" => {
-                            if let Ok(text) = reader.read_text(e.name()) {
-                                if cur_source.is_none() {
-                                    let cleaned = clean_xml_text(text.as_ref());
-                                    if !cleaned.is_empty() {
-                                        cur_source = Some(cleaned);
-                                    }
+                            if let Ok(text) = reader.read_text(e.name())
+                                && cur_source.is_none()
+                            {
+                                let cleaned = clean_xml_text(text.as_ref());
+                                if !cleaned.is_empty() {
+                                    cur_source = Some(cleaned);
                                 }
                             }
                         }
                         "author" | "name" => {
-                            if let Ok(text) = reader.read_text(e.name()) {
-                                if cur_author.is_none() {
-                                    let inner = if let Some(start) = text.find("<name>") {
-                                        if let Some(end) = text[start + 6..].find("</name>") {
-                                            &text[start + 6..start + 6 + end]
-                                        } else {
-                                            text.as_ref()
-                                        }
+                            if let Ok(text) = reader.read_text(e.name())
+                                && cur_author.is_none()
+                            {
+                                let inner = if let Some(start) = text.find("<name>") {
+                                    if let Some(end) = text[start + 6..].find("</name>") {
+                                        &text[start + 6..start + 6 + end]
                                     } else {
                                         text.as_ref()
-                                    };
-                                    let cleaned = clean_xml_text(inner);
-                                    if !cleaned.is_empty() {
-                                        cur_author = Some(cleaned);
                                     }
+                                } else {
+                                    text.as_ref()
+                                };
+                                let cleaned = clean_xml_text(inner);
+                                if !cleaned.is_empty() {
+                                    cur_author = Some(cleaned);
                                 }
                             }
                         }
                         "description" | "summary" | "content" => {
-                            if let Ok(text) = reader.read_text(e.name()) {
-                                if cur_snippet.is_none() {
-                                    let cleaned = clean_xml_text(text.as_ref());
-                                    if !cleaned.is_empty() {
-                                        cur_snippet = Some(cleaned);
-                                    }
+                            if let Ok(text) = reader.read_text(e.name())
+                                && cur_snippet.is_none()
+                            {
+                                let cleaned = clean_xml_text(text.as_ref());
+                                if !cleaned.is_empty() {
+                                    cur_snippet = Some(cleaned);
                                 }
                             }
                         }
                         _ => {}
                     }
-                } else if name == "title" && feed_source.is_none() {
-                    if let Ok(text) = reader.read_text(e.name()) {
-                        feed_source = Some(clean_xml_text(text.as_ref()));
-                    }
+                } else if name == "title"
+                    && feed_source.is_none()
+                    && let Ok(text) = reader.read_text(e.name())
+                {
+                    feed_source = Some(clean_xml_text(text.as_ref()));
                 }
             }
             Ok(Event::Empty(ref e)) => {
