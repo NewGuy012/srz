@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::process::Command;
-use sysinfo::System;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HardwareTier {
@@ -252,14 +251,6 @@ pub fn format_context_tokens(tokens: usize) -> String {
 }
 
 fn detect_total_memory() -> Option<u64> {
-    if let Ok(mut sys) = System::new() {
-        sys.refresh_memory();
-        let mem = sys.total_memory();
-        if mem > 0 {
-            return Some(mem);
-        }
-    }
-
     #[cfg(target_os = "macos")]
     {
         if let Ok(output) = Command::new("sysctl").args(["-n", "hw.memsize"]).output()
@@ -308,16 +299,6 @@ fn detect_total_memory() -> Option<u64> {
 }
 
 fn detect_chip_name() -> Option<String> {
-    if let Ok(mut sys) = System::new() {
-        sys.refresh_cpu_all();
-        if let Some(cpu) = sys.cpus().first() {
-            let brand = cpu.brand().trim();
-            if !brand.is_empty() {
-                return Some(brand.to_string());
-            }
-        }
-    }
-
     #[cfg(target_os = "macos")]
     {
         if let Ok(output) = Command::new("sysctl")
@@ -345,6 +326,31 @@ fn detect_chip_name() -> Option<String> {
                         return Some(clean.to_string());
                     }
                 }
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(brand) = std::env::var("PROCESSOR_IDENTIFIER") {
+            let clean = brand.trim();
+            if !clean.is_empty() {
+                return Some(clean.to_string());
+            }
+        }
+        if let Ok(output) = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "(Get-CimInstance Win32_Processor).Name",
+            ])
+            .output()
+            && output.status.success()
+            && let Ok(text) = std::str::from_utf8(&output.stdout)
+        {
+            let clean = text.trim();
+            if !clean.is_empty() {
+                return Some(clean.to_string());
             }
         }
     }
@@ -449,7 +455,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sysinfo_detection() {
+    fn test_hardware_system_detection() {
         let mem = detect_total_memory();
         assert!(mem.is_some_and(|m| m > 0));
         let chip = detect_chip_name();
