@@ -874,8 +874,8 @@ pub fn suggest_command(input: &str) -> Option<&'static str> {
 
     for &cmd in TOP_LEVEL_COMMANDS {
         let cmd_len = cmd.chars().count();
-        let dist = strsim::damerau_levenshtein(&input_lower, cmd);
-        let jaro = strsim::jaro(&input_lower, cmd);
+        let dist = crate::system::text_util::damerau_levenshtein(&input_lower, cmd);
+        let jaro = crate::system::text_util::jaro(&input_lower, cmd);
 
         // Strict thresholds to avoid false positives with short book titles (e.g. "Dune"):
         // 1. For 3-letter inputs, only allow 3-letter commands with edit distance 1 and similarity >= 0.75.

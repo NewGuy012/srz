@@ -1498,7 +1498,12 @@ impl LlmClient {
                 } else {
                     let best_match = models
                         .iter()
-                        .map(|m| (m, strsim::jaro_winkler(requested_model, m)))
+                        .map(|m| {
+                            (
+                                m,
+                                crate::system::text_util::jaro_winkler(requested_model, m),
+                            )
+                        })
                         .filter(|(_, sim)| *sim >= 0.72)
                         .max_by(|(_, s1), (_, s2)| {
                             s1.partial_cmp(s2).unwrap_or(std::cmp::Ordering::Equal)
