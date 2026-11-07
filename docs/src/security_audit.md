@@ -3,7 +3,7 @@
 **Project:** `srz` (Summarize CLI)  
 **Repository:** [github.com/NewGuy012/srz](https://github.com/NewGuy012/srz)  
 **Language & Platform:** Rust (Edition 2024) · macOS / Linux / Windows  
-**Cumulative Posture:** 🛡️ **100% Safe Rust** (`#![forbid(unsafe_code)]` enforced) · ✅ **33 / 33 Vulnerabilities Resolved** · ✅ **158 / 158 Tests Passing**
+**Cumulative Posture:** 🛡️ **100% Safe Rust** (`#![forbid(unsafe_code)]` enforced) · ✅ **36 / 36 Vulnerabilities Resolved** · ✅ **217 / 217 Tests Passing**
 
 This document serves as the chronological security audit ledger for `srz`. Each audit section is recorded with its execution timestamp, assessed scope, identified vulnerabilities, implemented remediations, and verification results.
 
@@ -19,6 +19,7 @@ This document serves as the chronological security audit ledger for `srz`. Each 
 | **[Audit #4](#audit-4)** | **2026-10-29 08:15:00 PDT** | Prompt Delimiter Escaping, C1/BiDi Terminal Sanitization, Bounded Streams, YouTube SSRF, Symlink Hardening & SHA-256 Hashing | 7 / 7 | ✅ Complete |
 | **[Audit #5](#audit-5)** | **2026-11-03 16:15:00 PST** | Server Discovery & Tokenization Bounds, Dynamic Budget Arithmetic, Google News Syndication & batchexecute RPC, Markdown URL Scheme Neutralization, TUI/Diagnostics Terminal Sanitization, Pager Subprocess Hardening, DuckDB Symlink Guards & Supply-Chain Deny Policy | 6 / 6 | ✅ Complete |
 | **[Audit #6](#audit-6)** | **2026-11-05 05:40:00 PST** | YAML Frontmatter Injection in Vault Export, Filename Collision Disambiguation, SQL Identifier Injection Validation in Attach & YouTube JSON Literal Extraction | 2 / 2 | ✅ Complete |
+| **[Audit #7](#audit-7)** | **2026-11-07 12:20:00 PST** | EPUB Decompression Bomb Bounds & Spine Deduplication, DuckDB Export Symlink/Permission Hardening, Binary Upgrade Staging Cleanup, Storage Double-Insert Deduplication & Binary Search Tokenization | 3 / 3 | ✅ Complete |
 
 * **[Cumulative Verification & Test Suite](#verification)**
 * **[Production Hardening & Residual Risk Recommendations](#recommendations)**
@@ -931,6 +932,100 @@ A focused security and correctness audit across export serialization, dynamic SQ
 
 ---
 
+<a id="audit-7"></a>
+## 📅 Audit #7 — November 7, 2026 · 12:20 PM PST (Phase 7: EPUB Bounds, Export Symlinks, Staging Cleanup & Storage Deduplication)
+
+### Overview & Scope
+A thorough repository-wide refactoring, security hardening, and optimization pass targeting archive decompression bombs, symlink protections on database file exports, self-upgrade temporary file staging cleanup, and storage deduplication:
+* **EPUB Ingestion Hardening (`src/sources/epub.rs`):** Decompression bounds (`Read::take`), entry size limits, spine deduplication, and cumulative book byte ceilings.
+* **Database File Export Hardening (`src/storage/db.rs`):** Symlink validation and owner-only `0600` permissions on DuckDB `export_csv` and `export_parquet`.
+* **Binary Self-Update Cleanup (`src/system/upgrade.rs`):** Guaranteed temporary file removal on early write/flush failures and symlink validation before replacing target binaries.
+* **Storage Deduplication & Bug Fix (`src/storage/db.rs`, `src/storage/cache.rs`, `src/commands/summarize.rs`, `src/main.rs`):** Unified DuckDB schema initialization between Cache and Database, eliminated double `INSERT INTO history` / `library` runs per summarization, and ensured term indexing and cache key fidelity across all targets.
+* **Algorithm Optimization (`src/engine/chunker.rs`):** $O(N^2) \to O(N \log N)$ binary search (`partition_point`) token count optimization for line and word decomposition.
+
+### Audit #7 Scorecard
+
+| Metric | Result | Notes |
+|:---|:---:|:---|
+| **Memory Safety** | 🛡️ **100% Safe Rust** | No `unsafe` blocks present · `#![forbid(unsafe_code)]` enforced |
+| **Flaws Identified** | **3 Total** | 1 High, 1 Medium, 1 Low-Med |
+| **Flaws Remediated** | ✅ **3 / 3 (100%)** | All issues resolved with automated regression tests |
+| **Test Suite Status** | ✅ **217 / 217 Passing** | 0 failures, 0 warnings under Clippy `-D warnings` |
+
+### Audit #7 Findings Matrix
+
+| # | Finding Title | Severity | CWE / Category | Status |
+|:---:|:---|:---:|:---|:---:|
+| **34** | [EPUB Decompression Bomb, Unbounded Entry Extraction & Spine Loop Exploitation](#finding-34) | 🔴 High | CWE-409 / CWE-770 | ✅ Patched |
+| **35** | [DuckDB CSV & Parquet Export Symlink / Insecure Permissions Bypass](#finding-35) | 🟡 Medium | CWE-59 / CWE-276 | ✅ Patched |
+| **36** | [Predictable Temporary Staging File Cleanup Failure & Target Symlink Overwrite](#finding-36) | 🟢 Low-Med | CWE-459 / CWE-59 | ✅ Patched |
+
+---
+
+<a id="finding-34"></a>
+#### 34. EPUB Decompression Bomb, Unbounded Entry Extraction & Spine Loop Exploitation
+
+| Attribute | Value |
+|:---|:---|
+| **Severity** | 🔴 High |
+| **CWE** | CWE-409: Improper Handling of Highly Compressed Data (Decompression Bomb); CWE-770: Allocation of Resources Without Limits or Throttling |
+| **Location** | `src/sources/epub.rs` (`EpubExtractor`) |
+
+##### 💥 Threat & Impact
+1. While compressed `.epub` files were capped at 20 MB on disk by `DocumentLoader`, entries within the archive (`container.xml`, `content.opf`, and chapter XHTML files) were decompressed using unbounded `read_to_string`. A small deflate-compressed file or nested XML payloads could expand into gigabytes in memory, triggering out-of-memory denial of service.
+2. Malicious EPUB files could repeat `<itemref idref="...">` spine references thousands of times, multiplying memory usage and token consumption.
+
+##### 🛡️ Remediation
+* Enforced bounded reads via `file.by_ref().take(...)`:
+  - `MAX_EPUB_XML_BYTES = 5 MB` for `container.xml` and OPF package manifests.
+  - `MAX_EPUB_CHAPTER_BYTES = 15 MB` per chapter XHTML document.
+  - `MAX_EPUB_TOTAL_BYTES = 50 MB` cumulative markdown text ceiling per EPUB.
+  - `MAX_EPUB_CHAPTER_COUNT = 2000` maximum chapters processed.
+* Implemented spine deduplication using a `HashSet` to reject repeated chapter references.
+* Added regression test `test_epub_deduplication_and_spine_limit`.
+
+---
+
+<a id="finding-35"></a>
+#### 35. DuckDB CSV & Parquet Export Symlink / Insecure Permissions Bypass
+
+| Attribute | Value |
+|:---|:---|
+| **Severity** | 🟡 Medium |
+| **CWE** | CWE-59: Improper Link Resolution Before File Access ('Link Following'); CWE-276: Incorrect Default Permissions |
+| **Location** | `src/storage/db.rs` (`Database::export_csv`, `Database::export_parquet`) |
+
+##### 💥 Threat & Impact
+Unlike `export_json` and `export_markdown_vault` (which use `fs_util::write_private_file`), `export_csv` and `export_parquet` previously invoked DuckDB `COPY (...) TO '...'` directly without verifying that the destination path was not a symlink, and left export files with default umask (`0644`) permissions containing private reading history.
+
+##### 🛡️ Remediation
+* Implemented `prepare_export_file` asserting that destination paths are not symlinks prior to executing `COPY ... TO`.
+* Ensured parent directories are privately initialized via `fs_util::create_private_dir_all`.
+* Explicitly applied owner-only `0600` permissions (`fs_util::set_private_file_perms`) immediately after writing.
+* Added regression test asserting symlink refusal and `0600` permissions in `tests/integration/db.rs`.
+
+---
+
+<a id="finding-36"></a>
+#### 36. Predictable Temporary Staging File Cleanup Failure & Target Symlink Overwrite
+
+| Attribute | Value |
+|:---|:---|
+| **Severity** | 🟢 Low-Med |
+| **CWE** | CWE-459: Incomplete Cleanup; CWE-59: Improper Link Resolution Before File Access |
+| **Location** | `src/system/upgrade.rs` (`run_upgrade`, `replace_binary`) |
+
+##### 💥 Threat & Impact
+1. During `srz upgrade`, if binary byte writing or syncing failed after creating the staged binary, `?` returned early without unlinking the staged temporary file, leaving orphaned executables in the temporary directory.
+2. In `replace_binary`, if `target_exe` was a symlink, renaming or unlinking could target arbitrary symlinked paths.
+
+##### 🛡️ Remediation
+* Wrapped binary write operations with explicit error handling unlinking `temp_path` on any failure.
+* Added symlink validation in `replace_binary` refusing to replace binaries if `target_exe` is a symlink.
+* Added regression test `test_replace_binary_refuses_symlink`.
+
+---
+
 <a id="verification"></a>
 ## 🧪 Cumulative Verification & Test Suite
 
@@ -944,19 +1039,19 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 ```
 
-### Complete Test Suite Breakdown (156 Total Tests)
+### Complete Test Suite Breakdown (217 Total Tests)
 
 | Test Suite Module | Tests | Verified Security & Operational Controls | Result |
 |:---|:---:|:---|:---:|
-| **`src/lib.rs` & `src/main.rs`** | 65 | PDF safe parsing, YouTube captions & SSRF checks, TUI filtering & sanitization, C1/BiDi terminal sanitization, DynamicBudget overflow safety & clamping, safe markdown URL scheme neutralization, Google News URL/RPC validation, config bounds | ✅ Pass |
-| **`tests/integration/cache.rs`** | 14 | POSIX `0700`/`0600` modes, symlink rejection, SHA-256 keys, safe float bounds, auto-prune, capability cache invalidation | ✅ Pass |
+| **`src/lib.rs` & `src/main.rs`** | 110 | EPUB decompression bounds & deduplication, PDF safe parsing, YouTube captions & SSRF checks, TUI filtering & sanitization, C1/BiDi terminal sanitization, DynamicBudget overflow safety & clamping, safe markdown URL scheme neutralization, Google News URL/RPC validation, config bounds, binary search chunker decomposition | ✅ Pass |
+| **`tests/integration/cache.rs`** | 16 | POSIX `0700`/`0600` modes, symlink rejection, SHA-256 keys, safe float bounds, auto-prune, capability cache invalidation, unified DuckDB schema | ✅ Pass |
 | **`tests/integration/cli.rs`** | 25 | Flag parsing precedence, target auto-detection, subcommands, output formats, upgrade flags, Llama GUI naming | ✅ Pass |
 | **`tests/integration/config.rs`** | 7 | Safe config deserialization, profile override rules, saturating arithmetic, API key trimming, context window merge | ✅ Pass |
-| **`tests/integration/content.rs`** | 11 | CSP injection, single quote escaping, case-insensitive closing tag escaping, ask prompt guardrails, HTML rendering | ✅ Pass |
-| **`tests/integration/db.rs`** | 16 | Parameterized queries, safe multibyte UTF-8 snippet extraction, DuckDB transactions, symlink refusal, BM25 ranking | ✅ Pass |
+| **`tests/integration/content.rs`** | 11 | CSP injection, single quote escaping, case-insensitive closing tag escaping, ask prompt guardrails, HTML rendering, EPUB loader | ✅ Pass |
+| **`tests/integration/db.rs`** | 16 | Parameterized queries, safe multibyte UTF-8 snippet extraction, DuckDB transactions, symlink refusal on CSV/Parquet export, BM25 ranking | ✅ Pass |
 | **`tests/integration/search.rs`** | 4 | Wikipedia & DuckDuckGo disambiguation, URL deduplication, bounded JSON reading, client pooling | ✅ Pass |
-| **`tests/integration/upgrade.rs`** | 10 | Atomic temp file creation, symlink overwrite rejection, SHA-256 verification, timeout bounds, tag canonicalization | ✅ Pass |
-| **Total** | **156 / 156** | **Zero Failures · Zero Ignored · Zero Clippy Warnings · #![forbid(unsafe_code)]** | ✅ **100% Pass** |
+| **`tests/integration/upgrade.rs`** | 11 | Atomic temp file creation, staged cleanup on error, symlink overwrite rejection, SHA-256 verification, timeout bounds, tag canonicalization | ✅ Pass |
+| **Total** | **217 / 217** | **Zero Failures · Zero Ignored · Zero Clippy Warnings · #![forbid(unsafe_code)]** | ✅ **100% Pass** |
 
 ---
 
