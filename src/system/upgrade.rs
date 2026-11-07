@@ -527,6 +527,18 @@ async fn download_and_verify_archive(
 /// Main entry point for executing `srz upgrade`.
 /// Safely replaces an executable binary with a staged new binary file.
 pub fn replace_binary(new_binary: &Path, target_exe: &Path) -> std::io::Result<()> {
+    if let Ok(meta) = std::fs::symlink_metadata(target_exe)
+        && meta.file_type().is_symlink()
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "Refusing to replace binary at symlink: {}",
+                target_exe.display()
+            ),
+        ));
+    }
+
     #[cfg(unix)]
     {
         if let Err(e) = std::fs::rename(new_binary, target_exe) {
@@ -751,10 +763,13 @@ pub async fn run_upgrade(
     let mut temp_file = open_opts
         .open(&temp_path)
         .with_context(|| format!("Failed to create temporary binary at {:?}", temp_path))?;
-    std::io::Write::write_all(&mut temp_file, &binary_bytes)
-        .with_context(|| format!("Failed to write temporary binary at {:?}", temp_path))?;
-    std::io::Write::flush(&mut temp_file)
-        .with_context(|| format!("Failed to flush temporary binary at {:?}", temp_path))?;
+    if let Err(err) = std::io::Write::write_all(&mut temp_file, &binary_bytes)
+        .and_then(|_| std::io::Write::flush(&mut temp_file))
+    {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(err)
+            .with_context(|| format!("Failed to write temporary binary at {:?}", temp_path));
+    }
 
     // 8. Swap binary
     let swap_pb = Ui::spinner(format!("Installing to {}...", current_exe.display()));

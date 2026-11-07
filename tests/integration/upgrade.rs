@@ -235,3 +235,20 @@ fn test_upgrade_temp_file_creation_prevents_overwrite() {
     opts.write(true).create_new(true);
     assert!(opts.open(&target_file).is_err());
 }
+
+#[cfg(unix)]
+#[test]
+fn test_replace_binary_refuses_symlink() {
+    let tmp = srz::fs_util::tempdir().unwrap();
+    let new_binary = tmp.path().join("new_bin");
+    let real_target = tmp.path().join("real_target");
+    let symlink_target = tmp.path().join("symlink_target");
+
+    std::fs::write(&new_binary, b"new binary content").unwrap();
+    std::fs::write(&real_target, b"old target content").unwrap();
+    std::os::unix::fs::symlink(&real_target, &symlink_target).unwrap();
+
+    let res = srz::upgrade::replace_binary(&new_binary, &symlink_target);
+    assert!(res.is_err());
+    assert!(res.unwrap_err().to_string().contains("symlink"));
+}
