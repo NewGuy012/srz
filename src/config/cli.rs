@@ -22,6 +22,15 @@ impl SummaryStyle {
         }
     }
 
+    /// Default completion token limit suited for each style when not explicitly overridden.
+    pub fn default_max_tokens(&self) -> u32 {
+        match self {
+            Self::Concise => 1536,
+            Self::Bullets => 2048,
+            Self::Detailed => 8192,
+        }
+    }
+
     pub fn prompt_guidance(&self) -> &'static str {
         match self {
             Self::Concise => {
@@ -635,6 +644,14 @@ impl Cli {
         apply_field!(api_key);
         apply_field!(style);
         apply_field!(max_tokens);
+        if !was_provided("max_tokens")
+            && profile
+                .and_then(|p| p.max_tokens)
+                .or(config.max_tokens)
+                .is_none()
+        {
+            self.max_tokens = self.style.default_max_tokens();
+        }
         apply_field!(no_cache);
         apply_field!(quiet);
         apply_field!(verbose);

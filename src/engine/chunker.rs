@@ -196,8 +196,7 @@ impl TextChunker {
         for &(seg, s_count) in &segments {
             if current_count + s_count > max_limit && !current_chunk_segments.is_empty() {
                 let chunk = Self::build_chunk(text, &current_chunk_segments);
-                let exact_count = count_fn(&chunk);
-                chunks.push((chunk, exact_count));
+                chunks.push((chunk, current_count));
 
                 let mut retained = Vec::new();
                 let mut retained_count = 0;
@@ -221,8 +220,7 @@ impl TextChunker {
 
         if !current_chunk_segments.is_empty() {
             let chunk = Self::build_chunk(text, &current_chunk_segments);
-            let exact_count = count_fn(&chunk);
-            chunks.push((chunk, exact_count));
+            chunks.push((chunk, current_count));
         }
 
         chunks
