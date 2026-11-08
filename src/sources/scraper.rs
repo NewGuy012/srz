@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -25,21 +26,6 @@ static MAIN_SELECTORS: LazyLock<Vec<Selector>> = LazyLock::new(|| {
     .filter_map(|s| Selector::parse(s).ok())
     .collect()
 });
-
-const REFERENCE_HEADINGS: &[&str] = &[
-    "references",
-    "## references",
-    "=== references ===",
-    "== references ==",
-    "external links",
-    "## external links",
-    "=== external links ===",
-    "notes and references",
-    "## notes",
-    "## bibliography",
-    "see also",
-    "## see also",
-];
 
 pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
@@ -317,31 +303,263 @@ impl WebScraper {
     }
 }
 
-/// Checks if a line is a reference/bibliography heading in-place without allocating a lowercase `String`.
-fn is_reference_heading(line: &str) -> bool {
-    REFERENCE_HEADINGS
-        .iter()
-        .any(|heading| line.eq_ignore_ascii_case(heading))
+/// Helper to scan for a matching closing bracket `]`, stopping on newlines or unescaped open brackets.
+fn find_closing_bracket(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut i = start;
+    while i < bytes.len() {
+        if bytes[i] == b']' {
+            return Some(i);
+        }
+        if bytes[i] == b'[' || bytes[i] == b'\n' {
+            return None;
+        }
+        i += 1;
+    }
+    None
 }
 
-/// Cleans lines and counts words in a single pass.
+/// Helper to scan for a matching closing parenthesis `)` handling nested parentheses.
+fn find_closing_paren(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut i = start;
+    while i < bytes.len() {
+        if bytes[i] == b'(' {
+            depth += 1;
+        } else if bytes[i] == b')' {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i);
+            }
+        } else if bytes[i] == b'\n' {
+            return None;
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Identifies whether a bracketed anchor represents a footnote citation, Wikipedia edit tag, or metadata reference.
+pub fn is_citation_or_footnote(anchor: &str) -> bool {
+    let s = anchor.trim();
+    if s.is_empty() {
+        return true;
+    }
+    let has_digit = s.chars().any(|c| c.is_ascii_digit());
+    let all_citation_chars = s.chars().all(|c| {
+        c.is_ascii_digit()
+            || c == ','
+            || c == '-'
+            || c == '–'
+            || c == ';'
+            || c.is_ascii_whitespace()
+    });
+    if has_digit && all_citation_chars {
+        return true;
+    }
+
+    let lower = s.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "edit"
+            | "edit source"
+            | "citation needed"
+            | "clarification needed"
+            | "source"
+            | "when?"
+            | "who?"
+            | "where?"
+            | "why?"
+            | "how?"
+            | "dead link"
+            | "verification needed"
+            | "failed verification"
+            | "original research?"
+            | "dubious"
+            | "disputed"
+    ) || lower.starts_with("note ")
+        || lower.starts_with("nb ")
+        || lower.starts_with("cite_note")
+        || lower.starts_with("lower-alpha")
+        || lower.starts_with("lower-roman")
+}
+
+fn skip_citation_whitespace(out: &mut String, bytes: &[u8], next_idx: usize, i: &mut usize) {
+    let len = bytes.len();
+    let next_is_space = next_idx < len && bytes[next_idx] == b' ';
+    let next_is_punct = next_idx < len
+        && matches!(
+            bytes[next_idx],
+            b'.' | b',' | b';' | b':' | b')' | b'!' | b'?'
+        );
+
+    if out.ends_with(' ') {
+        if next_is_space {
+            *i = next_idx + 1;
+        } else if next_is_punct {
+            out.pop();
+            *i = next_idx;
+        } else {
+            *i = next_idx;
+        }
+    } else {
+        *i = next_idx;
+    }
+}
+
+/// Cleans markdown links and citations from a single line of text:
+/// - Strips destination URLs from `[anchor](url)` to retain clean prose without URL token bloat.
+/// - Drops footnote citations (`[1]`, `[1, 2]`, `[citation needed]`, `[edit]`).
+/// - Drops image markdown (`![alt](url)`).
+/// - Preserves inline code (backticks) and code syntax like `arr[0]`.
+pub fn clean_markdown_line(line: &str) -> Cow<'_, str> {
+    if !line.contains('[') && !line.contains('!') {
+        return Cow::Borrowed(line);
+    }
+
+    let bytes = line.as_bytes();
+    let len = bytes.len();
+    let mut out = String::with_capacity(len);
+    let mut i = 0;
+    let mut in_inline_code = false;
+
+    while i < len {
+        if bytes[i] == b'`' {
+            in_inline_code = !in_inline_code;
+            out.push('`');
+            i += 1;
+            continue;
+        }
+
+        if in_inline_code {
+            let start = i;
+            while i < len && bytes[i] != b'`' {
+                i += 1;
+            }
+            out.push_str(&line[start..i]);
+            continue;
+        }
+
+        // Markdown image: ![alt](url)
+        if bytes[i] == b'!'
+            && i + 1 < len
+            && bytes[i + 1] == b'['
+            && let Some(close_bracket) = find_closing_bracket(bytes, i + 2)
+            && close_bracket + 1 < len
+            && bytes[close_bracket + 1] == b'('
+            && let Some(close_paren) = find_closing_paren(bytes, close_bracket + 2)
+        {
+            i = close_paren + 1;
+            continue;
+        }
+
+        // Markdown link or bracket: [anchor]...
+        if bytes[i] == b'['
+            && let Some(close_bracket) = find_closing_bracket(bytes, i + 1)
+        {
+            let anchor = &line[i + 1..close_bracket];
+            if close_bracket + 1 < len && bytes[close_bracket + 1] == b'(' {
+                if let Some(close_paren) = find_closing_paren(bytes, close_bracket + 2) {
+                    let next_idx = close_paren + 1;
+                    if is_citation_or_footnote(anchor) {
+                        skip_citation_whitespace(&mut out, bytes, next_idx, &mut i);
+                        continue;
+                    }
+
+                    // Emit anchor text (preserving clean prose without URL overhead)
+                    out.push_str(anchor);
+                    i = next_idx;
+                    continue;
+                }
+            } else if is_citation_or_footnote(anchor) {
+                let next_idx = close_bracket + 1;
+                skip_citation_whitespace(&mut out, bytes, next_idx, &mut i);
+                continue;
+            }
+        }
+
+        let ch = line[i..].chars().next().unwrap_or(' ');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+
+    Cow::Owned(out)
+}
+
+/// Checks if a line is a reference, bibliography, or appendix heading (including Wikipedia `[edit]` variants).
+pub fn is_reference_heading(line: &str) -> bool {
+    let mut s = line.trim();
+    if s.is_empty() {
+        return false;
+    }
+    // Strip leading Markdown heading markers (#)
+    s = s.trim_start_matches('#').trim();
+    // Strip leading/trailing MediaWiki heading markers (=)
+    s = s.trim_matches('=').trim();
+
+    // Strip trailing [edit], [edit source], (edit), etc.
+    if let Some(idx) = s.rfind('[') {
+        let suffix = s[idx..].trim();
+        if suffix.eq_ignore_ascii_case("[edit]")
+            || suffix.eq_ignore_ascii_case("[edit source]")
+            || suffix.eq_ignore_ascii_case("[ edit ]")
+        {
+            s = s[..idx].trim();
+        }
+    } else if let Some(idx) = s.rfind('(') {
+        let suffix = s[idx..].trim();
+        if suffix.eq_ignore_ascii_case("(edit)") {
+            s = s[..idx].trim();
+        }
+    }
+
+    matches!(
+        s.to_ascii_lowercase().as_str(),
+        "references"
+            | "external links"
+            | "further reading"
+            | "notes"
+            | "footnotes"
+            | "notes and references"
+            | "references and notes"
+            | "bibliography"
+            | "works cited"
+            | "sources"
+            | "citations"
+            | "see also"
+    )
+}
+
+/// Cleans lines and counts words in a single pass without stripping reference sections.
 pub fn clean_raw_text(text: &str) -> (String, usize) {
     clean_text(text, false, 1)
 }
 
-/// Cleans lines, optionally strips trailing reference sections using zero-allocation ASCII comparison,
+/// Cleans lines, strips markdown link URLs and inline citations,
+/// optionally strips trailing reference/appendix sections,
 /// and computes total word count in a single pass into one pre-sized `String`.
 pub fn clean_text(text: &str, strip_references: bool, max_empty_lines: usize) -> (String, usize) {
     let mut out = String::with_capacity(text.len());
     let mut word_count = 0;
     let mut empty_line_count = 0;
+    let mut in_code_block = false;
 
     for raw_line in text.lines() {
-        let line = raw_line.trim();
+        let trimmed_line = raw_line.trim();
 
-        if strip_references && is_reference_heading(line) {
+        if trimmed_line.starts_with("```") || trimmed_line.starts_with("~~~") {
+            in_code_block = !in_code_block;
+        }
+
+        if !in_code_block && strip_references && is_reference_heading(trimmed_line) {
             break;
         }
+
+        let cleaned_line = if in_code_block {
+            Cow::Borrowed(trimmed_line)
+        } else {
+            clean_markdown_line(trimmed_line)
+        };
+        let line = cleaned_line.trim();
 
         if line.is_empty() {
             empty_line_count += 1;
@@ -413,5 +631,81 @@ mod tests {
         assert!(md.contains("## Overview") || md.contains("Overview"));
         assert!(md.contains("First item"));
         assert!(md.contains("Second item"));
+    }
+
+    #[test]
+    fn test_clean_markdown_line_strips_link_urls() {
+        let line = "Rust is a [systems programming language](https://en.wikipedia.org/wiki/Systems_programming_language) created by [Graydon Hoare](https://en.wikipedia.org/wiki/Graydon_Hoare).";
+        let cleaned = clean_markdown_line(line);
+        assert_eq!(
+            cleaned,
+            "Rust is a systems programming language created by Graydon Hoare."
+        );
+    }
+
+    #[test]
+    fn test_clean_markdown_line_nested_parentheses_url() {
+        let line =
+            "Learn about [Rust](https://en.wikipedia.org/wiki/Rust_(programming_language)) today.";
+        let cleaned = clean_markdown_line(line);
+        assert_eq!(cleaned, "Learn about Rust today.");
+    }
+
+    #[test]
+    fn test_clean_markdown_line_strips_citations_and_edit_tags() {
+        let line =
+            "Rust was announced in 2010[12][13] by Mozilla Research[14], winning awards [15].";
+        let cleaned = clean_markdown_line(line);
+        assert_eq!(
+            cleaned,
+            "Rust was announced in 2010 by Mozilla Research, winning awards."
+        );
+
+        let line2 = "It is considered safe[citation needed] and efficient [note 1].";
+        let cleaned2 = clean_markdown_line(line2);
+        assert_eq!(cleaned2, "It is considered safe and efficient.");
+    }
+
+    #[test]
+    fn test_clean_markdown_line_preserves_inline_code_and_brackets() {
+        let line = "Access element with `arr[0]` or check [a-z] regex.";
+        let cleaned = clean_markdown_line(line);
+        assert_eq!(
+            cleaned,
+            "Access element with `arr[0]` or check [a-z] regex."
+        );
+    }
+
+    #[test]
+    fn test_clean_text_preserves_code_blocks() {
+        let md = "Some intro text.\n\n```rust\nfn main() {\n    let arr = [1, 2, 3];\n    println!(\"{}\", arr[0]);\n}\n```\n\nOutro text.";
+        let (cleaned, _) = clean_text(md, true, 2);
+        assert!(cleaned.contains("let arr = [1, 2, 3];"));
+        assert!(cleaned.contains("println!(\"{}\", arr[0]);"));
+    }
+
+    #[test]
+    fn test_is_reference_heading_wikipedia_variants() {
+        assert!(is_reference_heading("## References"));
+        assert!(is_reference_heading("## References [edit]"));
+        assert!(is_reference_heading("## References [edit source]"));
+        assert!(is_reference_heading("### External links [edit]"));
+        assert!(is_reference_heading("== References =="));
+        assert!(is_reference_heading("=== Further reading ==="));
+        assert!(is_reference_heading("## Notes and references"));
+        assert!(is_reference_heading("## See also"));
+        assert!(!is_reference_heading("## Language features"));
+        assert!(!is_reference_heading("## History of Rust"));
+    }
+
+    #[test]
+    fn test_clean_text_truncates_at_reference_heading() {
+        let doc =
+            "Core article content.\n\nMore details.\n\n## References [edit]\n\n1. Citation link";
+        let (cleaned, _) = clean_text(doc, true, 2);
+        assert!(cleaned.contains("Core article content."));
+        assert!(cleaned.contains("More details."));
+        assert!(!cleaned.contains("References"));
+        assert!(!cleaned.contains("Citation link"));
     }
 }
