@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 /// Maximum allowable limit of news articles to process in a single digest run.
 pub const MAX_NEWS_LIMIT: usize = 50;
@@ -120,11 +121,16 @@ impl GoogleNewsClient {
         // 2. Fetch intermediate Google News article page to extract ephemeral signature & timestamp.
         // Must use /rss/articles/ because /articles/ triggers Google bot protection (HTTP 429 CAPTCHA).
         let page_url = format!("https://news.google.com/rss/articles/{}", base64_id);
-        let resp = self.client.get(&page_url).send().await.ok()?;
-        let html =
-            crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES)
-                .await
-                .ok()?;
+        let resp = self
+            .client
+            .get(&page_url)
+            .timeout(Duration::from_secs(4))
+            .send()
+            .await
+            .ok()?;
+        let html = crate::scraper::read_response_text_limited(resp, 64 * 1024)
+            .await
+            .ok()?;
 
         let sig = extract_attr_value(&html, "data-n-a-sg=")?;
         if sig.is_empty()
@@ -190,14 +196,14 @@ impl GoogleNewsClient {
                 "application/x-www-form-urlencoded;charset=UTF-8",
             )
             .body(form_body)
+            .timeout(Duration::from_secs(4))
             .send()
             .await
             .ok()?;
 
-        let rpc_text =
-            crate::scraper::read_response_text_limited(rpc_resp, crate::scraper::MAX_SCRAPE_BYTES)
-                .await
-                .ok()?;
+        let rpc_text = crate::scraper::read_response_text_limited(rpc_resp, 128 * 1024)
+            .await
+            .ok()?;
         parse_batchexecute_destination_url(&rpc_text)
     }
 
@@ -320,6 +326,25 @@ impl GoogleNewsClient {
             let sem = semaphore.clone();
             join_set.spawn(async move {
                 let _permit = sem.acquire().await.ok()?;
+
+                // If feed already provides a rich multi-paragraph body, skip network scrape
+                if let Some(snip) = &item.snippet
+                    && snip.split_whitespace().count() >= 150
+                {
+                    let wc = snip.split_whitespace().count();
+                    return Some((
+                        item.google_link.clone(),
+                        NewsDigestSource {
+                            title: item.title,
+                            source_name: item.source_name.unwrap_or_else(|| "Source".to_string()),
+                            url: item.google_link,
+                            pub_date: item.pub_date,
+                            content: snip.clone(),
+                            word_count: wc,
+                        },
+                    ));
+                }
+
                 let is_gnews = is_google_news_link(&item.google_link);
                 let resolved_url = client.resolve_article_url(&item.google_link).await;
 
@@ -356,7 +381,17 @@ impl GoogleNewsClient {
                     return None;
                 }
 
-                let scraped: Result<ScrapedPage> = scraper_cloned.scrape(&direct_url).await;
+                // Enforce tight 5s per-article scrape timeout to prevent slow/hanging sites from blocking the digest
+                let scraped: Result<ScrapedPage> = match tokio::time::timeout(
+                    Duration::from_secs(5),
+                    scraper_cloned.scrape(&direct_url),
+                )
+                .await
+                {
+                    Ok(res) => res,
+                    Err(_) => Err(anyhow::anyhow!("Scrape timed out after 5s")),
+                };
+
                 let (content, word_count, resolved_title) = if let Ok(page) = scraped
                     && page.word_count > 60
                 {
@@ -424,7 +459,9 @@ impl GoogleNewsClient {
     }
 }
 
-use crate::system::text_util::{decode_html_entities, find_ascii_case_insensitive};
+use crate::system::text_util::decode_html_entities;
+#[cfg(test)]
+use crate::system::text_util::find_ascii_case_insensitive;
 
 /// Cleans CDATA wrappers and decodes HTML entities from an XML element's inner text.
 fn clean_xml_text(raw: &str) -> String {
@@ -436,34 +473,6 @@ fn clean_xml_text(raw: &str) -> String {
         }
     }
     decode_html_entities(trimmed).into_owned()
-}
-
-/// Extracts `<source>` values from `<item>` elements if present, bounded by `limit`.
-fn extract_source_tags(xml: &str, limit: usize) -> Vec<String> {
-    if limit == 0 {
-        return Vec::new();
-    }
-    let mut sources = Vec::new();
-    let mut cursor = 0;
-    while let Some(rel_start) = find_ascii_case_insensitive(&xml[cursor..], "<source") {
-        let tag_start = cursor + rel_start;
-        if let Some(tag_close) = xml[tag_start..].find('>') {
-            let inner_start = tag_start + tag_close + 1;
-            if let Some(end_rel) = find_ascii_case_insensitive(&xml[inner_start..], "</source>") {
-                let inner = xml[inner_start..inner_start + end_rel].trim();
-                if !inner.is_empty() {
-                    sources.push(clean_xml_text(inner));
-                    if sources.len() >= limit {
-                        break;
-                    }
-                }
-                cursor = inner_start + end_rel + "</source>".len();
-                continue;
-            }
-        }
-        cursor = tag_start + 7;
-    }
-    sources
 }
 
 fn day_of_week(y: i32, m: i32, d: i32) -> &'static str {
@@ -529,7 +538,6 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
         return Vec::new();
     }
 
-    let source_tags = extract_source_tags(xml, limit);
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
 
@@ -543,7 +551,7 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
     let mut cur_pub_date = None;
     let mut cur_source = None;
     let mut cur_author = None;
-    let mut cur_snippet = None;
+    let mut cur_snippet: Option<String> = None;
 
     loop {
         match reader.read_event() {
@@ -634,13 +642,17 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
                                 }
                             }
                         }
-                        "description" | "summary" | "content" => {
-                            if let Ok(text) = reader.read_text(e.name())
-                                && cur_snippet.is_none()
-                            {
+                        "description" | "summary" | "content" | "encoded" => {
+                            if let Ok(text) = reader.read_text(e.name()) {
                                 let cleaned = clean_xml_text(text.as_ref());
                                 if !cleaned.is_empty() {
-                                    cur_snippet = Some(cleaned);
+                                    if let Some(existing) = &cur_snippet {
+                                        if cleaned.len() > existing.len() {
+                                            cur_snippet = Some(cleaned);
+                                        }
+                                    } else {
+                                        cur_snippet = Some(cleaned);
+                                    }
                                 }
                             }
                         }
@@ -683,11 +695,8 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
                         String::new()
                     };
 
-                    let idx = items.len();
-                    let source_name = source_tags
-                        .get(idx)
-                        .cloned()
-                        .or(cur_source.take())
+                    let source_name = cur_source
+                        .take()
                         .or(cur_author.take())
                         .or_else(|| {
                             cur_title
