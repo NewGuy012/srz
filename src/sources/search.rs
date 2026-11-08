@@ -40,6 +40,8 @@ pub struct BookMetadata {
     pub canonical_title: String,
     pub author: Option<String>,
     pub first_publish_year: Option<u32>,
+    #[serde(default)]
+    pub work_key: Option<String>,
 }
 
 #[derive(Clone)]
@@ -72,7 +74,7 @@ impl BookSearcher {
         author: Option<&str>,
     ) -> Option<BookMetadata> {
         let mut endpoint = format!(
-            "https://openlibrary.org/search.json?title={}&limit=3&fields=title,author_name,first_publish_year",
+            "https://openlibrary.org/search.json?title={}&limit=3&fields=title,author_name,first_publish_year,key",
             url_encode(title)
         );
         if let Some(auth) = author {
@@ -108,15 +110,34 @@ impl BookSearcher {
                     .and_then(|y| y.as_u64())
                     .map(|y| y as u32);
 
+                let work_key = doc
+                    .get("key")
+                    .and_then(|k| k.as_str())
+                    .map(|s| s.to_string());
+
                 return Some(BookMetadata {
                     canonical_title: doc_title.to_string(),
                     author: author_name,
                     first_publish_year,
+                    work_key,
                 });
             }
         }
 
         None
+    }
+
+    /// Fetches the editorial description of an Open Library work (e.g. `/works/OL12345W`),
+    /// providing a grounded synopsis fallback when web scraping fails.
+    pub async fn fetch_work_description(&self, work_key: &str) -> Option<String> {
+        let clean_key = work_key.trim().trim_start_matches('/');
+        let endpoint = format!("https://openlibrary.org/{}.json", clean_key);
+
+        let resp = self.get_with_timeout(&endpoint, 3).await?;
+        let bytes = crate::scraper::read_response_bytes_limited(resp, 2 * 1024 * 1024)
+            .await
+            .ok()?;
+        parse_work_description(&bytes)
     }
 
     /// Searches for candidate book synopses concurrently across Wikipedia (OpenSearch + fulltext) and DuckDuckGo,
@@ -322,6 +343,26 @@ pub fn extract_ddg_url(raw: &str) -> Cow<'_, str> {
         }
     }
     Cow::Borrowed(raw)
+}
+
+/// Parses an Open Library work description JSON response, handling both plain string descriptions
+/// and typed objects `{"type": "/type/text", "value": "..."}`.
+pub fn parse_work_description(json_bytes: &[u8]) -> Option<String> {
+    let json: Value = serde_json::from_slice(json_bytes).ok()?;
+    if let Some(desc_val) = json.get("description") {
+        if let Some(desc_str) = desc_val.as_str() {
+            let trimmed = desc_str.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        } else if let Some(val_str) = desc_val.get("value").and_then(|v| v.as_str()) {
+            let trimmed = val_str.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Deduplicates search results by normalized (percent-decoded, trailing-slash-trimmed) URL.

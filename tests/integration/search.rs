@@ -156,3 +156,47 @@ The dichotomy between two modes of thought, heuristics and biases, and prospect 
     assert!(!text.contains("## References"));
     assert!(!text.contains("Farrar, Straus and Giroux"));
 }
+
+#[test]
+fn test_parse_work_description() {
+    // 1. Plain string description format
+    let json_str =
+        r#"{"title": "Dune", "description": "Dune is a science fiction novel by Frank Herbert."}"#;
+    let parsed = srz::search::parse_work_description(json_str.as_bytes());
+    assert_eq!(
+        parsed.as_deref(),
+        Some("Dune is a science fiction novel by Frank Herbert.")
+    );
+
+    // 2. Typed object description format: {"type": "/type/text", "value": "..."}
+    let json_obj = r#"{"title": "1984", "description": {"type": "/type/text", "value": "Nineteen Eighty-Four is a dystopian social science fiction novel by George Orwell."}}"#;
+    let parsed_obj = srz::search::parse_work_description(json_obj.as_bytes());
+    assert_eq!(
+        parsed_obj.as_deref(),
+        Some("Nineteen Eighty-Four is a dystopian social science fiction novel by George Orwell.")
+    );
+
+    // 3. Missing description or empty string
+    let json_empty = r#"{"title": "Unknown Book", "description": ""}"#;
+    assert!(srz::search::parse_work_description(json_empty.as_bytes()).is_none());
+
+    let json_none = r#"{"title": "No Description"}"#;
+    assert!(srz::search::parse_work_description(json_none.as_bytes()).is_none());
+}
+
+#[test]
+fn test_book_metadata_serde_backward_compatibility() {
+    // Old cached JSON without work_key field
+    let old_json =
+        r#"{"canonical_title":"The Hobbit","author":"J. R. R. Tolkien","first_publish_year":1937}"#;
+    let meta: srz::search::BookMetadata = serde_json::from_str(old_json).unwrap();
+    assert_eq!(meta.canonical_title, "The Hobbit");
+    assert_eq!(meta.author.as_deref(), Some("J. R. R. Tolkien"));
+    assert_eq!(meta.first_publish_year, Some(1937));
+    assert_eq!(meta.work_key, None);
+
+    // New JSON with work_key
+    let new_json = r#"{"canonical_title":"The Hobbit","author":"J. R. R. Tolkien","first_publish_year":1937,"work_key":"/works/OL262758W"}"#;
+    let meta_new: srz::search::BookMetadata = serde_json::from_str(new_json).unwrap();
+    assert_eq!(meta_new.work_key.as_deref(), Some("/works/OL262758W"));
+}

@@ -102,6 +102,7 @@ fn test_cache_stats_and_clean() {
         canonical_title: "Dune".to_string(),
         author: Some("Frank Herbert".to_string()),
         first_publish_year: Some(1965),
+        work_key: Some("/works/OL893415W".to_string()),
     });
     cache.set_book_metadata("Dune", None, &meta);
 
@@ -127,6 +128,7 @@ fn test_book_metadata_cache_roundtrip() {
         canonical_title: "The Hobbit".to_string(),
         author: Some("J. R. R. Tolkien".to_string()),
         first_publish_year: Some(1937),
+        work_key: Some("/works/OL262758W".to_string()),
     });
     cache.set_book_metadata("The Hobbit", None, &meta);
 

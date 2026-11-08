@@ -546,6 +546,7 @@ pub struct PreparedBookQuery {
     pub author: Option<String>,
     pub resolved_title: String,
     pub resolved_author: Option<String>,
+    pub work_key: Option<String>,
     pub candidates: Vec<SearchResult>,
 }
 
@@ -559,7 +560,7 @@ pub async fn prepare_book_query(
     _args: &Cli,
 ) -> Result<PreparedBookQuery> {
     let searcher = BookSearcher::with_client(scraper.client().clone());
-    let (resolved_title, resolved_author, candidates) =
+    let (resolved_title, resolved_author, work_key, candidates) =
         resolve_book_and_candidates_concurrently(title, author, cache, &searcher).await?;
 
     Ok(PreparedBookQuery {
@@ -567,6 +568,7 @@ pub async fn prepare_book_query(
         author: author.map(|a| a.to_string()),
         resolved_title,
         resolved_author,
+        work_key,
         candidates,
     })
 }
@@ -625,10 +627,13 @@ async fn resolve_book_and_candidates_concurrently(
     query_author: Option<&str>,
     cache: &Cache,
     searcher: &BookSearcher,
-) -> Result<(String, Option<String>, Vec<SearchResult>)> {
+) -> Result<(String, Option<String>, Option<String>, Vec<SearchResult>)> {
     if let Some(auth) = query_author {
         let effective_title = query_title.to_string();
         let effective_author = Some(auth.to_string());
+        let work_key = cache
+            .get_book_metadata(query_title, Some(auth))
+            .and_then(|m| m.and_then(|meta| meta.work_key));
         let mut searcher_mut = searcher.clone();
         let candidates = fetch_or_cache_candidates(
             &effective_title,
@@ -637,7 +642,7 @@ async fn resolve_book_and_candidates_concurrently(
             &mut searcher_mut,
         )
         .await?;
-        return Ok((effective_title, effective_author, candidates));
+        return Ok((effective_title, effective_author, work_key, candidates));
     }
 
     // Check if metadata is already cached
@@ -645,6 +650,7 @@ async fn resolve_book_and_candidates_concurrently(
     if let Some(Some(meta)) = cached_meta {
         let effective_title = meta.canonical_title;
         let effective_author = meta.author;
+        let work_key = meta.work_key;
         let year_str = meta
             .first_publish_year
             .map(|y| format!(" ({})", y))
@@ -663,7 +669,7 @@ async fn resolve_book_and_candidates_concurrently(
             &mut searcher_mut,
         )
         .await?;
-        return Ok((effective_title, effective_author, candidates));
+        return Ok((effective_title, effective_author, work_key, candidates));
     }
 
     // Check if candidates are already cached under the query title
@@ -672,7 +678,10 @@ async fn resolve_book_and_candidates_concurrently(
             "Loaded {} search candidate(s) from local cache.",
             cached_candidates.len()
         ));
-        return Ok((query_title.to_string(), None, cached_candidates));
+        let work_key = cache
+            .get_book_metadata(query_title, None)
+            .and_then(|m| m.and_then(|meta| meta.work_key));
+        return Ok((query_title.to_string(), None, work_key, cached_candidates));
     }
 
     // Fan-out Open Library metadata resolution AND candidate search concurrently
@@ -684,7 +693,7 @@ async fn resolve_book_and_candidates_concurrently(
 
     let (meta_opt, mut raw_candidates) = tokio::join!(meta_fut, candidates_fut);
 
-    let (effective_title, effective_author) = if let Some(meta) = meta_opt {
+    let (effective_title, effective_author, work_key) = if let Some(meta) = meta_opt {
         cache.set_book_metadata(query_title, None, &Some(meta.clone()));
         let year_str = meta
             .first_publish_year
@@ -704,7 +713,7 @@ async fn resolve_book_and_candidates_concurrently(
                 &format!("Identified \"{}\"", meta.canonical_title),
             );
         }
-        (meta.canonical_title, meta.author)
+        (meta.canonical_title, meta.author, meta.work_key)
     } else {
         if !raw_candidates.is_empty() {
             Ui::finish_spinner(
@@ -714,7 +723,7 @@ async fn resolve_book_and_candidates_concurrently(
         } else {
             Ui::finish_spinner(&spinner, "No web results found.");
         }
-        (query_title.to_string(), None)
+        (query_title.to_string(), None, None)
     };
 
     crate::search::rank_candidates(
@@ -730,7 +739,7 @@ async fn resolve_book_and_candidates_concurrently(
         );
     }
 
-    Ok((effective_title, effective_author, raw_candidates))
+    Ok((effective_title, effective_author, work_key, raw_candidates))
 }
 
 async fn fetch_or_cache_candidates(
@@ -919,8 +928,70 @@ async fn generate_prepared_book_summary(
             }
         }
 
+        // Check Open Library editorial work description fallback
+        if let Some(work_key) = &prep.work_key {
+            let searcher = BookSearcher::with_client(scraper.client().clone());
+            if let Some(desc) = searcher.fetch_work_description(work_key).await {
+                let wc = desc.split_whitespace().count();
+                if wc >= 30 {
+                    Ui::info(&format!(
+                        "Using Open Library editorial description as grounded context ({} words)...",
+                        wc
+                    ));
+                    let work_url = format!(
+                        "https://openlibrary.org/{}",
+                        work_key.trim_start_matches('/')
+                    );
+                    if let Ok(output) = llm
+                        .summarize_book_with_context(
+                            effective_title,
+                            effective_author,
+                            &work_url,
+                            &desc,
+                            args.style,
+                            mode,
+                        )
+                        .await
+                    {
+                        return Ok((output, wc, Some(work_url)));
+                    }
+                }
+            }
+        }
+
         Ui::warn("All online references failed to scrape. Falling back to LLM internal memory.");
     } else {
+        // If no web candidates found, check Open Library work description before parametric memory
+        if let Some(work_key) = &prep.work_key {
+            let searcher = BookSearcher::with_client(scraper.client().clone());
+            if let Some(desc) = searcher.fetch_work_description(work_key).await {
+                let wc = desc.split_whitespace().count();
+                if wc >= 30 {
+                    Ui::info(&format!(
+                        "Using Open Library editorial description as grounded context ({} words)...",
+                        wc
+                    ));
+                    let work_url = format!(
+                        "https://openlibrary.org/{}",
+                        work_key.trim_start_matches('/')
+                    );
+                    if let Ok(output) = llm
+                        .summarize_book_with_context(
+                            effective_title,
+                            effective_author,
+                            &work_url,
+                            &desc,
+                            args.style,
+                            mode,
+                        )
+                        .await
+                    {
+                        return Ok((output, wc, Some(work_url)));
+                    }
+                }
+            }
+        }
+
         Ui::warn("No web synopsis found online. Falling back to LLM trained memory.");
     }
 
