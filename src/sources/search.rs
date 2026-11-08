@@ -127,17 +127,16 @@ impl BookSearcher {
         unique
     }
 
-    /// Fetches candidates concurrently across search backends without ranking yet,
-    /// enabling parallel execution alongside metadata resolution.
+    /// Fetches candidates across search backends, prioritizing fast Wikipedia JSON APIs
+    /// and short-circuiting to bypass slow DuckDuckGo HTML scraping when a confident match is found.
     pub async fn search_raw_candidates(
         &self,
         title: &str,
         author: Option<&str>,
     ) -> Vec<SearchResult> {
-        let (opensearch_res, fulltext_res, ddg_res) = tokio::join!(
+        let (opensearch_res, fulltext_res) = tokio::join!(
             self.search_wikipedia_opensearch(title),
-            self.search_wikipedia_fulltext(title, author),
-            self.search_duckduckgo(title, author)
+            self.search_wikipedia_fulltext(title, author)
         );
 
         let mut raw_candidates = Vec::new();
@@ -147,11 +146,22 @@ impl BookSearcher {
         if let Ok(results) = fulltext_res {
             raw_candidates.extend(results);
         }
-        if let Ok(results) = ddg_res {
-            raw_candidates.extend(results);
+
+        let mut unique = deduplicate_candidates(raw_candidates);
+
+        // If Wikipedia yielded a high-confidence match (score >= 85), return immediately
+        // to bypass the 1.5-3.5s DuckDuckGo HTML scraping latency.
+        let prepared = PreparedQuery::new(title, author);
+        let has_high_confidence_wiki = unique.iter().any(|c| prepared.score(c) >= 85);
+
+        if !has_high_confidence_wiki {
+            if let Ok(ddg_results) = self.search_duckduckgo(title, author).await {
+                unique.extend(ddg_results);
+                unique = deduplicate_candidates(unique);
+            }
         }
 
-        deduplicate_candidates(raw_candidates)
+        unique
     }
 
     /// Queries Wikipedia OpenSearch API (canonical exact/prefix title index)
@@ -259,7 +269,7 @@ impl BookSearcher {
 
         let endpoint = format!("https://html.duckduckgo.com/html/?q={}", url_encode(&query));
 
-        let Some(resp) = self.get_with_timeout(&endpoint, 4).await else {
+        let Some(resp) = self.get_with_timeout(&endpoint, 3).await else {
             return Ok(Vec::new());
         };
 

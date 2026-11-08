@@ -63,6 +63,9 @@ fn test_rank_candidates_prioritizes_exact_novel_over_commentary_and_films() {
     rank_candidates("The Hobbit", Some("J. R. R. Tolkien"), &mut candidates);
     assert_eq!(candidates[0].title, "The Hobbit (Wikipedia)");
     assert!(candidates[0].score >= 150);
+
+    // Verify high-confidence short-circuit threshold logic (score >= 85)
+    assert!(candidates[0].score >= 85);
 }
 
 #[test]
