@@ -250,13 +250,35 @@ pub async fn handle_file(
     path: &std::path::Path,
     scraper: &WebScraper,
     llm: &LlmClient,
-    _cache: &Cache,
+    cache: &Cache,
     args: &Cli,
 ) -> Result<SummaryOutcome> {
     let path_str = path.display().to_string();
     let file_key = file_cache_key(path);
 
-    let doc = crate::sources::DocumentLoader::load_file(path, scraper)?;
+    let doc = if let Some(ref k) = file_key
+        && let Some(cached_page) = cache.get_page(k)
+    {
+        crate::sources::document::LocalDocument {
+            title: cached_page
+                .title
+                .unwrap_or_else(|| path.display().to_string()),
+            content: cached_page.content,
+            word_count: cached_page.word_count,
+        }
+    } else {
+        let loaded = crate::sources::DocumentLoader::load_file(path, scraper)?;
+        if let Some(ref k) = file_key {
+            let page_record = crate::scraper::ScrapedPage {
+                url: format!("file://{}", path.display()),
+                title: Some(loaded.title.clone()),
+                content: loaded.content.clone(),
+                word_count: loaded.word_count,
+            };
+            cache.set_page(k, &page_record);
+        }
+        loaded
+    };
 
     Ui::info(&format!(
         "Loaded {} words from file '{}'",

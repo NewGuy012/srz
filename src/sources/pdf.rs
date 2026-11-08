@@ -36,8 +36,8 @@ impl PdfExtractor {
             .context("Failed to extract text layer from PDF document")?;
 
         let (title, _author) = Self::extract_metadata_from_doc(&doc, path);
-        let content = Self::post_process_text(&raw_text);
-        let word_count = content.split_whitespace().count();
+        let processed = Self::post_process_text(&raw_text);
+        let (content, word_count) = crate::sources::scraper::clean_text(&processed, true, 2);
 
         if word_count < 5 {
             let path_str = path
@@ -136,7 +136,34 @@ impl PdfExtractor {
                         cleaned.push_str("\n\n");
                     }
                 } else {
-                    cleaned.push(' ');
+                    let next_is_heading_or_start = lines
+                        .peek()
+                        .map(|n| {
+                            let nt = n.trim();
+                            nt.starts_with('#')
+                                || nt.starts_with("• ")
+                                || nt.starts_with("- ")
+                                || nt.starts_with("* ")
+                                || (nt.len() < 80
+                                    && nt
+                                        .chars()
+                                        .next()
+                                        .map(|c| c.is_ascii_digit())
+                                        .unwrap_or(false)
+                                    && nt.contains(". "))
+                        })
+                        .unwrap_or(false);
+
+                    let ends_sentence = trimmed.ends_with('.')
+                        || trimmed.ends_with(':')
+                        || trimmed.ends_with('?')
+                        || trimmed.ends_with('!');
+
+                    if ends_sentence && next_is_heading_or_start {
+                        cleaned.push_str("\n\n");
+                    } else {
+                        cleaned.push(' ');
+                    }
                 }
             }
         }
