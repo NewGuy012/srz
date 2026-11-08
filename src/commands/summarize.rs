@@ -484,17 +484,20 @@ pub async fn handle_news(
         }
     };
 
-    // Cap each article's content to concise lead coverage (~600 words),
-    // avoiding sidebar/footer boilerplate while keeping total digest lightweight for single-pass synthesis.
-    const MAX_NEWS_ARTICLE_WORDS: usize = 600;
+    // Dynamically budget words per article across all gathered sources so that
+    // the combined news digest fits proportionally into the LLM single-pass context window.
+    let budget = llm.budget();
+    let per_article_words = if !sources.is_empty() {
+        (budget.single_pass_threshold.saturating_mul(3) / 4 / sources.len()).clamp(150, 800)
+    } else {
+        600
+    };
 
     let mut digest = String::new();
     let mut total_words = 0;
     for (i, src) in sources.iter().enumerate() {
-        let trimmed_content = crate::engine::llm::truncate_words_preserving_lines(
-            &src.content,
-            MAX_NEWS_ARTICLE_WORDS,
-        );
+        let trimmed_content =
+            crate::engine::llm::truncate_words_preserving_lines(&src.content, per_article_words);
         let article_words = trimmed_content.split_whitespace().count();
         total_words += article_words;
 
