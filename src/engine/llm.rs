@@ -553,14 +553,28 @@ fn truncate_headline(s: &str, max_len: usize) -> String {
     format!("{}…", cut)
 }
 
-/// Strips markdown formatting characters (`*`, `_`, `#`, `` ` ``).
+/// Strips markdown formatting characters (`*`, `_`, `#`, `` ` ``) and collapses whitespace in a single pass.
 fn strip_markdown_decorations(s: &str) -> String {
-    s.chars()
-        .filter(|&c| c != '*' && c != '_' && c != '#' && c != '`')
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    let mut out = String::with_capacity(s.len());
+    let mut prev_space = false;
+    for c in s.chars() {
+        if c == '*' || c == '_' || c == '#' || c == '`' {
+            continue;
+        }
+        if c.is_whitespace() {
+            if !prev_space && !out.is_empty() {
+                out.push(' ');
+                prev_space = true;
+            }
+        } else {
+            out.push(c);
+            prev_space = false;
+        }
+    }
+    if prev_space {
+        out.pop();
+    }
+    out
 }
 
 /// Checks whether a candidate headline is substantive and not generic thinking filler.
@@ -3256,5 +3270,20 @@ mod tests {
         assert_eq!(pb.message(), "Generating summary with local LLM...");
         assert!(!pb.message().contains("tokens"));
         assert!(!pb.message().contains("t/s"));
+    }
+
+    #[test]
+    fn test_strip_markdown_decorations() {
+        assert_eq!(strip_markdown_decorations(""), "");
+        assert_eq!(strip_markdown_decorations("   "), "");
+        assert_eq!(strip_markdown_decorations("**_#`"), "");
+        assert_eq!(
+            strip_markdown_decorations("## 1. **Identify** _core_ `themes`\n"),
+            "1. Identify core themes"
+        );
+        assert_eq!(
+            strip_markdown_decorations("   **Step 1:**   Formulate plan   "),
+            "Step 1: Formulate plan"
+        );
     }
 }

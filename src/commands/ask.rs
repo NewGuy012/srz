@@ -131,6 +131,22 @@ pub const ASK_SYSTEM_PROMPT: &str = "You are an expert reading assistant. Answer
 
 pub use crate::system::text_util::is_stop_word;
 
+#[inline]
+fn is_word_boundary(text: &str, start: usize, len: usize) -> bool {
+    let bytes = text.as_bytes();
+    let before_ok = if start == 0 {
+        true
+    } else {
+        !bytes[start - 1].is_ascii_alphanumeric() && bytes[start - 1] != b'_'
+    };
+    let after_ok = if start + len >= bytes.len() {
+        true
+    } else {
+        !bytes[start + len].is_ascii_alphanumeric() && bytes[start + len] != b'_'
+    };
+    before_ok && after_ok
+}
+
 fn count_term_occurrences(text: &str, term: &str) -> usize {
     if term.is_empty() {
         return 0;
@@ -140,8 +156,11 @@ fn count_term_occurrences(text: &str, term: &str) -> usize {
     while let Some(pos) =
         crate::system::text_util::find_ascii_case_insensitive(&text[cursor..], term)
     {
-        count += 1;
-        cursor += pos + term.len();
+        let abs_pos = cursor + pos;
+        if is_word_boundary(text, abs_pos, term.len()) {
+            count += 1;
+        }
+        cursor = abs_pos + term.len();
     }
     count
 }

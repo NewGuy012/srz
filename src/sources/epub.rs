@@ -140,13 +140,12 @@ fn find_opf_path<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<String> 
         }
     }
 
-    // 2. Fallback: locate any entry ending with .opf
-    for i in 0..archive.len() {
-        if let Ok(file) = archive.by_index(i)
-            && let Ok(name) = file.name()
-            && name.to_ascii_lowercase().ends_with(".opf")
+    // 2. Fallback: locate any entry ending with .opf from the in-memory central directory
+    for name_res in archive.file_names() {
+        if let Ok(name) = name_res
+            && crate::system::text_util::ends_with_ascii_case_insensitive(&name, ".opf")
         {
-            return Ok(name.to_string());
+            return Ok(name.into_owned());
         }
     }
 
@@ -259,14 +258,14 @@ fn parse_opf<R: Read + Seek>(
     // 2. Fallback to manifest items if spine is empty
     if chapter_paths.is_empty() {
         for (href, media_type) in manifest.values() {
-            let lower_media = media_type.to_ascii_lowercase();
-            let lower_href = href.to_ascii_lowercase();
-            if lower_media.contains("html")
-                || lower_media.contains("xml")
-                || lower_href.ends_with(".xhtml")
-                || lower_href.ends_with(".html")
-                || lower_href.ends_with(".htm")
-            {
+            let is_html_media =
+                crate::system::text_util::contains_ascii_case_insensitive(media_type, "html")
+                    || crate::system::text_util::contains_ascii_case_insensitive(media_type, "xml");
+            let is_html_ext =
+                crate::system::text_util::ends_with_ascii_case_insensitive(href, ".xhtml")
+                    || crate::system::text_util::ends_with_ascii_case_insensitive(href, ".html")
+                    || crate::system::text_util::ends_with_ascii_case_insensitive(href, ".htm");
+            if is_html_media || is_html_ext {
                 chapter_paths.push(resolve_epub_path(opf_dir, href));
                 if chapter_paths.len() >= MAX_EPUB_CHAPTER_COUNT {
                     break;
