@@ -27,14 +27,100 @@ static MAIN_SELECTORS: LazyLock<Vec<Selector>> = LazyLock::new(|| {
     .collect()
 });
 
+static HTMD_CONVERTER: LazyLock<htmd::HtmlToMarkdown> = LazyLock::new(htmd::HtmlToMarkdown::new);
+
 pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 pub const MAX_SCRAPE_BYTES: usize = 10 * 1024 * 1024; // 10 MB limit for web responses
 
+/// Helper to check if a byte slice starts with a given tag name case-insensitively,
+/// ensuring a tag delimiter (whitespace, '>', or '/') follows immediately.
+fn starts_with_tag(slice: &[u8], prefix: &[u8]) -> bool {
+    if slice.len() < prefix.len() {
+        return false;
+    }
+    for (a, b) in slice[..prefix.len()].iter().zip(prefix.iter()) {
+        if a.to_ascii_lowercase() != b.to_ascii_lowercase() {
+            return false;
+        }
+    }
+    if slice.len() > prefix.len() {
+        let next = slice[prefix.len()];
+        next.is_ascii_whitespace() || next == b'>' || next == b'/'
+    } else {
+        true
+    }
+}
+
+/// Finds the index of `needle` in `haystack` case-insensitively.
+fn find_subslice_ignore_case(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).position(|window| {
+        window
+            .iter()
+            .zip(needle.iter())
+            .all(|(a, b)| a.to_ascii_lowercase() == b.to_ascii_lowercase())
+    })
+}
+
+/// Quickly strips `<script>...</script>`, `<style>...</style>`, `<svg>...</svg>`,
+/// and `<noscript>...</noscript>` tags from raw HTML to prevent massive DOM bloat in Readability.
+pub fn strip_boilerplate_html_tags(html: &str) -> Cow<'_, str> {
+    let has_script = crate::system::text_util::contains_ascii_case_insensitive(html, "<script");
+    let has_style = crate::system::text_util::contains_ascii_case_insensitive(html, "<style");
+    let has_svg = crate::system::text_util::contains_ascii_case_insensitive(html, "<svg");
+    let has_noscript = crate::system::text_util::contains_ascii_case_insensitive(html, "<noscript");
+
+    if !has_script && !has_style && !has_svg && !has_noscript {
+        return Cow::Borrowed(html);
+    }
+
+    let mut out = String::with_capacity(html.len());
+    let bytes = html.as_bytes();
+    let mut cursor = 0;
+    let len = bytes.len();
+
+    while cursor < len {
+        if bytes[cursor] == b'<' {
+            let rest = &bytes[cursor..];
+            let closing_tag: Option<&'static [u8]> = if starts_with_tag(rest, b"<script") {
+                Some(b"</script>")
+            } else if starts_with_tag(rest, b"<style") {
+                Some(b"</style>")
+            } else if starts_with_tag(rest, b"<svg") {
+                Some(b"</svg>")
+            } else if starts_with_tag(rest, b"<noscript") {
+                Some(b"</noscript>")
+            } else {
+                None
+            };
+
+            if let Some(closing) = closing_tag {
+                if let Some(close_offset) = find_subslice_ignore_case(&bytes[cursor..], closing) {
+                    cursor += close_offset + closing.len();
+                    continue;
+                }
+            }
+        }
+
+        let next_tag = bytes[cursor + 1..]
+            .iter()
+            .position(|&b| b == b'<')
+            .map(|pos| cursor + 1 + pos)
+            .unwrap_or(len);
+
+        out.push_str(&html[cursor..next_tag]);
+        cursor = next_tag;
+    }
+
+    Cow::Owned(out)
+}
+
 /// Converts HTML to clean semantic Markdown preserving headings, lists, code blocks, and tables.
 pub fn html_to_markdown(html: &str) -> String {
-    let converter = htmd::HtmlToMarkdown::new();
-    match converter.convert(html) {
+    match HTMD_CONVERTER.convert(html) {
         Ok(md) if !md.trim().is_empty() => md,
         _ => html_to_plain_text(html.as_bytes()).unwrap_or_else(|_| html.to_string()),
     }
@@ -213,10 +299,11 @@ impl WebScraper {
     /// Normalizes raw HTML into clean, readable text.
     pub fn normalize(&self, url: &str, raw_html: &str) -> Result<ScrapedPage> {
         let mut document: Option<Html> = None;
+        let sanitized = strip_boilerplate_html_tags(raw_html);
 
         // 1. Attempt Readability extraction first (dom_smoothie) to avoid full DOM construction when possible
         let (article_title, extracted_html) =
-            match dom_smoothie::Readability::new(raw_html, Some(url), None) {
+            match dom_smoothie::Readability::new(sanitized.as_ref(), Some(url), None) {
                 Ok(mut readability) => match readability.parse() {
                     Ok(article) => {
                         let title = if !article.title.trim().is_empty() {
@@ -631,6 +718,18 @@ mod tests {
         assert!(md.contains("## Overview") || md.contains("Overview"));
         assert!(md.contains("First item"));
         assert!(md.contains("Second item"));
+    }
+
+    #[test]
+    fn test_strip_boilerplate_html_tags() {
+        let html = r#"<html><head><script type="application/json">{"data": 123}</script><style>body { color: red; }</style><title>Test</title></head><body><svg><path d="M0 0"/></svg><noscript>Enable JS</noscript><p>Actual article content here.</p></body></html>"#;
+        let stripped = strip_boilerplate_html_tags(html);
+        assert!(!stripped.contains("application/json"));
+        assert!(!stripped.contains("color: red"));
+        assert!(!stripped.contains("<svg"));
+        assert!(!stripped.contains("Enable JS"));
+        assert!(stripped.contains("<title>Test</title>"));
+        assert!(stripped.contains("<p>Actual article content here.</p>"));
     }
 
     #[test]
