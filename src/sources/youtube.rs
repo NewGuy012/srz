@@ -333,9 +333,24 @@ impl TimedTranscriptBuilder {
             return;
         }
 
+        // Filter out automatic audio filler tags (e.g. [Music], [Applause]) that bloat prompt tokens
+        if trimmed.starts_with('[')
+            && trimmed.ends_with(']')
+            && (trimmed.eq_ignore_ascii_case("[music]")
+                || trimmed.eq_ignore_ascii_case("[applause]")
+                || trimmed.eq_ignore_ascii_case("[laughter]")
+                || trimmed.eq_ignore_ascii_case("[cheering]"))
+        {
+            return;
+        }
+
         if !self.chapters.is_empty() {
-            // Find active chapter index for current timestamp
-            let mut active_idx = 0;
+            // Find active chapter index for current timestamp (monotonic forward scan)
+            let mut active_idx = if self.current_chapter_idx != usize::MAX {
+                self.current_chapter_idx
+            } else {
+                0
+            };
             while active_idx + 1 < self.chapters.len()
                 && seconds >= self.chapters[active_idx + 1].seconds
             {
@@ -669,10 +684,18 @@ async fn download_and_parse_captions(
         return None;
     }
 
-    let mut candidate_urls = vec![url.to_string()];
-    if !url.contains("fmt=") {
-        candidate_urls.push(format!("{}&fmt=json3", url));
-    }
+    let json3_url = if !url.contains("fmt=") {
+        format!("{}&fmt=json3", url)
+    } else {
+        url.to_string()
+    };
+
+    // Prioritize json3 format first (much faster to transfer and parse without XML entity decoding)
+    let candidate_urls = if json3_url != url {
+        vec![json3_url, url.to_string()]
+    } else {
+        vec![url.to_string()]
+    };
 
     let uas = [ANDROID_USER_AGENT, crate::scraper::DEFAULT_USER_AGENT];
     for u in &candidate_urls {
@@ -729,7 +752,7 @@ pub async fn fetch_youtube_transcript(client: &Client, video_id: &str) -> Result
         [("ANDROID", "20.10.38"), ("WEB", "2.20240101.00.00")];
 
     for (client_name, client_version) in INNERTUBE_CLIENTS {
-        if tracks.is_some() && title.is_some() && description.is_some() {
+        if tracks.is_some() && title.is_some() {
             break;
         }
         if let Ok(player_data) =
@@ -750,8 +773,8 @@ pub async fn fetch_youtube_transcript(client: &Client, video_id: &str) -> Result
         }
     }
 
-    // 2. Fallback to watch page HTML if tracks, title, or description are still missing
-    if (tracks.is_none() || title.is_none() || description.is_none())
+    // 2. Fallback to watch page HTML if essential tracks or title could not be resolved via Innertube
+    if (tracks.is_none() || title.is_none())
         && let Ok(resp) = client
             .get(&watch_url)
             .header("User-Agent", crate::scraper::DEFAULT_USER_AGENT)
