@@ -118,6 +118,42 @@ pub fn strip_boilerplate_html_tags(html: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
+/// Truncates Wikipedia HTML before the references, bibliography, and navigation footer,
+/// avoiding expensive DOM parsing and Markdown conversion of thousands of citation links.
+pub fn truncate_wikipedia_html_before_references(html: &str) -> Cow<'_, str> {
+    const WIKI_REFERENCE_MARKERS: &[&str] = &[
+        "id=\"references\"",
+        "id=\"bibliography\"",
+        "id=\"works_cited\"",
+        "class=\"reflist",
+        "class=\"references",
+    ];
+
+    let lower = html.to_ascii_lowercase();
+    let mut cut_idx = None;
+
+    for marker in WIKI_REFERENCE_MARKERS {
+        if let Some(pos) = lower.find(marker) {
+            let tag_start = html[..pos].rfind('<').unwrap_or(pos);
+            cut_idx = Some(match cut_idx {
+                Some(prev) => std::cmp::min(prev, tag_start),
+                None => tag_start,
+            });
+        }
+    }
+
+    if let Some(idx) = cut_idx {
+        if idx > 1000 {
+            let mut truncated = String::with_capacity(idx + 32);
+            truncated.push_str(&html[..idx]);
+            truncated.push_str("</div></body></html>");
+            return Cow::Owned(truncated);
+        }
+    }
+
+    Cow::Borrowed(html)
+}
+
 /// Converts HTML to clean semantic Markdown preserving headings, lists, code blocks, and tables.
 pub fn html_to_markdown(html: &str) -> String {
     match HTMD_CONVERTER.convert(html) {
@@ -299,7 +335,12 @@ impl WebScraper {
     /// Normalizes raw HTML into clean, readable text.
     pub fn normalize(&self, url: &str, raw_html: &str) -> Result<ScrapedPage> {
         let mut document: Option<Html> = None;
-        let sanitized = strip_boilerplate_html_tags(raw_html);
+        let pre_cleaned = if url.contains("wikipedia.org") {
+            truncate_wikipedia_html_before_references(raw_html)
+        } else {
+            Cow::Borrowed(raw_html)
+        };
+        let sanitized = strip_boilerplate_html_tags(pre_cleaned.as_ref());
 
         // 1. Attempt Readability extraction first (dom_smoothie) to avoid full DOM construction when possible
         let (article_title, extracted_html) =
@@ -730,6 +771,22 @@ mod tests {
         assert!(!stripped.contains("Enable JS"));
         assert!(stripped.contains("<title>Test</title>"));
         assert!(stripped.contains("<p>Actual article content here.</p>"));
+    }
+
+    #[test]
+    fn test_truncate_wikipedia_html_before_references() {
+        let padding = "A".repeat(1200);
+        let html = format!(
+            "<html><body><p>Article introduction and body: {}</p><h2 id=\"References\">References</h2><div class=\"reflist\"><ul><li>Citation 1</li></ul></div></body></html>",
+            padding
+        );
+
+        let truncated = truncate_wikipedia_html_before_references(&html);
+        assert!(truncated.contains("Article introduction and body"));
+        assert!(!truncated.contains("<h2 id=\"References\">"));
+        assert!(!truncated.contains("reflist"));
+        assert!(!truncated.contains("Citation 1"));
+        assert!(truncated.ends_with("</div></body></html>"));
     }
 
     #[test]
