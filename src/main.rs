@@ -240,6 +240,18 @@ async fn main() -> Result<()> {
                 Err(err) => Err(err),
             }
         }
+        ResolvedAction::Book { title } => {
+            let (llm, prep_res) = tokio::join!(
+                commands::init_llm_with_capabilities_or_exit(&args, Some(&cache)),
+                commands::prepare_book_query(&title, None, &scraper, &cache, &args)
+            );
+            match prep_res {
+                Ok(prep) => {
+                    commands::summarize_prepared_book(prep, &llm, &scraper, &cache, &args).await
+                }
+                Err(err) => Err(err),
+            }
+        }
         other_action => {
             let llm = commands::init_llm_with_capabilities_or_exit(&args, Some(&cache)).await;
             match other_action {
@@ -279,9 +291,6 @@ async fn main() -> Result<()> {
                     commands::handle_file(&path, &scraper, &llm, &cache, &args).await
                 }
                 ResolvedAction::Stdin => commands::handle_stdin(&scraper, &llm, &args).await,
-                ResolvedAction::Book { title } => {
-                    commands::handle_book(&title, None, &scraper, &llm, &cache, &args).await
-                }
                 ResolvedAction::News {
                     topic,
                     timeframe,

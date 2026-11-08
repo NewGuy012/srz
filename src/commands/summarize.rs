@@ -540,6 +540,74 @@ pub async fn handle_news(
     Ok(outcome)
 }
 
+#[derive(Debug, Clone)]
+pub struct PreparedBookQuery {
+    pub title: String,
+    pub author: Option<String>,
+    pub resolved_title: String,
+    pub resolved_author: Option<String>,
+    pub candidates: Vec<SearchResult>,
+}
+
+/// Resolves book metadata (Open Library) and candidates (Wikipedia / DDG) concurrently,
+/// returning structured context that can be fetched/summarized immediately once LLM is ready.
+pub async fn prepare_book_query(
+    title: &str,
+    author: Option<&str>,
+    scraper: &WebScraper,
+    cache: &Cache,
+    _args: &Cli,
+) -> Result<PreparedBookQuery> {
+    let searcher = BookSearcher::with_client(scraper.client().clone());
+    let (resolved_title, resolved_author, candidates) =
+        resolve_book_and_candidates_concurrently(title, author, cache, &searcher).await?;
+
+    Ok(PreparedBookQuery {
+        title: title.to_string(),
+        author: author.map(|a| a.to_string()),
+        resolved_title,
+        resolved_author,
+        candidates,
+    })
+}
+
+/// Summarizes a book after candidate reference discovery has completed.
+pub async fn summarize_prepared_book(
+    mut prep: PreparedBookQuery,
+    llm: &LlmClient,
+    scraper: &WebScraper,
+    cache: &Cache,
+    args: &Cli,
+) -> Result<SummaryOutcome> {
+    let book_display = match prep.author.as_deref() {
+        Some(auth) => format!("\"{}\" by {}", prep.title, auth),
+        None => format!("\"{}\"", prep.title),
+    };
+
+    let mode = args.stream_mode(&book_display);
+
+    let (output, word_count, source_url) =
+        generate_prepared_book_summary(&mut prep, scraper, llm, cache, args, mode).await?;
+
+    let is_truncated = output.truncated;
+    let title_key = prep.title.clone();
+    let outcome = SummaryOutcome::from_llm(
+        "book",
+        book_display,
+        prep.author,
+        source_url,
+        word_count,
+        output,
+    );
+    let outcome = if !is_truncated {
+        outcome.with_cache_key(&title_key)
+    } else {
+        outcome
+    };
+
+    Ok(outcome)
+}
+
 pub async fn handle_book(
     title: &str,
     author: Option<&str>,
@@ -548,39 +616,8 @@ pub async fn handle_book(
     cache: &Cache,
     args: &Cli,
 ) -> Result<SummaryOutcome> {
-    let book_display = match author {
-        Some(auth) => format!("\"{}\" by {}", title, auth),
-        None => format!("\"{}\"", title),
-    };
-
-    let mode = args.stream_mode(&book_display);
-    let query = BookQuery { title, author };
-
-    // 2. Generate summary (via grounded web search or LLM memory fallback)
-    let (output, word_count, source_url) =
-        generate_book_summary(&query, scraper, llm, cache, args, mode).await?;
-
-    let is_truncated = output.truncated;
-    let outcome = SummaryOutcome::from_llm(
-        "book",
-        book_display,
-        author.map(|a| a.to_string()),
-        source_url,
-        word_count,
-        output,
-    );
-    let outcome = if !is_truncated {
-        outcome.with_cache_key(title)
-    } else {
-        outcome
-    };
-
-    Ok(outcome)
-}
-
-struct BookQuery<'a> {
-    title: &'a str,
-    author: Option<&'a str>,
+    let prep = prepare_book_query(title, author, scraper, cache, args).await?;
+    summarize_prepared_book(prep, llm, scraper, cache, args).await
 }
 
 async fn resolve_book_and_candidates_concurrently(
@@ -771,29 +808,24 @@ fn disambiguate_candidates_if_needed(
     eprintln!();
 }
 
-async fn generate_book_summary(
-    query: &BookQuery<'_>,
+async fn generate_prepared_book_summary(
+    prep: &mut PreparedBookQuery,
     scraper: &WebScraper,
     llm: &LlmClient,
     cache: &Cache,
     args: &Cli,
     mode: StreamMode<'_>,
 ) -> Result<(LlmOutput, usize, Option<String>)> {
-    let searcher = BookSearcher::with_client(scraper.client().clone());
-    let (resolved_title, resolved_author, mut candidates) =
-        resolve_book_and_candidates_concurrently(query.title, query.author, cache, &searcher)
-            .await?;
+    let effective_title = prep.resolved_title.as_str();
+    let effective_author = prep.resolved_author.as_deref().or(prep.author.as_deref());
 
-    let effective_title = resolved_title.as_str();
-    let effective_author = resolved_author.as_deref().or(query.author);
-
-    if !candidates.is_empty() {
-        disambiguate_candidates_if_needed(effective_title, &mut candidates, args);
+    if !prep.candidates.is_empty() {
+        disambiguate_candidates_if_needed(effective_title, &mut prep.candidates, args);
 
         let mut fallback_snippet = None;
         let mut fallback_url = None;
 
-        for res in &candidates {
+        for res in &prep.candidates {
             Ui::info(&format!(
                 "Attempting reference: {} ({})",
                 res.title, res.url
@@ -887,7 +919,7 @@ async fn generate_book_summary(
     }
 
     let output = llm
-        .summarize_book_from_memory(query.title, query.author, args.style, mode)
+        .summarize_book_from_memory(effective_title, effective_author, args.style, mode)
         .await?;
     Ok((output, 0, None))
 }
