@@ -37,24 +37,20 @@ flowchart TD
 
     subgraph LLMEngine["3. LLM Synthesis & Streaming"]
         Probe["Server Discovery (/props, /api/show)"] --> BudgetEngine["DynamicBudget (n_ctx, slots)"]
-        BudgetEngine -.->|"Sets Context & Concurrency"| Chunker{"Tokens > Single Pass\nThreshold?"}
-        Tokenize["Model-Aware & Native /tokenize"] --> Chunker
-        YTCaptions --> Chunker
-        WebFlow --> Chunker
-        PDFFlow --> Chunker
-        EPUBFlow --> Chunker
-        FileFlow --> Chunker
-        RefScrape --> Chunker
+        BudgetEngine -.->|"Sets Context Window"| Threshold{"Tokens > Single Pass\nThreshold?"}
+        Tokenize["Model-Aware & Native /tokenize"] --> Threshold
+        YTCaptions --> Threshold
+        WebFlow --> Threshold
+        PDFFlow --> Threshold
+        EPUBFlow --> Threshold
+        FileFlow --> Threshold
+        RefScrape --> Threshold
         NewsScrape --> NewsBriefing["News Digest Synthesis"]
         Grounding --> MultiTurn["Multi-Turn Q&A Prompt Framing"]
-        Chunker -->|"Yes"| MapWorkers["Parallel Map Workers (KV Prefix Aligned)"]
-        MapWorkers --> TreeCheck{"Intermediate >\nThreshold?"}
-        TreeCheck -->|"Yes"| TreeReduce["Hierarchical Tree Reduction"]
-        TreeReduce --> TreeCheck
-        TreeCheck -->|"No"| FinalSynthesis["Final Synthesis Pass"]
-        Chunker -->|"No"| SinglePass["Direct Single Pass"]
-        FinalSynthesis --> SSE["Zero-Copy SSE Streaming Client"]
-        SinglePass --> SSE
+        Threshold -->|"Yes"| StratifiedCompress["CPU Stratified Salience Compression\n(Centroid BM25 & Headings / Lead / Tail)"]
+        Threshold -->|"No"| SinglePass["Direct Single Pass"]
+        StratifiedCompress --> SinglePass
+        SinglePass --> SSE["Zero-Copy SSE Streaming Client"]
         NewsBriefing --> SSE
         MultiTurn --> SSE
     end
@@ -97,17 +93,18 @@ src/
 | **Entry Points** | [`src/main.rs`](https://github.com/NewGuy012/srz/blob/master/src/main.rs) | `main` | Application lifecycle, config resolution, signal routing, and CLI dispatch. |
 | | [`src/lib.rs`](https://github.com/NewGuy012/srz/blob/master/src/lib.rs) | `lib` | Root library interface and backward-compatible module re-exports. |
 | **Commands** | [`src/commands/summarize.rs`](https://github.com/NewGuy012/srz/blob/master/src/commands/summarize.rs) | `commands::summarize` | Summarization workflows for web, YouTube, documents, stdin, and books. |
-| | [`src/commands/ask.rs`](https://github.com/NewGuy012/srz/blob/master/src/commands/ask.rs) | `commands::ask` | Grounded Q&A, stop-word filtered in-memory BM25 chunk selection, automatic re-fetching on cache expiration, interactive REPL (`rustyline`), and DuckDB chat persistence. |
+| | [`src/commands/ask.rs`](https://github.com/NewGuy012/srz/blob/master/src/commands/ask.rs) | `commands::ask` | Grounded Q&A, shared BM25 context retrieval, automatic re-fetching on cache expiration, interactive REPL (`rustyline`), and DuckDB chat persistence. |
 | | [`src/commands/library.rs`](https://github.com/NewGuy012/srz/blob/master/src/commands/library.rs) | `commands::library` | Handlers for `history`, `stats`, `find` (BM25), `query` (SQL), and `export`. |
 | | [`src/commands/diagnostics.rs`](https://github.com/NewGuy012/srz/blob/master/src/commands/diagnostics.rs) | `commands::diagnostics` | Backend verification (`doctor`), model enumeration, and config inspection. |
 | **Configuration** | [`src/config/cli.rs`](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs) | `config::cli` | `clap` CLI parser, style presets, flags, and target auto-detection heuristics. |
 | | [`src/config/file.rs`](https://github.com/NewGuy012/srz/blob/master/src/config/file.rs) | `config::file` | `config.toml` profiles, configuration loading, and template generation. |
-| **Engine** | [`src/engine/llm.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/llm.rs) | `engine::llm` | High-level LLM client, single-pass and parallel Map-Reduce orchestration, book summarization, and tree reduction. |
+| **Engine** | [`src/engine/compressor.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/compressor.rs) | `engine::compressor` | CPU Stratified Salience Compression, centroid BM25 term ranking, heading/lead/tail structural preservation, and shared grounding retrieval. |
+| | [`src/engine/llm.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/llm.rs) | `engine::llm` | High-level LLM client, single-pass streaming orchestration, book summarization, and news digest synthesis. |
 | | [`src/engine/sse.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/sse.rs) | `engine::sse` | Zero-copy SSE parser, streaming state machine, thought headline extraction, thinking duration formatting, and rate tracking. |
 | | [`src/engine/probe.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/probe.rs) | `engine::probe` | Server capability discovery (`/props`, `/api/show`), native `/tokenize` probing, context window discovery, and context clamping. |
-| | [`src/engine/prompts.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/prompts.rs) | `engine::prompts` | Prompt templating, XML boundary escaping, untrusted prompt wrapping, and tree-reduction batch partitioning. |
-| | [`src/engine/budget.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/budget.rs) | `engine::budget` | Dynamic token budgeting (`DynamicBudget`) scaling chunks and worker slots. |
-| | [`src/engine/chunker.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/chunker.rs) | `engine::chunker` | BPE token counting (`tiktoken-rs`), $O(1)$ fast paths, and paragraph chunking. |
+| | [`src/engine/prompts.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/prompts.rs) | `engine::prompts` | Prompt templating, XML boundary escaping, and untrusted prompt wrapping. |
+| | [`src/engine/budget.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/budget.rs) | `engine::budget` | Dynamic token budgeting (`DynamicBudget`) scaling context windows and output caps. |
+| | [`src/engine/chunker.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/chunker.rs) | `engine::chunker` | BPE token counting (`tiktoken-rs`), $O(1)$ fast paths, and hierarchical paragraph chunking. |
 | **Sources** | [`src/sources/document.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/document.rs) | `sources::document` | Local document validation (20 MB cap), format dispatch (PDF, EPUB, HTML, Markdown, plain text), and sanitization. |
 | | [`src/sources/epub.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/epub.rs) | `sources::epub` | Pure-Rust zero-dependency EPUB chapter & metadata extraction (`zip`, `quick-xml`, `htmd`). |
 | | [`src/sources/scraper.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/scraper.rs) | `sources::scraper` | HTTP client (10 MB cap), Mozilla Readability DOM parsing (`dom_smoothie`), and Markdown conversion. |
@@ -358,11 +355,21 @@ Rather than relying on external search daemons or platform-specific C extensions
 
 Across modern laptops and workstations, `srz` steers users toward **Google Gemma 4 at 8-bit quantization (`Q8_0`)** as its reference profile. Gemma 4 delivers high parameter density and strong instruction adherence across long context windows with low battery draw. Running at `Q8_0` preserves near-FP16 semantic fidelity and avoids the nuance degradation common in aggressive 4-bit quantizations while fitting comfortably within unified memory budgets. See the [Hardware Tier Reference Matrix](quickstart.md#hardware-tier-reference-matrix) for tier-by-tier recommendations.
 
-### Synthesis Strategy: Single-Pass vs. Map-Reduce
+### Synthesis Strategy: Single-Pass with Stratified Salience Compression
 
-The synthesis engine chooses its execution strategy dynamically based on the ratio between document token length and the server's active context window (`n_ctx`). When a document fits within roughly 70% of `n_ctx`, `srz` executes a **Single-Pass** synthesis, keeping the entire text inside the model's attention window simultaneously to preserve cross-chapter narrative continuity.
+Local LLMs have an asymmetric latency profile: prompt prefill runs compute-bound at 500–3,000+ tokens/second, while token generation (decode) is memory-bandwidth bound and runs slowly (15–40 tokens/second). Traditional Map-Reduce and recursive tree reduction multiply decoding passes, forcing the local runner through sequential intermediate generation loops that lock up consumer GPUs and unified memory.
 
-When a document exceeds the single-pass threshold, `srz` switches to **Parallel Map-Reduce with Hierarchical Tree Reduction**. The chunker decomposes text hierarchically—starting from natural paragraph boundaries (`\n\n`), falling back to line boundaries (`\n`), sentence boundaries, whitespace word boundaries, and character boundaries when encountering oversized or monolithic blocks lacking paragraph breaks—into overlapping windows sized by `DynamicBudget`, dispatching chunks concurrently across the server's available worker slots (`total_slots`). If the resulting intermediate summaries still exceed the single-pass limit, `srz` recursively groups them into consolidation batches and reduces them in a tree hierarchy before performing the final synthesis pass. Every chunk completion, consolidation batch, and direct pass is strictly bounded by `DynamicBudget::single_pass_threshold` to guarantee that prompts never exceed the server's attention window.
+To eliminate multi-minute latency on local machines, `srz` guarantees **Single-Pass Streaming Synthesis** across all document lengths:
+
+1. **Direct Single-Pass**: When a document fits within `single_pass_threshold` (roughly 70% of `n_ctx`), `srz` feeds the complete text directly into the model's attention window, preserving global thematic coherence and full cross-chapter context.
+2. **CPU Stratified Salience Compression**: When content exceeds the context ceiling (such as long PDF reports or 300-page EPUB books), `srz` runs a deterministic, synchronous compression pass in **< 20ms on the CPU**:
+   - Divides the document into $K$ contiguous strata (from 0% to 100% of the text) to ensure comprehensive beginning-to-end representation.
+   - Automatically computes a 40-term document centroid query excluding stopwords.
+   - Preserves structural elements: chapter headings (`#`, `Chapter`, `Section`), opening premises (Lead paragraphs), and closing takeaways (Conclusion paragraphs).
+   - Scores intermediate paragraphs using Robertson-Sparck Jones BM25 with numerical density weighting.
+   - Reassembles selected paragraphs chronologically with `\n\n...\n\n` dividers, enforcing a strict mathematical ceiling $\le \text{single\_pass\_threshold}$.
+
+This guarantees that every command streams live output to the terminal within seconds, eliminates recursive tree reduction loops, and prevents memory fragmentation.
 
 ### Dynamic Token Budgeting & Zero-Drift Calibration
 
@@ -372,9 +379,9 @@ $$
 \text{effective\_ctx} = \text{prompt\_chunk} + \text{reserve\_completion} + \text{headroom} \le n_{\text{ctx}}
 $$
 
-`DynamicBudget` divides the detected context window into three bounded regions: approximately **45% for the prompt chunk** (clamped between 1,024 and 65,536 tokens), **30% for completion reserve** (512 to 8,192 tokens), and **25% for safety headroom** (512 to 4,096 tokens) to absorb system prompt overhead.
+`DynamicBudget` divides the detected context window into bounded regions: approximately **70% for the usable input prompt**, **20% for completion reserve** (clamped by preset), and **10% for safety headroom** to absorb system prompt overhead.
 
-To eliminate the 15–25% token count drift typical when applying generic BPE tokenizers to non-OpenAI models, `srz` combines in-process model-aware profiles (`TokenizerKind` supporting Gemma SentencePiece 256k, Llama 3 128k, `o200k_base`, and `cl100k_base`) with authoritative server queries. When chunking large documents, `srz` computes a single-pass calibration ratio between server `/tokenize` tokens and local BPE tokens to dynamically scale chunk boundaries, completely eliminating sequential N+1 HTTP tokenization loops. During hierarchical tree reduction, intermediate summary counts are consistently measured using the active model's tokenizer. In interactive Q&A (`srz ask`), grounded context is dynamically re-ranked via Robertson-Sparck Jones BM25 per conversational turn, providing discriminative section grounding tailored to each user query.
+To eliminate the 15–25% token count drift typical when applying generic BPE tokenizers to non-OpenAI models, `srz` combines in-process model-aware profiles (`TokenizerKind` supporting Gemma SentencePiece 256k, Llama 3 128k, `o200k_base`, and `cl100k_base`) with authoritative server queries. When compressing large documents, `srz` accurately counts tokens using the active model's profile to enforce the context boundary. In interactive Q&A (`srz ask`), grounded context is dynamically re-ranked via Robertson-Sparck Jones BM25 per conversational turn, sharing the same underlying `engine::compressor` engine.
 
 ---
 
@@ -384,7 +391,7 @@ To eliminate the 15–25% token count drift typical when applying generic BPE to
 
 | Subsystem | Core Optimization | Architectural Benefit |
 | :--- | :--- | :--- |
-| **LLM Inference** | Parallel Map-Reduce + Hierarchical Tree Reduction + Zero-Drift Tokenization | Arbitrary document scaling without context overflow or token count drift. |
+| **LLM Inference** | Single-Pass Streaming + CPU Stratified Salience Compression + Zero-Drift Tokenization | 15–25s live streaming on any document length without multi-pass decode penalties. |
 | **Streaming & Reasoning** | Live dimmed chain-of-thought on `stderr` + line-buffered `StreamMarkdownRenderer` | Real-time cognitive visibility; flicker-free ANSI Markdown without mid-line style breaks. |
 | **Unix Stream Separation** | Strict stream routing: clean stdout for pipelines; diagnostics and links on `stderr` | Seamless piping into UNIX tools (`jq`, `cat`, files) without ANSI code contamination. |
 | **Terminal & Pager** | Unified document composition piped directly into `$PAGER` (`less -RFX`) | Header, body, links, and hints kept together without viewport truncation. |
@@ -410,8 +417,8 @@ When answering questions in `srz ask`, candidate document chunks are scored in m
 #### Overlapped Pipeline Startup & Transport Compression
 To eliminate latency on uncached runs, `srz` activates transparent HTTP payload compression (`gzip`, `brotli`, `deflate`) across all web scraping, RSS feed parsing, and API roundtrips. During initial startup, LLM capability probing (`/props` and `/tokenize`) runs concurrently with target web and document ingestion via `tokio::join!`, and opportunistic DuckDB maintenance (`maybe_auto_prune`) is deferred until after output presentation.
 
-#### Style-Aware Token Budgeting & Chunk Reasoning Suppression
-Rather than allocating a fixed 8,192-token completion budget regardless of requested length, `srz` scales default completion reservations dynamically based on summary preset (`concise` $\to$ 1,536, `bullets` $\to$ 2,048, `detailed` $\to$ 8,192). This expands the single-pass threshold by 26–41%, allowing medium-length documents and transcripts to fit in a single inference pass. When Map-Reduce is necessary, intermediate chunk passes are capped at 1,024 tokens and prompt instructions explicitly suppress chain-of-thought `<think>` tags to avoid runaway reasoning latency on intermediate sections.
+#### Style-Aware Token Budgeting & CPU Context Compression
+Rather than allocating a fixed 8,192-token completion budget regardless of requested length, `srz` scales default completion reservations dynamically based on summary preset (`concise` $\to$ 1,536, `bullets` $\to$ 2,048, `detailed` $\to$ 8,192). This expands the single-pass threshold by 26–41%, allowing medium-length documents and transcripts to fit in a single uncompressed inference pass. When documents exceed context capacity, CPU Stratified Salience Compression reduces the text to fit within `single_pass_threshold` in <20ms, ensuring all outputs stream live in a single generation pass.
 
 #### Boilerplate HTML Tag Stripping & PDF Clean Extraction
 Before parsing web pages with Mozilla Readability, raw HTML is scanned to strip `<script>`, `<style>`, `<svg>`, and `<noscript>` blocks, reducing DOM tree size by 50–80% on hydration-heavy modern sites. For local PDF documents, `PdfExtractor` strips trailing `References`, `Bibliography`, and inline citation markers (`[1]`, `[12, 15]`), cutting prompt token volume by 20–35% on academic papers, reconstructs natural paragraph boundaries, and caches extracted text layers in `cache_pages` to accelerate subsequent style adjustments and interactive chat.

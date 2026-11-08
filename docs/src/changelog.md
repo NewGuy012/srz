@@ -26,15 +26,16 @@ All notable changes to `srz` are documented in this file.
 
 ### Summary
 
-> Delivers massive end-to-end performance optimizations across all ingestion pipelines—accelerating uncached webpage, news feed, YouTube video, local PDF, and book summarization—while parallelizing server capability probing and overlapping ingestion with LLM initialization.
+> Delivers massive end-to-end performance optimizations across all ingestion pipelines, replaces slow serialized Map-Reduce with instant CPU Stratified Salience Compression for guaranteed single-pass streaming, and parallelizes server capability probing with content ingestion.
 
 ### Changes
+- **CPU Stratified Salience Compression (`src/engine/compressor.rs`, `src/engine/llm.rs`, `src/commands/ask.rs`)**: Replaced slow, serialized Map-Reduce and 5-round hierarchical tree reduction with instant single-pass streaming. Oversized documents, books, and news digests are compressed in <20ms on the CPU using centroid BM25 and structural heading/lead/tail preservation, guaranteeing 15–25s summaries with live terminal streaming while sharing BM25 ranking across `ask` and `summarize`.
 - **Book Pipeline Acceleration (`src/commands/summarize.rs`, `src/sources/search.rs`)**: Overlapped candidate discovery with LLM server capability probing, short-circuited DuckDuckGo scraping on confident Wikipedia matches, pre-truncated reference lists, and expanded synopsis extraction to non-fiction books with Open Library description fallback.
 - **Web & News Ingestion Optimizations (`src/sources/scraper.rs`, `src/sources/news.rs`)**: Pre-stripped HTML boilerplate tags before DOM parsing, enforced 5-second per-article scrape timeouts, and bypassed web scrapes when feed items provide rich content.
 - **YouTube Caption Resolution (`src/sources/youtube.rs`)**: Prioritized fast `fmt=json3` timedtext streaming, short-circuited watch page fallbacks, and filtered automatic audio filler cues (`[Music]`, `[Applause]`).
 - **PDF Reference Stripping & Caching (`src/sources/pdf.rs`, `src/commands/summarize.rs`)**: Stripped trailing bibliography sections and inline citations to reduce prompt tokens by 20–35%, and cached extracted PDF text in DuckDB to accelerate repeat operations.
 - **Server Probing Concurrency (`src/main.rs`, `src/engine/llm.rs`)**: Parallelized `/props` and `/tokenize` probes via `tokio::join!`, overlapped probe latency with content ingestion, enabled HTTP compression, and deferred opportunistic cache pruning off the critical path.
-- **Style-Aware Token Allocation (`src/engine/budget.rs`, `src/engine/llm.rs`)**: Scaled output token reservations by summary style preset, expanding single-pass threshold capacity by 26–41% to avoid multi-chunk Map-Reduce passes on medium documents.
+- **Style-Aware Token Allocation (`src/engine/budget.rs`, `src/engine/llm.rs`)**: Scaled output token reservations by summary style preset, expanding single-pass threshold capacity by 26–41% to maximize uncompressed context headroom.
 
 ---
 

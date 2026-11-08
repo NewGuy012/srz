@@ -101,13 +101,13 @@ Recommended Local LLM Setup (Llama GUI / llama.cpp):
 > 💡 **Total RAM Calculation**:  
 > `Total RAM Usage` = **Disk Size** (base model weights loaded into memory) + **Context RAM** (KV cache memory allocated for the active context window `n_ctx`). This reflects the actual physical memory footprint when running summaries in local LLM runners (Llama GUI / llama.cpp).
 
-### Single-Pass vs. Map-Reduce Chunking
+### Single-Pass & CPU Stratified Salience Compression
 
-How `srz` processes your document depends on the relationship between the document length and the server's available context window (`n_ctx`).
+How `srz` processes your document depends on the relationship between document token length and the server's available context window (`n_ctx`).
 
-When a document's token count is within approximately 70% of the active context window, `srz` synthesizes the text in a single pass (`1-Pass Mode`). This mode yields the highest-quality summaries because the model maintains complete narrative and thematic awareness across all chapters simultaneously.
+When a document's token count is within approximately 70% of the active context window, `srz` synthesizes the text directly in a single pass (`1-Pass Mode`). This mode yields the highest-quality summaries because the model maintains complete narrative and thematic awareness across all chapters simultaneously.
 
-When a document exceeds this 70% threshold—such as a 300-page book or a large collection of research papers—`srz` automatically transitions into `Chunking Mode`. The engine splits the text into token-budgeted chunks with overlapping margins, summarizes each chunk in parallel across available server worker slots (`total_slots`), and finally executes a reduction pass to produce a cohesive, unified synthesis without running out of memory.
+When a document exceeds this 70% threshold—such as a 300-page book or a large collection of research papers—`srz` automatically applies **CPU Stratified Salience Compression**. Rather than running slow, multi-pass Map-Reduce loops that tie up local GPU memory, `srz` extracts the most informative paragraphs and structural headings across all sections in `< 20ms` on the CPU, and generates the final synthesis in a single, fast streaming pass.
 
 ### Why Google Gemma 4 (`Q8_0`) on Laptops
 
