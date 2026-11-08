@@ -1,6 +1,6 @@
 [package]
 name = "srz"
-version = "0.7.6"
+version = "0.7.7"
 edition = "2024"
 authors = ["Moses Yoo"]
 description = "Fast, modular CLI to summarize webpages, documents, books, and live news using local LLMs"
