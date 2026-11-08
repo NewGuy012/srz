@@ -100,12 +100,12 @@ pub async fn handle_doctor(
 
     // 2. DuckDB database check
     let db_path = Database::default_path();
-    let (db_ok, db_entries_count) = match Database::open_default() {
+    let (db_ok, db_entries_count, db_err) = match Database::open_default() {
         Ok(db) => match db.get_stats() {
-            Ok(stats) => (true, stats.total_summaries),
-            Err(_) => (false, 0),
+            Ok(stats) => (true, stats.total_summaries, None),
+            Err(e) => (false, 0, Some(format!("Failed to retrieve stats: {:#}", e))),
         },
-        Err(_) => (false, 0),
+        Err(e) => (false, 0, Some(format!("{:#}", e))),
     };
 
     // 3. Cache directory check
@@ -130,6 +130,7 @@ pub async fn handle_doctor(
                 "path": db_path,
                 "healthy": db_ok,
                 "total_summaries": db_entries_count,
+                "error": db_err,
             },
             "cache": {
                 "dir": cache_dir,
@@ -255,6 +256,9 @@ pub async fn handle_doctor(
         );
     } else {
         println!("  ✗ Cannot open database at: {}", db_path.display());
+        if let Some(err) = &db_err {
+            println!("    Reason: {}", err);
+        }
     }
     println!();
 
