@@ -18,7 +18,6 @@ command = "mdbook-mermaid"
 git-repository-url = "https://github.com/NewGuy012/srz"
 edit-url-template = "https://github.com/NewGuy012/srz/edit/master/docs/src/{path}"
 site-url = "/srz/"
-favicon-svg = "assets/logo.svg"
 mathjax-support = false
 preferred-dark-theme = "coal"
 default-theme = "coal"
