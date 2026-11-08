@@ -230,20 +230,20 @@ async fn main() -> Result<()> {
     };
 
     let summary_result = match action {
-        ResolvedAction::Web { url } if !srz::cli::is_feed_url(&url) => {
+        ResolvedAction::Web { url } if !srz::cli::is_feed_url(url) => {
             let (llm, page_res) = tokio::join!(
                 commands::init_llm_with_capabilities_or_exit(&args, Some(&cache)),
-                commands::fetch_url_content(&url, &scraper, &cache, true)
+                commands::fetch_url_content(url, &scraper, &cache, true)
             );
             match page_res {
-                Ok(page) => commands::summarize_fetched_web_page(&url, page, &llm, &args).await,
+                Ok(page) => commands::summarize_fetched_web_page(url, page, &llm, &args).await,
                 Err(err) => Err(err),
             }
         }
         ResolvedAction::Book { title } => {
             let (llm, prep_res) = tokio::join!(
                 commands::init_llm_with_capabilities_or_exit(&args, Some(&cache)),
-                commands::prepare_book_query(&title, None, &scraper, &cache, &args)
+                commands::prepare_book_query(title, None, &scraper, &cache, &args)
             );
             match prep_res {
                 Ok(prep) => {
@@ -285,7 +285,7 @@ async fn main() -> Result<()> {
                     return Ok(());
                 }
                 ResolvedAction::Web { url } => {
-                    commands::handle_web(&url, &scraper, &llm, &cache, &args).await
+                    commands::handle_web(url, &scraper, &llm, &cache, &args).await
                 }
                 ResolvedAction::File { path } => {
                     commands::handle_file(&path, &scraper, &llm, &cache, &args).await

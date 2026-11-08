@@ -257,7 +257,8 @@ pub async fn handle_doctor(
     } else {
         println!("  ✗ Cannot open database at: {}", db_path.display());
         if let Some(err) = &db_err {
-            println!("    Reason: {}", err);
+            let safe_err = crate::ui::sanitize_terminal_text(err);
+            println!("    Reason: {}", safe_err);
         }
     }
     println!();

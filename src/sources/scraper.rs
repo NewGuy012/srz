@@ -40,7 +40,7 @@ fn starts_with_tag(slice: &[u8], prefix: &[u8]) -> bool {
         return false;
     }
     for (a, b) in slice[..prefix.len()].iter().zip(prefix.iter()) {
-        if a.to_ascii_lowercase() != b.to_ascii_lowercase() {
+        if !a.eq_ignore_ascii_case(b) {
             return false;
         }
     }
@@ -61,7 +61,7 @@ fn find_subslice_ignore_case(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         window
             .iter()
             .zip(needle.iter())
-            .all(|(a, b)| a.to_ascii_lowercase() == b.to_ascii_lowercase())
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
     })
 }
 
@@ -97,11 +97,11 @@ pub fn strip_boilerplate_html_tags(html: &str) -> Cow<'_, str> {
                 None
             };
 
-            if let Some(closing) = closing_tag {
-                if let Some(close_offset) = find_subslice_ignore_case(&bytes[cursor..], closing) {
-                    cursor += close_offset + closing.len();
-                    continue;
-                }
+            if let Some(closing) = closing_tag
+                && let Some(close_offset) = find_subslice_ignore_case(&bytes[cursor..], closing)
+            {
+                cursor += close_offset + closing.len();
+                continue;
             }
         }
 
@@ -142,13 +142,13 @@ pub fn truncate_wikipedia_html_before_references(html: &str) -> Cow<'_, str> {
         }
     }
 
-    if let Some(idx) = cut_idx {
-        if idx > 1000 {
-            let mut truncated = String::with_capacity(idx + 32);
-            truncated.push_str(&html[..idx]);
-            truncated.push_str("</div></body></html>");
-            return Cow::Owned(truncated);
-        }
+    if let Some(idx) = cut_idx
+        && idx > 1000
+    {
+        let mut truncated = String::with_capacity(idx + 32);
+        truncated.push_str(&html[..idx]);
+        truncated.push_str("</div></body></html>");
+        return Cow::Owned(truncated);
     }
 
     Cow::Borrowed(html)

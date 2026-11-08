@@ -175,11 +175,11 @@ impl BookSearcher {
         let prepared = PreparedQuery::new(title, author);
         let has_high_confidence_wiki = unique.iter().any(|c| prepared.score(c) >= 85);
 
-        if !has_high_confidence_wiki {
-            if let Ok(ddg_results) = self.search_duckduckgo(title, author).await {
-                unique.extend(ddg_results);
-                unique = deduplicate_candidates(unique);
-            }
+        if !has_high_confidence_wiki
+            && let Ok(ddg_results) = self.search_duckduckgo(title, author).await
+        {
+            unique.extend(ddg_results);
+            unique = deduplicate_candidates(unique);
         }
 
         unique

@@ -68,8 +68,8 @@ pub fn open_in_browser(path: &Path) -> std::io::Result<()> {
     let mut cmd = std::process::Command::new("open");
     #[cfg(target_os = "windows")]
     let mut cmd = {
-        let mut c = std::process::Command::new("cmd");
-        c.args(["/C", "start", ""]);
+        let mut c = std::process::Command::new("rundll32.exe");
+        c.arg("url.dll,FileProtocolHandler");
         c
     };
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
