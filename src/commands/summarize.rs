@@ -250,23 +250,11 @@ pub async fn handle_file(
     path: &std::path::Path,
     scraper: &WebScraper,
     llm: &LlmClient,
-    cache: &Cache,
+    _cache: &Cache,
     args: &Cli,
 ) -> Result<SummaryOutcome> {
     let path_str = path.display().to_string();
     let file_key = file_cache_key(path);
-
-    if let Some(ref k) = file_key
-        && let Some(cached) = cache.get_file_summary(k, args.style, &args.model)
-    {
-        Ui::info("Loaded summary from local cache (pass `--no-cache` to refresh).");
-        return Ok(SummaryOutcome::from_cached(
-            "file",
-            cached,
-            None,
-            Some(path_str),
-        ));
-    }
 
     let doc = crate::sources::DocumentLoader::load_file(path, scraper)?;
 
@@ -375,18 +363,7 @@ pub async fn handle_web(
 
     let target_type = target_type_for_url(url);
 
-    // 1. Check for a cached summary matching URL + style + model
-    if let Some(cached) = cache.get_web_summary(url, args.style, &args.model) {
-        Ui::info("Loaded summary from local cache (pass `--no-cache` to refresh).");
-        return Ok(SummaryOutcome::from_cached(
-            target_type,
-            cached,
-            None,
-            Some(url.to_string()),
-        ));
-    }
-
-    // 2. Fetch or load cached page / transcript / PDF
+    // Fetch or load cached page / transcript / PDF
     let page = fetch_url_content(url, scraper, cache, true).await?;
 
     let title_display = page.title.clone().unwrap_or_else(|| url.to_string());
@@ -438,17 +415,6 @@ pub async fn handle_news(
     let title_display = format!("News: {}", topic);
     let is_direct_feed = crate::sources::news::GoogleNewsClient::is_direct_feed(topic);
     let search_url = crate::sources::news::GoogleNewsClient::search_url_for_topic(topic);
-
-    // 1. Check for a cached news briefing matching topic + timeframe + style + model within news TTL (default: 2h)
-    if let Some(cached) = cache.get_news_summary(topic, timeframe, args.style, &args.model) {
-        Ui::info("Loaded news briefing from local cache (pass `--no-cache` to refresh).");
-        return Ok(SummaryOutcome::from_cached(
-            "news",
-            cached,
-            None,
-            Some(search_url),
-        ));
-    }
 
     let news_client = crate::news::GoogleNewsClient::with_client(scraper.client().clone());
 
@@ -556,17 +522,6 @@ pub async fn handle_book(
         Some(auth) => format!("\"{}\" by {}", title, auth),
         None => format!("\"{}\"", title),
     };
-
-    // 1. Check for a cached summary matching title + author + style + model
-    if let Some(cached) = cache.get_book_summary(title, author, args.style, &args.model) {
-        Ui::info("Loaded book summary from local cache (pass `--no-cache` to refresh).");
-        return Ok(SummaryOutcome::from_cached(
-            "book",
-            cached,
-            author.map(|a| a.to_string()),
-            None,
-        ));
-    }
 
     let mode = args.stream_mode(&book_display);
     let query = BookQuery { title, author };

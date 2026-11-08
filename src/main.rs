@@ -147,8 +147,6 @@ async fn main() -> Result<()> {
         _ => {}
     }
 
-    cache.maybe_auto_prune();
-
     if args.no_cache {
         Ui::info("Cache bypassed (`--no-cache`). Forcing fresh fetch and generation.");
     } else {
@@ -163,6 +161,21 @@ async fn main() -> Result<()> {
                         None,
                         Some(url.to_string()),
                     );
+                    return present_summary_outcome(outcome, &args, &cache);
+                }
+            }
+            ResolvedAction::Web { url } if srz::cli::is_feed_url(url) => {
+                if let Some(cached) = cache.get_news_summary(
+                    url,
+                    srz::cli::NewsTimeframe::Day,
+                    args.style,
+                    &args.model,
+                ) {
+                    Ui::info(
+                        "Loaded news briefing from local cache (pass `--no-cache` to refresh).",
+                    );
+                    let outcome =
+                        SummaryOutcome::from_cached("news", cached, None, Some(url.to_string()));
                     return present_summary_outcome(outcome, &args, &cache);
                 }
             }
@@ -378,7 +391,7 @@ fn present_summary_outcome(outcome: SummaryOutcome, args: &Cli, cache: &Cache) -
 
     // Record newly generated summaries in DuckDB history & library (lazily opened)
     if !outcome.cached
-        && let Some(db) = commands::open_db_or_warn()
+        && let Some(db) = cache.open_database().or_else(commands::open_db_or_warn)
     {
         let record = NewSummaryRecord {
             target_type: outcome.target_type,
@@ -400,6 +413,9 @@ fn present_summary_outcome(outcome: SummaryOutcome, args: &Cli, cache: &Cache) -
             let _ = commands::update_index_dashboard(&db, cache);
         }
     }
+
+    // Run opportunistic maintenance off the critical path after summary presentation
+    cache.maybe_auto_prune();
 
     Ok(())
 }

@@ -355,6 +355,18 @@ impl Cache {
         &self.policy
     }
 
+    /// Obtains a Database handle sharing the DuckDB instance of this cache if initialized,
+    /// avoiding redundant schema checks and file re-opens.
+    pub fn open_database(&self) -> Option<crate::db::Database> {
+        if let Some(guard) = self.get_or_init_db()
+            && let Some(ref conn) = *guard
+            && let Ok(cloned) = conn.try_clone()
+        {
+            return Some(crate::db::Database::from_connection(cloned));
+        }
+        crate::db::Database::open_at(&self.db_path).ok()
+    }
+
     /// Returns a mutable reference to the active cache policy.
     pub fn policy_mut(&mut self) -> &mut CachePolicy {
         &mut self.policy

@@ -331,6 +331,11 @@ impl Database {
         Ok(db)
     }
 
+    /// Wraps an existing, already-initialized DuckDB connection.
+    pub fn from_connection(conn: Connection) -> Self {
+        Self { conn }
+    }
+
     /// Opens an in-memory DuckDB database (useful for testing).
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory().context("Failed to open in-memory DuckDB")?;
