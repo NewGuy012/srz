@@ -483,18 +483,18 @@ fn normalize_title_for_comparison(title: &str) -> String {
     out
 }
 
-/// Extracts a focused narrative synopsis from a Wikipedia page's Markdown.
+/// Extracts a focused narrative synopsis or non-fiction overview from a Wikipedia page's Markdown.
 ///
 /// Looks for the introductory overview (lead section before the first `## `) along with
-/// the canonical narrative section (`## Plot`, `## Synopsis`, `## Summary`, or `## Premise`),
+/// the canonical narrative section (`## Plot`, `## Synopsis`, `## Summary`, `## Content`, or `## Overview`),
 /// discarding sprawling infoboxes, cast lists, discographies, adaptations, and publication tables.
 pub fn extract_wikipedia_synopsis(markdown: &str) -> Option<String> {
     // 1. Identify lead section (text before the first `## ` heading)
     let lead_end = markdown.find("\n## ").unwrap_or(markdown.len());
     let lead = markdown[..lead_end].trim();
 
-    // 2. Search for plot/synopsis section
-    const SYNOPSIS_HEADINGS: &[&str] = &[
+    // 2. Search for plot/synopsis/overview section
+    const PRIMARY_HEADINGS: &[&str] = &[
         "## plot",
         "## synopsis",
         "## plot summary",
@@ -503,18 +503,42 @@ pub fn extract_wikipedia_synopsis(markdown: &str) -> Option<String> {
         "## narrative",
     ];
 
+    const NON_FICTION_HEADINGS: &[&str] = &[
+        "## overview",
+        "## content",
+        "## contents",
+        "## core concepts",
+        "## key themes",
+        "## themes",
+        "## thesis",
+        "## background and overview",
+        "## structure",
+    ];
+
     let lower = markdown.to_ascii_lowercase();
     let mut plot_start = None;
-    for heading in SYNOPSIS_HEADINGS {
+
+    // Check primary narrative/fiction headings first
+    for heading in PRIMARY_HEADINGS {
         if let Some(pos) = lower.find(heading) {
             plot_start = Some(pos);
             break;
         }
     }
 
+    // If no primary fiction heading found, check non-fiction content/overview headings
+    if plot_start.is_none() {
+        for heading in NON_FICTION_HEADINGS {
+            if let Some(pos) = lower.find(heading) {
+                plot_start = Some(pos);
+                break;
+            }
+        }
+    }
+
     let start_idx = plot_start?;
 
-    // Find where the plot section ends: the next `## ` heading after `start_idx`
+    // Find where the plot/content section ends: the next `## ` heading after `start_idx`
     let section_body = &markdown[start_idx..];
     let body_start = section_body.find('\n').unwrap_or(0);
     let after_heading = &section_body[body_start..];

@@ -855,10 +855,16 @@ async fn generate_prepared_book_summary(
                             ));
                             (synopsis, wc)
                         } else {
-                            (page.content, page.word_count)
+                            let (cleaned, wc) = crate::scraper::clean_text(&page.content, true, 1);
+                            Ui::info(&format!(
+                                "Trimmed reference content: {} words (streamlined from {} full-page words)",
+                                wc, page.word_count
+                            ));
+                            (cleaned, wc)
                         }
                     } else {
-                        (page.content, page.word_count)
+                        let (cleaned, wc) = crate::scraper::clean_text(&page.content, true, 1);
+                        (cleaned, wc)
                     };
 
                     Ui::info(&format!(

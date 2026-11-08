@@ -124,3 +124,35 @@ A film adaptation was directed by David Lynch in 1984.
     assert!(!text.contains("David Lynch"));
     assert!(!text.contains("## References"));
 }
+
+#[test]
+fn test_extract_wikipedia_synopsis_non_fiction() {
+    let wiki_markdown = r#"# Thinking, Fast and Slow
+
+Thinking, Fast and Slow is a 2011 best-selling book by Nobel Memorial Prize in Economic Sciences laureate Daniel Kahneman.
+
+## Overview
+The book summarizes research that Kahneman conducted over decades, often in collaboration with Amos Tversky. It covers all three phases of his career: his early days working on cognitive biases, his work on prospect theory, and his later work on happiness. The central thesis is a dichotomy between two modes of thought: System 1 is fast, instinctive and emotional; System 2 is slower, more deliberative, and more logical.
+
+## Key themes
+The dichotomy between two modes of thought, heuristics and biases, and prospect theory.
+
+## References
+[1] Kahneman, Daniel. Thinking, Fast and Slow (2011). Farrar, Straus and Giroux.
+"#;
+
+    let extracted = srz::search::extract_wikipedia_synopsis(wiki_markdown);
+    assert!(extracted.is_some());
+    let text = extracted.unwrap();
+
+    // Verify lead overview is preserved
+    assert!(text.contains("Thinking, Fast and Slow is a 2011 best-selling book"));
+
+    // Verify non-fiction Overview section is extracted
+    assert!(text.contains("## Overview"));
+    assert!(text.contains("System 1 is fast, instinctive and emotional"));
+
+    // Verify references are excluded
+    assert!(!text.contains("## References"));
+    assert!(!text.contains("Farrar, Straus and Giroux"));
+}
