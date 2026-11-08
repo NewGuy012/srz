@@ -314,6 +314,50 @@ fn test_news_summary_cache_and_short_ttl_expiration() {
     assert_eq!(cached.word_count, 350);
     assert_eq!(cached.reasoning.as_deref(), Some("Model reasoning trace"));
 
+    // Querying with a different timeframe returns None
+    assert!(
+        cache
+            .get_news_summary(
+                "python language news",
+                NewsTimeframe::Day,
+                SummaryStyle::Concise,
+                "default",
+            )
+            .is_none()
+    );
+
+    // Book summary with author test
+    cache.set_book_summary(srz::cache::SetBookSummaryParams {
+        title: "Dune",
+        author: Some("Frank Herbert"),
+        style: SummaryStyle::Concise,
+        model: "default",
+        display_title: "\"Dune\" by Frank Herbert",
+        summary: "Arrakis and spice.",
+        word_count: 100,
+        reasoning: None,
+    });
+
+    assert!(
+        cache
+            .get_book_summary(
+                "Dune",
+                Some("Frank Herbert"),
+                SummaryStyle::Concise,
+                "default"
+            )
+            .is_some()
+    );
+    assert!(
+        cache
+            .get_book_summary("Dune", None, SummaryStyle::Concise, "default")
+            .is_none()
+    );
+
+    // Verify stats accurately counts the cached summaries in DuckDB
+    let stats = cache.stats();
+    assert!(stats.summaries >= 2);
+
     // Backdate past 2 hours (e.g. 3 hours = 10800s)
     cache.update_cached_at_for_test("history", "title = 'News: python language news'", 10800);
 

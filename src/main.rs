@@ -167,7 +167,7 @@ async fn main() -> Result<()> {
             ResolvedAction::Web { url } if srz::cli::is_feed_url(url) => {
                 if let Some(cached) = cache.get_news_summary(
                     url,
-                    srz::cli::NewsTimeframe::Day,
+                    srz::cli::NewsTimeframe::All,
                     args.style,
                     &args.model,
                 ) {

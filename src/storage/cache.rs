@@ -414,13 +414,32 @@ impl Cache {
             search_bytes += bytes;
         }
 
+        let mut summaries = 0;
+        let mut summaries_bytes = 0;
+        if let Some(guard) = self.get_or_init_db()
+            && let Some(conn) = guard.as_ref()
+            && let Ok(mut stmt) = conn.prepare(
+                "SELECT count(*), coalesce(sum(strlen(summary) + coalesce(strlen(reasoning), 0)), 0)
+                 FROM history h JOIN library l ON h.id = l.id
+                 WHERE h.cache_key IS NOT NULL;",
+            )
+            && let Ok(row) = stmt.query_row([], |row| {
+                let cnt: i64 = row.get(0)?;
+                let bytes: i64 = row.get(1)?;
+                Ok((cnt.max(0) as usize, bytes.max(0) as u64))
+            })
+        {
+            summaries = row.0;
+            summaries_bytes = row.1;
+        }
+
         CacheStats {
             pages,
             searches,
-            summaries: 0,
+            summaries,
             views,
-            total_files: pages + searches + views,
-            total_bytes: pages_bytes + search_bytes + views_bytes,
+            total_files: pages + searches + summaries + views,
+            total_bytes: pages_bytes + search_bytes + summaries_bytes + views_bytes,
         }
     }
 
@@ -1153,20 +1172,42 @@ impl Cache {
         );
     }
 
+    /// Computes canonical cache lookup key for a book title and optional author.
+    pub fn book_cache_title(title: &str, author: Option<&str>) -> String {
+        match author {
+            Some(a) if !a.trim().is_empty() => format!("\"{}\" by {}", title.trim(), a.trim()),
+            _ => title.trim().to_string(),
+        }
+    }
+
+    /// Computes canonical cache lookup key for a news topic and timeframe.
+    pub fn news_cache_title(topic: &str, timeframe: crate::cli::NewsTimeframe) -> String {
+        if crate::sources::news::GoogleNewsClient::is_direct_feed(topic) {
+            format!("News: {}", topic.trim())
+        } else {
+            match timeframe {
+                crate::cli::NewsTimeframe::All => format!("News: {}", topic.trim()),
+                tf => format!("News: {} ({})", topic.trim(), tf.display_label()),
+            }
+        }
+    }
+
     pub fn get_book_summary(
         &self,
         title: &str,
-        _author: Option<&str>,
+        author: Option<&str>,
         style: SummaryStyle,
         model: &str,
     ) -> Option<CachedSummary> {
-        self.get_summary_from_db("book", title, style.as_str(), model)
+        let key = Self::book_cache_title(title, author);
+        self.get_summary_from_db("book", &key, style.as_str(), model)
     }
 
     pub fn set_book_summary(&self, params: SetBookSummaryParams<'_>) {
+        let key = Self::book_cache_title(params.title, params.author);
         self.set_summary_in_db(
             "book",
-            params.title,
+            &key,
             None,
             params.display_title,
             params.summary,
@@ -1180,25 +1221,19 @@ impl Cache {
     pub fn get_news_summary(
         &self,
         topic: &str,
-        _timeframe: crate::cli::NewsTimeframe,
+        timeframe: crate::cli::NewsTimeframe,
         style: SummaryStyle,
         model: &str,
     ) -> Option<CachedSummary> {
-        let title_display = format!("News: {}", topic);
-        self.get_summary_from_db_with_ttl(
-            "news",
-            &title_display,
-            style.as_str(),
-            model,
-            self.policy.news_ttl,
-        )
+        let key = Self::news_cache_title(topic, timeframe);
+        self.get_summary_from_db_with_ttl("news", &key, style.as_str(), model, self.policy.news_ttl)
     }
 
     #[allow(clippy::too_many_arguments)]
     pub fn set_news_summary(
         &self,
         topic: &str,
-        _timeframe: crate::cli::NewsTimeframe,
+        timeframe: crate::cli::NewsTimeframe,
         style: SummaryStyle,
         model: &str,
         title: &str,
@@ -1207,9 +1242,10 @@ impl Cache {
         reasoning: Option<&str>,
     ) {
         let search_url = crate::sources::news::GoogleNewsClient::search_url_for_topic(topic);
+        let key = Self::news_cache_title(topic, timeframe);
         self.set_summary_in_db(
             "news",
-            title,
+            &key,
             Some(&search_url),
             title,
             summary,

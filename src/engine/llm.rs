@@ -2170,7 +2170,11 @@ impl LlmClient {
         let safe_source_url = crate::ui::sanitize_title(source_url);
 
         let budget = self.budget();
-        let tokens_count = TextChunker::count_tokens(web_context);
+        let tok_kind = self.tokenizer_kind();
+        let tokens_count = match self.tokenize_text(web_context).await {
+            Some(t) => t,
+            None => tok_kind.count_tokens(web_context),
+        };
 
         // If reference context exceeds single-pass threshold, distill it in parallel chunks
         // rather than silently truncating later chapters or sections.
@@ -2184,7 +2188,7 @@ impl LlmClient {
                 budget.chunk_tokens,
                 budget.chunk_overlap,
                 budget.single_pass_threshold,
-                TokenizerKind::Cl100k,
+                tok_kind,
             );
             if chunks.len() > 1 {
                 let chunks_len = chunks.len();

@@ -531,7 +531,7 @@ pub async fn handle_news(
         output,
     );
     let outcome = if !is_truncated {
-        let key = outcome.title.clone();
+        let key = Cache::news_cache_title(topic, timeframe);
         outcome.with_cache_key(key)
     } else {
         outcome
@@ -592,7 +592,7 @@ pub async fn summarize_prepared_book(
         generate_prepared_book_summary(&mut prep, scraper, llm, cache, args, mode).await?;
 
     let is_truncated = output.truncated;
-    let title_key = prep.title.clone();
+    let title_key = Cache::book_cache_title(&prep.title, prep.author.as_deref());
     let outcome = SummaryOutcome::from_llm(
         "book",
         book_display,
