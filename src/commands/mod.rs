@@ -11,7 +11,7 @@ use crate::ui::Ui;
 use anyhow::{Context, Result};
 use std::path::Path;
 
-pub use ask::{handle_ask, handle_ask_management};
+pub use ask::{AskArgs, handle_ask, handle_ask_management};
 pub use diagnostics::{handle_doctor, handle_models, handle_recommend};
 pub use library::{
     handle_export, handle_find, handle_history, handle_index, handle_query, handle_stats,

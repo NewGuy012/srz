@@ -105,13 +105,11 @@ async fn main() -> Result<()> {
                             commands::init_llm_with_capabilities_or_exit(&args, Some(&cache)).await;
                         let scraper = WebScraper::new()?;
                         let _ = commands::handle_ask(
-                            Some(target),
-                            None,
-                            true,
-                            false,
-                            None,
-                            None,
-                            None,
+                            commands::AskArgs {
+                                target: Some(target),
+                                interactive: true,
+                                ..Default::default()
+                            },
                             &scraper,
                             &llm,
                             &cache,
@@ -265,13 +263,15 @@ async fn main() -> Result<()> {
                     delete_chat,
                 } => {
                     if let Err(err) = commands::handle_ask(
-                        target,
-                        question,
-                        interactive,
-                        list_chats,
-                        resume,
-                        show_chat,
-                        delete_chat,
+                        commands::AskArgs {
+                            target,
+                            question,
+                            interactive,
+                            list_chats,
+                            resume,
+                            show_chat,
+                            delete_chat,
+                        },
                         &scraper,
                         &llm,
                         &cache,

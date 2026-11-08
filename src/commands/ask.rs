@@ -449,30 +449,48 @@ pub fn handle_ask_management(
     Ok(false)
 }
 
+/// Command arguments for the `srz ask` subcommand.
+#[derive(Debug, Clone, Default)]
+pub struct AskArgs {
+    pub target: Option<String>,
+    pub question: Option<String>,
+    pub interactive: bool,
+    pub list_chats: bool,
+    pub resume: Option<i64>,
+    pub show_chat: Option<i64>,
+    pub delete_chat: Option<i64>,
+}
+
 /// Handles the `srz ask` subcommand.
-#[allow(clippy::too_many_arguments)]
 pub async fn handle_ask(
-    target: Option<String>,
-    question: Option<String>,
-    interactive: bool,
-    list_chats: bool,
-    resume: Option<i64>,
-    show_chat: Option<i64>,
-    delete_chat: Option<i64>,
+    ask_args: AskArgs,
     scraper: &WebScraper,
     llm: &LlmClient,
     cache: &Cache,
     args: &Cli,
 ) -> Result<()> {
-    if handle_ask_management(list_chats, show_chat, delete_chat, args.json)? {
+    if handle_ask_management(
+        ask_args.list_chats,
+        ask_args.show_chat,
+        ask_args.delete_chat,
+        args.json,
+    )? {
         return Ok(());
     }
 
     let db = open_db_or_warn();
 
     // 4. Resolve document context & active session
-    let mut chat_id: Option<i64> = resume;
+    let mut chat_id: Option<i64> = ask_args.resume;
     let mut history: Vec<(String, String)> = Vec::new();
+
+    let AskArgs {
+        target,
+        question,
+        interactive,
+        resume,
+        ..
+    } = ask_args;
 
     let (title, content, target_type, target_url) = if let Some(res_id) = resume {
         let db_ref = db
@@ -603,22 +621,26 @@ pub async fn handle_ask(
     }
     println!("\x1b[2mType your question, or 'exit' / 'quit' to end the session.\x1b[0m\n");
 
+    let session_ctx = AskSessionContext {
+        title: &title,
+        content: &content,
+        doc_budget: budget.ask_doc_budget,
+        chat_id,
+        db: db.as_ref(),
+        stream: args.stream,
+        plain: args.plain,
+    };
+
     // If an initial question was passed alongside --interactive, answer it first
     if let Some(initial_q) = question {
         let safe_q = crate::ui::sanitize_terminal_text(&initial_q);
         println!("\x1b[1;32mQuestion:\x1b[0m {}", safe_q);
         record_and_ask_turn(
-            &title,
-            &content,
-            budget.ask_doc_budget,
+            &session_ctx,
             &mut history,
             &mut history_turn_tokens,
             &initial_q,
             llm,
-            args.stream,
-            args.plain,
-            chat_id,
-            db.as_ref(),
         )
         .await?;
     }
@@ -646,17 +668,11 @@ pub async fn handle_ask(
                 let _ = rl.add_history_entry(trimmed);
 
                 record_and_ask_turn(
-                    &title,
-                    &content,
-                    budget.ask_doc_budget,
+                    &session_ctx,
                     &mut history,
                     &mut history_turn_tokens,
                     trimmed,
                     llm,
-                    args.stream,
-                    args.plain,
-                    chat_id,
-                    db.as_ref(),
                 )
                 .await?;
             }
@@ -795,33 +811,36 @@ async fn ask_turn(
     Ok((output.content, this_turn_tokens))
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn record_and_ask_turn(
-    title: &str,
-    content: &str,
+struct AskSessionContext<'a> {
+    title: &'a str,
+    content: &'a str,
     doc_budget: usize,
+    chat_id: Option<i64>,
+    db: Option<&'a Database>,
+    stream: bool,
+    plain: bool,
+}
+
+async fn record_and_ask_turn(
+    ctx: &AskSessionContext<'_>,
     history: &mut Vec<(String, String)>,
     history_turn_tokens: &mut Vec<usize>,
     query: &str,
     llm: &LlmClient,
-    stream: bool,
-    plain: bool,
-    chat_id: Option<i64>,
-    db: Option<&Database>,
 ) -> Result<()> {
     let grounded_context =
-        format_grounded_context_with_budget(title, content, Some(query), doc_budget);
+        format_grounded_context_with_budget(ctx.title, ctx.content, Some(query), ctx.doc_budget);
     let (ans, turn_toks) = ask_turn(
         &grounded_context,
         history,
         history_turn_tokens,
         query,
         llm,
-        stream,
-        plain,
+        ctx.stream,
+        ctx.plain,
     )
     .await?;
-    if let (Some(cid), Some(db_ref)) = (chat_id, db) {
+    if let (Some(cid), Some(db_ref)) = (ctx.chat_id, ctx.db) {
         let _ = db_ref.add_chat_turn(cid, query, &ans);
     }
     history.push((query.to_string(), ans));
@@ -833,6 +852,16 @@ async fn record_and_ask_turn(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_ask_args_default() {
+        let args = AskArgs::default();
+        assert!(args.target.is_none());
+        assert!(args.question.is_none());
+        assert!(!args.interactive);
+        assert!(!args.list_chats);
+        assert!(args.resume.is_none());
+    }
 
     #[test]
     fn test_ask_system_prompt_structure() {
