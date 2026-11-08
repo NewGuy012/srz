@@ -708,3 +708,58 @@ fn test_export_markdown_vault_escaping_and_collisions() {
             .any(|c| c.contains("\\nmalicious_key: true"))
     );
 }
+
+#[test]
+fn test_migration_from_old_schema() {
+    let tmp = srz::fs_util::tempdir().unwrap();
+    let db_path = tmp.path().join("old_schema.duckdb");
+    {
+        let conn = duckdb::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE SEQUENCE IF NOT EXISTS library_id_seq;
+             CREATE TABLE library (
+                 id INTEGER DEFAULT nextval('library_id_seq') PRIMARY KEY,
+                 target_type VARCHAR NOT NULL,
+                 title VARCHAR NOT NULL,
+                 author VARCHAR,
+                 url VARCHAR,
+                 summary TEXT NOT NULL,
+                 created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+             );
+             CREATE SEQUENCE IF NOT EXISTS history_id_seq;
+             CREATE TABLE history (
+                 id INTEGER DEFAULT nextval('history_id_seq') PRIMARY KEY,
+                 target_type VARCHAR NOT NULL,
+                 title VARCHAR NOT NULL,
+                 author VARCHAR,
+                 url VARCHAR,
+                 style VARCHAR NOT NULL,
+                 model VARCHAR NOT NULL,
+                 word_count UINTEGER NOT NULL,
+                 prompt_tokens UINTEGER,
+                 completion_tokens UINTEGER,
+                 duration_ms UINTEGER NOT NULL,
+                 tokens_per_second FLOAT,
+                 created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+             );
+             INSERT INTO history (target_type, title, style, model, word_count, duration_ms)
+             VALUES ('book', 'Old Book', 'concise', 'm', 100, 10);
+             INSERT INTO library (id, target_type, title, summary)
+             VALUES (1, 'book', 'Old Book', 'Old summary');",
+        )
+        .unwrap();
+    }
+
+    let db = Database::open_at(&db_path);
+    assert!(db.is_ok(), "Database::open_at failed: {:?}", db.err());
+
+    let db = db.unwrap();
+    // Verify records can be retrieved from both history and library
+    let history = db.get_history(10).unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].title, "Old Book");
+
+    let latest = db.get_latest_summary().unwrap();
+    assert!(latest.is_some());
+    assert_eq!(latest.unwrap().summary, "Old summary");
+}

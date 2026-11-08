@@ -47,7 +47,7 @@ pub fn open_db_or_warn() -> Option<Database> {
     match Database::open_default() {
         Ok(d) => Some(d),
         Err(err) => {
-            Ui::warn(&format!("Could not open DuckDB database: {}", err));
+            Ui::warn(&format!("Could not open DuckDB database: {:#}", err));
             None
         }
     }

@@ -1188,6 +1188,7 @@ pub fn init_duckdb_schema(conn: &Connection) -> Result<()> {
              reasoning TEXT
          );
          ALTER TABLE library ADD COLUMN IF NOT EXISTS reasoning TEXT;
+         ALTER TABLE library ALTER COLUMN id DROP DEFAULT;
          ALTER TABLE library DROP COLUMN IF EXISTS target_type;
          ALTER TABLE library DROP COLUMN IF EXISTS title;
          ALTER TABLE library DROP COLUMN IF EXISTS author;
