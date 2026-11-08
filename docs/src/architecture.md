@@ -28,8 +28,8 @@ flowchart TD
 
     subgraph Resolution["2. Resolution & Grounding"]
         YTFlow --> YTCaptions["Timed-Text Resolution\n(Chapters & Auto-Translate Fallback)"]
-        BookFlow --> Meta["Concurrent Fan-Out:\nOpen Library + Multi-Search"]
-        Meta --> RefScrape["Targeted Synopsis & Lead Extraction\n(Cached / Live)"]
+        BookFlow --> Meta["Concurrent Fan-Out:\nOpen Library + Fast Wiki Search"]
+        Meta --> RefScrape["Targeted Synopsis & Non-Fiction Extraction\n(Pre-Stripped Refs / Description Fallback)"]
         NewsFlow --> Feed["Feed Ingestion &\nOffline CBMi Protobuf / RPC Decoding"]
         Feed --> NewsScrape["Concurrent Article Scraping\n(Pre-Scrape Caching & Snippet Fallback)"]
         AskFlow --> Grounding["Document Context Resolution\n(BM25 Stop-Word Chunking & Auto Re-Fetch)"]
@@ -238,6 +238,14 @@ The `srz ask` command accepts either a target paired with a question or a standa
 
 #### Multi-Model Router & Proxy Probing
 When `probe_server_capabilities` queries `GET /props` on `llama.cpp` routers or proxy gateways, the server often responds with `role: "router"` or `n_ctx: 0`. `srz` detects this topology automatically and issues a follow-up request to `GET /props?model=<MODEL>` to retrieve accurate, model-specific context window (`n_ctx`) and concurrency slot (`total_slots`) allocations.
+
+#### Book Resolution Pipeline & Fast Discovery
+When summarizing a book (`srz <TITLE>` or `srz book <TITLE>`), `srz` accelerates uncached runs across five coordinated optimizations:
+1. **Startup Concurrency**: LLM capabilities probing (`/props` and `/tokenize`) runs concurrently via `tokio::join!` with candidate discovery, eliminating startup serialization.
+2. **Wikipedia-First Short-Circuit**: `search_raw_candidates` prioritizes official Wikipedia OpenSearch and Full-text JSON APIs (~100–150ms). When a confident match ($\text{score} \ge 85$) is returned, execution short-circuits immediately, completely bypassing unauthenticated DuckDuckGo HTML scraping and saving up to 4 seconds of latency. DuckDuckGo is retained strictly as a fallback when Wikipedia yields no confident matches.
+3. **HTML Pre-Truncation & Reflist Stripping**: When downloading Wikipedia reference pages, raw HTML is truncated prior to the references, bibliography, and navigation footers before running Readability DOM parsing or Markdown conversion, reducing memory allocations by ~70% and accelerating page conversion.
+4. **Non-Fiction Extraction & Distillation Avoidance**: `extract_wikipedia_synopsis` recognizes both fiction narrative headings (`## Plot`, `## Synopsis`) and non-fiction structure headings (`## Overview`, `## Content`, `## Contents`, `## Key themes`, `## Core concepts`). Terminal reference lists and bibliographies are stripped from fallback content with `clean_text`, ensuring even full non-fiction articles fit directly within `single_pass_threshold` and avoid multi-chunk Map-Reduce distillation.
+5. **Open Library Editorial Description Fallback**: If web scraping fails or yields no candidates, `srz` retrieves the official Open Library work description (`/works/OL...W.json`) as a grounded fallback context before resorting to parametric LLM memory.
 
 ---
 
