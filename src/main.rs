@@ -221,8 +221,6 @@ async fn main() -> Result<()> {
         }
     }
 
-    let llm = commands::init_llm_with_capabilities_or_exit(&args, Some(&cache)).await;
-
     let scraper = match WebScraper::new() {
         Ok(s) => s,
         Err(err) => {
@@ -232,51 +230,69 @@ async fn main() -> Result<()> {
     };
 
     let summary_result = match action {
-        ResolvedAction::Ask {
-            target,
-            question,
-            interactive,
-            list_chats,
-            resume,
-            show_chat,
-            delete_chat,
-        } => {
-            if let Err(err) = commands::handle_ask(
-                target,
-                question,
-                interactive,
-                list_chats,
-                resume,
-                show_chat,
-                delete_chat,
-                &scraper,
-                &llm,
-                &cache,
-                &args,
-            )
-            .await
-            {
-                print_execution_error("Ask failed", &err);
-                std::process::exit(1);
+        ResolvedAction::Web { url } if !srz::cli::is_feed_url(&url) => {
+            let (llm, page_res) = tokio::join!(
+                commands::init_llm_with_capabilities_or_exit(&args, Some(&cache)),
+                commands::fetch_url_content(&url, &scraper, &cache, true)
+            );
+            match page_res {
+                Ok(page) => commands::summarize_fetched_web_page(&url, page, &llm, &args).await,
+                Err(err) => Err(err),
             }
-            return Ok(());
         }
-        ResolvedAction::Web { url } => {
-            commands::handle_web(url, &scraper, &llm, &cache, &args).await
+        other_action => {
+            let llm = commands::init_llm_with_capabilities_or_exit(&args, Some(&cache)).await;
+            match other_action {
+                ResolvedAction::Ask {
+                    target,
+                    question,
+                    interactive,
+                    list_chats,
+                    resume,
+                    show_chat,
+                    delete_chat,
+                } => {
+                    if let Err(err) = commands::handle_ask(
+                        target,
+                        question,
+                        interactive,
+                        list_chats,
+                        resume,
+                        show_chat,
+                        delete_chat,
+                        &scraper,
+                        &llm,
+                        &cache,
+                        &args,
+                    )
+                    .await
+                    {
+                        print_execution_error("Ask failed", &err);
+                        std::process::exit(1);
+                    }
+                    return Ok(());
+                }
+                ResolvedAction::Web { url } => {
+                    commands::handle_web(&url, &scraper, &llm, &cache, &args).await
+                }
+                ResolvedAction::File { path } => {
+                    commands::handle_file(&path, &scraper, &llm, &cache, &args).await
+                }
+                ResolvedAction::Stdin => commands::handle_stdin(&scraper, &llm, &args).await,
+                ResolvedAction::Book { title } => {
+                    commands::handle_book(&title, None, &scraper, &llm, &cache, &args).await
+                }
+                ResolvedAction::News {
+                    topic,
+                    timeframe,
+                    limit,
+                } => {
+                    commands::handle_news(&topic, timeframe, limit, &scraper, &llm, &cache, &args)
+                        .await
+                }
+                _ => unreachable!(),
+            }
         }
-        ResolvedAction::File { path } => {
-            commands::handle_file(&path, &scraper, &llm, &cache, &args).await
-        }
-        ResolvedAction::Stdin => commands::handle_stdin(&scraper, &llm, &args).await,
-        ResolvedAction::Book { title } => {
-            commands::handle_book(title, None, &scraper, &llm, &cache, &args).await
-        }
-        ResolvedAction::News {
-            topic,
-            timeframe,
-            limit,
-        } => commands::handle_news(&topic, timeframe, limit, &scraper, &llm, &cache, &args).await,
-        _ => unreachable!(),
     };
 
     match summary_result {

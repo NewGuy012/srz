@@ -361,11 +361,19 @@ pub async fn handle_web(
         .await;
     }
 
-    let target_type = target_type_for_url(url);
-
     // Fetch or load cached page / transcript / PDF
     let page = fetch_url_content(url, scraper, cache, true).await?;
+    summarize_fetched_web_page(url, page, llm, args).await
+}
 
+/// Summarizes an already-fetched web page, transcript, or remote document.
+pub async fn summarize_fetched_web_page(
+    url: &str,
+    page: ScrapedPage,
+    llm: &LlmClient,
+    args: &Cli,
+) -> Result<SummaryOutcome> {
+    let target_type = target_type_for_url(url);
     let title_display = page.title.clone().unwrap_or_else(|| url.to_string());
 
     Ui::info(&format!(

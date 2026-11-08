@@ -19,7 +19,8 @@ pub use library::{
 };
 pub use summarize::{
     SummaryOutcome, fetch_or_cache_page, fetch_or_cache_page_with, fetch_url_content, handle_book,
-    handle_file, handle_news, handle_stdin, handle_web, target_type_for_url,
+    handle_file, handle_news, handle_stdin, handle_web, summarize_fetched_web_page,
+    target_type_for_url,
 };
 
 /// Initializes an `LlmClient` from CLI arguments, printing a UI error and exiting on failure.

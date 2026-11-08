@@ -956,20 +956,22 @@ impl LlmClient {
     }
 
     async fn probe_standard_tokenize_endpoint(&self) -> bool {
-        let token_probed = if !self.model.is_empty() {
-            self.probe_tokenize_endpoint(
-                "/tokenize",
-                serde_json::json!({ "model": &self.model, "content": "test" }),
-            )
-            .await
+        if !self.model.is_empty() {
+            let (token_with_model, token_bare) = tokio::join!(
+                self.probe_tokenize_endpoint(
+                    "/tokenize",
+                    serde_json::json!({ "model": &self.model, "content": "test" }),
+                ),
+                self.probe_tokenize_endpoint(
+                    "/tokenize",
+                    serde_json::json!({ "content": "test" }),
+                ),
+            );
+            token_with_model || token_bare
         } else {
-            false
-        };
-
-        token_probed
-            || self
-                .probe_tokenize_endpoint("/tokenize", serde_json::json!({ "content": "test" }))
+            self.probe_tokenize_endpoint("/tokenize", serde_json::json!({ "content": "test" }))
                 .await
+        }
     }
 
     async fn fetch_root_json<B>(&self, path: &str, build_req: B) -> Option<serde_json::Value>
@@ -998,63 +1000,47 @@ impl LlmClient {
             backend_kind: "default".to_string(),
         };
 
-        // 1. Try llama.cpp GET /props (with model query param fallback for router/multi-model servers)
-        let mut props_json: Option<serde_json::Value> = None;
-        let mut model_props_tried = false;
-
-        if !self.model.is_empty() {
-            let model_path = format!(
-                "/props?model={}",
-                crate::system::text_util::url_encode(&self.model)
-            );
-            if let Some(json) = self
-                .fetch_root_json(&model_path, |c, u| {
-                    c.get(u).timeout(Duration::from_millis(1500))
-                })
-                .await
-            {
-                model_props_tried = true;
-                let n_ctx = json
-                    .pointer("/default_generation_settings/n_ctx")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                if n_ctx > 0 {
-                    props_json = Some(json);
-                }
-            }
-        }
-
-        if props_json.is_none()
-            && let Some(json) = self
-                .fetch_root_json("/props", |c, u| {
-                    c.get(u).timeout(Duration::from_millis(1500))
-                })
-                .await
-        {
-            let is_router = json.get("role").and_then(|r| r.as_str()) == Some("router")
-                || json
-                    .pointer("/default_generation_settings/n_ctx")
-                    .and_then(|v| v.as_u64())
-                    == Some(0);
-            if is_router && !self.model.is_empty() && !model_props_tried {
-                let model_path = format!(
-                    "/props?model={}",
-                    crate::system::text_util::url_encode(&self.model)
-                );
-                if let Some(m_json) = self
-                    .fetch_root_json(&model_path, |c, u| {
+        // 1. Try llama.cpp GET /props and tokenize probe concurrently
+        let (props_json, tokenize_supported) = tokio::join!(
+            async {
+                let mut props_json: Option<serde_json::Value> = None;
+                if !self.model.is_empty() {
+                    let model_path = format!(
+                        "/props?model={}",
+                        crate::system::text_util::url_encode(&self.model)
+                    );
+                    let (model_res, root_res) = tokio::join!(
+                        self.fetch_root_json(&model_path, |c, u| {
+                            c.get(u).timeout(Duration::from_millis(1500))
+                        }),
+                        self.fetch_root_json("/props", |c, u| {
+                            c.get(u).timeout(Duration::from_millis(1500))
+                        }),
+                    );
+                    if let Some(json) = model_res {
+                        let n_ctx = json
+                            .pointer("/default_generation_settings/n_ctx")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        if n_ctx > 0 {
+                            props_json = Some(json);
+                        }
+                    }
+                    if props_json.is_none() {
+                        props_json = root_res;
+                    }
+                } else if let Some(json) = self
+                    .fetch_root_json("/props", |c, u| {
                         c.get(u).timeout(Duration::from_millis(1500))
                     })
                     .await
                 {
-                    props_json = Some(m_json);
-                } else {
                     props_json = Some(json);
                 }
-            } else {
-                props_json = Some(json);
-            }
-        }
+                props_json
+            },
+            self.probe_standard_tokenize_endpoint()
+        );
 
         if let Some(json) = props_json {
             caps.backend_kind = "llama.cpp".to_string();
@@ -1073,8 +1059,7 @@ impl LlmClient {
                 caps.total_slots = (slots as usize).clamp(1, crate::budget::MAX_CONCURRENCY);
             }
 
-            // Probe POST /tokenize on llama.cpp
-            if self.probe_standard_tokenize_endpoint().await {
+            if tokenize_supported {
                 caps.supports_tokenize = true;
                 caps.tokenize_endpoint = Some("/tokenize".to_string());
             }
