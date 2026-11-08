@@ -1068,30 +1068,22 @@ impl Cache {
         if let Some(guard) = self.get_or_init_db()
             && let Some(conn) = guard.as_ref()
         {
-            let _ = conn.execute(
-                "INSERT INTO history (
-                    target_type, title, url, style, model,
-                    word_count, duration_ms, created_at, cache_key
-                ) VALUES (?, ?, ?, ?, ?, ?, 0, current_timestamp, ?)",
-                params![
-                    target_type,
-                    title,
-                    url,
-                    style,
-                    model,
-                    word_count as u32,
-                    cache_key
-                ],
-            );
-            if let Ok(doc_id) = conn.query_row("SELECT currval('history_id_seq')", [], |r| {
-                r.get::<_, i64>(0)
-            }) {
-                let _ = conn.execute(
-                    "INSERT INTO library (id, summary, reasoning) VALUES (?, ?, ?)",
-                    params![doc_id, summary, reasoning],
-                );
-                let _ = crate::storage::db::insert_doc_terms(conn, doc_id, title, summary);
-            }
+            let record = crate::storage::db::NewSummaryRecord {
+                target_type,
+                title,
+                author: None,
+                url,
+                style,
+                model,
+                summary,
+                word_count,
+                duration_ms: 0,
+                prompt_tokens: None,
+                completion_tokens: None,
+                tokens_per_second: None,
+                reasoning,
+            };
+            let _ = crate::storage::db::record_summary_on_conn(conn, &record, Some(cache_key));
         }
     }
 

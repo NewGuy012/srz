@@ -289,6 +289,48 @@ pub fn open_hardened_duckdb_file_with_retry(
     Ok((conn, already_exists))
 }
 
+/// Records a summary and its terms onto an existing DuckDB connection.
+pub fn record_summary_on_conn(
+    conn: &duckdb::Connection,
+    record: &NewSummaryRecord<'_>,
+    cache_key: Option<&str>,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO history (
+            target_type, title, author, url, style, model,
+            word_count, prompt_tokens, completion_tokens,
+            duration_ms, tokens_per_second, cache_key
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        params![
+            record.target_type,
+            record.title,
+            record.author,
+            record.url,
+            record.style,
+            record.model,
+            record.word_count as u32,
+            record.prompt_tokens,
+            record.completion_tokens,
+            record.duration_ms as u32,
+            record.tokens_per_second,
+            cache_key,
+        ],
+    )
+    .context("Failed to record entry in DuckDB history table")?;
+
+    let doc_id: i64 = conn.query_row("SELECT currval('history_id_seq')", [], |r| r.get(0))?;
+
+    conn.execute(
+        "INSERT INTO library (id, summary, reasoning) VALUES (?, ?, ?)",
+        params![doc_id, record.summary, record.reasoning],
+    )
+    .context("Failed to record entry in DuckDB library table")?;
+
+    insert_doc_terms(conn, doc_id, record.title, record.summary)?;
+
+    Ok(())
+}
+
 impl Database {
     /// Returns the default path for the persistent DuckDB database:
     /// Checks $SRZ_DATA_DIR/srz.duckdb, $XDG_DATA_HOME/srz/srz.duckdb, ~/.local/share/srz/srz.duckdb.
@@ -478,41 +520,7 @@ impl Database {
             .unwrap_or(record.title);
 
         self.with_transaction(|conn| {
-            conn.execute(
-                "INSERT INTO history (
-                    target_type, title, author, url, style, model,
-                    word_count, prompt_tokens, completion_tokens,
-                    duration_ms, tokens_per_second, cache_key
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                params![
-                    record.target_type,
-                    record.title,
-                    record.author,
-                    record.url,
-                    record.style,
-                    record.model,
-                    record.word_count as u32,
-                    record.prompt_tokens,
-                    record.completion_tokens,
-                    record.duration_ms as u32,
-                    record.tokens_per_second,
-                    effective_cache_key,
-                ],
-            )
-            .context("Failed to record entry in DuckDB history table")?;
-
-            let doc_id: i64 =
-                conn.query_row("SELECT currval('history_id_seq')", [], |r| r.get(0))?;
-
-            conn.execute(
-                "INSERT INTO library (id, summary, reasoning) VALUES (?, ?, ?)",
-                params![doc_id, record.summary, record.reasoning],
-            )
-            .context("Failed to record entry in DuckDB library table")?;
-
-            insert_doc_terms(conn, doc_id, record.title, record.summary)?;
-
-            Ok(())
+            record_summary_on_conn(conn, record, Some(effective_cache_key))
         })
     }
 

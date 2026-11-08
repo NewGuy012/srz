@@ -634,12 +634,11 @@ async fn resolve_book_and_candidates_concurrently(
         let work_key = cache
             .get_book_metadata(query_title, Some(auth))
             .and_then(|m| m.and_then(|meta| meta.work_key));
-        let mut searcher_mut = searcher.clone();
         let candidates = fetch_or_cache_candidates(
             &effective_title,
             effective_author.as_deref(),
             cache,
-            &mut searcher_mut,
+            searcher,
         )
         .await?;
         return Ok((effective_title, effective_author, work_key, candidates));
@@ -661,12 +660,11 @@ async fn resolve_book_and_candidates_concurrently(
                 effective_title, a, year_str
             ));
         }
-        let mut searcher_mut = searcher.clone();
         let candidates = fetch_or_cache_candidates(
             &effective_title,
             effective_author.as_deref(),
             cache,
-            &mut searcher_mut,
+            searcher,
         )
         .await?;
         return Ok((effective_title, effective_author, work_key, candidates));
@@ -746,7 +744,7 @@ async fn fetch_or_cache_candidates(
     effective_title: &str,
     effective_author: Option<&str>,
     cache: &Cache,
-    searcher: &mut BookSearcher,
+    searcher: &BookSearcher,
 ) -> Result<Vec<SearchResult>> {
     if let Some(cached_candidates) = cache.get_search_results(effective_title, effective_author) {
         Ui::info(&format!(
@@ -928,71 +926,44 @@ async fn generate_prepared_book_summary(
             }
         }
 
-        // Check Open Library editorial work description fallback
-        if let Some(work_key) = &prep.work_key {
-            let searcher = BookSearcher::with_client(scraper.client().clone());
-            if let Some(desc) = searcher.fetch_work_description(work_key).await {
-                let wc = desc.split_whitespace().count();
-                if wc >= 30 {
-                    Ui::info(&format!(
-                        "Using Open Library editorial description as grounded context ({} words)...",
-                        wc
-                    ));
-                    let work_url = format!(
-                        "https://openlibrary.org/{}",
-                        work_key.trim_start_matches('/')
-                    );
-                    if let Ok(output) = llm
-                        .summarize_book_with_context(
-                            effective_title,
-                            effective_author,
-                            &work_url,
-                            &desc,
-                            args.style,
-                            mode,
-                        )
-                        .await
-                    {
-                        return Ok((output, wc, Some(work_url)));
-                    }
-                }
-            }
-        }
-
-        Ui::warn("All online references failed to scrape. Falling back to LLM internal memory.");
+        Ui::warn(
+            "All online references failed to scrape. Falling back to Open Library or LLM internal memory.",
+        );
     } else {
-        // If no web candidates found, check Open Library work description before parametric memory
-        if let Some(work_key) = &prep.work_key {
-            let searcher = BookSearcher::with_client(scraper.client().clone());
-            if let Some(desc) = searcher.fetch_work_description(work_key).await {
-                let wc = desc.split_whitespace().count();
-                if wc >= 30 {
-                    Ui::info(&format!(
-                        "Using Open Library editorial description as grounded context ({} words)...",
-                        wc
-                    ));
-                    let work_url = format!(
-                        "https://openlibrary.org/{}",
-                        work_key.trim_start_matches('/')
-                    );
-                    if let Ok(output) = llm
-                        .summarize_book_with_context(
-                            effective_title,
-                            effective_author,
-                            &work_url,
-                            &desc,
-                            args.style,
-                            mode,
-                        )
-                        .await
-                    {
-                        return Ok((output, wc, Some(work_url)));
-                    }
+        Ui::warn(
+            "No web synopsis found online. Falling back to Open Library or LLM trained memory.",
+        );
+    }
+
+    // Check Open Library editorial work description fallback before parametric memory
+    if let Some(work_key) = &prep.work_key {
+        let searcher = BookSearcher::with_client(scraper.client().clone());
+        if let Some(desc) = searcher.fetch_work_description(work_key).await {
+            let wc = desc.split_whitespace().count();
+            if wc >= 30 {
+                Ui::info(&format!(
+                    "Using Open Library editorial description as grounded context ({} words)...",
+                    wc
+                ));
+                let work_url = format!(
+                    "https://openlibrary.org/{}",
+                    work_key.trim_start_matches('/')
+                );
+                if let Ok(output) = llm
+                    .summarize_book_with_context(
+                        effective_title,
+                        effective_author,
+                        &work_url,
+                        &desc,
+                        args.style,
+                        mode,
+                    )
+                    .await
+                {
+                    return Ok((output, wc, Some(work_url)));
                 }
             }
         }
-
-        Ui::warn("No web synopsis found online. Falling back to LLM trained memory.");
     }
 
     let output = llm

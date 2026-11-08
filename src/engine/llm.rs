@@ -2048,12 +2048,9 @@ impl LlmClient {
                         )
                         .await?;
 
-                    let mut next_summaries = Vec::with_capacity(batch_count);
-                    for part in round_outputs {
-                        total_prompt_tokens += part.prompt_tokens.unwrap_or(0);
-                        total_completion_tokens += part.completion_tokens.unwrap_or(0);
-                        next_summaries.push(part.content);
-                    }
+                    let (p, c, next_summaries) = accumulate_chunk_tokens(round_outputs);
+                    total_prompt_tokens += p;
+                    total_completion_tokens += c;
 
                     if next_summaries.len() >= section_summaries.len() {
                         // No progress made in reducing summary count
