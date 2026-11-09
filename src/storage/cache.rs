@@ -397,6 +397,9 @@ impl Cache {
         let (mut searches, mut search_bytes) = Self::namespace_stats(&self.base_dir.join("search"));
         let (views, views_bytes) = Self::namespace_stats(&self.views_dir());
 
+        let mut summaries = 0;
+        let mut summaries_bytes = 0;
+
         if let Some(guard) = self.get_or_init_db()
             && let Some(conn) = guard.as_ref()
         {
@@ -412,25 +415,19 @@ impl Cache {
             );
             searches += cnt;
             search_bytes += bytes;
-        }
 
-        let mut summaries = 0;
-        let mut summaries_bytes = 0;
-        if let Some(guard) = self.get_or_init_db()
-            && let Some(conn) = guard.as_ref()
-            && let Ok(mut stmt) = conn.prepare(
+            if let Ok(mut stmt) = conn.prepare(
                 "SELECT count(*), coalesce(sum(strlen(summary) + coalesce(strlen(reasoning), 0)), 0)
                  FROM history h JOIN library l ON h.id = l.id
                  WHERE h.cache_key IS NOT NULL;",
-            )
-            && let Ok(row) = stmt.query_row([], |row| {
+            ) && let Ok(row) = stmt.query_row([], |row| {
                 let cnt: i64 = row.get(0)?;
                 let bytes: i64 = row.get(1)?;
                 Ok((cnt.max(0) as usize, bytes.max(0) as u64))
-            })
-        {
-            summaries = row.0;
-            summaries_bytes = row.1;
+            }) {
+                summaries = row.0;
+                summaries_bytes = row.1;
+            }
         }
 
         CacheStats {
@@ -537,20 +534,18 @@ impl Cache {
                         ((max_budget as f64) * 0.85) as u64
                     };
 
-                    let pages_bytes: u64 = conn
-                        .query_row(
-                            "SELECT coalesce(sum(strlen(url) + coalesce(strlen(title), 0) + strlen(content) + 32), 0)::BIGINT FROM cache_pages",
-                            [],
-                            |r| Ok(r.get::<_, i64>(0)?.max(0) as u64),
-                        )
-                        .unwrap_or(0);
-                    let search_bytes: u64 = conn
-                        .query_row(
-                            "SELECT coalesce(sum(strlen(data)), 0)::BIGINT FROM cache_search",
-                            [],
-                            |r| Ok(r.get::<_, i64>(0)?.max(0) as u64),
-                        )
-                        .unwrap_or(0);
+                    let pages_bytes = Self::query_table_stats(
+                        conn,
+                        "cache_pages",
+                        CacheNamespace::Pages.db_size_expr(),
+                    )
+                    .1;
+                    let search_bytes = Self::query_table_stats(
+                        conn,
+                        "cache_search",
+                        CacheNamespace::Search.db_size_expr(),
+                    )
+                    .1;
                     let total_db_bytes = pages_bytes + search_bytes;
 
                     if total_db_bytes > target_size {

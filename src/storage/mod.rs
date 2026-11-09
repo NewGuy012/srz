@@ -7,4 +7,5 @@ pub use cache::{
 };
 pub use db::{
     Database, QueryResult, init_duckdb_schema, is_duckdb_schema_ready, open_hardened_duckdb_file,
+    open_hardened_duckdb_file_with_retry, tokenize_search_terms, tokenize_terms,
 };

@@ -270,6 +270,16 @@ pub fn open_hardened_duckdb_file_with_retry(
                     || err_str.contains("busy")
                     || err_str.contains("IO Error")
                     || err_str.contains("Could not set lock");
+                let is_corrupt = err_str.contains("corrupt")
+                    || err_str.contains("not a valid DuckDB")
+                    || err_str.contains("Serialization Error");
+                if is_corrupt && attempts == 0 {
+                    attempts += 1;
+                    let _ = std::fs::remove_file(path);
+                    let wal_path = path.with_extension("duckdb.wal");
+                    let _ = std::fs::remove_file(wal_path);
+                    continue;
+                }
                 if is_lock_error && attempts < max_retries {
                     attempts += 1;
                     std::thread::sleep(backoff);
@@ -857,13 +867,7 @@ impl Database {
             return Ok(Vec::new());
         }
 
-        let raw_query_terms = tokenize_terms(trimmed);
-        let query_terms: Vec<String> = raw_query_terms
-            .into_iter()
-            .filter(|t| {
-                !crate::system::text_util::is_stop_word(t) && !(t.len() <= 1 && t.is_ascii())
-            })
-            .collect();
+        let query_terms = tokenize_search_terms(trimmed);
         let mut results: Vec<LibrarySearchResult> = Vec::new();
         let mut seen_ids = std::collections::HashSet::new();
 
@@ -1108,14 +1112,7 @@ pub fn escape_yaml_string(s: &str) -> String {
     out
 }
 
-/// Tokenizes text into normalized lowercased terms for BM25 indexing and querying.
-pub fn tokenize_terms(text: &str) -> Vec<String> {
-    text.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
-        .map(|s| s.trim_matches(|c: char| !c.is_alphanumeric()))
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_lowercase())
-        .collect()
-}
+pub use crate::system::text_util::{tokenize_search_terms, tokenize_terms};
 
 /// Indexes document title and summary terms into `library_terms`.
 pub(crate) fn insert_doc_terms(
@@ -1127,19 +1124,13 @@ pub(crate) fn insert_doc_terms(
     let mut term_counts: std::collections::HashMap<String, (usize, bool)> =
         std::collections::HashMap::new();
 
-    for term in tokenize_terms(title) {
-        if crate::system::text_util::is_stop_word(&term) || (term.len() <= 1 && term.is_ascii()) {
-            continue;
-        }
+    for term in tokenize_search_terms(title) {
         let entry = term_counts.entry(term).or_insert((0, true));
         entry.0 += 1;
         entry.1 = true;
     }
 
-    for term in tokenize_terms(summary) {
-        if crate::system::text_util::is_stop_word(&term) || (term.len() <= 1 && term.is_ascii()) {
-            continue;
-        }
+    for term in tokenize_search_terms(summary) {
         let entry = term_counts.entry(term).or_insert((0, false));
         entry.0 += 1;
     }
@@ -1245,6 +1236,8 @@ pub fn init_duckdb_schema(conn: &Connection) -> Result<()> {
              in_title BOOLEAN NOT NULL DEFAULT FALSE,
              PRIMARY KEY (doc_id, term)
          );
+         CREATE INDEX IF NOT EXISTS idx_library_terms_term ON library_terms(term);
+         CREATE INDEX IF NOT EXISTS idx_history_cache_key ON history(cache_key);
 
          CREATE SEQUENCE IF NOT EXISTS chat_sessions_id_seq;
          CREATE TABLE IF NOT EXISTS chat_sessions (
