@@ -1099,28 +1099,14 @@ impl Cache {
         title: &str,
         summary: &str,
     ) {
-        self.set_web_summary_with_words(url, style, model, title, summary, 0, None);
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn set_web_summary_with_words(
-        &self,
-        url: &str,
-        style: SummaryStyle,
-        model: &str,
-        title: &str,
-        summary: &str,
-        word_count: usize,
-        reasoning: Option<&str>,
-    ) {
         self.set_summary_in_db(
             "web",
             url,
             Some(url),
             title,
             summary,
-            word_count,
-            reasoning,
+            0,
+            None,
             style.as_str(),
             model,
         );

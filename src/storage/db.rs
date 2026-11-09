@@ -171,52 +171,23 @@ pub struct LibraryItem {
 
 impl LibraryItem {
     /// Returns true if this item's title, author, url, summary, or target type matches `query` (case-insensitively).
-    /// Optimized to check short metadata fields first and avoid heap allocations.
     pub fn matches_query(&self, query: &str) -> bool {
         let q = query.trim();
         if q.is_empty() {
             return true;
         }
-        if q.is_ascii() {
-            self.matches_ascii_query(q)
+
+        let q_lower = if q.is_ascii() {
+            None
         } else {
-            let q_lower = q.to_lowercase();
-            self.matches_unicode_query(&q_lower)
-        }
-    }
+            Some(q.to_lowercase())
+        };
 
-    /// Preprocessed match used in batch/TUI loops to avoid re-allocating `to_lowercase()` per item.
-    pub fn matches_query_preprocessed(&self, q: &str, q_lower: Option<&str>) -> bool {
-        if q.is_empty() {
-            return true;
-        }
-        if let Some(lower) = q_lower {
-            self.matches_unicode_query(lower)
-        } else {
-            self.matches_ascii_query(q)
-        }
-    }
-
-    fn matches_ascii_query(&self, q: &str) -> bool {
-        crate::system::text_util::contains_ascii_case_insensitive(&self.title, q)
-            || crate::system::text_util::contains_ascii_case_insensitive(&self.target_type, q)
-            || self
-                .author
-                .as_deref()
-                .is_some_and(|a| crate::system::text_util::contains_ascii_case_insensitive(a, q))
-            || self
-                .url
-                .as_deref()
-                .is_some_and(|u| crate::system::text_util::contains_ascii_case_insensitive(u, q))
-            || crate::system::text_util::contains_ascii_case_insensitive(&self.summary, q)
-    }
-
-    fn matches_unicode_query(&self, q_lower: &str) -> bool {
         let matches_field = |field: &str| -> bool {
-            if field.is_ascii() {
-                false
+            if let Some(ref q_low) = q_lower {
+                field.to_lowercase().contains(q_low)
             } else {
-                field.to_lowercase().contains(q_lower)
+                crate::system::text_util::contains_ascii_case_insensitive(field, q)
             }
         };
 
