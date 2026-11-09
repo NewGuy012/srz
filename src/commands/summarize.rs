@@ -405,11 +405,11 @@ pub async fn summarize_fetched_web_page(
 
     let mode = args.stream_mode(&title_display);
     let output = llm
-        .summarize_webpage(
-            page.title.as_deref(),
-            url,
+        .summarize_document_counted(
+            page.title.as_deref().unwrap_or("Untitled Webpage"),
+            Some(url),
             &page.content,
-            page.word_count,
+            Some(page.word_count),
             args.style,
             mode,
         )
@@ -611,18 +611,6 @@ pub async fn summarize_prepared_book(
     };
 
     Ok(outcome)
-}
-
-pub async fn handle_book(
-    title: &str,
-    author: Option<&str>,
-    scraper: &WebScraper,
-    llm: &LlmClient,
-    cache: &Cache,
-    args: &Cli,
-) -> Result<SummaryOutcome> {
-    let prep = prepare_book_query(title, author, scraper, cache, args).await?;
-    summarize_prepared_book(prep, llm, scraper, cache, args).await
 }
 
 async fn resolve_book_and_candidates_concurrently(

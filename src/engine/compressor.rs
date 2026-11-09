@@ -95,23 +95,8 @@ pub fn compute_bm25_scores(
 }
 
 /// Selects the most relevant sections of `content` when it exceeds `max_tokens` using
-/// stop-word filtered Robertson-Sparck Jones BM25 ranking across candidate text chunks.
+/// model-aware token counting and Robertson-Sparck Jones BM25 ranking.
 pub fn select_relevant_context_bm25<'a>(
-    content: &'a str,
-    question: Option<&str>,
-    max_tokens: usize,
-) -> Cow<'a, str> {
-    select_relevant_context_bm25_with_tokenizer(
-        content,
-        question,
-        max_tokens,
-        TokenizerKind::Cl100k,
-    )
-}
-
-/// Selects the most relevant sections of `content` when it exceeds `max_tokens` using
-/// model-aware token counting and BM25 ranking.
-pub fn select_relevant_context_bm25_with_tokenizer<'a>(
     content: &'a str,
     question: Option<&str>,
     max_tokens: usize,
@@ -476,7 +461,8 @@ mod tests {
 
         let combined = format!("{}{}{}", chunk1, chunk2, chunk3);
         let question = "What is the main advantage of quantum cryptography?";
-        let selected = select_relevant_context_bm25(&combined, Some(question), 600);
+        let selected =
+            select_relevant_context_bm25(&combined, Some(question), 600, TokenizerKind::Cl100k);
 
         assert!(selected.contains("Quantum cryptography utilizes photon entanglement"));
     }

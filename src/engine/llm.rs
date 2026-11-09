@@ -1024,28 +1024,6 @@ impl LlmClient {
         ))
     }
 
-    /// Summarize webpage content using single-pass summarization with stratified salience compression when oversized.
-    pub async fn summarize_webpage(
-        &self,
-        title: Option<&str>,
-        url: &str,
-        content: &str,
-        word_count: usize,
-        style: SummaryStyle,
-        mode: StreamMode<'_>,
-    ) -> Result<LlmOutput> {
-        let title_str = title.unwrap_or("Untitled Webpage");
-        self.summarize_document_counted(
-            title_str,
-            Some(url),
-            content,
-            Some(word_count),
-            style,
-            mode,
-        )
-        .await
-    }
-
     /// Summarize any document text with single-pass execution, applying CPU Stratified Salience Compression
     /// if the document exceeds the active server's context window.
     pub async fn summarize_document_counted(

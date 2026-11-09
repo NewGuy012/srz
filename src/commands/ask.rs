@@ -144,63 +144,16 @@ pub use crate::system::text_util::is_stop_word;
 
 pub use crate::chunker::TokenizerKind;
 
-/// Selects the most relevant sections of `content` when it exceeds `max_tokens` using
-/// stop-word filtered Robertson-Sparck Jones BM25 ranking across candidate text chunks
-/// with a model-matched tokenizer.
-pub fn select_relevant_context_with_budget_and_tokenizer<'a>(
-    content: &'a str,
-    question: Option<&str>,
-    max_tokens: usize,
-    tokenizer_kind: TokenizerKind,
-) -> std::borrow::Cow<'a, str> {
-    crate::engine::compressor::select_relevant_context_bm25_with_tokenizer(
-        content,
-        question,
-        max_tokens,
-        tokenizer_kind,
-    )
-}
+pub use crate::engine::compressor::select_relevant_context_bm25;
 
-/// Selects the most relevant sections of `content` when it exceeds `max_tokens` using
-/// stop-word filtered Robertson-Sparck Jones BM25 ranking across candidate text chunks.
-pub fn select_relevant_context_with_budget<'a>(
-    content: &'a str,
-    question: Option<&str>,
-    max_tokens: usize,
-) -> std::borrow::Cow<'a, str> {
-    select_relevant_context_with_budget_and_tokenizer(
-        content,
-        question,
-        max_tokens,
-        TokenizerKind::Cl100k,
-    )
-}
-
-/// Selects the most relevant sections of `content` when it exceeds `MAX_CONTEXT_TOKENS` and a `question` is provided.
-pub fn select_relevant_context<'a>(
-    content: &'a str,
-    question: Option<&str>,
-) -> std::borrow::Cow<'a, str> {
-    use crate::engine::llm::MAX_CONTEXT_TOKENS;
-    select_relevant_context_with_budget(content, question, MAX_CONTEXT_TOKENS)
-}
-
-/// Formats untrusted document text safely bounded by `MAX_CONTEXT_WORDS` and `MAX_CONTEXT_TOKENS` with delimiter escaping.
+/// Formats untrusted document text safely bounded by `MAX_CONTEXT_TOKENS` with delimiter escaping.
 pub fn format_grounded_context(title: &str, content: &str) -> String {
-    format_grounded_context_for_question(title, content, None)
-}
-
-/// Formats untrusted document text with question-aware chunk selection for extra-long documents.
-pub fn format_grounded_context_for_question(
-    title: &str,
-    content: &str,
-    question: Option<&str>,
-) -> String {
-    format_grounded_context_with_budget(
+    format_grounded_context_with_budget_and_tokenizer(
         title,
         content,
-        question,
+        None,
         crate::engine::llm::MAX_CONTEXT_TOKENS,
+        TokenizerKind::Cl100k,
     )
 }
 
@@ -211,12 +164,7 @@ pub fn format_grounded_context_with_budget_and_tokenizer(
     max_tokens: usize,
     tokenizer_kind: TokenizerKind,
 ) -> String {
-    let selected = select_relevant_context_with_budget_and_tokenizer(
-        content,
-        question,
-        max_tokens,
-        tokenizer_kind,
-    );
+    let selected = select_relevant_context_bm25(content, question, max_tokens, tokenizer_kind);
     let untrusted_block = crate::engine::llm::format_untrusted_section(
         "source_document",
         &selected,
@@ -224,21 +172,6 @@ pub fn format_grounded_context_with_budget_and_tokenizer(
     );
     let safe_title = crate::ui::sanitize_title(title);
     format!("Document: {safe_title}\n\n{untrusted_block}")
-}
-
-pub fn format_grounded_context_with_budget(
-    title: &str,
-    content: &str,
-    question: Option<&str>,
-    max_tokens: usize,
-) -> String {
-    format_grounded_context_with_budget_and_tokenizer(
-        title,
-        content,
-        question,
-        max_tokens,
-        TokenizerKind::Cl100k,
-    )
 }
 
 /// Handles offline chat management commands (`--chats`, `--show-chat`, `--delete-chat`) without initializing LLM or web clients.
@@ -866,18 +799,15 @@ mod tests {
         let question = "What is the main advantage of quantum cryptography?";
 
         // Request a budget that only fits ~1-2 chunks
-        let selected = select_relevant_context_with_budget(&combined, Some(question), 600);
+        let selected =
+            select_relevant_context_bm25(&combined, Some(question), 600, TokenizerKind::Cl100k);
 
         // The BM25 algorithm with stop-word filtering should prioritize the quantum cryptography chunk!
         assert!(selected.contains("Quantum cryptography utilizes photon entanglement"));
 
         // Verify with Llama3 tokenizer
-        let selected_llama = select_relevant_context_with_budget_and_tokenizer(
-            &combined,
-            Some(question),
-            600,
-            TokenizerKind::Llama3,
-        );
+        let selected_llama =
+            select_relevant_context_bm25(&combined, Some(question), 600, TokenizerKind::Llama3);
         assert!(selected_llama.contains("Quantum cryptography utilizes photon entanglement"));
     }
 }

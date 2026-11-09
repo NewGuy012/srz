@@ -11,7 +11,6 @@ pub use budget::{DynamicBudget, ModelInfo, ServerCapabilities, clamp_context_win
 pub use chunker::{TextChunker, TokenizerKind};
 pub use compressor::{
     compress_document_stratified, compute_bm25_scores, select_relevant_context_bm25,
-    select_relevant_context_bm25_with_tokenizer,
 };
 pub use llm::LlmClient;
 pub use prompts::{escape_closing_tag, format_untrusted_section};
