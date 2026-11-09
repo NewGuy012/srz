@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
 
 use crate::chunker::{TextChunker, TokenizerKind};
 use crate::system::text_util::{find_ascii_case_insensitive, is_stop_word, tokenize_terms};
@@ -217,175 +216,59 @@ pub fn compress_document_stratified<'a>(
     }
 
     // 1. Decompose document into paragraphs
-    let mut paragraphs: Vec<(&'a str, usize, bool)> = Vec::new();
-    for p in content.split("\n\n") {
-        let trimmed = p.trim();
-        if !trimmed.is_empty() {
-            let tokens = tok_kind.count_tokens(trimmed);
-            let is_heading = trimmed.starts_with('#')
-                || trimmed.starts_with("Chapter ")
-                || trimmed.starts_with("**Chapter")
-                || trimmed.starts_with("Section ")
-                || trimmed.starts_with("### Article");
-            paragraphs.push((trimmed, tokens, is_heading));
-        }
-    }
+    let paragraphs: Vec<&'a str> = content
+        .split("\n\n")
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty())
+        .collect();
 
     if paragraphs.is_empty() {
         return Cow::Borrowed(content);
     }
 
-    if paragraphs.len() == 1 {
+    if paragraphs.len() <= 1 {
         return TextChunker::truncate_by_tokens(content, max_tokens);
     }
 
-    // 2. Compute document centroid query (top ~40 non-stopword terms)
-    let raw_terms = tokenize_terms(content);
-    let mut term_freqs: HashMap<String, usize> = HashMap::new();
-    for term in raw_terms {
-        if !is_stop_word(&term) && term.len() > 1 {
-            *term_freqs.entry(term).or_insert(0) += 1;
+    let lead_budget = (max_tokens * 65) / 100;
+    let tail_budget = max_tokens.saturating_sub(lead_budget);
+
+    let mut lead_paras = Vec::new();
+    let mut lead_tokens = 0;
+    for &p in &paragraphs {
+        let p_tokens = tok_kind.count_tokens(p);
+        if lead_tokens + p_tokens > lead_budget && !lead_paras.is_empty() {
+            break;
         }
+        lead_paras.push(p);
+        lead_tokens += p_tokens;
     }
 
-    let mut sorted_terms: Vec<(String, usize)> = term_freqs.into_iter().collect();
-    sorted_terms.sort_by_key(|a| std::cmp::Reverse(a.1));
-    let centroid_terms: Vec<String> = sorted_terms.into_iter().take(40).map(|(t, _)| t).collect();
-
-    // 3. Compute BM25 relevance scores across paragraphs
-    let n_paras = paragraphs.len();
-    let total_para_tokens: usize = paragraphs.iter().map(|(_, t, _)| *t).sum();
-    let avgdl = (total_para_tokens as f64) / (n_paras as f64).max(1.0);
-
-    let para_texts: Vec<&str> = paragraphs.iter().map(|(p, _, _)| *p).collect();
-    let para_lens: Vec<usize> = paragraphs.iter().map(|(_, t, _)| *t).collect();
-    let bm25_scores = compute_bm25_scores(&para_texts, &para_lens, &centroid_terms, avgdl);
-
-    // Score all paragraphs with BM25 + information density bonus (numbers/metrics)
-    let para_scores: Vec<f64> = paragraphs
-        .iter()
-        .enumerate()
-        .map(|(idx, (para, _, is_heading))| {
-            if *is_heading {
-                return 100.0; // Guaranteed structural priority
-            }
-            let mut score = bm25_scores[idx];
-
-            // Information density bonus for digits / metrics
-            let digit_count = para.chars().filter(|c| c.is_ascii_digit()).count();
-            if digit_count > 0 {
-                score += (digit_count as f64).min(5.0) * 0.2;
-            }
-
-            score
-        })
-        .collect();
-
-    // 4. Stratified selection
-    // Divide the document into K strata (e.g. 10 to 16 equal partitions)
-    let num_strata = n_paras.clamp(1, 12);
-    let mut selected_indices: HashSet<usize> = HashSet::new();
-    let mut current_total_tokens = 0usize;
-
-    // Safety margin for separator tokens (`\n\n...\n\n` is ~4 tokens each)
-    let safe_budget = max_tokens
-        .saturating_sub(num_strata * 8)
-        .max(max_tokens / 2);
-    let stratum_budget = (safe_budget / num_strata).max(100);
-
-    for s in 0..num_strata {
-        let start = s * n_paras / num_strata;
-        let end = ((s + 1) * n_paras / num_strata).max(start + 1).min(n_paras);
-        if start >= end {
-            continue;
+    let lead_count = lead_paras.len();
+    let mut tail_paras = Vec::new();
+    let mut tail_tokens = 0;
+    for &p in paragraphs.iter().skip(lead_count).rev() {
+        let p_tokens = tok_kind.count_tokens(p);
+        if tail_tokens + p_tokens > tail_budget && !tail_paras.is_empty() {
+            break;
         }
+        tail_paras.push(p);
+        tail_tokens += p_tokens;
+    }
+    tail_paras.reverse();
 
-        let mut stratum_tokens = 0usize;
-
-        // Step 4a: Prioritize Headings in this stratum
-        for (i, para) in paragraphs.iter().enumerate().take(end).skip(start) {
-            if para.2 && current_total_tokens + para.1 <= safe_budget && selected_indices.insert(i)
-            {
-                current_total_tokens += para.1;
-                stratum_tokens += para.1;
-            }
+    if tail_paras.is_empty() {
+        let joined = lead_paras.join("\n\n");
+        if tok_kind.count_tokens(&joined) > max_tokens {
+            return Cow::Owned(TextChunker::truncate_by_tokens(&joined, max_tokens).into_owned());
         }
-
-        // Step 4b: Pick opening paragraph of this stratum (Lead)
-        if current_total_tokens + paragraphs[start].1 <= safe_budget
-            && selected_indices.insert(start)
-        {
-            current_total_tokens += paragraphs[start].1;
-            stratum_tokens += paragraphs[start].1;
-        }
-
-        // Step 4c: Pick closing paragraph of this stratum (Conclusion)
-        let last_idx = end - 1;
-        if last_idx > start
-            && current_total_tokens + paragraphs[last_idx].1 <= safe_budget
-            && selected_indices.insert(last_idx)
-        {
-            current_total_tokens += paragraphs[last_idx].1;
-            stratum_tokens += paragraphs[last_idx].1;
-        }
-
-        // Step 4d: Fill remaining stratum budget with top BM25 paragraphs
-        let mut candidates: Vec<usize> = (start..end)
-            .filter(|i| !selected_indices.contains(i))
-            .collect();
-        candidates.sort_by(|&a, &b| {
-            para_scores[b]
-                .partial_cmp(&para_scores[a])
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        for cand in candidates {
-            if stratum_tokens >= stratum_budget || current_total_tokens >= safe_budget {
-                break;
-            }
-            let p_tokens = paragraphs[cand].1;
-            if current_total_tokens + p_tokens <= safe_budget {
-                selected_indices.insert(cand);
-                current_total_tokens += p_tokens;
-                stratum_tokens += p_tokens;
-            }
-        }
+        return Cow::Owned(joined);
     }
 
-    // 5. Always ensure the absolute first paragraph (document thesis) and absolute last paragraph (document conclusion)
-    if !selected_indices.contains(&0) && current_total_tokens + paragraphs[0].1 <= max_tokens {
-        selected_indices.insert(0);
-    }
-    let last = n_paras - 1;
-    if !selected_indices.contains(&last) && current_total_tokens + paragraphs[last].1 <= max_tokens
-    {
-        selected_indices.insert(last);
-    }
+    let mut out = lead_paras.join("\n\n");
+    out.push_str("\n\n...\n\n");
+    out.push_str(&tail_paras.join("\n\n"));
 
-    // 6. Chronological Reassembly
-    let mut sorted_indices: Vec<usize> = selected_indices.into_iter().collect();
-    sorted_indices.sort_unstable();
-
-    if sorted_indices.is_empty() {
-        return TextChunker::truncate_by_tokens(content, max_tokens);
-    }
-
-    let mut out = String::with_capacity(content.len().min(max_tokens * 4));
-    let mut prev_idx: Option<usize> = None;
-
-    for idx in sorted_indices {
-        if let Some(prev) = prev_idx {
-            if idx == prev + 1 {
-                out.push_str("\n\n");
-            } else {
-                out.push_str("\n\n...\n\n");
-            }
-        }
-        out.push_str(paragraphs[idx].0);
-        prev_idx = Some(idx);
-    }
-
-    // Final guard against token count drift
     if tok_kind.count_tokens(&out) > max_tokens {
         return Cow::Owned(TextChunker::truncate_by_tokens(&out, max_tokens).into_owned());
     }

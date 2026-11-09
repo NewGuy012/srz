@@ -1,22 +1,32 @@
 use std::borrow::Cow;
-use std::sync::LazyLock;
-use tiktoken_rs::CoreBPE;
 
-static BPE: LazyLock<CoreBPE> = LazyLock::new(|| {
-    tiktoken_rs::cl100k_base().expect("Failed to initialize cl100k_base tokenizer")
-});
+/// Estimates token count using a fast, zero-dependency word-to-token heuristic:
+/// 1 word is approximately 1.33 (4/3) tokens in English and code, with a byte fallback for unbroken tokens.
+#[inline]
+pub fn estimate_tokens(text: &str) -> usize {
+    let words = text.split_ascii_whitespace().count();
+    if words == 0 {
+        return 0;
+    }
+    let word_estimate = (words * 4).div_ceil(3);
+    if text.len() > words * 16 {
+        word_estimate.max(text.len().div_ceil(4))
+    } else {
+        word_estimate
+    }
+}
 
 /// Tokenizer profile for model-aware in-process token counting and chunking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TokenizerKind {
-    /// OpenAI GPT-4 / GPT-3.5 standard cl100k_base BPE vocabulary.
+    /// OpenAI GPT-4 / GPT-3.5 standard cl100k_base profile.
     #[default]
     Cl100k,
-    /// OpenAI GPT-4o / o1 / o3 o200k_base BPE vocabulary.
+    /// OpenAI GPT-4o / o1 / o3 o200k_base profile.
     O200k,
-    /// Meta Llama 3 / 3.1 / 3.2 128k BPE vocabulary profile.
+    /// Meta Llama 3 / 3.1 / 3.2 profile.
     Llama3,
-    /// Google Gemma 4 / Gemma 2 256k SentencePiece vocabulary profile.
+    /// Google Gemma 4 / Gemma 2 profile.
     Gemma,
 }
 
@@ -37,26 +47,11 @@ impl TokenizerKind {
 
     /// Measures token count of `text` according to this tokenizer profile.
     pub fn count_tokens(&self, text: &str) -> usize {
+        let base = estimate_tokens(text);
         match self {
-            Self::Cl100k => BPE.encode_with_special_tokens(text).len(),
-            Self::O200k => {
-                static O200K: LazyLock<CoreBPE> = LazyLock::new(|| {
-                    tiktoken_rs::o200k_base().expect("Failed to initialize o200k_base")
-                });
-                O200K.encode_with_special_tokens(text).len()
-            }
-            Self::Llama3 => {
-                // Meta Llama 3 uses a 128k BPE vocabulary with specialized splitting regex.
-                // In English and code, Llama 3 token count aligns closely with cl100k with ~1.12x inflation for whitespace/syntax.
-                let base = BPE.encode_with_special_tokens(text).len();
-                base.saturating_mul(112).div_ceil(100)
-            }
-            Self::Gemma => {
-                // Google Gemma uses a 256k SentencePiece vocabulary with byte-level fallback.
-                // In English prose, SentencePiece splits on punctuation and prefix underscores, resulting in ~1.18x inflation over cl100k.
-                let base = BPE.encode_with_special_tokens(text).len();
-                base.saturating_mul(118).div_ceil(100)
-            }
+            Self::Cl100k | Self::O200k => base,
+            Self::Llama3 => base.saturating_mul(112).div_ceil(100),
+            Self::Gemma => base.saturating_mul(118).div_ceil(100),
         }
     }
 }
@@ -64,9 +59,9 @@ impl TokenizerKind {
 pub struct TextChunker;
 
 impl TextChunker {
-    /// Counts tokens in `text` using the standard OpenAI cl100k_base BPE tokenizer.
+    /// Counts tokens in `text` using fast token estimation.
     pub fn count_tokens(text: &str) -> usize {
-        BPE.encode_with_special_tokens(text).len()
+        estimate_tokens(text)
     }
 
     /// Counts tokens in `text` using a specified model-aware tokenizer profile.
@@ -74,25 +69,27 @@ impl TextChunker {
         kind.count_tokens(text)
     }
 
-    /// Truncates `text` so its BPE token count does not exceed `max_tokens`, preserving paragraph
+    /// Truncates `text` so its token count does not exceed `max_tokens`, preserving paragraph
     /// boundaries when possible and returning a zero-copy `Cow::Borrowed` slice when under budget.
     pub fn truncate_by_tokens(text: &str, max_tokens: usize) -> Cow<'_, str> {
         if max_tokens == 0 {
             return Cow::Borrowed("[Context trimmed for token budget]");
         }
-        // Fast path: 1 token is at least 1 byte in cl100k_base.
         if text.len() <= max_tokens {
             return Cow::Borrowed(text);
         }
-        let tokens = BPE.encode_with_special_tokens(text);
-        if tokens.len() <= max_tokens {
+        let estimated = estimate_tokens(text);
+        if estimated <= max_tokens {
             return Cow::Borrowed(text);
         }
-        if let Ok(decoded) = BPE.decode(&tokens[..max_tokens]) {
-            let trimmed = decoded.trim_end();
-            return Cow::Owned(format!("{trimmed}\n\n[Context trimmed for token budget]"));
-        }
-        Cow::Borrowed(text)
+        let max_words = (max_tokens * 3) / 4;
+        let mut words = text.split_ascii_whitespace();
+        let Some(nth_word) = words.nth(max_words.max(1) - 1) else {
+            return Cow::Borrowed(text);
+        };
+        let end_offset = (nth_word.as_ptr() as usize) - (text.as_ptr() as usize) + nth_word.len();
+        let prefix = text[..end_offset.min(text.len())].trim_end();
+        Cow::Owned(format!("{prefix}\n\n[Context trimmed for token budget]"))
     }
 
     /// Splits text into chunks of roughly `max_tokens` with `overlap_tokens` overlap,
@@ -228,11 +225,11 @@ impl TextChunker {
         F: FnMut(&str) -> usize,
     {
         let is_single_block = raw_paragraphs.len() <= 1;
-        // Allow up to 1.6x of max_limit to preserve intact paragraph boundaries when multiple paragraphs exist
+        // Allow up to 1.8x of max_limit to preserve intact paragraph boundaries when multiple paragraphs exist
         let para_threshold = if is_single_block {
             max_limit
         } else {
-            max_limit.saturating_mul(16) / 10
+            max_limit.saturating_mul(18) / 10
         };
 
         let mut segments = Vec::new();
