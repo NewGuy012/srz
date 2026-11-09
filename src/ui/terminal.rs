@@ -329,46 +329,10 @@ pub fn sanitize_terminal_text(input: &str) -> String {
 
 /// Sanitizes a title string for terminal presentation by removing escape sequences and collapsing whitespace.
 pub fn sanitize_title(title: &str) -> String {
-    let sanitized = sanitize_terminal_text_cow(title);
-    let bytes = sanitized.as_bytes();
-    if bytes.is_empty() {
-        return sanitized.into_owned();
-    }
-
-    let mut prev_space = false;
-    let mut needs_collapse = bytes.first().is_some_and(|b| b.is_ascii_whitespace())
-        || bytes.last().is_some_and(|b| b.is_ascii_whitespace());
-
-    if !needs_collapse {
-        for &b in bytes {
-            if b == b'\n' || b == b'\r' || b == b'\t' {
-                needs_collapse = true;
-                break;
-            }
-            if b == b' ' {
-                if prev_space {
-                    needs_collapse = true;
-                    break;
-                }
-                prev_space = true;
-            } else {
-                prev_space = false;
-            }
-        }
-    }
-
-    if !needs_collapse {
-        return sanitized.into_owned();
-    }
-
-    let mut out = String::with_capacity(sanitized.len());
-    for word in sanitized.split_whitespace() {
-        if !out.is_empty() {
-            out.push(' ');
-        }
-        out.push_str(word);
-    }
-    out
+    sanitize_terminal_text_cow(title)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Formats a duration into a human-readable compact string (e.g., `80ms`, `1.4s`, `2m 15s`).

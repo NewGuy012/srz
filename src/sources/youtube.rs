@@ -406,16 +406,8 @@ impl TimedTranscriptBuilder {
     }
 }
 
-/// Parses JSON3 format timed text into formatted timestamped paragraphs.
-pub fn parse_json3_timedtext(json_str: &str) -> Option<String> {
-    parse_json3_timedtext_with_chapters(json_str, None)
-}
-
-/// Parses JSON3 format timed text with optional chapter marker boundaries.
-pub fn parse_json3_timedtext_with_chapters(
-    json_str: &str,
-    chapters: Option<&[VideoChapter]>,
-) -> Option<String> {
+/// Parses JSON3 format timed text into formatted timestamped paragraphs with optional chapter markers.
+pub fn parse_json3_timedtext(json_str: &str, chapters: Option<&[VideoChapter]>) -> Option<String> {
     let parsed: TimedTextJson = serde_json::from_str(json_str).ok()?;
     if parsed.events.is_empty() {
         return None;
@@ -442,16 +434,8 @@ pub fn parse_json3_timedtext_with_chapters(
     builder.finish()
 }
 
-/// Parses XML timed text format 1 `<text start="1.23" dur="4.56">...</text>` into formatted paragraphs.
-pub fn parse_xml_timedtext(xml_str: &str) -> Option<String> {
-    parse_xml_timedtext_with_chapters(xml_str, None)
-}
-
-/// Parses XML timed text format 1 with optional chapter marker boundaries.
-pub fn parse_xml_timedtext_with_chapters(
-    xml_str: &str,
-    chapters: Option<&[VideoChapter]>,
-) -> Option<String> {
+/// Parses XML timed text format 1 (`<text start="1.23" dur="4.56">...</text>`) into formatted paragraphs with optional chapter markers.
+pub fn parse_xml_timedtext(xml_str: &str, chapters: Option<&[VideoChapter]>) -> Option<String> {
     if !xml_str.contains("<text") {
         return None;
     }
@@ -485,13 +469,8 @@ pub fn parse_xml_timedtext_with_chapters(
     builder.finish()
 }
 
-/// Parses XML timed text format 3 (`<p t="160" d="4000"><s>word</s>...</p>`) into formatted paragraphs.
-pub fn parse_xml_format3_timedtext(xml_str: &str) -> Option<String> {
-    parse_xml_format3_timedtext_with_chapters(xml_str, None)
-}
-
-/// Parses XML timed text format 3 with optional chapter marker boundaries.
-pub fn parse_xml_format3_timedtext_with_chapters(
+/// Parses XML timed text format 3 (`<p t="160" d="4000"><s>word</s>...</p>`) into formatted paragraphs with optional chapter markers.
+pub fn parse_xml_format3_timedtext(
     xml_str: &str,
     chapters: Option<&[VideoChapter]>,
 ) -> Option<String> {
@@ -537,32 +516,24 @@ pub fn parse_xml_format3_timedtext_with_chapters(
     builder.finish()
 }
 
-/// Dispatches timed text payloads to the appropriate parser based on payload structure.
-pub fn parse_timedtext(body: &str) -> Option<String> {
-    parse_timedtext_with_chapters(body, None)
-}
-
 /// Dispatches timed text payloads to the appropriate parser with optional chapter markers.
-pub fn parse_timedtext_with_chapters(
-    body: &str,
-    chapters: Option<&[VideoChapter]>,
-) -> Option<String> {
+pub fn parse_timedtext(body: &str, chapters: Option<&[VideoChapter]>) -> Option<String> {
     let trimmed = body.trim();
     if trimmed.is_empty() {
         return None;
     }
     if trimmed.starts_with('{')
-        && let Some(res) = parse_json3_timedtext_with_chapters(trimmed, chapters)
+        && let Some(res) = parse_json3_timedtext(trimmed, chapters)
     {
         return Some(res);
     }
     if trimmed.contains("<p")
-        && let Some(res) = parse_xml_format3_timedtext_with_chapters(trimmed, chapters)
+        && let Some(res) = parse_xml_format3_timedtext(trimmed, chapters)
     {
         return Some(res);
     }
     if trimmed.contains("<text")
-        && let Some(res) = parse_xml_timedtext_with_chapters(trimmed, chapters)
+        && let Some(res) = parse_xml_timedtext(trimmed, chapters)
     {
         return Some(res);
     }
@@ -736,7 +707,7 @@ async fn fetch_single_caption_url(
         return None;
     }
 
-    parse_timedtext_with_chapters(&body, chapters)
+    parse_timedtext(&body, chapters)
 }
 
 /// Fetches and extracts transcript and metadata for a YouTube video.
@@ -965,7 +936,7 @@ mod tests {
             ]
         }"#;
 
-        let parsed = parse_json3_timedtext(json).unwrap();
+        let parsed = parse_json3_timedtext(json, None).unwrap();
         assert!(parsed.contains("[00:01] Hello world"));
         assert!(parsed.contains("[01:05] Next minute topic"));
     }
@@ -977,7 +948,7 @@ mod tests {
             <text start="62.0" dur="4.0">Second minute begins</text>
         </transcript>"#;
 
-        let parsed = parse_xml_timedtext(xml).unwrap();
+        let parsed = parse_xml_timedtext(xml, None).unwrap();
         assert!(parsed.contains("[00:02] Welcome to & the course"));
         assert!(parsed.contains("[01:02] Second minute begins"));
     }
@@ -992,7 +963,7 @@ mod tests {
         </body>
         </timedtext>"#;
 
-        let parsed = parse_xml_format3_timedtext(xml).unwrap();
+        let parsed = parse_xml_format3_timedtext(xml, None).unwrap();
         assert!(parsed.contains("[00:00] rust a memory safe"));
         assert!(parsed.contains("[01:05] second minute"));
     }
@@ -1001,14 +972,14 @@ mod tests {
     fn test_parse_timedtext_dispatch() {
         let json = r#"{"events": [{"tStartMs": 2000, "segs": [{"utf8": "json format"}]}]}"#;
         assert!(
-            parse_timedtext(json)
+            parse_timedtext(json, None)
                 .unwrap()
                 .contains("[00:02] json format")
         );
 
         let format1 = r#"<transcript><text start="3.0">format 1</text></transcript>"#;
         assert!(
-            parse_timedtext(format1)
+            parse_timedtext(format1, None)
                 .unwrap()
                 .contains("[00:03] format 1")
         );
@@ -1016,7 +987,7 @@ mod tests {
         let format3 =
             r#"<timedtext format="3"><body><p t="4000"><s>format 3</s></p></body></timedtext>"#;
         assert!(
-            parse_timedtext(format3)
+            parse_timedtext(format3, None)
                 .unwrap()
                 .contains("[00:04] format 3")
         );
@@ -1090,7 +1061,7 @@ Thanks for watching!
             },
         ];
 
-        let parsed = parse_json3_timedtext_with_chapters(json, Some(&chapters)).unwrap();
+        let parsed = parse_json3_timedtext(json, Some(&chapters)).unwrap();
         assert!(parsed.contains("[00:00] ## Introduction\nWelcome to the video."));
         assert!(parsed.contains("[01:45] ## Architecture\nNow exploring the architecture."));
     }

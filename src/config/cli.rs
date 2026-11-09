@@ -746,24 +746,22 @@ pub fn is_news_query(s: &str) -> bool {
     if first.eq_ignore_ascii_case("news") || first.eq_ignore_ascii_case("headlines") {
         return true;
     }
-    let first_is_current_or_latest =
+    let first_is_recent =
         first.eq_ignore_ascii_case("current") || first.eq_ignore_ascii_case("latest");
     let mut has_update_or_story = false;
-    let mut has_more = false;
 
     for word in words {
-        has_more = true;
         if word.eq_ignore_ascii_case("news") || word.eq_ignore_ascii_case("headlines") {
             return true;
         }
-        if first_is_current_or_latest
+        if first_is_recent
             && (word.eq_ignore_ascii_case("updates") || word.eq_ignore_ascii_case("stories"))
         {
             has_update_or_story = true;
         }
     }
 
-    first_is_current_or_latest && has_more && has_update_or_story
+    first_is_recent && has_update_or_story
 }
 
 pub fn clean_news_query(s: &str) -> String {
@@ -782,23 +780,15 @@ pub fn clean_news_query(s: &str) -> String {
         "for",
     ];
 
-    let mut out = String::new();
-    for word in s.split_whitespace() {
-        let is_stop = STOP_WORDS
-            .iter()
-            .any(|stop| word.eq_ignore_ascii_case(stop));
-        if !is_stop {
-            if !out.is_empty() {
-                out.push(' ');
-            }
-            out.push_str(word);
-        }
-    }
+    let words: Vec<&str> = s
+        .split_whitespace()
+        .filter(|w| !STOP_WORDS.iter().any(|stop| w.eq_ignore_ascii_case(stop)))
+        .collect();
 
-    if out.is_empty() {
+    if words.is_empty() {
         "top stories".to_string()
     } else {
-        out
+        words.join(" ")
     }
 }
 

@@ -376,28 +376,18 @@ pub fn markdown_to_html(md: &str) -> String {
     html_output.replace("<hr />", "<hr>")
 }
 
-/// Escapes a single character for HTML and appends to `out`.
-pub fn escape_html_char(out: &mut String, ch: char) {
-    match ch {
-        '&' => out.push_str("&amp;"),
-        '<' => out.push_str("&lt;"),
-        '>' => out.push_str("&gt;"),
-        '"' => out.push_str("&quot;"),
-        '\'' => out.push_str("&#39;"),
-        _ => out.push(ch),
-    }
-}
-
-/// Appends HTML-escaped text directly into the provided output buffer using fast chunk scanning.
+/// Appends HTML-escaped text directly into the provided output buffer.
 pub fn escape_html_to(out: &mut String, text: &str) {
-    let mut rest = text;
-    while let Some(idx) = rest.find(['&', '<', '>', '"', '\'']) {
-        out.push_str(&rest[..idx]);
-        let ch = rest[idx..].chars().next().unwrap();
-        escape_html_char(out, ch);
-        rest = &rest[idx + ch.len_utf8()..];
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
     }
-    out.push_str(rest);
 }
 
 /// Returns a zero-allocation `Cow::Borrowed` when `text` requires no escaping.
