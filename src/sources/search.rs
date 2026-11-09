@@ -131,6 +131,9 @@ impl BookSearcher {
     /// providing a grounded synopsis fallback when web scraping fails.
     pub async fn fetch_work_description(&self, work_key: &str) -> Option<String> {
         let clean_key = work_key.trim().trim_start_matches('/');
+        if !is_valid_work_key(clean_key) {
+            return None;
+        }
         let endpoint = format!("https://openlibrary.org/{}.json", clean_key);
 
         let resp = self.get_with_timeout(&endpoint, 3).await?;
@@ -343,6 +346,20 @@ pub fn extract_ddg_url(raw: &str) -> Cow<'_, str> {
         }
     }
     Cow::Borrowed(raw)
+}
+
+/// Validates an Open Library work key (e.g. `/works/OL12345W` or `works/OL12345W`),
+/// ensuring it strictly starts with `works/OL` and contains only safe identifier characters (CWE-22 / CWE-918).
+pub fn is_valid_work_key(work_key: &str) -> bool {
+    let clean = work_key.trim().trim_start_matches('/');
+    if !clean.starts_with("works/OL") {
+        return false;
+    }
+    let id_part = &clean["works/".len()..];
+    !id_part.is_empty()
+        && id_part
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// Parses an Open Library work description JSON response, handling both plain string descriptions
@@ -601,4 +618,27 @@ pub fn extract_wikipedia_synopsis(markdown: &str) -> Option<String> {
     result.push_str(plot_content);
 
     Some(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_valid_work_key() {
+        assert!(is_valid_work_key("/works/OL12345W"));
+        assert!(is_valid_work_key("works/OL12345W"));
+        assert!(is_valid_work_key("works/OL12345-M"));
+        assert!(is_valid_work_key("works/OL123_45"));
+
+        // Path traversal / SSRF rejections
+        assert!(!is_valid_work_key("/works/../admin"));
+        assert!(!is_valid_work_key("works/OL123?param=val"));
+        assert!(!is_valid_work_key("works/OL123#frag"));
+        assert!(!is_valid_work_key("works/OL123/sub"));
+        assert!(!is_valid_work_key("@attacker.com/works/OL123"));
+        assert!(!is_valid_work_key("authors/OL123A"));
+        assert!(!is_valid_work_key("works/"));
+        assert!(!is_valid_work_key(""));
+    }
 }
