@@ -22,6 +22,20 @@ All notable changes to `srz` are documented in this file.
 
 ---
 
+## v0.7.8
+
+### Summary
+
+> Delivers comprehensive architectural simplification and module consolidation, hardens security across ingestion and export vectors (Audit #9), adds self-healing corrupt DuckDB recovery with secondary indexing, and optimizes string algorithms and terminal session management.
+
+### Changes
+- **Architecture Simplification & Module Consolidation (`src/`)**: Consolidated fragmented submodules into cohesive domain files (`sources::document`, `engine::budget`, `ui::terminal`, `config::cli`, and `commands::dispatch_cli`), preserving full backward compatibility via crate-level aliases while slimming `src/main.rs` down to a clean, 39-line dispatch wrapper.
+- **Security & Integrity Hardening (`src/sources/search.rs`, `src/commands/ask.rs`, `src/commands/library.rs`, `src/system/upgrade.rs`, `src/ui/tui.rs`)**: Validated Open Library `work_key` paths against traversal and SSRF, isolated cached file loading to `file` targets, neutralized spreadsheet formula injection (`format_csv_cell`) in SQL CSV exports, sanitized terminal history/chat timestamps, added automated rollback on binary upgrade failures, and introduced an RAII `TerminalSessionGuard` to prevent terminal raw mode hangs on TUI exit or panic.
+- **DuckDB Self-Healing Recovery & Indexing (`src/storage/db.rs`, `src/storage/cache.rs`)**: Added automated corrupt database file recovery with `.corrupt.bak` archiving, introduced secondary indexes on `library_terms(term)` and `history(cache_key)` for instant lookups, and deduplicated table statistics queries while eliminating redundant mutex locks.
+- **Tokenization & Hardware Profiling (`src/system/text_util.rs`, `src/system/hardware.rs`, `src/engine/chunker.rs`, `src/commands/ask.rs`)**: Flattened Damerau-Levenshtein distance calculations to a single contiguous allocation, cached host hardware detection via `LazyLock`, added zero-copy ASCII tokenizers, aligned BM25 candidate selection in `srz ask` with model-matched tokenizers (`TokenizerKind`), and bypassed redundant token counting on uncompressed documents.
+
+---
+
 ## v0.7.7
 
 ### Summary
