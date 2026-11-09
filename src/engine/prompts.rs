@@ -9,6 +9,19 @@ pub fn format_author_line(author: Option<&str>) -> Cow<'_, str> {
     }
 }
 
+fn matches_closing_tag(tag_slice: &str, tag_name: &str) -> bool {
+    let inner = tag_slice
+        .strip_prefix('<')
+        .and_then(|s| s.strip_suffix('>'))
+        .unwrap_or("")
+        .trim();
+    if let Some(after_slash) = inner.strip_prefix('/') {
+        after_slash.trim().eq_ignore_ascii_case(tag_name)
+    } else {
+        false
+    }
+}
+
 /// Escapes any occurrence of `closing_tag` inside `content` to prevent XML delimiter injection,
 /// matching case-insensitively and regardless of whitespace inside tags (e.g. `</SOURCE_DOCUMENT >`, `< / source_document >`),
 /// returning `Cow::Borrowed(content)` with zero allocations when no matching closing tag is present.
@@ -18,8 +31,7 @@ pub fn escape_closing_tag<'a>(
     escaped_tag: &str,
 ) -> Cow<'a, str> {
     let tag_name = closing_tag
-        .trim_start_matches('<')
-        .trim_start_matches('/')
+        .trim_start_matches(['<', '/'])
         .trim_end_matches('>')
         .trim();
 
@@ -29,44 +41,24 @@ pub fn escape_closing_tag<'a>(
 
     let mut out = String::new();
     let mut last_idx = 0;
-    let bytes = content.as_bytes();
-    let mut i = 0;
+    let mut cursor = 0;
 
-    while i < bytes.len() {
-        if bytes[i] == b'<' {
-            let start = i;
-            let mut j = i + 1;
-            // Optional whitespace after '<'
-            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-                j += 1;
-            }
-            if j < bytes.len() && bytes[j] == b'/' {
-                j += 1;
-                // Optional whitespace after '/'
-                while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-                    j += 1;
-                }
-                // Case-insensitive match on tag name
-                let name_len = tag_name.len();
-                if j + name_len <= bytes.len()
-                    && content[j..j + name_len].eq_ignore_ascii_case(tag_name)
-                {
-                    let mut k = j + name_len;
-                    // Optional whitespace after tag name
-                    while k < bytes.len() && bytes[k].is_ascii_whitespace() {
-                        k += 1;
-                    }
-                    if k < bytes.len() && bytes[k] == b'>' {
-                        out.push_str(&content[last_idx..start]);
-                        out.push_str(escaped_tag);
-                        last_idx = k + 1;
-                        i = k + 1;
-                        continue;
-                    }
-                }
+    while let Some(start_rel) = content[cursor..].find('<') {
+        let start = cursor + start_rel;
+        if let Some(end_rel) = content[start..].find('>') {
+            let end = start + end_rel + 1;
+            let tag_candidate = &content[start..end];
+            if !tag_candidate[1..tag_candidate.len() - 1].contains('<')
+                && matches_closing_tag(tag_candidate, tag_name)
+            {
+                out.push_str(&content[last_idx..start]);
+                out.push_str(escaped_tag);
+                last_idx = end;
+                cursor = end;
+                continue;
             }
         }
-        i += 1;
+        cursor = start + 1;
     }
 
     if last_idx == 0 {

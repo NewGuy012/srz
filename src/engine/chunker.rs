@@ -102,24 +102,10 @@ impl TextChunker {
         max_tokens: usize,
         overlap_tokens: usize,
     ) -> Vec<Cow<'a, str>> {
-        Self::chunk_by_tokens_with_kind(text, max_tokens, overlap_tokens, TokenizerKind::Cl100k)
-    }
-
-    /// Splits text into chunks of roughly `max_tokens` with `overlap_tokens` overlap using model-aware tokenizer rules.
-    pub fn chunk_by_tokens_with_kind<'a>(
-        text: &'a str,
-        max_tokens: usize,
-        overlap_tokens: usize,
-        kind: TokenizerKind,
-    ) -> Vec<Cow<'a, str>> {
-        // Fast path: In BPE, 1 token is at least 1 byte.
-        // If text.len() <= max_tokens, the token count cannot exceed max_tokens.
-        if text.len() <= max_tokens {
-            return vec![Cow::Borrowed(text)];
-        }
-        Self::chunk_with_metric(text, max_tokens, overlap_tokens, move |s| {
-            kind.count_tokens(s)
-        })
+        Self::chunk_by_tokens_with_counts(text, max_tokens, overlap_tokens)
+            .into_iter()
+            .map(|(c, _)| c)
+            .collect()
     }
 
     /// Splits text into chunks of roughly `max_tokens` with `overlap_tokens` overlap,
@@ -157,24 +143,12 @@ impl TextChunker {
     /// Preserves paragraph boundaries wherever possible and returns zero-copy `Cow::Borrowed`
     /// slices whenever the input or a chunk does not require concatenation.
     pub fn chunk<'a>(text: &'a str, max_words: usize, overlap_words: usize) -> Vec<Cow<'a, str>> {
-        Self::chunk_with_metric(text, max_words, overlap_words, |s| {
+        Self::chunk_with_metric_with_counts(text, max_words, overlap_words, |s| {
             s.split_whitespace().count()
         })
-    }
-
-    fn chunk_with_metric<'a, F>(
-        text: &'a str,
-        max_limit: usize,
-        overlap_limit: usize,
-        count_fn: F,
-    ) -> Vec<Cow<'a, str>>
-    where
-        F: FnMut(&str) -> usize,
-    {
-        Self::chunk_with_metric_with_counts(text, max_limit, overlap_limit, count_fn)
-            .into_iter()
-            .map(|(c, _)| c)
-            .collect()
+        .into_iter()
+        .map(|(c, _)| c)
+        .collect()
     }
 
     fn chunk_with_metric_with_counts<'a, F>(

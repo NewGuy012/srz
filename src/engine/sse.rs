@@ -454,8 +454,9 @@ pub fn format_thinking_duration(secs: f64) -> String {
     if secs < 1.0 {
         format!("{:.1}s", secs)
     } else if secs < 10.0 {
-        if (secs * 10.0).round() % 10.0 == 0.0 {
-            format!("{}s", secs.round() as u64)
+        let rounded_10 = (secs * 10.0).round();
+        if rounded_10 % 10.0 == 0.0 {
+            format!("{}s", (rounded_10 / 10.0) as u64)
         } else {
             format!("{:.1}s", secs)
         }
@@ -470,47 +471,27 @@ fn truncate_headline(s: &str, max_len: usize) -> String {
     if trimmed.chars().count() <= max_len {
         return trimmed.to_string();
     }
-
-    let mut end = 0;
-    let mut last_space = 0;
-    for (i, ch) in trimmed.char_indices() {
-        if i >= max_len.saturating_sub(1) {
-            break;
-        }
-        if ch.is_whitespace() {
-            last_space = i;
-        }
-        end = i + ch.len_utf8();
-    }
-
-    let cut_point = if last_space > 10 { last_space } else { end };
-    let cut = trimmed[..cut_point]
-        .trim_end_matches(|c: char| c.is_whitespace() || c == ':' || c == '.' || c == '-');
-    format!("{}…", cut)
+    let boundary = trimmed
+        .char_indices()
+        .take_while(|&(idx, _)| idx < max_len)
+        .last()
+        .map(|(idx, ch)| idx + ch.len_utf8())
+        .unwrap_or(max_len);
+    let cut = match trimmed[..boundary].rfind(char::is_whitespace) {
+        Some(space) if space > 10 => &trimmed[..space],
+        _ => &trimmed[..boundary],
+    };
+    format!("{}…", cut.trim_end_matches([' ', ':', '.', '-']))
 }
 
 /// Strips markdown formatting characters (`*`, `_`, `#`, `` ` ``) and collapses whitespace in a single pass.
 pub fn strip_markdown_decorations(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut prev_space = false;
-    for c in s.chars() {
-        if c == '*' || c == '_' || c == '#' || c == '`' {
-            continue;
-        }
-        if c.is_whitespace() {
-            if !prev_space && !out.is_empty() {
-                out.push(' ');
-                prev_space = true;
-            }
-        } else {
-            out.push(c);
-            prev_space = false;
-        }
-    }
-    if prev_space {
-        out.pop();
-    }
-    out
+    s.chars()
+        .filter(|&c| c != '*' && c != '_' && c != '#' && c != '`')
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Checks if a word is an uppercase acronym/initialism (e.g. "API", "LLM", "USA").
@@ -664,76 +645,38 @@ fn strip_parenthetical_and_trim(s: &str) -> &str {
 fn clean_heading_candidate(line: &str) -> Option<String> {
     let trimmed = line.trim();
 
-    // Markdown heading: `# Heading`, `## Heading`, etc.
-    if trimmed.starts_with('#') {
-        let after_hash = trimmed.trim_start_matches('#').trim();
-        let stripped = strip_markdown_decorations(after_hash);
-        let after_num = stripped
-            .trim_start_matches(|c: char| {
-                c.is_ascii_digit() || c == '.' || c == ')' || c == ' ' || c == '\t'
-            })
-            .trim();
-        let cleaned =
-            after_num.trim_matches(|c: char| c.is_whitespace() || c == ':' || c == '.' || c == '-');
-        if !cleaned.is_empty() {
-            return Some(truncate_headline(cleaned, 45));
-        }
-    }
-
-    // Numbered step: `1. **Title:**`, `1) Title`, etc.
-    let is_numbered = trimmed.chars().take_while(|c| c.is_ascii_digit()).count() > 0
-        && (trimmed.contains(". ")
-            || trimmed.contains(") ")
-            || trimmed.starts_with(|c: char| c.is_ascii_digit()));
-
-    if is_numbered {
-        // Strip leading number and punctuation
-        let after_num = trimmed
-            .trim_start_matches(|c: char| {
-                c.is_ascii_digit() || c == '.' || c == ')' || c == ' ' || c == '\t'
-            })
-            .trim();
-
-        // If it starts with bold `**...**` or has bold title
-        if let Some(start_bold) = after_num.find("**") {
-            let after_start = &after_num[start_bold + 2..];
-            if let Some(end_bold) = after_start.find("**") {
-                let bold_text = &after_start[..end_bold];
-                let without_paren = strip_parenthetical_and_trim(bold_text);
-                if !without_paren.is_empty() {
-                    return Some(truncate_headline(without_paren, 45));
-                }
+    // 1. Bold title within line: `**Title:**` or `1. **Title:**`
+    if let Some(start_bold) = trimmed.find("**") {
+        let after_start = &trimmed[start_bold + 2..];
+        if let Some(end_bold) = after_start.find("**") {
+            let bold_text = &after_start[..end_bold];
+            let without_paren = strip_parenthetical_and_trim(bold_text);
+            if !without_paren.is_empty() {
+                return Some(truncate_headline(without_paren, 45));
             }
         }
-
-        let stripped = strip_markdown_decorations(after_num);
-        let without_paren = strip_parenthetical_and_trim(&stripped);
-        if !without_paren.is_empty() {
-            return Some(truncate_headline(without_paren, 45));
-        }
     }
 
-    // Explicit step prefix: `Step 1: ...`, `Phase 2: ...`
+    // 2. Markdown heading `# Title`, numbered step `1. Title`, or `Step 1: Title`
+    let is_heading = trimmed.starts_with('#');
+    let is_numbered = trimmed.starts_with(|c: char| c.is_ascii_digit())
+        && (trimmed.contains(". ") || trimmed.contains(") ") || trimmed.contains(':'));
     let lower = trimmed.to_ascii_lowercase();
-    if lower.starts_with("step ")
+    let is_step_prefix = lower.starts_with("step ")
         || lower.starts_with("phase ")
         || lower.starts_with("stage ")
-        || lower.starts_with("part ")
-    {
-        let stripped = strip_markdown_decorations(trimmed);
-        let cleaned =
-            stripped.trim_matches(|c: char| c.is_whitespace() || c == ':' || c == '.' || c == '-');
-        if !cleaned.is_empty() {
-            return Some(truncate_headline(cleaned, 45));
-        }
-    }
+        || lower.starts_with("part ");
 
-    // Standalone bold line: `**Analyze the Request:**`
-    if let Some(after_start) = trimmed.strip_prefix("**")
-        && let Some(end_bold) = after_start.find("**")
-    {
-        let bold_text = &after_start[..end_bold];
-        let without_paren = strip_parenthetical_and_trim(bold_text);
+    if is_heading || is_numbered || is_step_prefix {
+        let stripped = strip_markdown_decorations(trimmed.trim_start_matches('#'));
+        let after_num = if is_heading || is_numbered {
+            stripped.trim_start_matches(|c: char| {
+                c.is_ascii_digit() || c == '.' || c == ')' || c == ' ' || c == '\t'
+            })
+        } else {
+            &stripped
+        };
+        let without_paren = strip_parenthetical_and_trim(after_num);
         if !without_paren.is_empty() {
             return Some(truncate_headline(without_paren, 45));
         }
