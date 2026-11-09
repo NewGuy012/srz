@@ -55,12 +55,12 @@ impl SummaryStyle {
 pub enum NewsTimeframe {
     /// Past 24 hours / current day
     Day,
-    /// Past 7 days / week (default)
-    #[default]
+    /// Past 7 days / week
     Week,
     /// Past 30 days / month
     Month,
-    /// Any time / all results
+    /// Any time / all results (default: recency-ranked without restrictive temporal filter)
+    #[default]
     All,
 }
 
@@ -338,8 +338,8 @@ pub enum Commands {
     News {
         /// Topic or query to search for (e.g. "javascript", "rust", "tech")
         topic: String,
-        /// Timeframe for news recency (day, week, month, all; default: week)
-        #[arg(short = 't', long, value_enum, default_value = "week")]
+        /// Timeframe for news recency (day, week, month, all; default: all)
+        #[arg(short = 't', long, value_enum, default_value = "all")]
         timeframe: NewsTimeframe,
         /// Maximum number of top articles to aggregate and summarize (default: 5)
         #[arg(short, long, default_value_t = 5)]
@@ -540,11 +540,19 @@ impl Cli {
                     topic,
                     timeframe,
                     limit,
-                } => Ok(ResolvedAction::News {
-                    topic: topic.trim().to_string(),
-                    timeframe: *timeframe,
-                    limit: *limit,
-                }),
+                } => {
+                    let clean_topic =
+                        if crate::sources::news::GoogleNewsClient::is_direct_feed(topic) {
+                            topic.trim().to_string()
+                        } else {
+                            clean_news_query(topic)
+                        };
+                    Ok(ResolvedAction::News {
+                        topic: clean_topic,
+                        timeframe: *timeframe,
+                        limit: *limit,
+                    })
+                }
                 Commands::Completions { shell } => {
                     Ok(ResolvedAction::Completions { shell: *shell })
                 }
@@ -582,7 +590,7 @@ impl Cli {
                     let clean_topic = clean_news_query(trimmed);
                     Ok(ResolvedAction::News {
                         topic: clean_topic,
-                        timeframe: NewsTimeframe::Week,
+                        timeframe: NewsTimeframe::All,
                         limit: 5,
                     })
                 } else if let Some(suggestion) = suggest_command(trimmed) {

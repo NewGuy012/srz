@@ -219,8 +219,8 @@ impl GoogleNewsClient {
         const MAX_CONCURRENT_NEWS_SCRAPES: usize = 6;
 
         let limit = limit.clamp(1, MAX_NEWS_LIMIT);
-        // Fetch up to 2x limit (or at least limit + 2) candidates to buffer against paywalls/dead links
-        let fetch_limit = limit.saturating_mul(2).max(limit.saturating_add(2));
+        // Fetch up to 4x limit (minimum 20, capped at MAX_NEWS_LIMIT) candidates to buffer against paywalls/dead links
+        let fetch_limit = limit.saturating_mul(4).clamp(20, MAX_NEWS_LIMIT);
         let feed_items = self.fetch_feed(topic, timeframe, fetch_limit).await?;
         if feed_items.is_empty() {
             let tip = match timeframe {
