@@ -147,6 +147,7 @@ pub use crate::chunker::TokenizerKind;
 pub use crate::engine::compressor::select_relevant_context_bm25;
 
 /// Formats untrusted document text safely bounded by `MAX_CONTEXT_TOKENS` with delimiter escaping.
+#[doc(hidden)]
 pub fn format_grounded_context(title: &str, content: &str) -> String {
     format_grounded_context_with_budget_and_tokenizer(
         title,

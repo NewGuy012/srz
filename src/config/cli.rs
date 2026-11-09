@@ -1125,6 +1125,7 @@ max_tokens = 8192
     }
 
     /// Generates a starter `config.toml` template string using detected host hardware.
+    #[doc(hidden)]
     pub fn default_template() -> String {
         Self::template_for_hardware(&crate::system::hardware::HardwareProfile::detect())
     }

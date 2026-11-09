@@ -265,7 +265,8 @@ impl Cache {
         )
     }
 
-    /// Creates a cache instance rooted in a custom directory (useful for testing).
+    /// Creates a cache instance rooted in a custom directory (exposed for integration testing).
+    #[doc(hidden)]
     pub fn with_dir(base_dir: PathBuf, enabled: bool) -> Self {
         let db_path = base_dir.join("srz.duckdb");
         Self::with_paths(base_dir, db_path, enabled, CachePolicy::default())
@@ -362,6 +363,8 @@ impl Cache {
     }
 
     /// Returns a mutable reference to the active cache policy.
+    /// Mutable access to cache policy (exposed for integration testing).
+    #[doc(hidden)]
     pub fn policy_mut(&mut self) -> &mut CachePolicy {
         &mut self.policy
     }
@@ -1085,6 +1088,7 @@ impl Cache {
         self.get_summary_from_db("web", url, style.as_str(), model)
     }
 
+    #[doc(hidden)]
     pub fn set_web_summary(
         &self,
         url: &str,
@@ -1146,6 +1150,7 @@ impl Cache {
         self.get_summary_from_db("book", &key, style.as_str(), model)
     }
 
+    #[doc(hidden)]
     pub fn set_book_summary(&self, params: SetBookSummaryParams<'_>) {
         let key = Self::book_cache_title(params.title, params.author);
         self.set_summary_in_db(
@@ -1172,6 +1177,7 @@ impl Cache {
         self.get_summary_from_db_with_ttl("news", &key, style.as_str(), model, self.policy.news_ttl)
     }
 
+    #[doc(hidden)]
     #[allow(clippy::too_many_arguments)]
     pub fn set_news_summary(
         &self,

@@ -97,6 +97,7 @@ impl TextChunker {
 
     /// Splits text into chunks of roughly `max_tokens` with `overlap_tokens` overlap,
     /// using accurate BPE token counts while preserving paragraph boundaries and zero-copy slices.
+    #[doc(hidden)]
     pub fn chunk_by_tokens<'a>(
         text: &'a str,
         max_tokens: usize,

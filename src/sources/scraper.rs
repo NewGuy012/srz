@@ -657,7 +657,8 @@ pub fn is_reference_heading(line: &str) -> bool {
     )
 }
 
-/// Cleans lines and counts words in a single pass without stripping reference sections.
+/// Cleans lines and counts words in a single pass without stripping reference sections (exposed for integration testing).
+#[doc(hidden)]
 pub fn clean_raw_text(text: &str) -> (String, usize) {
     clean_text(text, false, 1)
 }

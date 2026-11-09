@@ -156,61 +156,8 @@ pub fn write_private_file(path: &Path, contents: impl AsRef<[u8]>) -> std::io::R
     Ok(())
 }
 
-/// A RAII temporary directory that removes itself upon drop.
-#[derive(Debug)]
-pub struct TempDir {
-    path: PathBuf,
-}
-
-impl TempDir {
-    pub fn new() -> std::io::Result<Self> {
-        Self::new_in(std::env::temp_dir(), "srz-test")
-    }
-
-    pub fn new_in(parent: impl AsRef<Path>, prefix: &str) -> std::io::Result<Self> {
-        let parent = parent.as_ref();
-        if !parent.exists() {
-            fs::create_dir_all(parent)?;
-        }
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir_name = format!("{}-{}-{:x}-{}", prefix, std::process::id(), nonce, count);
-        let path = parent.join(dir_name);
-        create_private_dir_all(&path)?;
-        Ok(Self { path })
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl AsRef<Path> for TempDir {
-    fn as_ref(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl std::ops::Deref for TempDir {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
-
-pub fn tempdir() -> std::io::Result<TempDir> {
-    TempDir::new()
-}
+// Re-export test utilities from dedicated testing module for backward compatibility
+pub use crate::testing::{TempDir, tempdir};
 
 #[cfg(test)]
 mod tests {

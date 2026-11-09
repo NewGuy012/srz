@@ -756,6 +756,7 @@ mod tests {
 
     #[test]
     fn test_success_and_elapsed_empty_message_ignored() {
+        // Smoke test: verify that empty/blank strings do not panic or emit corrupt escape sequences
         Ui::success("");
         Ui::success("   ");
         Ui::success_with_elapsed("", Duration::from_secs(5));
@@ -763,5 +764,6 @@ mod tests {
         let pb = ProgressBar::hidden();
         Ui::finish_spinner(&pb, "");
         Ui::finish_spinner(&pb, "   ");
+        assert!(pb.is_hidden());
     }
 }

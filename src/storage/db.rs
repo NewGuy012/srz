@@ -368,7 +368,8 @@ impl Database {
         Ok(db)
     }
 
-    /// Attaches an external DuckDB database (such as cache.duckdb) as an attached schema.
+    /// Attaches an external DuckDB database (such as cache.duckdb) as an attached schema (exposed for integration testing).
+    #[doc(hidden)]
     pub fn attach_database(&self, path: &Path, alias: &str) -> Result<()> {
         if alias.is_empty()
             || !alias.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
@@ -478,6 +479,7 @@ impl Database {
     }
 
     /// Records a newly generated summary into both the `history` and `library` tables within a single transaction.
+    #[doc(hidden)]
     pub fn record_summary(&self, record: &NewSummaryRecord<'_>) -> Result<()> {
         self.record_summary_with_key(record, None)
     }
