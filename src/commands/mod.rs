@@ -558,38 +558,21 @@ pub fn print_execution_error(action_label: &str, err: &anyhow::Error) {
             );
 
     if is_connection_error {
-        let hw = crate::system::hardware::HardwareProfile::detect();
         println!();
         Ui::info("💡 Quick Start: Your local LLM backend is not reachable.");
-        Ui::info(&format!(
-            "Based on your machine ({:.1} GB RAM detected):",
-            hw.total_memory_gb
-        ));
-        Ui::info(&format!(
-            "  • In Llama GUI (localhost:9931): Load {} ({})",
-            hw.recommended_model, hw.recommended_context_display
-        ));
-        Ui::info("  • Or start llama-server CLI:");
-        println!("    \x1b[1;32m{}\x1b[0m", hw.recommended_launch_command);
-        Ui::info(
-            "Or run `srz recommend` to view alternative models, Ollama commands, and profiles.\n",
-        );
+        Ui::info("How to resolve:");
+        Ui::info("  • Ensure your LLM server (llama-server, Ollama, etc.) is running.");
+        Ui::info("  • Run `srz doctor` to diagnose backend connectivity.");
+        Ui::info("  • Run `srz recommend` to view recommended models and launch commands.\n");
     } else if is_model_not_found {
-        let hw = crate::system::hardware::HardwareProfile::detect();
         println!();
         Ui::info("💡 Quick Start: Local model not detected on your LLM backend.");
         Ui::info("Your LLM server is active, but could not find or load the configured model.");
         Ui::info("How to resolve:");
-        Ui::info(&format!(
-            "  • In Llama GUI (localhost:9931): Download or select {} ({})",
-            hw.concise_model, hw.recommended_context_display
-        ));
-        Ui::info("  • If using Ollama, pull or run the model:");
-        println!("    \x1b[1;32m{}\x1b[0m", hw.ollama_launch_command);
-        Ui::info("  • If using llama.cpp CLI (llama-server):");
-        println!("    \x1b[1;32m{}\x1b[0m", hw.recommended_launch_command);
         Ui::info("  • Check models currently reported by your backend:");
         println!("    \x1b[1;32msrz models\x1b[0m");
+        Ui::info("  • Run `srz recommend` for model suggestions for your machine:");
+        println!("    \x1b[1;32msrz recommend\x1b[0m");
         Ui::info("  • Diagnose backend connection & model status:");
         println!("    \x1b[1;32msrz doctor\x1b[0m\n");
     } else if is_context_error {

@@ -13,8 +13,7 @@ use crate::engine::sse::{
 };
 pub use crate::engine::sse::{
     LlmOutput, MAX_CONTENT_BUFFER_BYTES, MAX_HTTP_RESPONSE_BYTES, MAX_SSE_LINE_BYTES,
-    RequestMessage, StreamMode, extract_thought_headline, format_thinking_duration,
-    is_same_or_growing_headline, strip_markdown_decorations, to_sentence_case,
+    RequestMessage, StreamMode, format_thinking_duration,
 };
 use crate::ui::Ui;
 use anyhow::{Context, Result};
@@ -245,6 +244,21 @@ impl LlmClient {
             tokenize_endpoint: None,
             backend_kind: "default".to_string(),
         };
+
+        // Skip network probing for remote endpoints to eliminate multi-second timeouts
+        if !self.base_url.contains("localhost") && !self.base_url.contains("127.0.0.1") {
+            caps.backend_kind = "remote".to_string();
+            return caps;
+        }
+
+        // If context window is explicitly configured, skip remote inspection
+        if self.context_window_override.is_some() {
+            if self.probe_standard_tokenize_endpoint().await {
+                caps.supports_tokenize = true;
+                caps.tokenize_endpoint = Some("/tokenize".to_string());
+            }
+            return caps;
+        }
 
         // 1. Try llama.cpp GET /props and tokenize probe concurrently
         let (props_json, tokenize_supported) = tokio::join!(
