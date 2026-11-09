@@ -5,8 +5,6 @@ pub mod llm;
 pub mod prompts;
 pub mod sse;
 
-pub use budget as probe;
-
 pub use budget::{DynamicBudget, ModelInfo, ServerCapabilities, clamp_context_window};
 pub use chunker::{TextChunker, TokenizerKind};
 pub use compressor::{

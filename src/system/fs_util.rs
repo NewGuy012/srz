@@ -214,7 +214,6 @@ pub fn tempdir() -> std::io::Result<TempDir> {
 
 #[cfg(test)]
 mod tests {
-    #[allow(unused_imports)]
     use super::*;
 
     #[test]
