@@ -513,99 +513,71 @@ pub fn strip_markdown_decorations(s: &str) -> String {
     out
 }
 
-/// Converts a thought headline string to sentence case:
-/// - Capitalizes the initial letter of the first word.
-/// - Converts subsequent words to lowercase unless they are established uppercase acronyms (e.g. API, LLM, USA).
-/// - If the entire headline is in all-caps, normalizes it cleanly into sentence case.
+/// Checks if a word is an uppercase acronym/initialism (e.g. "API", "LLM", "USA").
+fn is_acronym(word: &str) -> bool {
+    let alpha: Vec<char> = word.chars().filter(|c| c.is_alphabetic()).collect();
+    alpha.len() >= 2 && alpha.iter().all(|c| c.is_uppercase())
+}
+
+/// Capitalizes the first alphabetic character in a word, lowercasing remaining characters
+/// unless the word is an acronym.
+fn capitalize_word(word: &str, is_all_caps: bool) -> String {
+    if !is_all_caps && is_acronym(word) {
+        return word.to_string();
+    }
+    let mut out = String::with_capacity(word.len());
+    let mut capitalized = false;
+    for c in word.chars() {
+        if !capitalized && c.is_alphabetic() {
+            out.extend(c.to_uppercase());
+            capitalized = true;
+        } else {
+            out.extend(c.to_lowercase());
+        }
+    }
+    out
+}
+
+/// Converts a single phrase segment to sentence case.
+fn format_segment(segment: &str) -> String {
+    let is_all_caps = segment.chars().filter(|c| c.is_alphabetic()).count() > 1
+        && segment
+            .chars()
+            .filter(|c| c.is_alphabetic())
+            .all(|c| c.is_uppercase());
+
+    let mut words = segment.split_whitespace();
+    let Some(first) = words.next() else {
+        return String::new();
+    };
+
+    let mut out = capitalize_word(first, is_all_caps);
+    for word in words {
+        out.push(' ');
+        if !is_all_caps && is_acronym(word) {
+            out.push_str(word);
+        } else {
+            out.extend(word.chars().flat_map(|c| c.to_lowercase()));
+        }
+    }
+    out
+}
+
+/// Converts a thought headline string to sentence case.
+/// Anything after a colon (e.g. `Step 2: Processing content`) starts with a capital letter,
+/// while subsequent words are lowercased (preserving uppercase acronyms like API/LLM).
 pub fn to_sentence_case(s: &str) -> String {
     let trimmed = s.trim();
     if trimmed.is_empty() {
         return String::new();
     }
 
-    let alphabetic_count = trimmed.chars().filter(|c| c.is_alphabetic()).count();
-    let is_all_caps = alphabetic_count > 1
-        && trimmed
-            .chars()
-            .filter(|c| c.is_alphabetic())
-            .all(|c| c.is_uppercase());
-
-    let mut result = String::with_capacity(trimmed.len());
-    let mut is_first_word = true;
-
-    for word in trimmed.split_whitespace() {
-        if !is_first_word {
-            result.push(' ');
-        }
-
-        let leading_len: usize = word
-            .chars()
-            .take_while(|c| !c.is_alphanumeric())
-            .map(|c| c.len_utf8())
-            .sum();
-        let trailing_len: usize = word
-            .chars()
-            .rev()
-            .take_while(|c| !c.is_alphanumeric())
-            .map(|c| c.len_utf8())
-            .sum();
-
-        if leading_len + trailing_len >= word.len() {
-            result.push_str(word);
-        } else {
-            let leading = &word[..leading_len];
-            let core = &word[leading_len..word.len() - trailing_len];
-            let trailing = &word[word.len() - trailing_len..];
-
-            result.push_str(leading);
-
-            let core_is_acronym = !is_all_caps
-                && core.len() >= 2
-                && core
-                    .chars()
-                    .all(|c| c.is_ascii_uppercase() || !c.is_alphabetic())
-                && core.chars().any(|c| c.is_alphabetic());
-
-            if is_first_word {
-                if is_all_caps {
-                    let mut first = true;
-                    for c in core.chars() {
-                        if first && c.is_alphabetic() {
-                            result.extend(c.to_uppercase());
-                            first = false;
-                        } else {
-                            result.extend(c.to_lowercase());
-                        }
-                    }
-                } else if core_is_acronym {
-                    result.push_str(core);
-                } else {
-                    let mut first = true;
-                    for c in core.chars() {
-                        if first && c.is_alphabetic() {
-                            result.extend(c.to_uppercase());
-                            first = false;
-                        } else {
-                            result.push(c);
-                        }
-                    }
-                }
-                is_first_word = false;
-            } else {
-                if core_is_acronym {
-                    result.push_str(core);
-                } else {
-                    for c in core.chars() {
-                        result.extend(c.to_lowercase());
-                    }
-                }
-            }
-
-            result.push_str(trailing);
-        }
-    }
-
-    result
+    trimmed
+        .split(':')
+        .map(|segment| format_segment(segment.trim()))
+        .filter(|seg| !seg.is_empty())
+        .collect::<Vec<_>>()
+        .join(": ")
 }
 
 /// Checks whether a candidate headline is substantive and not generic thinking filler.
@@ -1144,20 +1116,20 @@ mod tests {
         state.handle_thought_headline_update("Step 1: Ingesting Data", &pb);
         assert_eq!(
             state.last_thought_headline.as_deref(),
-            Some("Step 1: ingesting data")
+            Some("Step 1: Ingesting data")
         );
 
         // Transition: updates active headline in-place without terminal noise
         state.handle_thought_headline_update("Step 2: Processing Content", &pb);
         assert_eq!(
             state.last_thought_headline.as_deref(),
-            Some("Step 2: processing content")
+            Some("Step 2: Processing content")
         );
 
         state.handle_thought_headline_update("Step 3: Generating Output", &pb);
         assert_eq!(
             state.last_thought_headline.as_deref(),
-            Some("Step 3: generating output")
+            Some("Step 3: Generating output")
         );
     }
 
@@ -1249,7 +1221,11 @@ mod tests {
         );
         assert_eq!(
             to_sentence_case("Step 1: Ingesting Data"),
-            "Step 1: ingesting data"
+            "Step 1: Ingesting data"
+        );
+        assert_eq!(
+            to_sentence_case("Step 2: Processing Content"),
+            "Step 2: Processing content"
         );
     }
 
