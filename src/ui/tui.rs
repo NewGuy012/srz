@@ -154,24 +154,40 @@ pub enum TuiAction {
     },
 }
 
+/// RAII guard that enables raw mode and enters alternate screen on creation,
+/// and restores canonical terminal state (leaves alternate screen, disables raw mode, shows cursor)
+/// unconditionally when dropped, even on early exit, error, or panic.
+pub struct TerminalSessionGuard;
+
+impl TerminalSessionGuard {
+    pub fn new() -> Result<Self> {
+        enable_raw_mode()?;
+        let mut stdout = stdout();
+        execute!(stdout, EnterAlternateScreen)?;
+        Ok(Self)
+    }
+}
+
+impl Drop for TerminalSessionGuard {
+    fn drop(&mut self) {
+        let mut stdout = stdout();
+        let _ = disable_raw_mode();
+        let _ = execute!(stdout, LeaveAlternateScreen);
+        let _ = execute!(stdout, crossterm::cursor::Show);
+    }
+}
+
 /// Runs the interactive terminal UI library explorer.
 pub fn run_tui(db: &Database, cache: &Cache) -> Result<TuiAction> {
-    enable_raw_mode()?;
-    let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    let _guard = TerminalSessionGuard::new()?;
+    let stdout = stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     let items = db.get_all_library_items().unwrap_or_default();
     let mut state = AppState::new(items, cache.views_dir());
 
-    let res = run_loop(&mut terminal, &mut state, db);
-
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
-
-    res
+    run_loop(&mut terminal, &mut state, db)
 }
 
 fn run_loop(
