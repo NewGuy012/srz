@@ -975,6 +975,137 @@ async fn generate_prepared_book_summary(
     Ok((output, 0, None))
 }
 
+fn print_view_file_links(files: &crate::render::RenderedFiles) {
+    Ui::success(&format!(
+        "Styled HTML view: file://{}",
+        files.html_path.display()
+    ));
+    Ui::success(&format!(
+        "Markdown file:    file://{}",
+        files.md_path.display()
+    ));
+}
+
+/// Presents a summary outcome to the user based on CLI arguments (JSON, saved file, or terminal pager),
+/// records newly generated summaries into DuckDB history & library, and runs opportunistic cache pruning.
+pub fn present_summary_outcome(outcome: SummaryOutcome, args: &Cli, cache: &Cache) -> Result<()> {
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&outcome)?);
+    } else if let Some(output_path) = &args.output {
+        let content = if crate::render::is_html_path(output_path) {
+            std::borrow::Cow::Owned(crate::render::render_html_document_with_reasoning(
+                &outcome.title,
+                &outcome.summary,
+                outcome.reasoning.as_deref(),
+            ))
+        } else {
+            std::borrow::Cow::Borrowed(outcome.summary.as_str())
+        };
+        crate::fs_util::write_private_file(output_path, content.as_bytes())
+            .with_context(|| format!("Failed to write output to {:?}", output_path))?;
+
+        Ui::success(&format!(
+            "Summary successfully saved to {}",
+            output_path.display()
+        ));
+    } else {
+        let is_tty = std::io::stdout().is_terminal();
+        let hint_ref = if !args.plain && !args.quiet {
+            outcome.hint.as_deref()
+        } else {
+            None
+        };
+
+        // Only generate rendered HTML and Markdown view files when the user explicitly requests opening in browser (--open)
+        let view_files = if args.open {
+            crate::render::ensure_view_files_unique(
+                &cache.views_dir(),
+                &outcome.title,
+                &outcome.summary,
+                outcome.url.as_deref(),
+                outcome.reasoning.as_deref(),
+                !outcome.cached,
+            )
+            .ok()
+        } else {
+            None
+        };
+
+        if args.open
+            && let Some(ref files) = view_files
+            && let Err(err) = crate::render::open_in_browser(&files.html_path)
+        {
+            Ui::warn(&format!("Could not open browser: {}", err));
+        }
+
+        if outcome.streamed_to_stdout {
+            if is_tty {
+                if let Some(ref files) = view_files {
+                    print_view_file_links(files);
+                }
+                if let Some(hint) = hint_ref {
+                    eprintln!("\n\x1b[2m{}\x1b[0m", hint);
+                }
+            }
+        } else {
+            let view_pair = view_files
+                .as_ref()
+                .map(|f| (f.html_path.as_path(), f.md_path.as_path()));
+
+            crate::ui::display_summary_full(
+                &outcome.title,
+                &outcome.summary,
+                args.effective_paging(),
+                args.plain,
+                if is_tty { view_pair } else { None },
+                if is_tty { hint_ref } else { None },
+            )?;
+
+            // When output is piped (!is_tty), print view file notices and hints strictly to stderr
+            if !is_tty {
+                if let Some(ref files) = view_files {
+                    print_view_file_links(files);
+                }
+                if let Some(hint) = hint_ref {
+                    eprintln!("\n{}", hint);
+                }
+            }
+        }
+    }
+
+    // Record newly generated summaries in DuckDB history & library (lazily opened)
+    if !outcome.cached
+        && let Some(db) = cache
+            .open_database()
+            .or_else(crate::commands::open_db_or_warn)
+    {
+        let record = crate::db::NewSummaryRecord {
+            target_type: outcome.target_type,
+            title: &outcome.title,
+            author: outcome.author.as_deref(),
+            url: outcome.url.as_deref(),
+            style: args.style.as_str(),
+            model: &args.model,
+            word_count: outcome.word_count,
+            prompt_tokens: outcome.prompt_tokens,
+            completion_tokens: outcome.completion_tokens,
+            duration_ms: outcome.duration_ms,
+            tokens_per_second: outcome.tokens_per_second,
+            summary: &outcome.summary,
+            reasoning: outcome.reasoning.as_deref(),
+        };
+        let _ = db.record_summary_with_key(&record, outcome.cache_key.as_deref());
+        if args.open {
+            let _ = crate::commands::update_index_dashboard(&db, cache);
+        }
+    }
+
+    // Run opportunistic maintenance off the critical path after summary presentation
+    cache.maybe_auto_prune();
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

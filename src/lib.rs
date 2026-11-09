@@ -10,6 +10,7 @@ pub mod ui;
 
 // Backwards-compatible aliases for crate root
 pub use config::cli;
+pub use config::cli as file;
 pub use engine::budget;
 pub use engine::budget as probe;
 pub use engine::chunker;

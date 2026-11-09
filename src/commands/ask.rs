@@ -12,6 +12,7 @@ use crate::ui::{Ui, display_summary, render_markdown};
 async fn resolve_cached_page_or_fetch(
     scraper: &WebScraper,
     cache: &Cache,
+    target_type: &str,
     url: Option<&str>,
     fallback_title: String,
     fallback_content: String,
@@ -29,11 +30,13 @@ async fn resolve_cached_page_or_fetch(
             return (title, page.content);
         }
         // If expired from cache and is a local file that still exists, reload
-        let path = Path::new(u);
-        if path.exists()
-            && let Ok(doc) = crate::sources::DocumentLoader::load_file(path, scraper)
-        {
-            return (doc.title, doc.content);
+        if target_type == "file" {
+            let path = Path::new(u);
+            if path.exists()
+                && let Ok(doc) = crate::sources::DocumentLoader::load_file(path, scraper)
+            {
+                return (doc.title, doc.content);
+            }
         }
     }
     // Warn the user that full text is no longer available and an executive summary is being used
@@ -71,6 +74,12 @@ async fn resolve_document_context(
         if let Some(db) = db_opt {
             let results = db.search(trimmed)?;
             if let Some(hit) = results.into_iter().next() {
+                let target_type = db
+                    .get_library_item_by_id(hit.id)
+                    .ok()
+                    .flatten()
+                    .map(|item| item.target_type)
+                    .unwrap_or_else(|| "web".to_string());
                 let fallback_summary = db
                     .get_library_item_by_id(hit.id)
                     .ok()
@@ -80,6 +89,7 @@ async fn resolve_document_context(
                 let (title, content) = resolve_cached_page_or_fetch(
                     scraper,
                     cache,
+                    &target_type,
                     hit.url.as_deref(),
                     hit.title,
                     fallback_summary,
@@ -115,6 +125,7 @@ async fn resolve_document_context(
         let (title, content) = resolve_cached_page_or_fetch(
             scraper,
             cache,
+            &latest.target_type,
             latest.url.as_deref(),
             latest.title,
             latest.summary,
@@ -131,6 +142,25 @@ pub const ASK_SYSTEM_PROMPT: &str = "You are an expert reading assistant. Answer
 
 pub use crate::system::text_util::is_stop_word;
 
+pub use crate::chunker::TokenizerKind;
+
+/// Selects the most relevant sections of `content` when it exceeds `max_tokens` using
+/// stop-word filtered Robertson-Sparck Jones BM25 ranking across candidate text chunks
+/// with a model-matched tokenizer.
+pub fn select_relevant_context_with_budget_and_tokenizer<'a>(
+    content: &'a str,
+    question: Option<&str>,
+    max_tokens: usize,
+    tokenizer_kind: TokenizerKind,
+) -> std::borrow::Cow<'a, str> {
+    crate::engine::compressor::select_relevant_context_bm25_with_tokenizer(
+        content,
+        question,
+        max_tokens,
+        tokenizer_kind,
+    )
+}
+
 /// Selects the most relevant sections of `content` when it exceeds `max_tokens` using
 /// stop-word filtered Robertson-Sparck Jones BM25 ranking across candidate text chunks.
 pub fn select_relevant_context_with_budget<'a>(
@@ -138,7 +168,12 @@ pub fn select_relevant_context_with_budget<'a>(
     question: Option<&str>,
     max_tokens: usize,
 ) -> std::borrow::Cow<'a, str> {
-    crate::engine::compressor::select_relevant_context_bm25(content, question, max_tokens)
+    select_relevant_context_with_budget_and_tokenizer(
+        content,
+        question,
+        max_tokens,
+        TokenizerKind::Cl100k,
+    )
 }
 
 /// Selects the most relevant sections of `content` when it exceeds `MAX_CONTEXT_TOKENS` and a `question` is provided.
@@ -169,13 +204,19 @@ pub fn format_grounded_context_for_question(
     )
 }
 
-pub fn format_grounded_context_with_budget(
+pub fn format_grounded_context_with_budget_and_tokenizer(
     title: &str,
     content: &str,
     question: Option<&str>,
     max_tokens: usize,
+    tokenizer_kind: TokenizerKind,
 ) -> String {
-    let selected = select_relevant_context_with_budget(content, question, max_tokens);
+    let selected = select_relevant_context_with_budget_and_tokenizer(
+        content,
+        question,
+        max_tokens,
+        tokenizer_kind,
+    );
     let untrusted_block = crate::engine::llm::format_untrusted_section(
         "source_document",
         &selected,
@@ -183,6 +224,21 @@ pub fn format_grounded_context_with_budget(
     );
     let safe_title = crate::ui::sanitize_title(title);
     format!("Document: {safe_title}\n\n{untrusted_block}")
+}
+
+pub fn format_grounded_context_with_budget(
+    title: &str,
+    content: &str,
+    question: Option<&str>,
+    max_tokens: usize,
+) -> String {
+    format_grounded_context_with_budget_and_tokenizer(
+        title,
+        content,
+        question,
+        max_tokens,
+        TokenizerKind::Cl100k,
+    )
 }
 
 /// Handles offline chat management commands (`--chats`, `--show-chat`, `--delete-chat`) without initializing LLM or web clients.
@@ -227,9 +283,10 @@ pub fn handle_ask_management(
                 let safe_q = crate::ui::sanitize_terminal_text(last_q);
                 println!("     Last Q: \"{}\"", safe_q);
             }
+            let safe_updated = crate::ui::sanitize_title(&s.updated_at);
             println!(
                 "     Updated: {} | Resume: srz ask --resume {}\n",
-                s.updated_at, s.id
+                safe_updated, s.id
             );
         }
         return Ok(true);
@@ -275,15 +332,16 @@ pub fn handle_ask_management(
         ));
         for msg in &msgs {
             let safe_content = crate::ui::sanitize_terminal_text(&msg.content);
+            let safe_created = crate::ui::sanitize_title(&msg.created_at);
             if msg.role == "user" {
                 println!(
                     "\x1b[1;32mUser ({})\x1b[0m:\n{}\n",
-                    msg.created_at, safe_content
+                    safe_created, safe_content
                 );
             } else {
                 println!(
                     "\x1b[1;36mAssistant ({})\x1b[0m:\n{}\n",
-                    msg.created_at, safe_content
+                    safe_created, safe_content
                 );
             }
         }
@@ -395,12 +453,13 @@ pub async fn handle_ask(
 
     let safe_title = crate::ui::sanitize_title(&title);
     let budget = llm.budget();
+    let tokenizer = llm.tokenizer_kind();
     let is_interactive = interactive || question.is_none() || resume.is_some();
     let mut history_turn_tokens: Vec<usize> = history
         .iter()
         .map(|(q, a)| {
-            crate::chunker::TextChunker::count_tokens(q)
-                + crate::chunker::TextChunker::count_tokens(a)
+            crate::chunker::TextChunker::count_tokens_with_kind(q, tokenizer)
+                + crate::chunker::TextChunker::count_tokens_with_kind(a, tokenizer)
         })
         .collect();
 
@@ -416,8 +475,13 @@ pub async fn handle_ask(
     if !is_interactive {
         // Single question mode
         let q = question.unwrap();
-        let grounded_context =
-            format_grounded_context_with_budget(&title, &content, Some(&q), budget.ask_doc_budget);
+        let grounded_context = format_grounded_context_with_budget_and_tokenizer(
+            &title,
+            &content,
+            Some(&q),
+            budget.ask_doc_budget,
+            tokenizer,
+        );
         let mut prompt_buf = String::new();
         let messages = build_chat_messages(&grounded_context, &history, &q, &mut prompt_buf);
 
@@ -653,8 +717,9 @@ async fn ask_turn(
         }
     }
 
-    let this_turn_tokens = crate::chunker::TextChunker::count_tokens(question)
-        + crate::chunker::TextChunker::count_tokens(&output.content);
+    let tokenizer = llm.tokenizer_kind();
+    let this_turn_tokens = crate::chunker::TextChunker::count_tokens_with_kind(question, tokenizer)
+        + crate::chunker::TextChunker::count_tokens_with_kind(&output.content, tokenizer);
 
     Ok((output.content, this_turn_tokens))
 }
@@ -676,8 +741,13 @@ async fn record_and_ask_turn(
     query: &str,
     llm: &LlmClient,
 ) -> Result<()> {
-    let grounded_context =
-        format_grounded_context_with_budget(ctx.title, ctx.content, Some(query), ctx.doc_budget);
+    let grounded_context = format_grounded_context_with_budget_and_tokenizer(
+        ctx.title,
+        ctx.content,
+        Some(query),
+        ctx.doc_budget,
+        llm.tokenizer_kind(),
+    );
     let (ans, turn_toks) = ask_turn(
         &grounded_context,
         history,
@@ -800,5 +870,14 @@ mod tests {
 
         // The BM25 algorithm with stop-word filtering should prioritize the quantum cryptography chunk!
         assert!(selected.contains("Quantum cryptography utilizes photon entanglement"));
+
+        // Verify with Llama3 tokenizer
+        let selected_llama = select_relevant_context_with_budget_and_tokenizer(
+            &combined,
+            Some(question),
+            600,
+            TokenizerKind::Llama3,
+        );
+        assert!(selected_llama.contains("Quantum cryptography utilizes photon entanglement"));
     }
 }

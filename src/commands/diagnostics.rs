@@ -52,8 +52,7 @@ pub async fn handle_models(args: &Cli, as_json: bool) -> Result<()> {
             Ok(())
         }
         Err(err) => {
-            let safe_err = crate::ui::sanitize_terminal_text(&format!("{:#}", err));
-            Ui::error(&format!("Could not fetch models: {}", safe_err));
+            Ui::error(&format!("Could not fetch models: {:#}", err));
             Ui::info("Tip: Run `srz doctor` to diagnose server connectivity and ports.");
             std::process::exit(1);
         }
