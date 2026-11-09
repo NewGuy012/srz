@@ -1,19 +1,10 @@
 use crate::system::text_util::{url_decode, url_encode};
 use anyhow::Result;
-use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashSet;
-use std::sync::LazyLock;
 use std::time::Duration;
-
-static DDG_RESULT_SEL: LazyLock<Selector> =
-    LazyLock::new(|| Selector::parse(".result__body").unwrap());
-static DDG_TITLE_SEL: LazyLock<Selector> =
-    LazyLock::new(|| Selector::parse(".result__title a").unwrap());
-static DDG_SNIPPET_SEL: LazyLock<Selector> =
-    LazyLock::new(|| Selector::parse(".result__snippet").unwrap());
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
@@ -260,9 +251,19 @@ impl BookSearcher {
                         .get("snippet")
                         .and_then(|s| s.as_str())
                         .map(|raw_snippet| {
-                            // Strip HTML tags from snippet
-                            let fragment = Html::parse_fragment(raw_snippet);
-                            fragment.root_element().text().collect::<String>()
+                            let mut stripped = String::with_capacity(raw_snippet.len());
+                            let mut in_tag = false;
+                            for c in raw_snippet.chars() {
+                                if c == '<' {
+                                    in_tag = true;
+                                } else if c == '>' {
+                                    in_tag = false;
+                                } else if !in_tag {
+                                    stripped.push(c);
+                                }
+                            }
+                            crate::system::text_util::decode_html_entities(stripped.trim())
+                                .into_owned()
                         });
 
                     let url_title = page_title.replace(' ', "_");
@@ -306,28 +307,90 @@ impl BookSearcher {
             Ok(h) => h,
             Err(_) => return Ok(Vec::new()),
         };
-        let document = Html::parse_document(&html);
-
         let mut results = Vec::new();
+        let mut cursor = 0;
 
-        for element in document.select(&DDG_RESULT_SEL).take(3) {
-            if let Some(link_elem) = element.select(&DDG_TITLE_SEL).next()
-                && let Some(raw_href) = link_elem.value().attr("href")
-            {
-                let actual_url = extract_ddg_url(raw_href);
-                if actual_url.starts_with("http") {
-                    let title_text: String = link_elem.text().collect();
-                    let snippet: Option<String> = element
-                        .select(&DDG_SNIPPET_SEL)
-                        .next()
-                        .map(|s| s.text().collect::<String>().trim().to_string());
+        while let Some(pos) = html[cursor..].find("result__body") {
+            let start = cursor + pos;
+            let next = html[start + 12..]
+                .find("result__body")
+                .map(|p| start + 12 + p)
+                .unwrap_or(html.len());
+            let block = &html[start..next];
+            cursor = next;
 
-                    results.push(SearchResult::new(
-                        title_text.trim(),
-                        actual_url.into_owned(),
-                        snippet,
-                    ));
+            let Some(title_pos) = block.find("result__title") else {
+                continue;
+            };
+            let title_rest = &block[title_pos..];
+            let href = if let Some(hpos) = title_rest.find("href=\"") {
+                let rest = &title_rest[hpos + 6..];
+                rest.split('\"').next()
+            } else if let Some(hpos) = title_rest.find("href='") {
+                let rest = &title_rest[hpos + 6..];
+                rest.split('\'').next()
+            } else {
+                None
+            };
+
+            let Some(raw_href) = href else {
+                continue;
+            };
+            let actual_url = extract_ddg_url(raw_href);
+            if !actual_url.starts_with("http") {
+                continue;
+            }
+
+            let title = if let Some(a_start) = title_rest.find('>') {
+                let after_a = &title_rest[a_start + 1..];
+                if let Some(a_end) = after_a.find("</a>") {
+                    let mut stripped = String::new();
+                    let mut in_tag = false;
+                    for c in after_a[..a_end].chars() {
+                        if c == '<' {
+                            in_tag = true;
+                        } else if c == '>' {
+                            in_tag = false;
+                        } else if !in_tag {
+                            stripped.push(c);
+                        }
+                    }
+                    crate::system::text_util::decode_html_entities(stripped.trim()).into_owned()
+                } else {
+                    String::new()
                 }
+            } else {
+                String::new()
+            };
+
+            let snippet = if let Some(snip_pos) = block.find("result__snippet") {
+                let snip_rest = &block[snip_pos..];
+                if let Some(tag_end) = snip_rest.find('>') {
+                    let content = &snip_rest[tag_end + 1..];
+                    if let Some(close_tag) = content.find('<') {
+                        let inner = content[..close_tag].trim();
+                        if !inner.is_empty() {
+                            Some(crate::system::text_util::decode_html_entities(inner).into_owned())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            results.push(SearchResult::new(
+                title.trim(),
+                actual_url.into_owned(),
+                snippet,
+            ));
+            if results.len() >= 3 {
+                break;
             }
         }
 

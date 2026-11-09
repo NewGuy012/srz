@@ -1,31 +1,9 @@
 use anyhow::{Context, Result};
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
-use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::sync::LazyLock;
 use std::time::Duration;
-
-static OG_TITLE_SEL: LazyLock<Selector> =
-    LazyLock::new(|| Selector::parse("meta[property='og:title']").unwrap());
-static TITLE_SEL: LazyLock<Selector> = LazyLock::new(|| Selector::parse("title").unwrap());
-static H1_SEL: LazyLock<Selector> = LazyLock::new(|| Selector::parse("h1").unwrap());
-static MAIN_SELECTORS: LazyLock<Vec<Selector>> = LazyLock::new(|| {
-    [
-        "article",
-        "main",
-        "[role='main']",
-        ".mw-parser-output",
-        "#mw-content-text",
-        "#content",
-        ".post-content",
-        ".article-content",
-        ".entry-content",
-    ]
-    .into_iter()
-    .filter_map(|s| Selector::parse(s).ok())
-    .collect()
-});
 
 static HTMD_CONVERTER: LazyLock<htmd::HtmlToMarkdown> = LazyLock::new(htmd::HtmlToMarkdown::new);
 
@@ -167,18 +145,28 @@ pub fn html_to_plain_text(html_bytes: &[u8]) -> Result<String> {
     let html_str = std::str::from_utf8(html_bytes)
         .map(std::borrow::Cow::Borrowed)
         .unwrap_or_else(|_| String::from_utf8_lossy(html_bytes));
-    let fragment = scraper::Html::parse_document(&html_str);
-    let mut out = String::new();
-    for text in fragment.root_element().text() {
-        let trimmed = text.trim();
-        if !trimmed.is_empty() {
-            if !out.is_empty() {
-                out.push(' ');
-            }
-            out.push_str(trimmed);
+
+    if let Ok(md) = HTMD_CONVERTER.convert(&html_str) {
+        if !md.trim().is_empty() {
+            let (cleaned, _) = clean_text(&md, false, 1);
+            return Ok(cleaned);
         }
     }
-    Ok(out)
+
+    let mut out = String::with_capacity(html_str.len());
+    let mut in_tag = false;
+    for c in html_str.chars() {
+        if c == '<' {
+            in_tag = true;
+        } else if c == '>' {
+            in_tag = false;
+            out.push(' ');
+        } else if !in_tag {
+            out.push(c);
+        }
+    }
+    let (cleaned, _) = clean_text(&out, false, 1);
+    Ok(cleaned)
 }
 
 /// Reads response body bytes up to `max_bytes`, erroring if the content length or streamed bytes exceed `max_bytes`.
@@ -332,9 +320,8 @@ impl WebScraper {
         self.normalize(url, &html)
     }
 
-    /// Normalizes raw HTML into clean, readable text.
+    /// Normalizes raw HTML into clean, readable text using Readability and Markdown conversion.
     pub fn normalize(&self, url: &str, raw_html: &str) -> Result<ScrapedPage> {
-        let mut document: Option<Html> = None;
         let pre_cleaned = if url.contains("wikipedia.org") {
             truncate_wikipedia_html_before_references(raw_html)
         } else {
@@ -342,7 +329,7 @@ impl WebScraper {
         };
         let sanitized = strip_boilerplate_html_tags(pre_cleaned.as_ref());
 
-        // 1. Attempt Readability extraction first (dom_smoothie) to avoid full DOM construction when possible
+        // 1. Attempt Readability extraction first (dom_smoothie)
         let (article_title, extracted_html) =
             match dom_smoothie::Readability::new(sanitized.as_ref(), Some(url), None) {
                 Ok(mut readability) => match readability.parse() {
@@ -354,24 +341,15 @@ impl WebScraper {
                         };
                         (title, std::borrow::Cow::Owned(article.content.to_string()))
                     }
-                    Err(_) => {
-                        let doc = document.get_or_insert_with(|| Html::parse_document(raw_html));
-                        (None, self.extract_main_html(doc, raw_html))
-                    }
+                    Err(_) => (None, Cow::Borrowed(raw_html)),
                 },
-                Err(_) => {
-                    let doc = document.get_or_insert_with(|| Html::parse_document(raw_html));
-                    (None, self.extract_main_html(doc, raw_html))
-                }
+                Err(_) => (None, Cow::Borrowed(raw_html)),
             };
 
         // 2. Extract or fallback Title
         let title = match article_title {
             Some(t) => Some(t),
-            None => {
-                let doc = document.get_or_insert_with(|| Html::parse_document(raw_html));
-                self.extract_title(doc)
-            }
+            None => extract_title_from_html(raw_html),
         };
 
         // 3. Convert HTML to clean semantic Markdown (preserving headings, lists, tables)
@@ -387,48 +365,91 @@ impl WebScraper {
             word_count,
         })
     }
+}
 
-    pub fn extract_title(&self, document: &Html) -> Option<String> {
-        // Try og:title first (zero-copy attribute slice until final .to_string())
-        if let Some(elem) = document.select(&OG_TITLE_SEL).next()
-            && let Some(content) = elem.value().attr("content")
-        {
-            let trimmed = content.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
-            }
-        }
-
-        // Try <title> tag, then <h1> tag
-        for sel in [&*TITLE_SEL, &*H1_SEL] {
-            if let Some(elem) = document.select(sel).next() {
-                let text: String = elem.text().collect();
-                let trimmed = text.trim();
+/// Extracts title from raw HTML by inspecting <meta property="og:title">, <title>, or <h1>.
+pub fn extract_title_from_html(html: &str) -> Option<String> {
+    // 1. Try og:title
+    if let Some(pos) =
+        crate::system::text_util::find_ascii_case_insensitive(html, "property=\"og:title\"")
+            .or_else(|| {
+                crate::system::text_util::find_ascii_case_insensitive(html, "property='og:title'")
+            })
+    {
+        let tag_start = html[..pos].rfind('<').unwrap_or(pos);
+        let tag_end = html[pos..].find('>').map(|p| pos + p).unwrap_or(html.len());
+        let tag = &html[tag_start..tag_end];
+        if let Some(c_pos) = tag.find("content=\"") {
+            let val = &tag[c_pos + 9..];
+            if let Some(end) = val.find('\"') {
+                let trimmed = val[..end].trim();
                 if !trimmed.is_empty() {
-                    return Some(trimmed.to_string());
+                    return Some(
+                        crate::system::text_util::decode_html_entities(trimmed).into_owned(),
+                    );
+                }
+            }
+        } else if let Some(c_pos) = tag.find("content='") {
+            let val = &tag[c_pos + 9..];
+            if let Some(end) = val.find('\'') {
+                let trimmed = val[..end].trim();
+                if !trimmed.is_empty() {
+                    return Some(
+                        crate::system::text_util::decode_html_entities(trimmed).into_owned(),
+                    );
                 }
             }
         }
-
-        None
     }
 
-    fn extract_main_html<'a>(
-        &self,
-        document: &Html,
-        raw_html: &'a str,
-    ) -> std::borrow::Cow<'a, str> {
-        for sel in MAIN_SELECTORS.iter() {
-            if let Some(element) = document.select(sel).next() {
-                let html = element.html();
-                if html.len() > 200 {
-                    return std::borrow::Cow::Owned(html);
+    // 2. Try <title>...</title>
+    if let Some(pos) = crate::system::text_util::find_ascii_case_insensitive(html, "<title") {
+        let rest = &html[pos + 6..];
+        if let Some(tag_end) = rest.find('>') {
+            let content = &rest[tag_end + 1..];
+            if let Some(end) =
+                crate::system::text_util::find_ascii_case_insensitive(content, "</title>")
+            {
+                let trimmed = content[..end].trim();
+                if !trimmed.is_empty() {
+                    return Some(
+                        crate::system::text_util::decode_html_entities(trimmed).into_owned(),
+                    );
                 }
             }
         }
-
-        std::borrow::Cow::Borrowed(raw_html)
     }
+
+    // 3. Try <h1>...</h1>
+    if let Some(pos) = crate::system::text_util::find_ascii_case_insensitive(html, "<h1") {
+        let rest = &html[pos + 3..];
+        if let Some(tag_end) = rest.find('>') {
+            let content = &rest[tag_end + 1..];
+            if let Some(end) =
+                crate::system::text_util::find_ascii_case_insensitive(content, "</h1>")
+            {
+                let mut stripped = String::new();
+                let mut in_tag = false;
+                for c in content[..end].chars() {
+                    if c == '<' {
+                        in_tag = true;
+                    } else if c == '>' {
+                        in_tag = false;
+                    } else if !in_tag {
+                        stripped.push(c);
+                    }
+                }
+                let trimmed = stripped.trim();
+                if !trimmed.is_empty() {
+                    return Some(
+                        crate::system::text_util::decode_html_entities(trimmed).into_owned(),
+                    );
+                }
+            }
+        }
+    }
+
+    None
 }
 
 /// Helper to scan for a matching closing bracket `]`, stopping on newlines or unescaped open brackets.
