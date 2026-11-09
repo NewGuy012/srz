@@ -113,87 +113,9 @@ pub fn format_untrusted_section(tag: &str, content: &str, max_tokens: Option<usi
     format!("<{tag}>\n{safe_content}\n</{tag}>")
 }
 
-/// Partitions intermediate summaries into batches whose combined token count is within `target_batch_tokens`,
-/// ensuring at least 2 summaries per batch where possible so that reduction actually compresses the payload.
-pub fn partition_summaries_for_reduction(
-    summaries: &[String],
-    target_batch_tokens: usize,
-) -> Vec<Vec<String>> {
-    let counts: Vec<usize> = summaries
-        .iter()
-        .map(|s| TextChunker::count_tokens(s))
-        .collect();
-    partition_summaries_with_counts(summaries, &counts, target_batch_tokens)
-}
-
-/// Partitions intermediate summaries using precomputed token counts to eliminate redundant tokenizer passes.
-pub fn partition_summaries_with_counts(
-    summaries: &[String],
-    counts: &[usize],
-    target_batch_tokens: usize,
-) -> Vec<Vec<String>> {
-    if summaries.is_empty() {
-        return Vec::new();
-    }
-    if summaries.len() <= 2 {
-        return vec![summaries.to_vec()];
-    }
-
-    let mut batches = Vec::new();
-    let mut current_batch = Vec::new();
-    let mut current_tokens = 0;
-
-    for (s, &s_tokens) in summaries.iter().zip(counts.iter()) {
-        // If adding this summary exceeds target and we already have at least 2 summaries in current batch, seal it
-        if current_tokens + s_tokens > target_batch_tokens && current_batch.len() >= 2 {
-            batches.push(current_batch);
-            current_batch = Vec::new();
-            current_tokens = 0;
-        }
-        current_batch.push(s.clone());
-        current_tokens += s_tokens;
-    }
-
-    if !current_batch.is_empty() {
-        // If trailing batch only has 1 item and a previous batch exists, merge it into the previous batch
-        if current_batch.len() == 1
-            && let Some(prev) = batches.last_mut()
-        {
-            prev.extend(current_batch);
-        } else {
-            batches.push(current_batch);
-        }
-    }
-
-    // Fallback: If everything ended up in a single batch but there are >= 4 summaries, split in half to force progress
-    if batches.len() <= 1 && summaries.len() >= 4 {
-        let mid = summaries.len() / 2;
-        batches = vec![summaries[..mid].to_vec(), summaries[mid..].to_vec()];
-    }
-
-    batches
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_partition_summaries_for_reduction() {
-        let s1 = "Summary one with a few words.".to_string();
-        let s2 = "Summary two with a few words.".to_string();
-        let s3 = "Summary three with a few words.".to_string();
-        let s4 = "Summary four with a few words.".to_string();
-        let summaries = vec![s1, s2, s3, s4];
-
-        let batches = partition_summaries_for_reduction(&summaries, 500);
-        assert!(!batches.is_empty());
-        let total_items: usize = batches.iter().map(|b| b.len()).sum();
-        assert_eq!(total_items, 4);
-
-        let small_batches = partition_summaries_for_reduction(&summaries, 15);
-        assert!(small_batches.len() >= 2);
-    }
 
     #[test]
     fn test_format_author_line() {

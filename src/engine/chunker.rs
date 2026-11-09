@@ -129,10 +129,28 @@ impl TextChunker {
         max_tokens: usize,
         overlap_tokens: usize,
     ) -> Vec<(Cow<'a, str>, usize)> {
+        Self::chunk_by_tokens_with_counts_and_kind(
+            text,
+            max_tokens,
+            overlap_tokens,
+            TokenizerKind::Cl100k,
+        )
+    }
+
+    /// Splits text into chunks of roughly `max_tokens` with `overlap_tokens` overlap using the specified tokenizer kind,
+    /// returning each chunk alongside its pre-computed token count to avoid re-tokenization.
+    pub fn chunk_by_tokens_with_counts_and_kind<'a>(
+        text: &'a str,
+        max_tokens: usize,
+        overlap_tokens: usize,
+        kind: TokenizerKind,
+    ) -> Vec<(Cow<'a, str>, usize)> {
         if text.len() <= max_tokens {
-            return vec![(Cow::Borrowed(text), Self::count_tokens(text))];
+            return vec![(Cow::Borrowed(text), kind.count_tokens(text))];
         }
-        Self::chunk_with_metric_with_counts(text, max_tokens, overlap_tokens, Self::count_tokens)
+        Self::chunk_with_metric_with_counts(text, max_tokens, overlap_tokens, |s| {
+            kind.count_tokens(s)
+        })
     }
 
     /// Splits text into chunks of roughly `max_words` with `overlap_words` overlap.
@@ -280,6 +298,34 @@ impl TextChunker {
         }
     }
 
+    fn split_at_best_boundary<'a, F>(
+        remaining: &mut &'a str,
+        candidates: &[usize],
+        max_limit: usize,
+        count_fn: &mut F,
+        out: &mut Vec<(&'a str, usize)>,
+    ) -> bool
+    where
+        F: FnMut(&str) -> usize,
+    {
+        if candidates.is_empty() {
+            return false;
+        }
+        let idx = candidates.partition_point(|&pos| count_fn(&remaining[..pos]) <= max_limit);
+        if idx > 0 {
+            let pos = candidates[idx - 1];
+            let (head, tail) = remaining.split_at(pos);
+            let head_trimmed = head.trim();
+            if !head_trimmed.is_empty() {
+                out.push((head_trimmed, count_fn(head_trimmed)));
+            }
+            *remaining = tail.trim_start();
+            true
+        } else {
+            false
+        }
+    }
+
     fn decompose_line<'a, F>(
         line: &'a str,
         max_limit: usize,
@@ -310,26 +356,8 @@ impl TextChunker {
                 })
                 .collect();
 
-            let best_split = if !candidates.is_empty() {
-                let idx =
-                    candidates.partition_point(|&pos| count_fn(&remaining[..pos]) <= max_limit);
-                if idx > 0 {
-                    Some(candidates[idx - 1])
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            if let Some(pos) = best_split {
-                let (head, tail) = remaining.split_at(pos);
-                let head_trimmed = head.trim();
-                if !head_trimmed.is_empty() {
-                    out.push((head_trimmed, count_fn(head_trimmed)));
-                }
-                remaining = tail.trim_start();
-            } else {
+            if !Self::split_at_best_boundary(&mut remaining, &candidates, max_limit, count_fn, out)
+            {
                 Self::decompose_words(remaining, max_limit, count_fn, out);
                 break;
             }
@@ -358,26 +386,8 @@ impl TextChunker {
                 .filter_map(|(i, c)| if c.is_whitespace() { Some(i) } else { None })
                 .collect();
 
-            let best_cut = if !candidates.is_empty() {
-                let idx =
-                    candidates.partition_point(|&pos| count_fn(&remaining[..pos]) <= max_limit);
-                if idx > 0 {
-                    Some(candidates[idx - 1])
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            if let Some(pos) = best_cut {
-                let (head, tail) = remaining.split_at(pos);
-                let head_trimmed = head.trim();
-                if !head_trimmed.is_empty() {
-                    out.push((head_trimmed, count_fn(head_trimmed)));
-                }
-                remaining = tail.trim_start();
-            } else {
+            if !Self::split_at_best_boundary(&mut remaining, &candidates, max_limit, count_fn, out)
+            {
                 let char_indices: Vec<usize> = remaining.char_indices().map(|(i, _)| i).collect();
                 let idx =
                     char_indices.partition_point(|&pos| count_fn(&remaining[..pos]) <= max_limit);

@@ -1,12 +1,10 @@
 use crate::chunker::TokenizerKind;
 use crate::cli::SummaryStyle;
-use crate::engine::budget::{DynamicBudget, ServerCapabilities};
+use crate::engine::budget::{DynamicBudget, ModelsListResponse, ServerCapabilities};
+pub use crate::engine::budget::{ModelInfo, ModelInfoMeta, clamp_context_window};
 use crate::engine::compressor::compress_document_stratified;
-use crate::engine::probe::ModelsListResponse;
-pub use crate::engine::probe::{ModelInfo, ModelInfoMeta, clamp_context_window};
 pub use crate::engine::prompts::{
     escape_closing_tag, format_author_line, format_untrusted_section,
-    partition_summaries_for_reduction, partition_summaries_with_counts,
     truncate_words_preserving_lines,
 };
 use crate::engine::sse::{
@@ -1123,18 +1121,19 @@ impl LlmClient {
             )
             .await?;
 
-        let hardware = crate::system::hardware::HardwareProfile::detect();
-        let doc_token_count = doc_tokens.unwrap_or_else(|| tok_kind.count_tokens(content));
-        if was_compressed
-            && budget.n_ctx < hardware.recommended_context
-            && doc_token_count <= (hardware.recommended_context * 7 / 10)
-        {
-            final_out.hint = Some(format!(
-                "💡 Tip: Ingested ~{}k tokens. Server context (n_ctx={}) compressed to fit single pass. For uncompressed full-fidelity summaries: {}",
-                (doc_token_count + 500) / 1000,
-                budget.n_ctx,
-                hardware.recommended_launch_command
-            ));
+        if was_compressed {
+            let hardware = crate::system::hardware::HardwareProfile::detect();
+            let doc_token_count = doc_tokens.unwrap_or_else(|| tok_kind.count_tokens(content));
+            if budget.n_ctx < hardware.recommended_context
+                && doc_token_count <= (hardware.recommended_context * 7 / 10)
+            {
+                final_out.hint = Some(format!(
+                    "💡 Tip: Ingested ~{}k tokens. Server context (n_ctx={}) compressed to fit single pass. For uncompressed full-fidelity summaries: {}",
+                    (doc_token_count + 500) / 1000,
+                    budget.n_ctx,
+                    hardware.recommended_launch_command
+                ));
+            }
         }
 
         Ok(final_out)

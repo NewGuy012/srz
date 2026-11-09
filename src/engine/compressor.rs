@@ -2,8 +2,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use crate::chunker::{TextChunker, TokenizerKind};
-use crate::storage::db::tokenize_terms;
-use crate::system::text_util::{find_ascii_case_insensitive, is_stop_word};
+use crate::system::text_util::{find_ascii_case_insensitive, is_stop_word, tokenize_terms};
 
 #[inline]
 fn is_word_boundary(text: &str, start: usize, len: usize) -> bool {
@@ -38,12 +37,85 @@ pub fn count_term_occurrences(text: &str, term: &str) -> usize {
     count
 }
 
+/// Computes Robertson-Sparck Jones BM25 relevance scores for a slice of text segments
+/// against a list of terms given segment token lengths and average document length.
+pub fn compute_bm25_scores(
+    segments: &[&str],
+    lengths: &[usize],
+    terms: &[String],
+    avgdl: f64,
+) -> Vec<f64> {
+    let n_docs = segments.len();
+    if n_docs == 0 || terms.is_empty() {
+        return vec![0.0; n_docs];
+    }
+
+    let n_terms = terms.len();
+    let mut term_dfs = vec![0usize; n_terms];
+    let mut segment_tfs = Vec::with_capacity(n_docs);
+
+    for segment in segments {
+        let mut tfs = Vec::with_capacity(n_terms);
+        for (term_idx, term) in terms.iter().enumerate() {
+            let tf = count_term_occurrences(segment, term);
+            if tf > 0 {
+                term_dfs[term_idx] += 1;
+            }
+            tfs.push(tf);
+        }
+        segment_tfs.push(tfs);
+    }
+
+    const K1: f64 = 1.2;
+    const B: f64 = 0.75;
+
+    segments
+        .iter()
+        .enumerate()
+        .map(|(idx, _)| {
+            let doc_len = lengths[idx] as f64;
+            let norm_len = 1.0 - B + B * (doc_len / avgdl);
+            let mut score = 0.0;
+
+            for (term_idx, _) in terms.iter().enumerate() {
+                let df = term_dfs[term_idx];
+                if df == 0 {
+                    continue;
+                }
+                let tf = segment_tfs[idx][term_idx] as f64;
+                if tf > 0.0 {
+                    let idf = (((n_docs - df) as f64 + 0.5) / (df as f64 + 0.5) + 1.0).ln();
+                    let saturation = (tf * (K1 + 1.0)) / (tf + K1 * norm_len);
+                    score += idf.max(0.1) * saturation;
+                }
+            }
+            score
+        })
+        .collect()
+}
+
 /// Selects the most relevant sections of `content` when it exceeds `max_tokens` using
 /// stop-word filtered Robertson-Sparck Jones BM25 ranking across candidate text chunks.
 pub fn select_relevant_context_bm25<'a>(
     content: &'a str,
     question: Option<&str>,
     max_tokens: usize,
+) -> Cow<'a, str> {
+    select_relevant_context_bm25_with_tokenizer(
+        content,
+        question,
+        max_tokens,
+        TokenizerKind::Cl100k,
+    )
+}
+
+/// Selects the most relevant sections of `content` when it exceeds `max_tokens` using
+/// model-aware token counting and BM25 ranking.
+pub fn select_relevant_context_bm25_with_tokenizer<'a>(
+    content: &'a str,
+    question: Option<&str>,
+    max_tokens: usize,
+    tokenizer_kind: TokenizerKind,
 ) -> Cow<'a, str> {
     if content.len() <= (max_tokens.saturating_mul(3) / 4) {
         return Cow::Borrowed(content);
@@ -80,8 +152,12 @@ pub fn select_relevant_context_bm25<'a>(
 
     let chunk_size = (max_tokens / 8).clamp(500, 2000);
     let chunk_overlap = (chunk_size / 12).clamp(50, 150);
-    let chunks_with_counts =
-        TextChunker::chunk_by_tokens_with_counts(content, chunk_size, chunk_overlap);
+    let chunks_with_counts = TextChunker::chunk_by_tokens_with_counts_and_kind(
+        content,
+        chunk_size,
+        chunk_overlap,
+        tokenizer_kind,
+    );
     if chunks_with_counts.len() <= 1 {
         return Cow::Borrowed(content);
     }
@@ -90,45 +166,17 @@ pub fn select_relevant_context_bm25<'a>(
     let total_tokens: usize = chunks_with_counts.iter().map(|(_, t)| *t).sum();
     let avgdl = (total_tokens as f64) / (n_docs as f64).max(1.0);
 
-    let n_terms = unique_q_terms.len();
-    let mut term_dfs = vec![0usize; n_terms];
-    let mut chunk_tfs = Vec::with_capacity(n_docs);
-
-    for (chunk, _) in &chunks_with_counts {
-        let mut tfs = Vec::with_capacity(n_terms);
-        for (term_idx, term) in unique_q_terms.iter().enumerate() {
-            let tf = count_term_occurrences(chunk, term);
-            if tf > 0 {
-                term_dfs[term_idx] += 1;
-            }
-            tfs.push(tf);
-        }
-        chunk_tfs.push(tfs);
-    }
-
-    // Robertson-Sparck Jones BM25 parameters
-    const K1: f64 = 1.2;
-    const B: f64 = 0.75;
+    let seg_texts: Vec<&str> = chunks_with_counts.iter().map(|(c, _)| c.as_ref()).collect();
+    let seg_lens: Vec<usize> = chunks_with_counts.iter().map(|(_, t)| *t).collect();
+    let bm25_scores = compute_bm25_scores(&seg_texts, &seg_lens, &unique_q_terms, avgdl);
 
     let mut scored: Vec<(usize, f64, usize)> = chunks_with_counts
         .iter()
         .enumerate()
         .map(|(idx, (_, tokens))| {
-            let mut score = if idx == 0 { 0.5 } else { 0.0 };
-            let doc_len = *tokens as f64;
-            let norm_len = 1.0 - B + B * (doc_len / avgdl);
-
-            for (term_idx, _) in unique_q_terms.iter().enumerate() {
-                let df = term_dfs[term_idx];
-                if df == 0 {
-                    continue;
-                }
-                let tf = chunk_tfs[idx][term_idx] as f64;
-                if tf > 0.0 {
-                    let idf = (((n_docs - df) as f64 + 0.5) / (df as f64 + 0.5) + 1.0).ln();
-                    let saturation = (tf * (K1 + 1.0)) / (tf + K1 * norm_len);
-                    score += idf.max(0.1) * saturation;
-                }
+            let mut score = bm25_scores[idx];
+            if idx == 0 {
+                score += 0.5;
             }
             (idx, score, *tokens)
         })
@@ -219,54 +267,24 @@ pub fn compress_document_stratified<'a>(
     sorted_terms.sort_by_key(|a| std::cmp::Reverse(a.1));
     let centroid_terms: Vec<String> = sorted_terms.into_iter().take(40).map(|(t, _)| t).collect();
 
-    // 3. Compute term document frequency across paragraphs for BM25
+    // 3. Compute BM25 relevance scores across paragraphs
     let n_paras = paragraphs.len();
     let total_para_tokens: usize = paragraphs.iter().map(|(_, t, _)| *t).sum();
     let avgdl = (total_para_tokens as f64) / (n_paras as f64).max(1.0);
 
-    let n_centroid = centroid_terms.len();
-    let mut term_dfs = vec![0usize; n_centroid];
-    let mut para_tfs = Vec::with_capacity(n_paras);
-
-    for (para, _, _) in &paragraphs {
-        let mut tfs = Vec::with_capacity(n_centroid);
-        for (term_idx, term) in centroid_terms.iter().enumerate() {
-            let tf = count_term_occurrences(para, term);
-            if tf > 0 {
-                term_dfs[term_idx] += 1;
-            }
-            tfs.push(tf);
-        }
-        para_tfs.push(tfs);
-    }
+    let para_texts: Vec<&str> = paragraphs.iter().map(|(p, _, _)| *p).collect();
+    let para_lens: Vec<usize> = paragraphs.iter().map(|(_, t, _)| *t).collect();
+    let bm25_scores = compute_bm25_scores(&para_texts, &para_lens, &centroid_terms, avgdl);
 
     // Score all paragraphs with BM25 + information density bonus (numbers/metrics)
-    const K1: f64 = 1.2;
-    const B: f64 = 0.75;
-
     let para_scores: Vec<f64> = paragraphs
         .iter()
         .enumerate()
-        .map(|(idx, (para, tokens, is_heading))| {
+        .map(|(idx, (para, _, is_heading))| {
             if *is_heading {
                 return 100.0; // Guaranteed structural priority
             }
-            let doc_len = *tokens as f64;
-            let norm_len = 1.0 - B + B * (doc_len / avgdl);
-            let mut score = 0.0;
-
-            for (term_idx, _) in centroid_terms.iter().enumerate() {
-                let df = term_dfs[term_idx];
-                if df == 0 {
-                    continue;
-                }
-                let tf = para_tfs[idx][term_idx] as f64;
-                if tf > 0.0 {
-                    let idf = (((n_paras - df) as f64 + 0.5) / (df as f64 + 0.5) + 1.0).ln();
-                    let saturation = (tf * (K1 + 1.0)) / (tf + K1 * norm_len);
-                    score += idf.max(0.1) * saturation;
-                }
-            }
+            let mut score = bm25_scores[idx];
 
             // Information density bonus for digits / metrics
             let digit_count = para.chars().filter(|c| c.is_ascii_digit()).count();
