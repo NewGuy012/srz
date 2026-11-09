@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;
 
 /// Maximum allowable limit of news articles to process in a single digest run.
@@ -218,9 +219,9 @@ impl GoogleNewsClient {
     ) -> Result<Vec<NewsDigestSource>> {
         const MAX_CONCURRENT_NEWS_SCRAPES: usize = 6;
 
-        let limit = limit.clamp(1, MAX_NEWS_LIMIT);
-        // Fetch up to 4x limit (minimum 20, capped at MAX_NEWS_LIMIT) candidates to buffer against paywalls/dead links
-        let fetch_limit = limit.saturating_mul(4).clamp(20, MAX_NEWS_LIMIT);
+        let target_limit = limit.max(5).clamp(1, MAX_NEWS_LIMIT);
+        // Generously buffer candidates to guarantee at least target_limit scrapeable articles
+        let fetch_limit = target_limit.saturating_mul(6).clamp(35, MAX_NEWS_LIMIT);
         let feed_items = self.fetch_feed(topic, timeframe, fetch_limit).await?;
         if feed_items.is_empty() {
             let tip = match timeframe {
@@ -249,31 +250,33 @@ impl GoogleNewsClient {
             );
         }
 
-        let mut sources = Vec::new();
-        let mut uncached_items = Vec::new();
+        let mut collected: BTreeMap<usize, NewsDigestSource> = BTreeMap::new();
+        let mut completed_ranks: HashSet<usize> = HashSet::new();
+        let mut uncached_items: Vec<(usize, NewsArticleItem)> = Vec::new();
 
-        for item in feed_items {
+        for (idx, item) in feed_items.into_iter().enumerate() {
             // 1. Direct cache check for feed link with short news TTL (default: 2h)
             if let Some(c) = cache
                 && let Some(page) = c.get_news_page(&item.google_link)
                 && page.word_count > 60
                 && !is_google_news_link(&page.url)
             {
-                sources.push(NewsDigestSource {
-                    title: page.title.unwrap_or(item.title),
-                    source_name: item.source_name.unwrap_or_else(|| "Source".to_string()),
-                    url: if is_google_news_link(&item.google_link) {
-                        page.url
-                    } else {
-                        item.google_link
+                collected.insert(
+                    idx,
+                    NewsDigestSource {
+                        title: page.title.unwrap_or(item.title),
+                        source_name: item.source_name.unwrap_or_else(|| "Source".to_string()),
+                        url: if is_google_news_link(&item.google_link) {
+                            page.url
+                        } else {
+                            item.google_link
+                        },
+                        pub_date: item.pub_date,
+                        content: page.content,
+                        word_count: page.word_count,
                     },
-                    pub_date: item.pub_date,
-                    content: page.content,
-                    word_count: page.word_count,
-                });
-                if sources.len() >= limit {
-                    return Ok(sources);
-                }
+                );
+                completed_ranks.insert(idx);
                 continue;
             }
 
@@ -286,164 +289,211 @@ impl GoogleNewsClient {
             {
                 // Cache under google_link as well for sub-millisecond future hits
                 c.set_page(&item.google_link, &page);
-                sources.push(NewsDigestSource {
-                    title: page.title.unwrap_or(item.title),
-                    source_name: item.source_name.unwrap_or_else(|| "Source".to_string()),
-                    url: direct,
-                    pub_date: item.pub_date,
-                    content: page.content,
-                    word_count: page.word_count,
-                });
-                if sources.len() >= limit {
-                    return Ok(sources);
-                }
+                collected.insert(
+                    idx,
+                    NewsDigestSource {
+                        title: page.title.unwrap_or(item.title),
+                        source_name: item.source_name.unwrap_or_else(|| "Source".to_string()),
+                        url: direct,
+                        pub_date: item.pub_date,
+                        content: page.content,
+                        word_count: page.word_count,
+                    },
+                );
+                completed_ranks.insert(idx);
                 continue;
             }
 
-            uncached_items.push(item);
+            uncached_items.push((idx, item));
         }
 
-        let semaphore =
-            std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_NEWS_SCRAPES));
-        let mut join_set = tokio::task::JoinSet::new();
-
-        // Resolve destination URLs and scrape articles with bounded concurrency
-        for item in uncached_items {
-            let client = self.clone();
-            let scraper_cloned = scraper.clone();
-            let sem = semaphore.clone();
-            join_set.spawn(async move {
-                let _permit = sem.acquire().await.ok()?;
-
-                // If feed already provides a rich multi-paragraph body, skip network scrape
-                if let Some(snip) = &item.snippet
-                    && snip.split_whitespace().count() >= 150
-                {
-                    let wc = snip.split_whitespace().count();
-                    return Some((
-                        item.google_link.clone(),
-                        NewsDigestSource {
-                            title: item.title,
-                            source_name: item.source_name.unwrap_or_else(|| "Source".to_string()),
-                            url: item.google_link,
-                            pub_date: item.pub_date,
-                            content: snip.clone(),
-                            word_count: wc,
-                        },
-                    ));
-                }
-
-                let is_gnews = is_google_news_link(&item.google_link);
-                let resolved_url = client.resolve_article_url(&item.google_link).await;
-
-                let direct_url = match resolved_url {
-                    Some(u) => u,
-                    None if !is_gnews => item.google_link.clone(),
-                    None => {
-                        // Could not resolve Google News redirect URL to real publisher.
-                        // Fall back to feed snippet if substantial; never scrape news.google.com!
-                        if let Some(snip) = &item.snippet
-                            && snip.split_whitespace().count() >= 20
-                        {
-                            let wc = snip.split_whitespace().count();
-                            return Some((
-                                item.google_link.clone(),
-                                NewsDigestSource {
-                                    title: item.title,
-                                    source_name: item
-                                        .source_name
-                                        .unwrap_or_else(|| "Source".to_string()),
-                                    url: item.google_link,
-                                    pub_date: item.pub_date,
-                                    content: snip.clone(),
-                                    word_count: wc,
-                                },
-                            ));
-                        }
-                        return None;
-                    }
-                };
-
-                // Safety guard: never attempt to scrape Google News redirect/tracking shells
-                if is_google_news_link(&direct_url) {
-                    return None;
-                }
-
-                // Enforce tight 5s per-article scrape timeout to prevent slow/hanging sites from blocking the digest
-                let scraped: Result<ScrapedPage> = match tokio::time::timeout(
-                    Duration::from_secs(5),
-                    scraper_cloned.scrape(&direct_url),
-                )
-                .await
-                {
-                    Ok(res) => res,
-                    Err(_) => Err(anyhow::anyhow!("Scrape timed out after 5s")),
-                };
-
-                let (content, word_count, resolved_title) = if let Ok(page) = scraped
-                    && page.word_count > 60
-                {
-                    (
-                        page.content,
-                        page.word_count,
-                        page.title.unwrap_or(item.title),
-                    )
-                } else if let Some(snip) = &item.snippet
-                    && snip.split_whitespace().count() >= 20
-                {
-                    // Fall back to syndication feed description/content when scraping hits paywalls/403
-                    let wc = snip.split_whitespace().count();
-                    (snip.clone(), wc, item.title)
-                } else {
-                    return None;
-                };
-
-                Some((
-                    item.google_link,
-                    NewsDigestSource {
-                        title: resolved_title,
-                        source_name: item.source_name.unwrap_or_else(|| "Source".to_string()),
-                        url: direct_url,
-                        pub_date: item.pub_date,
-                        content,
-                        word_count,
-                    },
-                ))
-            });
+        let mut min_pending_rank = 0;
+        while completed_ranks.contains(&min_pending_rank) {
+            min_pending_rank += 1;
         }
 
-        while let Some(res) = join_set.join_next().await {
-            if let Ok(Some((google_link, source))) = res {
-                if let Some(c) = cache {
-                    let page_record = ScrapedPage {
-                        url: source.url.clone(),
-                        title: Some(source.title.clone()),
-                        content: source.content.clone(),
-                        word_count: source.word_count,
+        let all_cached_satisfied = if collected.len() >= target_limit {
+            let cutoff = *collected.keys().nth(target_limit - 1).unwrap();
+            min_pending_rank > cutoff
+        } else {
+            false
+        };
+
+        if !all_cached_satisfied && !uncached_items.is_empty() {
+            let semaphore =
+                std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_NEWS_SCRAPES));
+            let mut join_set = tokio::task::JoinSet::new();
+
+            for (idx, item) in uncached_items {
+                let client = self.clone();
+                let scraper_cloned = scraper.clone();
+                let sem = semaphore.clone();
+                join_set.spawn(async move {
+                    let Ok(_permit) = sem.acquire().await else {
+                        return (idx, item.google_link, None);
                     };
-                    if !is_google_news_link(&source.url) {
-                        c.set_page(&source.url, &page_record);
-                        if source.url != google_link {
-                            c.set_page(&google_link, &page_record);
+
+                    // If feed already provides a rich multi-paragraph body, skip network scrape
+                    if let Some(snip) = &item.snippet
+                        && snip.split_whitespace().count() >= 150
+                    {
+                        let wc = snip.split_whitespace().count();
+                        return (
+                            idx,
+                            item.google_link.clone(),
+                            Some(NewsDigestSource {
+                                title: item.title,
+                                source_name: item
+                                    .source_name
+                                    .unwrap_or_else(|| "Source".to_string()),
+                                url: item.google_link,
+                                pub_date: item.pub_date,
+                                content: snip.clone(),
+                                word_count: wc,
+                            }),
+                        );
+                    }
+
+                    let is_gnews = is_google_news_link(&item.google_link);
+                    let resolved_url = client.resolve_article_url(&item.google_link).await;
+
+                    let direct_url = match resolved_url {
+                        Some(u) => u,
+                        None if !is_gnews => item.google_link.clone(),
+                        None => {
+                            if let Some(snip) = &item.snippet
+                                && snip.split_whitespace().count() >= 20
+                            {
+                                let wc = snip.split_whitespace().count();
+                                return (
+                                    idx,
+                                    item.google_link.clone(),
+                                    Some(NewsDigestSource {
+                                        title: item.title,
+                                        source_name: item
+                                            .source_name
+                                            .unwrap_or_else(|| "Source".to_string()),
+                                        url: item.google_link,
+                                        pub_date: item.pub_date,
+                                        content: snip.clone(),
+                                        word_count: wc,
+                                    }),
+                                );
+                            }
+                            return (idx, item.google_link, None);
+                        }
+                    };
+
+                    if is_google_news_link(&direct_url) {
+                        return (idx, item.google_link, None);
+                    }
+
+                    let scraped: Result<ScrapedPage> = match tokio::time::timeout(
+                        Duration::from_secs(4),
+                        scraper_cloned.scrape(&direct_url),
+                    )
+                    .await
+                    {
+                        Ok(res) => res,
+                        Err(_) => Err(anyhow::anyhow!("Scrape timed out after 4s")),
+                    };
+
+                    let (content, word_count, resolved_title) = if let Ok(page) = scraped
+                        && page.word_count > 60
+                    {
+                        (
+                            page.content,
+                            page.word_count,
+                            page.title.unwrap_or(item.title),
+                        )
+                    } else if let Some(snip) = &item.snippet
+                        && snip.split_whitespace().count() >= 20
+                    {
+                        let wc = snip.split_whitespace().count();
+                        (snip.clone(), wc, item.title)
+                    } else {
+                        return (idx, item.google_link, None);
+                    };
+
+                    (
+                        idx,
+                        item.google_link,
+                        Some(NewsDigestSource {
+                            title: resolved_title,
+                            source_name: item.source_name.unwrap_or_else(|| "Source".to_string()),
+                            url: direct_url,
+                            pub_date: item.pub_date,
+                            content,
+                            word_count,
+                        }),
+                    )
+                });
+            }
+
+            while let Some(res) = join_set.join_next().await {
+                if let Ok((idx, google_link, maybe_source)) = res {
+                    completed_ranks.insert(idx);
+                    while completed_ranks.contains(&min_pending_rank) {
+                        min_pending_rank += 1;
+                    }
+
+                    if let Some(source) = maybe_source {
+                        if let Some(c) = cache {
+                            let page_record = ScrapedPage {
+                                url: source.url.clone(),
+                                title: Some(source.title.clone()),
+                                content: source.content.clone(),
+                                word_count: source.word_count,
+                            };
+                            if !is_google_news_link(&source.url) {
+                                c.set_page(&source.url, &page_record);
+                                if source.url != google_link {
+                                    c.set_page(&google_link, &page_record);
+                                }
+                            }
+                        }
+                        collected.insert(idx, source);
+                    }
+
+                    if collected.len() >= target_limit {
+                        let cutoff = *collected.keys().nth(target_limit - 1).unwrap();
+                        if min_pending_rank > cutoff {
+                            join_set.abort_all();
+                            break;
                         }
                     }
-                }
-                sources.push(source);
-                if sources.len() >= limit {
-                    join_set.abort_all();
-                    break;
                 }
             }
         }
 
-        if sources.is_empty() {
+        if collected.is_empty() {
             anyhow::bail!(
                 "Found headlines for '{}', but none of the article pages could be scraped.",
                 topic
             );
         }
 
-        Ok(sources)
+        // Rank and sort collected articles balancing recency (freshness) and relevance (feed position)
+        let mut ranked: Vec<(usize, Option<i64>, NewsDigestSource)> = collected
+            .into_iter()
+            .map(|(rank, src)| {
+                let ts = src
+                    .pub_date
+                    .as_deref()
+                    .and_then(parse_feed_date_to_timestamp);
+                (rank, ts, src)
+            })
+            .collect();
+
+        sort_news_by_recency_and_relevance(&mut ranked);
+
+        let final_sources: Vec<NewsDigestSource> = ranked
+            .into_iter()
+            .take(target_limit)
+            .map(|(_, _, src)| src)
+            .collect();
+
+        Ok(final_sources)
     }
 }
 
@@ -518,6 +568,127 @@ fn normalize_feed_date(raw: &str) -> Option<String> {
         return Some(format!("{} +0000", stripped));
     }
     Some(trimmed.to_string())
+}
+
+/// Parses RFC 2822 or normalized feed date strings into a UTC Unix epoch timestamp in seconds.
+pub fn parse_feed_date_to_timestamp(date_str: &str) -> Option<i64> {
+    let trimmed = date_str.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut parts: Vec<&str> = trimmed.split_whitespace().collect();
+    if parts.is_empty() {
+        return None;
+    }
+
+    // Skip optional day of week (e.g. "Fri," or "Fri")
+    if (parts[0].ends_with(',')
+        || (parts[0].len() == 3 && parts[0].chars().all(|c| c.is_ascii_alphabetic())))
+        && parts.len() >= 5
+    {
+        parts.remove(0);
+    }
+
+    if parts.len() < 4 {
+        return None;
+    }
+
+    let day: u32 = parts[0].parse().ok()?;
+    let month = match parts[1].to_ascii_lowercase().as_str() {
+        "jan" => 1,
+        "feb" => 2,
+        "mar" => 3,
+        "apr" => 4,
+        "may" => 5,
+        "jun" => 6,
+        "jul" => 7,
+        "aug" => 8,
+        "sep" => 9,
+        "oct" => 10,
+        "nov" => 11,
+        "dec" => 12,
+        _ => return None,
+    };
+    let year: i32 = parts[2].parse().ok()?;
+
+    let time_parts: Vec<&str> = parts[3].split(':').collect();
+    if time_parts.len() < 2 {
+        return None;
+    }
+    let hour: u32 = time_parts[0].parse().ok()?;
+    let min: u32 = time_parts[1].parse().ok()?;
+    let sec: u32 = if time_parts.len() >= 3 {
+        time_parts[2].parse().unwrap_or(0)
+    } else {
+        0
+    };
+
+    let offset_secs = if parts.len() >= 5 {
+        parse_timezone_offset_seconds(parts[4])
+    } else {
+        0
+    };
+
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || min > 59 || sec > 60 {
+        return None;
+    }
+
+    let days = days_from_civil(year, month, day);
+    let total_secs = days
+        .checked_mul(86400)?
+        .checked_add((hour as i64) * 3600 + (min as i64) * 60 + (sec as i64))?
+        .checked_sub(offset_secs)?;
+
+    Some(total_secs)
+}
+
+fn parse_timezone_offset_seconds(tz: &str) -> i64 {
+    let clean = tz.trim();
+    if clean.eq_ignore_ascii_case("gmt") || clean.eq_ignore_ascii_case("utc") || clean == "Z" {
+        return 0;
+    }
+    if (clean.starts_with('+') || clean.starts_with('-')) && clean.len() >= 5 {
+        let sign = if clean.starts_with('-') { -1 } else { 1 };
+        let hh: i64 = clean[1..3].parse().unwrap_or(0);
+        let mm: i64 = clean[3..5].parse().unwrap_or(0);
+        return sign * (hh * 3600 + mm * 60);
+    }
+    0
+}
+
+/// Howard Hinnant's civil day count algorithm from 1970-01-01
+fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
+    let y = y - if m <= 2 { 1 } else { 0 };
+    let era = (if y >= 0 { y } else { y - 399 }) / 400;
+    let yoe = (y - era * 400) as u32;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era as i64 * 146097 + doe as i64 - 719468
+}
+
+/// Ranks and sorts news sources balancing recency (freshness) and relevance (feed position).
+pub fn sort_news_by_recency_and_relevance(sources: &mut [(usize, Option<i64>, NewsDigestSource)]) {
+    const RECENCY_BUCKET_SECS: i64 = 18 * 3600; // 18-hour window for breaking news parity
+
+    sources.sort_by(|a, b| {
+        match (a.1, b.1) {
+            (Some(ts_a), Some(ts_b)) => {
+                let diff = ts_a - ts_b;
+                // If publication dates are substantially different (outside the 18h cycle),
+                // the more recent news strictly takes priority.
+                if diff.abs() > RECENCY_BUCKET_SECS {
+                    ts_b.cmp(&ts_a) // Newest timestamp first
+                } else {
+                    // Within the same news cycle/day, Google's relevance ranking breaks the tie!
+                    a.0.cmp(&b.0)
+                }
+            }
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.0.cmp(&b.0),
+        }
+    });
 }
 
 /// Parses RSS 0.9/1.0/2.0 or Atom feed items into a list of [`NewsArticleItem`].
@@ -1146,5 +1317,68 @@ mod tests {
             items[0].snippet.as_deref(),
             Some("This is a descriptive summary of the breaking story.")
         );
+    }
+
+    #[test]
+    fn test_parse_feed_date_to_timestamp() {
+        // RFC 2822 with GMT
+        let ts1 = parse_feed_date_to_timestamp("Thu, 22 Oct 2026 08:30:00 GMT");
+        assert!(ts1.is_some());
+
+        // RFC 2822 with +0000
+        let ts2 = parse_feed_date_to_timestamp("Fri, 23 Oct 2026 10:00:00 +0000");
+        assert!(ts2.is_some());
+        assert!(ts2.unwrap() > ts1.unwrap()); // Next day is larger
+
+        // RFC 2822 without weekday
+        let ts3 = parse_feed_date_to_timestamp("23 Oct 2026 10:00:00 +0000");
+        assert_eq!(ts3, ts2);
+
+        // Negative timezone offset (-0500)
+        let ts4 = parse_feed_date_to_timestamp("23 Oct 2026 10:00:00 -0500");
+        assert_eq!(ts4.unwrap(), ts2.unwrap() + 5 * 3600);
+
+        // Invalid dates
+        assert_eq!(parse_feed_date_to_timestamp("not a date"), None);
+        assert_eq!(parse_feed_date_to_timestamp(""), None);
+    }
+
+    #[test]
+    fn test_sort_news_by_recency_and_relevance() {
+        let make_src = |title: &str| NewsDigestSource {
+            title: title.to_string(),
+            source_name: "Source".to_string(),
+            url: format!("https://example.com/{}", title),
+            pub_date: None,
+            content: "content".to_string(),
+            word_count: 100,
+        };
+
+        let base_ts = 1_700_000_000i64;
+
+        // Article A: 2h ago, original rank 2 (within 18h window of B & C)
+        // Article B: 4h ago, original rank 0
+        // Article C: 6h ago, original rank 1
+        // Article D: 3 days ago, original rank 3 (outside 18h window)
+        // Article E: No date, original rank 4
+        let mut items = vec![
+            (2, Some(base_ts + 4 * 3600), make_src("A")),  // 2h ago
+            (0, Some(base_ts + 2 * 3600), make_src("B")),  // 4h ago
+            (1, Some(base_ts), make_src("C")),             // 6h ago
+            (3, Some(base_ts - 72 * 3600), make_src("D")), // 3 days ago
+            (4, None, make_src("E")),                      // No date
+        ];
+
+        sort_news_by_recency_and_relevance(&mut items);
+
+        // Within the fresh 18-hour cycle (A, B, C), original Google relevance rank wins:
+        // Rank 0 (B) -> Rank 1 (C) -> Rank 2 (A)
+        // Then D (older date)
+        // Then E (no date)
+        assert_eq!(items[0].2.title, "B");
+        assert_eq!(items[1].2.title, "C");
+        assert_eq!(items[2].2.title, "A");
+        assert_eq!(items[3].2.title, "D");
+        assert_eq!(items[4].2.title, "E");
     }
 }
