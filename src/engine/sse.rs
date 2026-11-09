@@ -290,7 +290,8 @@ impl SseStreamState {
 
                 let msg = match &self.last_thought_headline {
                     Some(step) if !step.is_empty() => {
-                        format!("💭 Thinking: {}...", step)
+                        let clean_step = step.trim_end_matches(['.', '…']);
+                        format!("💭 Thinking: {}...", to_sentence_case(clean_step))
                     }
                     _ => "💭 Thinking...".to_string(),
                 };
@@ -304,20 +305,21 @@ impl SseStreamState {
         new_headline: &str,
         _pb: &indicatif::ProgressBar,
     ) {
+        let sentence_cased = to_sentence_case(new_headline);
         match &self.last_thought_headline {
             None => {
-                self.last_thought_headline = Some(new_headline.to_string());
+                self.last_thought_headline = Some(sentence_cased);
             }
             Some(old_headline) => {
-                if is_same_or_growing_headline(old_headline, new_headline) {
-                    if new_headline.len() > old_headline.len() {
-                        self.last_thought_headline = Some(new_headline.to_string());
+                if is_same_or_growing_headline(old_headline, &sentence_cased) {
+                    if sentence_cased.len() > old_headline.len() {
+                        self.last_thought_headline = Some(sentence_cased);
                     }
                     return;
                 }
 
                 // Update active step headline in-place for live summary without dumping noisy lines to terminal
-                self.last_thought_headline = Some(new_headline.to_string());
+                self.last_thought_headline = Some(sentence_cased);
             }
         }
     }
@@ -511,6 +513,101 @@ pub fn strip_markdown_decorations(s: &str) -> String {
     out
 }
 
+/// Converts a thought headline string to sentence case:
+/// - Capitalizes the initial letter of the first word.
+/// - Converts subsequent words to lowercase unless they are established uppercase acronyms (e.g. API, LLM, USA).
+/// - If the entire headline is in all-caps, normalizes it cleanly into sentence case.
+pub fn to_sentence_case(s: &str) -> String {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let alphabetic_count = trimmed.chars().filter(|c| c.is_alphabetic()).count();
+    let is_all_caps = alphabetic_count > 1
+        && trimmed
+            .chars()
+            .filter(|c| c.is_alphabetic())
+            .all(|c| c.is_uppercase());
+
+    let mut result = String::with_capacity(trimmed.len());
+    let mut is_first_word = true;
+
+    for word in trimmed.split_whitespace() {
+        if !is_first_word {
+            result.push(' ');
+        }
+
+        let leading_len: usize = word
+            .chars()
+            .take_while(|c| !c.is_alphanumeric())
+            .map(|c| c.len_utf8())
+            .sum();
+        let trailing_len: usize = word
+            .chars()
+            .rev()
+            .take_while(|c| !c.is_alphanumeric())
+            .map(|c| c.len_utf8())
+            .sum();
+
+        if leading_len + trailing_len >= word.len() {
+            result.push_str(word);
+        } else {
+            let leading = &word[..leading_len];
+            let core = &word[leading_len..word.len() - trailing_len];
+            let trailing = &word[word.len() - trailing_len..];
+
+            result.push_str(leading);
+
+            let core_is_acronym = !is_all_caps
+                && core.len() >= 2
+                && core
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || !c.is_alphabetic())
+                && core.chars().any(|c| c.is_alphabetic());
+
+            if is_first_word {
+                if is_all_caps {
+                    let mut first = true;
+                    for c in core.chars() {
+                        if first && c.is_alphabetic() {
+                            result.extend(c.to_uppercase());
+                            first = false;
+                        } else {
+                            result.extend(c.to_lowercase());
+                        }
+                    }
+                } else if core_is_acronym {
+                    result.push_str(core);
+                } else {
+                    let mut first = true;
+                    for c in core.chars() {
+                        if first && c.is_alphabetic() {
+                            result.extend(c.to_uppercase());
+                            first = false;
+                        } else {
+                            result.push(c);
+                        }
+                    }
+                }
+                is_first_word = false;
+            } else {
+                if core_is_acronym {
+                    result.push_str(core);
+                } else {
+                    for c in core.chars() {
+                        result.extend(c.to_lowercase());
+                    }
+                }
+            }
+
+            result.push_str(trailing);
+        }
+    }
+
+    result
+}
+
 /// Checks whether a candidate headline is substantive and not generic thinking filler.
 fn is_meaningful_headline(s: &str) -> bool {
     let lower = s.to_ascii_lowercase();
@@ -695,7 +792,7 @@ pub fn extract_thought_headline(reasoning_text: &str) -> Option<String> {
         if let Some(candidate) = clean_heading_candidate(line)
             && is_meaningful_headline(&candidate)
         {
-            return Some(candidate);
+            return Some(to_sentence_case(&candidate));
         }
     }
 
@@ -705,7 +802,7 @@ pub fn extract_thought_headline(reasoning_text: &str) -> Option<String> {
         let trimmed = line_clean
             .trim_matches(|c: char| c.is_whitespace() || c == ':' || c == '.' || c == '-');
         if is_action_verb_sentence(trimmed) && is_meaningful_headline(trimmed) {
-            return Some(truncate_headline(trimmed, 45));
+            return Some(to_sentence_case(&truncate_headline(trimmed, 45)));
         }
     }
 
@@ -718,7 +815,7 @@ pub fn extract_thought_headline(reasoning_text: &str) -> Option<String> {
         let trimmed = line_clean
             .trim_matches(|c: char| c.is_whitespace() || c == ':' || c == '.' || c == '-');
         if trimmed.len() >= 8 && is_meaningful_headline(trimmed) {
-            return Some(truncate_headline(trimmed, 45));
+            return Some(to_sentence_case(&truncate_headline(trimmed, 45)));
         }
     }
 
@@ -817,7 +914,7 @@ mod tests {
         let step1 = "Here's a thinking process to construct the news briefing:\n\n1.  **Analyze the Request:**\n    *   **Topic:** USA election news (Midterms, Nov 2026).\n    *   **Timeframe:** Past Week";
         assert_eq!(
             extract_thought_headline(step1),
-            Some("Analyze the Request".to_string())
+            Some("Analyze the request".to_string())
         );
 
         let step2 = format!(
@@ -826,7 +923,7 @@ mod tests {
         );
         assert_eq!(
             extract_thought_headline(&step2),
-            Some("Source Material Review & Extraction".to_string())
+            Some("Source material review & extraction".to_string())
         );
 
         let step3 = format!(
@@ -835,7 +932,7 @@ mod tests {
         );
         assert_eq!(
             extract_thought_headline(&step3),
-            Some("Structuring and Drafting the Briefing".to_string())
+            Some("Structuring and drafting the briefing".to_string())
         );
 
         let step4 = format!(
@@ -844,7 +941,7 @@ mod tests {
         );
         assert_eq!(
             extract_thought_headline(&step4),
-            Some("Final Review".to_string())
+            Some("Final review".to_string())
         );
 
         // Markdown headings
@@ -852,7 +949,7 @@ mod tests {
             "### 1. Ownership and Borrowing\nExplaining how Rust guarantees memory safety.";
         assert_eq!(
             extract_thought_headline(md_heading),
-            Some("Ownership and Borrowing".to_string())
+            Some("Ownership and borrowing".to_string())
         );
 
         // Action verb sentence
@@ -874,7 +971,7 @@ mod tests {
         let standalone_bold = "**Synthesizing Main Takeaway**\nThe candidate won.";
         assert_eq!(
             extract_thought_headline(standalone_bold),
-            Some("Synthesizing Main Takeaway".to_string())
+            Some("Synthesizing main takeaway".to_string())
         );
 
         // Empty and generic filler
@@ -929,7 +1026,7 @@ mod tests {
         ));
         assert_eq!(
             state.last_thought_headline.as_deref(),
-            Some("Analyze Source Material")
+            Some("Analyze source material")
         );
         assert!(state.is_thinking);
         assert!(!state.finished_thinking_ui);
@@ -945,7 +1042,7 @@ mod tests {
         ));
         assert_eq!(
             state.last_thought_headline.as_deref(),
-            Some("Synthesize Key Developments")
+            Some("Synthesize key developments")
         );
         assert!(state.is_thinking);
 
@@ -1047,20 +1144,20 @@ mod tests {
         state.handle_thought_headline_update("Step 1: Ingesting Data", &pb);
         assert_eq!(
             state.last_thought_headline.as_deref(),
-            Some("Step 1: Ingesting Data")
+            Some("Step 1: ingesting data")
         );
 
         // Transition: updates active headline in-place without terminal noise
         state.handle_thought_headline_update("Step 2: Processing Content", &pb);
         assert_eq!(
             state.last_thought_headline.as_deref(),
-            Some("Step 2: Processing Content")
+            Some("Step 2: processing content")
         );
 
         state.handle_thought_headline_update("Step 3: Generating Output", &pb);
         assert_eq!(
             state.last_thought_headline.as_deref(),
-            Some("Step 3: Generating Output")
+            Some("Step 3: generating output")
         );
     }
 
@@ -1091,7 +1188,7 @@ mod tests {
             "Generating summary with local LLM...",
             StreamMode::Buffered
         ));
-        assert_eq!(pb.message(), "💭 Thinking: Identify Core Themes...");
+        assert_eq!(pb.message(), "💭 Thinking: Identify core themes...");
         assert!(!pb.message().contains('('));
         assert!(!pb.message().contains("tokens"));
         assert!(!pb.message().contains("t/s"));
@@ -1122,6 +1219,38 @@ mod tests {
         assert_eq!(pb.message(), "Generating summary with local LLM...");
         assert!(!pb.message().contains("tokens"));
         assert!(!pb.message().contains("t/s"));
+    }
+
+    #[test]
+    fn test_to_sentence_case() {
+        assert_eq!(to_sentence_case(""), "");
+        assert_eq!(to_sentence_case("   "), "");
+        assert_eq!(to_sentence_case("Draft the Summary"), "Draft the summary");
+        assert_eq!(to_sentence_case("draft the summary"), "Draft the summary");
+        assert_eq!(
+            to_sentence_case("Identify Core Themes"),
+            "Identify core themes"
+        );
+        assert_eq!(
+            to_sentence_case("Source Material Review & Extraction"),
+            "Source material review & extraction"
+        );
+        assert_eq!(
+            to_sentence_case("ANALYZE THE REQUEST"),
+            "Analyze the request"
+        );
+        assert_eq!(
+            to_sentence_case("Querying the LLM API"),
+            "Querying the LLM API"
+        );
+        assert_eq!(
+            to_sentence_case("Reviewing 5 articles to synthesize…"),
+            "Reviewing 5 articles to synthesize…"
+        );
+        assert_eq!(
+            to_sentence_case("Step 1: Ingesting Data"),
+            "Step 1: ingesting data"
+        );
     }
 
     #[test]

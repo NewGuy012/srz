@@ -14,7 +14,7 @@ use crate::engine::sse::{
 pub use crate::engine::sse::{
     LlmOutput, MAX_CONTENT_BUFFER_BYTES, MAX_HTTP_RESPONSE_BYTES, MAX_SSE_LINE_BYTES,
     RequestMessage, StreamMode, extract_thought_headline, format_thinking_duration,
-    is_same_or_growing_headline, strip_markdown_decorations,
+    is_same_or_growing_headline, strip_markdown_decorations, to_sentence_case,
 };
 use crate::ui::Ui;
 use anyhow::{Context, Result};
