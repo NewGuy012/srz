@@ -401,10 +401,6 @@ pub fn escape_html_cow(text: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
-pub fn escape_html(text: &str) -> String {
-    escape_html_cow(text).into_owned()
-}
-
 /// Formats an author name with a leading " by " if present.
 pub fn format_author_by(author: Option<&str>) -> String {
     match author {

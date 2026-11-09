@@ -207,18 +207,6 @@ impl GoogleNewsClient {
         parse_batchexecute_destination_url(&rpc_text)
     }
 
-    /// Fetches and normalizes top news articles concurrently with bounded concurrency.
-    pub async fn collect_news_articles(
-        &self,
-        topic: &str,
-        timeframe: NewsTimeframe,
-        limit: usize,
-        scraper: &WebScraper,
-    ) -> Result<Vec<NewsDigestSource>> {
-        self.collect_news_articles_with_cache(topic, timeframe, limit, scraper, None)
-            .await
-    }
-
     /// Fetches and normalizes top news articles concurrently, consulting and populating `cache` when provided.
     pub async fn collect_news_articles_with_cache(
         &self,

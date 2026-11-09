@@ -47,8 +47,6 @@ pub struct DynamicBudget {
     pub single_pass_threshold: usize,
     /// Maximum tokens per chunk when map-reducing long documents
     pub chunk_tokens: usize,
-    /// Token overlap between consecutive chunks
-    pub chunk_overlap: usize,
     /// Grounding document context budget for grounded Q&A (srz ask)
     pub ask_doc_budget: usize,
     /// Sliding conversational history budget for multi-turn Q&A (srz ask)
@@ -80,7 +78,6 @@ impl DynamicBudget {
         let usable = n_ctx.saturating_sub(overhead);
         let single_pass_threshold = usable;
         let chunk_tokens = (usable.saturating_mul(7) / 10).max(1500);
-        let chunk_overlap = (chunk_tokens / 15).clamp(100, 1000);
         let ask_doc_budget = usable / 2;
         let ask_hist_budget = usable.saturating_mul(4) / 10;
 
@@ -90,15 +87,9 @@ impl DynamicBudget {
             concurrency,
             single_pass_threshold,
             chunk_tokens,
-            chunk_overlap,
             ask_doc_budget,
             ask_hist_budget,
         }
-    }
-
-    /// Default baseline budget assuming a standard 32k context window and 1 slot.
-    pub fn default_32k() -> Self {
-        Self::new(32_768, 1, None, None)
     }
 }
 

@@ -102,12 +102,6 @@ impl DocumentLoader {
         })
     }
 
-    /// Helper that loads a document and returns `(title, content)`.
-    pub fn extract_file_text(path: &Path, scraper: &WebScraper) -> Result<(String, String)> {
-        let doc = Self::load_file(path, scraper)?;
-        Ok((doc.title, doc.content))
-    }
-
     /// Extracts clean text, word count, and title from raw string content, normalizing HTML if detected.
     pub fn normalize_or_plain_text(
         scraper: &WebScraper,

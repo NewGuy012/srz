@@ -107,11 +107,6 @@ impl LlmClient {
         self
     }
 
-    pub fn with_capabilities(mut self, caps: ServerCapabilities) -> Self {
-        self.capabilities = Some(caps);
-        self
-    }
-
     pub fn capabilities(&self) -> Option<&ServerCapabilities> {
         self.capabilities.as_ref()
     }

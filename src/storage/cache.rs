@@ -271,12 +271,6 @@ impl Cache {
         Self::with_paths(base_dir, db_path, enabled, CachePolicy::default())
     }
 
-    /// Creates a cache instance with a custom directory and retention policy.
-    pub fn with_policy(base_dir: PathBuf, enabled: bool, policy: CachePolicy) -> Self {
-        let db_path = base_dir.join("srz.duckdb");
-        Self::with_paths(base_dir, db_path, enabled, policy)
-    }
-
     /// Creates a cache instance with explicit base cache directory and database file paths.
     pub fn with_paths(
         base_dir: PathBuf,
@@ -1119,30 +1113,6 @@ impl Cache {
         model: &str,
     ) -> Option<CachedSummary> {
         self.get_summary_from_db("file", file_key, style.as_str(), model)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn set_file_summary(
-        &self,
-        file_key: &str,
-        style: SummaryStyle,
-        model: &str,
-        title: &str,
-        summary: &str,
-        word_count: usize,
-        reasoning: Option<&str>,
-    ) {
-        self.set_summary_in_db(
-            "file",
-            file_key,
-            Some(file_key),
-            title,
-            summary,
-            word_count,
-            reasoning,
-            style.as_str(),
-            model,
-        );
     }
 
     /// Computes canonical cache lookup key for a book title and optional author.
