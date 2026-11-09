@@ -167,12 +167,13 @@ pub fn damerau_levenshtein(a: &str, b: &str) -> usize {
         return a_len;
     }
 
-    let mut d = vec![vec![0usize; b_len + 1]; a_len + 1];
+    let width = b_len + 1;
+    let mut d = vec![0usize; (a_len + 1) * width];
 
-    for (i, row) in d.iter_mut().enumerate() {
-        row[0] = i;
+    for i in 0..=a_len {
+        d[i * width] = i;
     }
-    for (j, val) in d[0].iter_mut().enumerate() {
+    for (j, val) in d.iter_mut().take(width).enumerate() {
         *val = j;
     }
 
@@ -183,22 +184,22 @@ pub fn damerau_levenshtein(a: &str, b: &str) -> usize {
             } else {
                 1
             };
-            let mut min_val = (d[i - 1][j] + 1)
-                .min(d[i][j - 1] + 1)
-                .min(d[i - 1][j - 1] + cost);
+            let mut min_val = (d[(i - 1) * width + j] + 1)
+                .min(d[i * width + (j - 1)] + 1)
+                .min(d[(i - 1) * width + (j - 1)] + cost);
 
             if i > 1
                 && j > 1
                 && a_chars[i - 1] == b_chars[j - 2]
                 && a_chars[i - 2] == b_chars[j - 1]
             {
-                min_val = min_val.min(d[i - 2][j - 2] + 1);
+                min_val = min_val.min(d[(i - 2) * width + (j - 2)] + 1);
             }
-            d[i][j] = min_val;
+            d[i * width + j] = min_val;
         }
     }
 
-    d[a_len][b_len]
+    d[a_len * width + b_len]
 }
 
 /// Computes the Jaro similarity between two character sequences, returning a value between 0.0 and 1.0.
@@ -512,9 +513,65 @@ pub fn is_stop_word_lower(word: &str) -> bool {
     )
 }
 
+/// Tokenizes text into normalized lowercased terms for BM25 indexing and querying.
+/// Fast-paths lowercase ASCII tokens to avoid redundant heap allocations and case-mapping.
+pub fn tokenize_terms(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+        .map(|s| s.trim_matches(|c: char| !c.is_alphanumeric()))
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            if s.is_ascii() {
+                if s.bytes().any(|b| b.is_ascii_uppercase()) {
+                    s.to_ascii_lowercase()
+                } else {
+                    s.to_string()
+                }
+            } else {
+                s.to_lowercase()
+            }
+        })
+        .collect()
+}
+
+/// Tokenizes text into search/index terms, filtering out stop words and single-character ASCII tokens.
+pub fn tokenize_search_terms(text: &str) -> Vec<String> {
+    tokenize_terms(text)
+        .into_iter()
+        .filter(|t| !is_stop_word(t) && !(t.len() <= 1 && t.is_ascii()))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_damerau_levenshtein() {
+        assert_eq!(damerau_levenshtein("", ""), 0);
+        assert_eq!(damerau_levenshtein("a", ""), 1);
+        assert_eq!(damerau_levenshtein("", "b"), 1);
+        assert_eq!(damerau_levenshtein("kitten", "sitting"), 3);
+        // Transposition test
+        assert_eq!(damerau_levenshtein("ca", "ac"), 1);
+        assert_eq!(damerau_levenshtein("banana", "banna"), 1);
+    }
+
+    #[test]
+    fn test_tokenize_terms_and_search_terms() {
+        let text = "The Quick Brown Fox jumps over 123 lazy dogs! #Rust_2026-edition";
+        let terms = tokenize_terms(text);
+        assert!(terms.contains(&"quick".to_string()));
+        assert!(terms.contains(&"brown".to_string()));
+        assert!(terms.contains(&"the".to_string()));
+        assert!(terms.contains(&"rust_2026-edition".to_string()));
+
+        let search_terms = tokenize_search_terms(text);
+        // "the" is a stop word and should be filtered out
+        assert!(!search_terms.contains(&"the".to_string()));
+        assert!(search_terms.contains(&"quick".to_string()));
+        assert!(search_terms.contains(&"fox".to_string()));
+        assert!(search_terms.contains(&"dogs".to_string()));
+    }
 
     #[test]
     fn test_decode_html_entities() {

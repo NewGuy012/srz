@@ -56,12 +56,17 @@ pub struct HardwareProfile {
     pub ram_footprint: &'static str,
 }
 
+static DETECTED_PROFILE: std::sync::LazyLock<HardwareProfile> = std::sync::LazyLock::new(|| {
+    let total_memory_bytes = detect_total_memory().unwrap_or(16 * 1024 * 1024 * 1024);
+    let chip_name = detect_chip_name().unwrap_or_else(|| "Standard CPU".to_string());
+    HardwareProfile::from_specs(total_memory_bytes, chip_name)
+});
+
 impl HardwareProfile {
     /// Detects host hardware memory and processor characteristics, mapping to the optimal Gemma 4 configuration.
+    /// Results are cached across calls to avoid spawning subprocesses (`sysctl`/`powershell`) multiple times.
     pub fn detect() -> Self {
-        let total_memory_bytes = detect_total_memory().unwrap_or(16 * 1024 * 1024 * 1024);
-        let chip_name = detect_chip_name().unwrap_or_else(|| "Standard CPU".to_string());
-        Self::from_specs(total_memory_bytes, chip_name)
+        DETECTED_PROFILE.clone()
     }
 
     pub fn from_specs(total_memory_bytes: u64, chip_name: String) -> Self {
