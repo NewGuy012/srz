@@ -41,7 +41,6 @@ pdf-extract = "0.12.1"
 dom_smoothie = "0.19"
 quick-xml = "0.42"
 pulldown-cmark = "0.13"
-rustyline = "19"
 htmd = "0.5.6"
 
 [dev-dependencies]

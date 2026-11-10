@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::io::{self, Write};
 use std::path::Path;
 
 use crate::cache::Cache;
@@ -487,17 +488,18 @@ pub async fn handle_ask(
         .await?;
     }
 
-    let mut rl =
-        rustyline::DefaultEditor::new().context("Failed to initialize interactive line editor")?;
-
-    for (past_q, _) in &history {
-        let _ = rl.add_history_entry(past_q.as_str());
-    }
-
+    let stdin = io::stdin();
     loop {
-        let readline = rl.readline("\x1b[1;36msrz [ask]>\x1b[0m ");
-        match readline {
-            Ok(line) => {
+        print!("\x1b[1;36msrz [ask]>\x1b[0m ");
+        let _ = io::stdout().flush();
+
+        let mut line = String::new();
+        match stdin.read_line(&mut line) {
+            Ok(0) => {
+                println!();
+                break;
+            }
+            Ok(_) => {
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
                     continue;
@@ -507,8 +509,6 @@ pub async fn handle_ask(
                     break;
                 }
 
-                let _ = rl.add_history_entry(trimmed);
-
                 record_and_ask_turn(
                     &session_ctx,
                     &mut history,
@@ -517,14 +517,6 @@ pub async fn handle_ask(
                     llm,
                 )
                 .await?;
-            }
-            Err(rustyline::error::ReadlineError::Interrupted) => {
-                println!("\x1b[2mGoodbye!\x1b[0m\n");
-                break;
-            }
-            Err(rustyline::error::ReadlineError::Eof) => {
-                println!();
-                break;
             }
             Err(err) => {
                 eprintln!("\x1b[1;31mError reading input:\x1b[0m {}", err);
