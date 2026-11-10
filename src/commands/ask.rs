@@ -74,18 +74,12 @@ async fn resolve_document_context(
         if let Some(db) = db_opt {
             let results = db.search(trimmed)?;
             if let Some(hit) = results.into_iter().next() {
-                let target_type = db
-                    .get_library_item_by_id(hit.id)
-                    .ok()
-                    .flatten()
-                    .map(|item| item.target_type)
+                let item_opt = db.get_library_item_by_id(hit.id).ok().flatten();
+                let target_type = item_opt
+                    .as_ref()
+                    .map(|item| item.target_type.clone())
                     .unwrap_or_else(|| "web".to_string());
-                let fallback_summary = db
-                    .get_library_item_by_id(hit.id)
-                    .ok()
-                    .flatten()
-                    .map(|item| item.summary)
-                    .unwrap_or(hit.snippet);
+                let fallback_summary = item_opt.map(|item| item.summary).unwrap_or(hit.snippet);
                 let (title, content) = resolve_cached_page_or_fetch(
                     scraper,
                     cache,

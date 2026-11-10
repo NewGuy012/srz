@@ -327,7 +327,7 @@ pub async fn dispatch_cli(
     } else {
         // Sub-millisecond cache fast-path: probe cache before initializing LLM/scraper clients
         match &action {
-            crate::cli::ResolvedAction::Web { url } if !crate::cli::is_feed_url(url) => {
+            crate::cli::ResolvedAction::Web { url } => {
                 if let Some(cached) = cache.get_web_summary(url, args.style, &args.model) {
                     Ui::info("Loaded summary from local cache (pass `--no-cache` to refresh).");
                     let outcome = SummaryOutcome::from_cached(
@@ -336,21 +336,6 @@ pub async fn dispatch_cli(
                         None,
                         Some(url.to_string()),
                     );
-                    return present_summary_outcome(outcome, &args, &cache);
-                }
-            }
-            crate::cli::ResolvedAction::Web { url } if crate::cli::is_feed_url(url) => {
-                if let Some(cached) = cache.get_news_summary(
-                    url,
-                    crate::cli::NewsTimeframe::All,
-                    args.style,
-                    &args.model,
-                ) {
-                    Ui::info(
-                        "Loaded news briefing from local cache (pass `--no-cache` to refresh).",
-                    );
-                    let outcome =
-                        SummaryOutcome::from_cached("news", cached, None, Some(url.to_string()));
                     return present_summary_outcome(outcome, &args, &cache);
                 }
             }
@@ -406,7 +391,7 @@ pub async fn dispatch_cli(
     };
 
     let summary_result = match action {
-        crate::cli::ResolvedAction::Web { url } if !crate::cli::is_feed_url(url) => {
+        crate::cli::ResolvedAction::Web { url } => {
             let (llm, page_res) = tokio::join!(
                 init_llm_with_capabilities_or_exit(&args, Some(&cache)),
                 fetch_url_content(url, &scraper, &cache, true)
@@ -459,9 +444,6 @@ pub async fn dispatch_cli(
                         std::process::exit(1);
                     }
                     return Ok(());
-                }
-                crate::cli::ResolvedAction::Web { url } => {
-                    handle_web(url, &scraper, &llm, &cache, &args).await
                 }
                 crate::cli::ResolvedAction::File { path } => {
                     handle_file(&path, &scraper, &llm, &cache, &args).await

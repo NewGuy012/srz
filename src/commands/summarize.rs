@@ -370,19 +370,6 @@ pub async fn handle_web(
     cache: &Cache,
     args: &Cli,
 ) -> Result<SummaryOutcome> {
-    if crate::cli::is_feed_url(url) {
-        return handle_news(
-            url,
-            crate::cli::NewsTimeframe::All,
-            5,
-            scraper,
-            llm,
-            cache,
-            args,
-        )
-        .await;
-    }
-
     // Fetch or load cached page / transcript / PDF
     let page = fetch_url_content(url, scraper, cache, true).await?;
     summarize_fetched_web_page(url, page, llm, args).await
@@ -806,16 +793,13 @@ fn disambiguate_candidates_if_needed(
     eprintln!();
 }
 
-async fn generate_prepared_book_summary(
+async fn resolve_book_reference_context(
     prep: &mut PreparedBookQuery,
     scraper: &WebScraper,
-    llm: &LlmClient,
     cache: &Cache,
     args: &Cli,
-    mode: StreamMode<'_>,
-) -> Result<(LlmOutput, usize, Option<String>)> {
+) -> Option<(String, String, usize)> {
     let effective_title = prep.resolved_title.as_str();
-    let effective_author = prep.resolved_author.as_deref().or(prep.author.as_deref());
 
     if !prep.candidates.is_empty() {
         disambiguate_candidates_if_needed(effective_title, &mut prep.candidates, args);
@@ -871,17 +855,7 @@ async fn generate_prepared_book_summary(
                         llm::MAX_CONTEXT_WORDS
                     ));
 
-                    let output = llm
-                        .summarize_book_with_context(
-                            effective_title,
-                            effective_author,
-                            &res.url,
-                            &content_to_use,
-                            args.style,
-                            mode,
-                        )
-                        .await?;
-                    return Ok((output, words_to_use, Some(res.url.clone())));
+                    return Some((res.url.clone(), content_to_use, words_to_use));
                 }
                 Err(err) => {
                     Ui::warn(&format!(
@@ -902,19 +876,7 @@ async fn generate_prepared_book_summary(
         if let (Some(snippet), Some(url)) = (fallback_snippet, fallback_url) {
             Ui::info("Using search snippet as grounded context...");
             let word_count = snippet.split_whitespace().count();
-            if let Ok(output) = llm
-                .summarize_book_with_context(
-                    effective_title,
-                    effective_author,
-                    &url,
-                    &snippet,
-                    args.style,
-                    mode,
-                )
-                .await
-            {
-                return Ok((output, word_count, Some(url)));
-            }
+            return Some((url, snippet, word_count));
         }
 
         Ui::warn(
@@ -940,21 +902,39 @@ async fn generate_prepared_book_summary(
                     "https://openlibrary.org/{}",
                     work_key.trim_start_matches('/')
                 );
-                if let Ok(output) = llm
-                    .summarize_book_with_context(
-                        effective_title,
-                        effective_author,
-                        &work_url,
-                        &desc,
-                        args.style,
-                        mode,
-                    )
-                    .await
-                {
-                    return Ok((output, wc, Some(work_url)));
-                }
+                return Some((work_url, desc, wc));
             }
         }
+    }
+
+    None
+}
+
+async fn generate_prepared_book_summary(
+    prep: &mut PreparedBookQuery,
+    scraper: &WebScraper,
+    llm: &LlmClient,
+    cache: &Cache,
+    args: &Cli,
+    mode: StreamMode<'_>,
+) -> Result<(LlmOutput, usize, Option<String>)> {
+    let reference_context = resolve_book_reference_context(prep, scraper, cache, args).await;
+
+    let effective_title = prep.resolved_title.as_str();
+    let effective_author = prep.resolved_author.as_deref().or(prep.author.as_deref());
+
+    if let Some((url, content, word_count)) = reference_context {
+        let output = llm
+            .summarize_book_with_context(
+                effective_title,
+                effective_author,
+                &url,
+                &content,
+                args.style,
+                mode,
+            )
+            .await?;
+        return Ok((output, word_count, Some(url)));
     }
 
     let output = llm
