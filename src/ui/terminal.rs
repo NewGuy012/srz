@@ -1,3 +1,4 @@
+use crate::config::cli::PagingMode;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::borrow::Cow;
 use std::env;
@@ -8,10 +9,6 @@ use std::process::{Command, Stdio};
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use termimad::MadSkin;
-use termimad::crossterm::style::{Attribute, Color};
-
-use crate::config::cli::PagingMode;
 
 static QUIET: AtomicBool = AtomicBool::new(false);
 static VERBOSE: AtomicBool = AtomicBool::new(false);
@@ -349,42 +346,79 @@ pub fn format_duration_short(d: Duration) -> String {
     }
 }
 
-static SKIN: LazyLock<MadSkin> = LazyLock::new(create_skin);
+/// Renders markdown string into ANSI formatted terminal text using pulldown-cmark.
+pub fn render_markdown(markdown: &str, _width: Option<usize>) -> String {
+    use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 
-/// Creates a tailored MadSkin for srz terminal markdown output.
-pub fn create_skin() -> MadSkin {
-    let mut skin = MadSkin::default();
+    let mut out = String::with_capacity(markdown.len() * 2);
+    let mut in_code_block = false;
+    let mut list_depth: usize = 0;
 
-    // Headers
-    skin.headers[0].set_fg(Color::Cyan);
-    skin.headers[0]
-        .compound_style
-        .add_attr(Attribute::Underlined);
-    skin.headers[1].set_fg(Color::Cyan);
-    skin.headers[2].set_fg(Color::Yellow);
+    for event in Parser::new(markdown) {
+        match event {
+            Event::Start(Tag::Heading { level, .. }) => match level {
+                HeadingLevel::H1 => out.push_str("\x1b[1;36;4m"),
+                HeadingLevel::H2 => out.push_str("\x1b[1;36m"),
+                _ => out.push_str("\x1b[1;33m"),
+            },
+            Event::End(TagEnd::Heading(_)) => {
+                out.push_str("\x1b[0m\n\n");
+            }
+            Event::Start(Tag::Paragraph) => {}
+            Event::End(TagEnd::Paragraph) => {
+                out.push_str("\n\n");
+            }
+            Event::Start(Tag::List(_)) => {
+                list_depth += 1;
+            }
+            Event::End(TagEnd::List(_)) => {
+                list_depth = list_depth.saturating_sub(1);
+                if list_depth == 0 {
+                    out.push('\n');
+                }
+            }
+            Event::Start(Tag::Item) => {
+                let indent = "  ".repeat(list_depth.saturating_sub(1));
+                out.push_str(&indent);
+                out.push_str("\x1b[36m•\x1b[0m ");
+            }
+            Event::End(TagEnd::Item) => {
+                out.push('\n');
+            }
+            Event::Start(Tag::Strong) => out.push_str("\x1b[1;37m"),
+            Event::End(TagEnd::Strong) => out.push_str("\x1b[0m"),
+            Event::Start(Tag::Emphasis) => out.push_str("\x1b[35m"),
+            Event::End(TagEnd::Emphasis) => out.push_str("\x1b[0m"),
+            Event::Start(Tag::CodeBlock(_)) => {
+                in_code_block = true;
+                out.push_str("\x1b[32m");
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                in_code_block = false;
+                out.push_str("\x1b[0m\n\n");
+            }
+            Event::Code(code) => {
+                out.push_str("\x1b[32m");
+                out.push_str(&code);
+                out.push_str("\x1b[0m");
+            }
+            Event::Text(text) => {
+                out.push_str(&text);
+            }
+            Event::SoftBreak => {
+                if in_code_block {
+                    out.push('\n');
+                } else {
+                    out.push(' ');
+                }
+            }
+            Event::HardBreak => out.push('\n'),
+            Event::Rule => out.push_str("\x1b[2m──────────\x1b[0m\n\n"),
+            _ => {}
+        }
+    }
 
-    // Inline formatting
-    skin.bold.set_fg(Color::White);
-    skin.italic.set_fg(Color::Magenta);
-    skin.inline_code.set_fg(Color::Green);
-
-    // Code blocks
-    skin.code_block.set_fg(Color::Green);
-
-    // Bullet points
-    skin.bullet = termimad::StyledChar::from_fg_char(Color::Cyan, '•');
-
-    skin
-}
-
-/// Renders markdown string into ANSI formatted terminal text.
-pub fn render_markdown(markdown: &str, width: Option<usize>) -> String {
-    let term_width = width.unwrap_or_else(|| {
-        crossterm::terminal::size()
-            .map(|(w, _)| w as usize)
-            .unwrap_or(80)
-    });
-    SKIN.text(markdown, Some(term_width)).to_string()
+    out.trim_end().to_string()
 }
 
 /// Incremental line-buffered markdown stream renderer for real-time terminal output.
@@ -679,12 +713,9 @@ mod tests {
         assert!(rendered.contains("Title"));
         assert!(rendered.contains("bold"));
         assert!(rendered.contains("Bullet"));
-    }
-
-    #[test]
-    fn test_create_skin() {
-        let skin = create_skin();
-        assert_eq!(skin.headers[0].compound_style.get_fg(), Some(Color::Cyan));
+        assert!(rendered.contains("\x1b[1;36;4m")); // H1 cyan underline
+        assert!(rendered.contains("\x1b[1;37m")); // Bold white
+        assert!(rendered.contains("\x1b[36m•\x1b[0m")); // Bullet
     }
 
     #[test]
