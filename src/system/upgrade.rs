@@ -6,7 +6,6 @@ use std::env;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tar::Archive;
 use zip::ZipArchive;
 
 use crate::ui::Ui;
@@ -294,15 +293,47 @@ fn read_bounded_binary(mut reader: impl Read, source_label: &str) -> Result<Vec<
 
 /// Extracts the named binary from a gzipped tarball with bounded decompression.
 pub fn extract_binary_from_tar_gz(bytes: &[u8], binary_name: &str) -> Result<Vec<u8>> {
-    let gz = GzDecoder::new(Cursor::new(bytes));
-    let mut archive = Archive::new(gz);
-    for entry in archive.entries().context("Failed to read tar entries")? {
-        let entry = entry.context("Corrupt tar entry")?;
-        let path = entry.path().context("Invalid tar entry path")?;
-        if path.file_name().and_then(|n| n.to_str()) == Some(binary_name) {
-            return read_bounded_binary(entry, "tar entry");
+    let mut gz = GzDecoder::new(Cursor::new(bytes));
+    let mut header = [0u8; 512];
+
+    while gz.read_exact(&mut header).is_ok() {
+        if header.iter().all(|&b| b == 0) {
+            break;
         }
+
+        // File name is at 0..100
+        let name_bytes = &header[0..100];
+        let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(100);
+        let name = std::str::from_utf8(&name_bytes[..name_len]).unwrap_or("");
+
+        // File size is octal ASCII at 124..136
+        let size_bytes = &header[124..136];
+        let size_str = std::str::from_utf8(size_bytes)
+            .unwrap_or("")
+            .trim_matches(['\0', ' ']);
+        let size = u64::from_str_radix(size_str, 8).unwrap_or(0);
+
+        let filename = name.rsplit('/').next().unwrap_or(name);
+        if filename == binary_name {
+            if size > MAX_BINARY_BYTES {
+                bail!(
+                    "Decompressed binary exceeds security limit of {} MB",
+                    MAX_BINARY_BYTES / (1024 * 1024)
+                );
+            }
+            let mut binary_buf = vec![0u8; size as usize];
+            gz.read_exact(&mut binary_buf)
+                .context("Failed to read binary data from tar")?;
+            return Ok(binary_buf);
+        }
+
+        // Skip to next 512-byte block boundary
+        let padded_size = (size + 511) & !511;
+        let mut discard = gz.by_ref().take(padded_size);
+        std::io::copy(&mut discard, &mut std::io::sink())
+            .context("Failed to skip entry in tar archive")?;
     }
+
     bail!("Binary '{}' not found in release archive", binary_name)
 }
 

@@ -142,19 +142,27 @@ fn test_format_asset_names() {
 fn test_extract_binary_from_tar_gz() {
     let binary_content = b"echo 'srz v0.2.0'";
 
-    // Create an in-memory tar.gz containing 'srz'
+    // Create an in-memory tar.gz containing 'srz' using standard USTAR format
+    let mut header = [0u8; 512];
+    header[..3].copy_from_slice(b"srz");
+    header[100..108].copy_from_slice(b"0000755\0");
+    let size_octal = format!("{:011o} ", binary_content.len());
+    header[124..136].copy_from_slice(size_octal.as_bytes());
+    header[156] = b'0';
+    header[257..263].copy_from_slice(b"ustar\0");
+    header[148..156].copy_from_slice(b"        ");
+    let cksum: u32 = header.iter().map(|&b| b as u32).sum();
+    let cksum_octal = format!("{:06o}\0 ", cksum);
+    header[148..156].copy_from_slice(cksum_octal.as_bytes());
+
     let mut gz_encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    {
-        let mut tar_builder = tar::Builder::new(&mut gz_encoder);
-        let mut header = tar::Header::new_gnu();
-        header.set_size(binary_content.len() as u64);
-        header.set_mode(0o755);
-        header.set_cksum();
-        tar_builder
-            .append_data(&mut header, "srz", &binary_content[..])
-            .expect("Failed to append file to tar");
-        tar_builder.finish().expect("Failed to finish tar archive");
+    gz_encoder.write_all(&header).unwrap();
+    gz_encoder.write_all(binary_content).unwrap();
+    let pad = (512 - (binary_content.len() % 512)) % 512;
+    if pad > 0 {
+        gz_encoder.write_all(&vec![0u8; pad]).unwrap();
     }
+    gz_encoder.write_all(&[0u8; 1024]).unwrap();
     let archive_bytes = gz_encoder.finish().expect("Failed to finish gzip encoding");
 
     // Extract 'srz'
