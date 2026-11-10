@@ -34,7 +34,7 @@ pub fn init_llm_or_exit(args: &Cli) -> crate::llm::LlmClient {
     }
 }
 
-/// Initializes an `LlmClient` and discovers server capabilities (with DuckDB caching & model-change invalidation).
+/// Initializes an `LlmClient` and discovers server capabilities (with redb caching & model-change invalidation).
 pub async fn init_llm_with_capabilities_or_exit(
     args: &Cli,
     cache: Option<&crate::cache::Cache>,
@@ -227,7 +227,7 @@ pub async fn dispatch_cli(
     }
 
     // Handle immediate utility subcommands without initializing scraping, LLM HTTP clients,
-    // or opening DuckDB unless the subcommand actually requires database access.
+    // or opening redb unless the subcommand actually requires database access.
     match action {
         crate::cli::ResolvedAction::Ask {
             list_chats,

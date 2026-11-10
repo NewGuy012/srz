@@ -320,7 +320,7 @@ impl LlmClient {
         caps
     }
 
-    /// Initializes server capabilities using DuckDB caching, invalidating automatically when model changes.
+    /// Initializes server capabilities using redb caching, invalidating automatically when model changes.
     pub async fn init_with_capabilities(mut self, cache: Option<&crate::cache::Cache>) -> Self {
         if let Some(c) = cache
             && let Some(cached) = c.get_server_capabilities(&self.base_url, &self.model)

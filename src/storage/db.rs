@@ -456,10 +456,9 @@ impl Database {
     }
 
     pub fn get_history(&self, limit: usize) -> Result<Vec<HistoryEntry>> {
-        let items = self.get_all_library_items()?;
+        let items = self.get_library_items_bounded(limit)?;
         Ok(items
             .into_iter()
-            .take(limit)
             .map(LibraryItem::into_history_entry)
             .collect())
     }
@@ -469,17 +468,27 @@ impl Database {
     }
 
     pub fn get_all_library_items(&self) -> Result<Vec<LibraryItem>> {
+        self.get_library_items_bounded(usize::MAX)
+    }
+
+    pub fn get_library_items_bounded(&self, limit: usize) -> Result<Vec<LibraryItem>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         let read_txn = self.db.begin_read()?;
         let table = match read_txn.open_table(TABLE_HISTORY) {
             Ok(t) => t,
             Err(_) => return Ok(Vec::new()),
         };
 
-        let mut items = Vec::new();
+        let mut items = Vec::with_capacity(limit.min(128));
         for item_res in table.iter()?.rev() {
             let (_, val) = item_res?;
             let item: LibraryItem = serde_json::from_slice(val.value())?;
             items.push(item);
+            if items.len() >= limit {
+                break;
+            }
         }
         Ok(items)
     }

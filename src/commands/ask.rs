@@ -71,7 +71,7 @@ async fn resolve_document_context(
             anyhow::bail!("File not found: {:?}", path);
         }
 
-        // 3. Search in DuckDB library for matching title
+        // 3. Search in redb library for matching title
         if let Some(db) = db_opt {
             let results = db.search(trimmed)?;
             if let Some(hit) = results.into_iter().next() {

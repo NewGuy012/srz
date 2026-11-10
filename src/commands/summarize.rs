@@ -955,7 +955,7 @@ fn print_view_file_links(files: &crate::render::RenderedFiles) {
 }
 
 /// Presents a summary outcome to the user based on CLI arguments (JSON, saved file, or terminal pager),
-/// records newly generated summaries into DuckDB history & library, and runs opportunistic cache pruning.
+/// records newly generated summaries into redb history & library, and runs opportunistic cache pruning.
 pub fn present_summary_outcome(outcome: SummaryOutcome, args: &Cli, cache: &Cache) -> Result<()> {
     if args.json {
         println!("{}", serde_json::to_string_pretty(&outcome)?);
@@ -1041,7 +1041,7 @@ pub fn present_summary_outcome(outcome: SummaryOutcome, args: &Cli, cache: &Cach
         }
     }
 
-    // Record newly generated summaries in DuckDB history & library (lazily opened)
+    // Record newly generated summaries in redb history & library (lazily opened)
     if !outcome.cached
         && let Some(db) = cache
             .open_database()

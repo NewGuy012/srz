@@ -745,18 +745,11 @@ pub async fn run_upgrade(
         .map(PathBuf::from)
         .unwrap_or_else(env::temp_dir);
 
-    let nonce: u64 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
-
-    let temp_name = format!(
-        ".srz-upgrade-{}-{:x}-{}",
-        std::process::id(),
-        nonce,
-        target_info.binary_name
+    let temp_path = crate::system::fs_util::create_temp_file_path(
+        &temp_dir,
+        ".srz-upgrade",
+        &format!("-{}", target_info.binary_name),
     );
-    let temp_path = temp_dir.join(temp_name);
 
     let mut open_opts = std::fs::OpenOptions::new();
     open_opts.write(true).create_new(true);

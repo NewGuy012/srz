@@ -79,6 +79,25 @@ pub fn default_config_path() -> PathBuf {
     std::env::temp_dir().join("srz").join("config.toml")
 }
 
+/// Generates a unique temporary file path within `dir` using PID, nanos timestamp, and atomic counter.
+pub fn create_temp_file_path(dir: &Path, prefix: &str, suffix: &str) -> PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp_name = format!(
+        "{}-{}-{:x}-{}{}",
+        prefix,
+        std::process::id(),
+        nonce,
+        count,
+        suffix
+    );
+    dir.join(temp_name)
+}
+
 /// Sets directory permissions to `0700` on Unix systems (no-op on other platforms).
 pub fn set_private_dir_perms(path: &Path) {
     #[cfg(unix)]
@@ -164,14 +183,7 @@ pub fn write_private_file(path: &Path, contents: impl AsRef<[u8]>) -> std::io::R
         create_private_dir_all(parent)?;
     }
 
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let temp_name = format!(".srz-tmp-{}-{:x}-{}.tmp", std::process::id(), nonce, count);
-    let temp_path = parent.join(temp_name);
+    let temp_path = create_temp_file_path(parent, ".srz-tmp", ".tmp");
 
     let mut open_opts = fs::OpenOptions::new();
     open_opts.write(true).create_new(true);

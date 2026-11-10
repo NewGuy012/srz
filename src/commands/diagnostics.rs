@@ -59,7 +59,7 @@ pub async fn handle_models(args: &Cli, as_json: bool) -> Result<()> {
     }
 }
 
-/// Diagnoses LLM connectivity, DuckDB database status, cache storage, and configuration.
+/// Diagnoses LLM connectivity, redb database status, cache storage, and configuration.
 pub async fn handle_doctor(
     args: &Cli,
     config: &Config,
@@ -97,7 +97,7 @@ pub async fn handle_doctor(
     // 2. Hardware profile detection
     let hw = crate::system::hardware::HardwareProfile::detect();
 
-    // 2. DuckDB database check
+    // 2. redb database check
     let db_path = Database::default_path();
     let (db_ok, db_entries_count, db_err) = match Database::open_default() {
         Ok(db) => match db.get_stats() {
