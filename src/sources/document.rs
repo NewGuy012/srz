@@ -1,11 +1,11 @@
+use crate::system::zip::ZipReader;
 use anyhow::{Context, Result};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, File};
-use std::io::{Cursor, Read, Seek};
+use std::fs;
+use std::io::Read;
 use std::path::Path;
-use zip::ZipArchive;
 
 use crate::render;
 use crate::scraper::{ScrapedPage, WebScraper, clean_text, html_to_markdown};
@@ -319,26 +319,17 @@ impl EpubExtractor {
     /// Extracts text and metadata from an EPUB file path.
     pub fn extract_file(path: &Path) -> Result<ScrapedPage> {
         DocumentLoader::validate_file(path)?;
-        let file =
-            File::open(path).with_context(|| format!("Failed to open EPUB file at {:?}", path))?;
-        Self::extract_from_reader(file, Some(path))
+        let bytes =
+            fs::read(path).with_context(|| format!("Failed to open EPUB file at {:?}", path))?;
+        Self::extract_from_bytes(&bytes, Some(path))
     }
 
     /// Extracts text and metadata from in-memory EPUB bytes.
     pub fn extract_from_bytes(bytes: &[u8], path: Option<&Path>) -> Result<ScrapedPage> {
-        let cursor = Cursor::new(bytes);
-        Self::extract_from_reader(cursor, path)
-    }
+        let archive = ZipReader::new(bytes).context("Failed to open EPUB as zip archive")?;
 
-    /// Core extractor reading from any seekable reader.
-    pub fn extract_from_reader<R: Read + Seek>(
-        reader: R,
-        path: Option<&Path>,
-    ) -> Result<ScrapedPage> {
-        let mut archive = ZipArchive::new(reader).context("Failed to open EPUB as zip archive")?;
-
-        let opf_path = find_opf_path(&mut archive)?;
-        let (title, chapters) = parse_opf(&mut archive, &opf_path)?;
+        let opf_path = find_opf_path(&archive)?;
+        let (title, chapters) = parse_opf(&archive, &opf_path)?;
 
         let mut book_markdown = String::new();
         let mut total_bytes: usize = 0;
@@ -348,37 +339,32 @@ impl EpubExtractor {
             if !seen_chapters.insert(chapter_path.clone()) {
                 continue;
             }
-            if let Ok(mut file) = archive.by_name(&chapter_path) {
-                let mut html = String::new();
-                if file
-                    .by_ref()
-                    .take(MAX_EPUB_CHAPTER_BYTES)
-                    .read_to_string(&mut html)
-                    .is_ok()
-                {
-                    let md = html_to_markdown(&html);
-                    let trimmed = md.trim();
-                    if !trimmed.is_empty() {
-                        if total_bytes.saturating_add(trimmed.len()) > MAX_EPUB_TOTAL_BYTES {
-                            let remaining = MAX_EPUB_TOTAL_BYTES.saturating_sub(total_bytes);
-                            if remaining > 0 {
-                                let bound = trimmed.floor_char_boundary(remaining);
-                                let slice = &trimmed[..bound];
-                                if !slice.is_empty() {
-                                    if !book_markdown.is_empty() {
-                                        book_markdown.push_str("\n\n");
-                                    }
-                                    book_markdown.push_str(slice);
+            if let Ok(file_bytes) =
+                archive.read_file(&chapter_path, MAX_EPUB_CHAPTER_BYTES as usize)
+                && let Ok(html) = std::str::from_utf8(&file_bytes)
+            {
+                let md = html_to_markdown(html);
+                let trimmed = md.trim();
+                if !trimmed.is_empty() {
+                    if total_bytes.saturating_add(trimmed.len()) > MAX_EPUB_TOTAL_BYTES {
+                        let remaining = MAX_EPUB_TOTAL_BYTES.saturating_sub(total_bytes);
+                        if remaining > 0 {
+                            let bound = trimmed.floor_char_boundary(remaining);
+                            let slice = &trimmed[..bound];
+                            if !slice.is_empty() {
+                                if !book_markdown.is_empty() {
+                                    book_markdown.push_str("\n\n");
                                 }
+                                book_markdown.push_str(slice);
                             }
-                            break;
                         }
-                        if !book_markdown.is_empty() {
-                            book_markdown.push_str("\n\n");
-                        }
-                        book_markdown.push_str(trimmed);
-                        total_bytes = total_bytes.saturating_add(trimmed.len());
+                        break;
                     }
+                    if !book_markdown.is_empty() {
+                        book_markdown.push_str("\n\n");
+                    }
+                    book_markdown.push_str(trimmed);
+                    total_bytes = total_bytes.saturating_add(trimmed.len());
                 }
             }
         }
@@ -414,27 +400,19 @@ impl EpubExtractor {
 }
 
 /// Locates the package OPF file path within the EPUB archive.
-fn find_opf_path<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<String> {
+fn find_opf_path(archive: &ZipReader) -> Result<String> {
     // 1. Standard EPUB path: check META-INF/container.xml
-    if let Ok(mut container_file) = archive.by_name("META-INF/container.xml") {
-        let mut xml = String::new();
-        if container_file
-            .by_ref()
-            .take(MAX_EPUB_XML_BYTES)
-            .read_to_string(&mut xml)
-            .is_ok()
-            && let Some(path) = parse_container_xml(&xml)
-        {
-            return Ok(path);
-        }
+    if let Ok(xml_bytes) = archive.read_file("META-INF/container.xml", MAX_EPUB_XML_BYTES as usize)
+        && let Ok(xml) = std::str::from_utf8(&xml_bytes)
+        && let Some(path) = parse_container_xml(xml)
+    {
+        return Ok(path);
     }
 
     // 2. Fallback: locate any entry ending with .opf from the in-memory central directory
-    for name_res in archive.file_names() {
-        if let Ok(name) = name_res
-            && crate::system::text_util::ends_with_ascii_case_insensitive(&name, ".opf")
-        {
-            return Ok(name.into_owned());
+    for name in archive.file_names() {
+        if crate::system::text_util::ends_with_ascii_case_insensitive(name, ".opf") {
+            return Ok(name.to_string());
         }
     }
 
@@ -473,26 +451,18 @@ fn parse_container_xml(xml: &str) -> Option<String> {
 }
 
 /// Parses the OPF package document to extract book title and ordered chapter file paths.
-fn parse_opf<R: Read + Seek>(
-    archive: &mut ZipArchive<R>,
-    opf_path: &str,
-) -> Result<(Option<String>, Vec<String>)> {
-    let mut opf_file = archive
-        .by_name(opf_path)
+fn parse_opf(archive: &ZipReader, opf_path: &str) -> Result<(Option<String>, Vec<String>)> {
+    let opf_bytes = archive
+        .read_file(opf_path, MAX_EPUB_XML_BYTES as usize)
         .with_context(|| format!("Failed to read OPF file at {}", opf_path))?;
-    let mut opf_xml = String::new();
-    opf_file
-        .by_ref()
-        .take(MAX_EPUB_XML_BYTES)
-        .read_to_string(&mut opf_xml)
-        .context("Failed to read OPF content")?;
+    let opf_xml = std::str::from_utf8(&opf_bytes).context("OPF XML is not valid UTF-8")?;
 
     let opf_dir = match opf_path.rfind('/') {
         Some(idx) => &opf_path[..=idx],
         None => "",
     };
 
-    let mut reader = Reader::from_str(&opf_xml);
+    let mut reader = Reader::from_str(opf_xml);
     let mut title: Option<String> = None;
     let mut manifest: HashMap<String, (String, String)> = HashMap::new(); // id -> (href, media_type)
     let mut spine: Vec<String> = Vec::new(); // list of idref
@@ -632,8 +602,6 @@ fn resolve_epub_path(base_dir: &str, href: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use zip::write::SimpleFileOptions;
 
     #[test]
     fn test_post_process_text_hyphenation() {
@@ -661,24 +629,11 @@ mod tests {
 
     #[test]
     fn test_epub_deduplication_and_spine_limit() {
-        let mut zip_buf = std::io::Cursor::new(Vec::new());
-        {
-            let mut writer = zip::ZipWriter::new(&mut zip_buf);
-            let opts = SimpleFileOptions::default();
-
-            writer.start_file("META-INF/container.xml", opts).unwrap();
-            writer
-                .write_all(
-                    br#"<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+        let container_xml =
+            br#"<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
   <rootfiles><rootfile full-path="content.opf"/></rootfiles>
-</container>"#,
-                )
-                .unwrap();
-
-            writer.start_file("content.opf", opts).unwrap();
-            writer
-                .write_all(
-                    br#"<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+</container>"#;
+        let opf_xml = br#"<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Bomb Test</dc:title></metadata>
   <manifest>
     <item id="c1" href="ch1.html" media-type="application/xhtml+xml"/>
@@ -688,21 +643,14 @@ mod tests {
     <itemref idref="c1"/>
     <itemref idref="c1"/>
   </spine>
-</package>"#,
-                )
-                .unwrap();
+</package>"#;
+        let ch1_html = b"<html><body><p>Unique single chapter text content here.</p></body></html>";
 
-            writer.start_file("ch1.html", opts).unwrap();
-            writer
-                .write_all(
-                    b"<html><body><p>Unique single chapter text content here.</p></body></html>",
-                )
-                .unwrap();
-
-            writer.finish().unwrap();
-        }
-
-        let bytes = zip_buf.into_inner();
+        let bytes = crate::system::zip::create_test_zip(&[
+            ("META-INF/container.xml", container_xml),
+            ("content.opf", opf_xml),
+            ("ch1.html", ch1_html),
+        ]);
         let page = EpubExtractor::extract_from_bytes(&bytes, None).unwrap();
         let occurrences = page.content.matches("Unique single chapter text").count();
         assert_eq!(occurrences, 1);

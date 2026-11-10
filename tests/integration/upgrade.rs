@@ -177,22 +177,7 @@ fn test_extract_binary_from_tar_gz() {
 #[test]
 fn test_extract_binary_from_zip() {
     let binary_content = b"MZ-mock-binary-srz-exe";
-
-    // Create an in-memory zip containing 'srz.exe'
-    let mut zip_buf = std::io::Cursor::new(Vec::new());
-    {
-        let mut zip_writer = zip::ZipWriter::new(&mut zip_buf);
-        let options = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
-        zip_writer
-            .start_file("srz.exe", options)
-            .expect("Failed to start zip file");
-        zip_writer
-            .write_all(binary_content)
-            .expect("Failed to write binary to zip");
-        zip_writer.finish().expect("Failed to finish zip archive");
-    }
-    let zip_bytes = zip_buf.into_inner();
+    let zip_bytes = srz::system::zip::create_test_zip(&[("srz.exe", binary_content)]);
 
     // Extract 'srz.exe'
     let extracted =

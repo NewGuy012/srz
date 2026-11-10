@@ -389,34 +389,15 @@ fn test_escape_closing_tag_case_insensitive_and_whitespace_variations() {
 fn test_epub_extractor_and_document_loader() {
     use srz::document::DocumentLoader;
     use srz::document::EpubExtractor;
-    use std::io::Write;
 
-    let mut zip_buf = std::io::Cursor::new(Vec::new());
-    {
-        let mut zip_writer = zip::ZipWriter::new(&mut zip_buf);
-        let options = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
-
-        // 1. container.xml
-        zip_writer
-            .start_file("META-INF/container.xml", options)
-            .unwrap();
-        zip_writer
-            .write_all(
-                br#"<?xml version="1.0"?>
+    let container_xml = br#"<?xml version="1.0"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
   <rootfiles>
     <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
   </rootfiles>
-</container>"#,
-            )
-            .unwrap();
+</container>"#;
 
-        // 2. content.opf
-        zip_writer.start_file("OEBPS/content.opf", options).unwrap();
-        zip_writer
-            .write_all(
-                br#"<?xml version="1.0" encoding="utf-8"?>
+    let opf_xml = br#"<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub-id">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:title>The Great Gatsby</dc:title>
@@ -430,48 +411,32 @@ fn test_epub_extractor_and_document_loader() {
     <itemref idref="c1"/>
     <itemref idref="c2"/>
   </spine>
-</package>"#,
-            )
-            .unwrap();
+</package>"#;
 
-        // 3. ch1.xhtml
-        zip_writer
-            .start_file("OEBPS/chapters/ch1.xhtml", options)
-            .unwrap();
-        zip_writer
-            .write_all(
-                br#"<!DOCTYPE html>
+    let ch1_xhtml = br#"<!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head><title>Chapter 1</title></head>
 <body>
   <h1>Chapter 1</h1>
   <p>In my younger and more vulnerable years my father gave me some advice that I've been turning over in my mind ever since.</p>
 </body>
-</html>"#,
-            )
-            .unwrap();
+</html>"#;
 
-        // 4. ch2.xhtml
-        zip_writer
-            .start_file("OEBPS/chapters/ch2.xhtml", options)
-            .unwrap();
-        zip_writer
-            .write_all(
-                br#"<!DOCTYPE html>
+    let ch2_xhtml = br#"<!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head><title>Chapter 2</title></head>
 <body>
   <h1>Chapter 2</h1>
   <p>About half way between West Egg and New York the motor road hastily joins the railroad.</p>
 </body>
-</html>"#,
-            )
-            .unwrap();
+</html>"#;
 
-        zip_writer.finish().unwrap();
-    }
-
-    let epub_bytes = zip_buf.into_inner();
+    let epub_bytes = srz::system::zip::create_test_zip(&[
+        ("META-INF/container.xml", &container_xml[..]),
+        ("OEBPS/content.opf", &opf_xml[..]),
+        ("OEBPS/chapters/ch1.xhtml", &ch1_xhtml[..]),
+        ("OEBPS/chapters/ch2.xhtml", &ch2_xhtml[..]),
+    ]);
 
     // In-memory extraction
     let page = EpubExtractor::extract_from_bytes(&epub_bytes, None).unwrap();
