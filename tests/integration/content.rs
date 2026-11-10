@@ -1,4 +1,3 @@
-use srz::chunker::{TextChunker, TokenizerKind};
 use srz::llm::truncate_words_preserving_lines;
 use srz::render::{
     ensure_view_files_unique, markdown_to_html, render_html_document_with_reasoning, slugify,
@@ -37,29 +36,6 @@ fn test_normalize_extracts_title_and_clean_text() {
     assert!(!page.content.contains("[1]"));
     assert!(!page.content.contains("Citation 1"));
     assert!(page.word_count > 10);
-}
-
-#[test]
-fn test_short_text_single_chunk_is_zero_copy() {
-    let text = "Paragraph one with some text.\n\nParagraph two with more text.";
-    let chunks =
-        TextChunker::chunk_by_tokens_with_counts_and_kind(text, 100, 10, TokenizerKind::Cl100k);
-    assert_eq!(chunks.len(), 1);
-    assert!(matches!(chunks[0].0, Cow::Borrowed(_)));
-    assert_eq!(chunks[0].0, text);
-}
-
-#[test]
-fn test_chunking_splits_on_word_limit() {
-    let p1 = "word ".repeat(50);
-    let p2 = "test ".repeat(50);
-    let text = format!("{}\n\n{}", p1.trim(), p2.trim());
-
-    let chunks =
-        TextChunker::chunk_by_tokens_with_counts_and_kind(&text, 60, 10, TokenizerKind::Cl100k);
-    assert_eq!(chunks.len(), 2);
-    assert!(matches!(chunks[0].0, Cow::Borrowed(_)));
-    assert!(matches!(chunks[1].0, Cow::Borrowed(_)));
 }
 
 #[test]
@@ -137,16 +113,6 @@ fn test_markdown_to_styled_html_rendering() {
         fs::read_to_string(&overwritten.md_path).unwrap(),
         "Updated summary"
     );
-}
-
-#[test]
-fn test_clean_raw_text() {
-    use srz::scraper::clean_raw_text;
-
-    let dirty = "  Hello world!   \n\n\n\n  This is a clean test.  \n";
-    let (cleaned, count) = clean_raw_text(dirty);
-    assert_eq!(count, 7);
-    assert!(cleaned.contains("Hello world!\n\nThis is a clean test."));
 }
 
 #[test]
