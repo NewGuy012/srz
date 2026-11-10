@@ -226,10 +226,10 @@ impl Cache {
             return None;
         }
         let mut guard = self.db.lock().ok()?;
-        if guard.is_none() {
-            if let Ok(database) = Database::open_at(&self.db_path) {
-                *guard = Some(database);
-            }
+        if guard.is_none()
+            && let Ok(database) = Database::open_at(&self.db_path)
+        {
+            *guard = Some(database);
         }
         guard.clone()
     }
@@ -288,15 +288,15 @@ impl Cache {
         let mut files_removed = 0;
 
         if let Some(db) = self.get_or_init_db() {
-            if let Some(max_age) = options.older_than {
-                if let Ok(count) = db.prune_cache_by_age(max_age) {
-                    files_removed += count;
-                }
+            if let Some(max_age) = options.older_than
+                && let Ok(count) = db.prune_cache_by_age(max_age)
+            {
+                files_removed += count;
             }
-            if let Some(max_bytes) = options.max_bytes {
-                if let Ok(count) = db.prune_cache_lru(max_bytes as usize) {
-                    files_removed += count;
-                }
+            if let Some(max_bytes) = options.max_bytes
+                && let Ok(count) = db.prune_cache_lru(max_bytes as usize)
+            {
+                files_removed += count;
             }
         }
 
@@ -307,16 +307,13 @@ impl Cache {
             if let Ok(entries) = fs::read_dir(self.views_dir()) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if let Ok(meta) = entry.metadata() {
-                        if let Ok(modified) = meta.modified() {
-                            if let Ok(age) = now.duration_since(modified) {
-                                if age > ttl {
-                                    if fs::remove_file(&path).is_ok() {
-                                        files_removed += 1;
-                                    }
-                                }
-                            }
-                        }
+                    if let Ok(meta) = entry.metadata()
+                        && let Ok(modified) = meta.modified()
+                        && let Ok(age) = now.duration_since(modified)
+                        && age > ttl
+                        && fs::remove_file(&path).is_ok()
+                    {
+                        files_removed += 1;
                     }
                 }
             }
@@ -340,14 +337,12 @@ impl Cache {
         let marker = self.base_dir.join(".last_prune");
         let now = SystemTime::now();
 
-        if let Ok(meta) = fs::metadata(&marker) {
-            if let Ok(mod_time) = meta.modified() {
-                if let Ok(elapsed) = now.duration_since(mod_time) {
-                    if elapsed < self.policy.auto_prune_interval {
-                        return None;
-                    }
-                }
-            }
+        if let Ok(meta) = fs::metadata(&marker)
+            && let Ok(mod_time) = meta.modified()
+            && let Ok(elapsed) = now.duration_since(mod_time)
+            && elapsed < self.policy.auto_prune_interval
+        {
+            return None;
         }
 
         let _ = fs_util::create_private_dir_all(&self.base_dir);
@@ -384,11 +379,11 @@ impl Cache {
         let mut bytes = 0;
         if let Ok(entries) = fs::read_dir(dir) {
             for entry in entries.flatten() {
-                if let Ok(meta) = entry.metadata() {
-                    if meta.is_file() {
-                        count += 1;
-                        bytes += meta.len();
-                    }
+                if let Ok(meta) = entry.metadata()
+                    && meta.is_file()
+                {
+                    count += 1;
+                    bytes += meta.len();
                 }
             }
         }

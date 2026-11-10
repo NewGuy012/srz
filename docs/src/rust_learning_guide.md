@@ -61,7 +61,7 @@ Following the pedagogical progression of the official [Rust Book](https://doc.ru
     - [12.3 Mathematical Compile-Time Safety: `#![forbid(unsafe_code)]`](#123-mathematical-compile-time-safety-forbidunsafe_code)
     - [12.4 Layered Host Hardware Profiling Without FFI or `unsafe`](#124-layered-host-hardware-profiling-without-ffi-or-unsafe)
     - [12.5 The Mathematical Invariant of Dynamic Context Budgeting](#125-the-mathematical-invariant-of-dynamic-context-budgeting)
-    - [12.6 Model-Aware Caching & Invalidation in Embedded DuckDB](#126-model-aware-caching--invalidation-in-embedded-duckdb)
+    - [12.6 Model-Aware Caching & Invalidation in Embedded Storage](#126-model-aware-caching--invalidation-in-embedded-storage)
 - [**Part III: System Architecture & Synthesis**](#part-iii-system-architecture--synthesis)
   - [Chapter 13: System Architecture & Data Flow Tour](#chapter-13-system-architecture--data-flow-tour)
     - [13.1 High-Level Architecture Diagram](#131-high-level-architecture-diagram)
@@ -296,7 +296,7 @@ Structs allow you to package related values together into named types, creating 
 - 💡 **The "Click" Moment: Eliminating the Pyramid of Doom:** In older Rust (or languages like Go/Python), combining condition checks and value extractions required deeply nested `if` statements. Let-chains combine boolean conditions (`!outcome.cached`) and pattern-matching variable extractions (`let Some(db) = ...`) into a single guard condition without indentation drift.
 - 🔍 **Real Code in `srz` ([src/commands/summarize.rs](https://github.com/NewGuy012/srz/blob/master/src/commands/summarize.rs#L1065-L1070)):**
   ```rust
-  // Record newly generated summaries in DuckDB history & library (lazily opened)
+  // Record newly generated summaries in local storage history & library (lazily opened)
   if !outcome.cached
       && let Some(db) = cache
           .open_database()
@@ -311,12 +311,12 @@ Structs allow you to package related values together into named types, creating 
 <a id="43-match-guards-sub-millisecond-cache-fast-paths"></a>
 ### 4.3 Match Guards: Sub-Millisecond Cache Fast-Paths
 - 💡 **Simple Analogy:** An express checkout lane at a supermarket: *"If you have 10 items or fewer, skip the entire main queue."*
-- 💡 **The "Click" Moment: Short-Circuiting Heavy Runtime Setup:** Rust allows pattern arms to declare an extra `if <condition>` guard. In `srz`, initializing Tokio's HTTP connection pool, loading model metadata, or querying capabilities takes tens of milliseconds. Before allocating any of these clients, `srz` inspects `&action` with match guards. If the target is a web URL and not a live RSS feed (`if !crate::cli::is_feed_url(url)`), it checks embedded DuckDB. If cached, it returns in under 1ms!
-- 🔍 **Real Code in `srz` ([src/commands/mod.rs](https://github.com/NewGuy012/srz/blob/master/src/commands/mod.rs#L336-L348)):**
+- 💡 **The "Click" Moment: Short-Circuiting Heavy Runtime Setup:** Rust allows pattern arms to declare an extra `if <condition>` guard. In `srz`, initializing Tokio's HTTP connection pool, loading model metadata, or querying capabilities takes tens of milliseconds. Before allocating any of these clients, `srz` inspects `&action` with match guards. If the target is a web URL, it checks the local cache. If cached, it returns in under 1ms!
+- 🔍 **Real Code in `srz` ([src/commands/mod.rs](https://github.com/NewGuy012/srz/blob/master/src/commands/mod.rs#L330-L345)):**
   ```rust
   // Sub-millisecond cache fast-path: probe cache before initializing LLM/scraper clients
   match &action {
-      crate::cli::ResolvedAction::Web { url } if !crate::cli::is_feed_url(url) => {
+      crate::cli::ResolvedAction::Web { url } => {
           if let Some(cached) = cache.get_web_summary(url, args.style, &args.model) {
               Ui::info("Loaded summary from local cache (pass `--no-cache` to refresh).");
               let outcome = SummaryOutcome::from_cached(
@@ -422,7 +422,7 @@ In application code (like CLIs and servers), writing dozens of custom error enum
 <a id="72-lifetimes-in-structs-newsummaryrecorda"></a>
 ### 7.2 Lifetimes in Structs (`NewSummaryRecord<'a>`)
 - 💡 **Simple Analogy:** Filling out a library checkout receipt that references a manuscript on display, rather than having to make a full physical copy of the manuscript just to fill in the receipt.
-- 💡 **The "Click" Moment:** Why not make `summary: String` in database insertion structs? If a summary is 50KB long, having `String` fields forces Rust to duplicate all 50,000 characters on the heap just to insert it into DuckDB. By annotating the struct with `'a`, `NewSummaryRecord` borrows existing strings in memory. The Rust compiler guarantees at compile time that the record cannot outlive the strings it borrows, preventing dangling pointers with **zero allocations**.
+- 💡 **The "Click" Moment:** Why not make `summary: String` in database insertion structs? If a summary is 50KB long, having `String` fields forces Rust to duplicate all 50,000 characters on the heap just to insert it into the database. By annotating the struct with `'a`, `NewSummaryRecord` borrows existing strings in memory. The Rust compiler guarantees at compile time that the record cannot outlive the strings it borrows, preventing dangling pointers with **zero allocations**.
 - 🔍 **Real Code in `srz` ([src/storage/db.rs](https://github.com/NewGuy012/srz/blob/master/src/storage/db.rs#L32-L46) and [src/commands/summarize.rs](https://github.com/NewGuy012/srz/blob/master/src/commands/summarize.rs#L1070-L1085)):**
   ```rust
   // In src/storage/db.rs: Struct holding borrowed strings
@@ -641,7 +641,7 @@ In application code (like CLIs and servers), writing dozens of custom error enum
       if let Some(db) = open_db_or_warn() {
           f(&db) // 👈 Lends temporary borrowed reference &db to caller closure
       } else {
-          Ui::error("DuckDB database unavailable.");
+          Ui::error("Database unavailable.");
           Ok(T::default())
       }
   }
@@ -660,7 +660,7 @@ In application code (like CLIs and servers), writing dozens of custom error enum
   // Or in Browse: returns Result<TuiAction>!
   let action = with_db(|db| crate::ui::run_tui(db, &cache))?;
   ```
-  Instead of each command manually opening connections, checking for missing databases, handling locks, and remembering to close connections, `with_db` acts as an RAII loan manager. `impl FnOnce(&Database)` means: "Give me any closure that accepts a borrowed `&Database` once." When the closure returns, `db` is dropped and the DuckDB connection is cleanly closed.
+  Instead of each command manually opening connections, checking for missing databases, handling locks, and remembering to close connections, `with_db` acts as an RAII loan manager. `impl FnOnce(&Database)` means: "Give me any closure that accepts a borrowed `&Database` once." When the closure returns, `db` is dropped and the database connection is cleanly closed.
 - 🔄 **If you know other languages:** This is Rust's idiomatic replacement for Python's `with open(...) as f:` context managers or Java's `try-with-resources`. Rather than adding special language syntax, Rust achieves this cleanly using higher-order closures and borrowing.
 - 📖 **The Rust Book Reference:** [Chapter 13.1: Closures](https://doc.rust-lang.org/book/ch13-01-closures.html) and [Chapter 15.3: The `Drop` Trait](https://doc.rust-lang.org/book/ch15-03-drop.html)
 
@@ -835,39 +835,31 @@ Rust tasks spawned onto Tokio run cooperatively. An application can comfortably 
 
 <a id="125-the-mathematical-invariant-of-dynamic-context-budgeting"></a>
 ### 12.5 The Mathematical Invariant of Dynamic Context Budgeting
-- 💡 **Simple Analogy:** A shipping container with a hard weight limit. You reserve capacity for completion output and safety headroom, precisely sizing prompt chunks and slot concurrency so the context window never overflows.
-- 💡 **The "Click" Moment: Zero-Drift Native Tokenization & Invariant Arithmetic:** Hardcoded limits (like assuming 12k or 16k tokens) break on small 4k models or underutilize 128k models. Worse, measuring tokens client-side with OpenAI's `tiktoken-rs` against a Gemma or Llama model introduces a 15–25% "tokenizer drift" error. `srz` queries the server's native `/tokenize` endpoint (`0% drift`), then feeds the exact capacity (`n_ctx`) into a mathematical invariant struct `DynamicBudget`. The struct enforces the mathematical capacity invariant at runtime:
+- 💡 **Simple Analogy:** A shipping container with a hard weight limit. You reserve capacity for completion output and safety headroom, precisely sizing prompt inputs so the context window never overflows.
+- 💡 **The "Click" Moment: Model-Aware Tokenization & Invariant Arithmetic:** Hardcoded limits (like assuming 12k or 16k tokens) break on small 4k models or underutilize 128k models. Worse, measuring tokens with an inaccurate generic tokenizer against Gemma or Llama models introduces significant "tokenizer drift" error. `srz` uses in-process model-aware tokenizers (`TokenizerKind`), then feeds the exact capacity (`n_ctx`) into a mathematical invariant struct `DynamicBudget`. The struct enforces the mathematical capacity invariant at runtime:
 
   $$ \text{overhead} = \text{max\_completion} + \text{system\_margin} + \text{cushion} \le n_{\text{ctx}} $$
 
-  This mathematically guarantees with saturating arithmetic that prompt chunks, document grounding budgets (for `srz ask`), and completion headroom fit within hardware bounds without arithmetic overflow or OOM panics.
+  This mathematically guarantees with saturating arithmetic that document grounding budgets (for `srz ask`), and completion headroom fit within hardware bounds without arithmetic overflow or OOM panics.
 - 🔍 **Real Code in `srz` ([src/engine/budget.rs](https://github.com/NewGuy012/srz/blob/master/src/engine/budget.rs#L39-L94)):**
   ```rust
   #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
   pub struct DynamicBudget {
       pub n_ctx: usize,
       pub max_completion: u32,
-      pub concurrency: usize,
       pub single_pass_threshold: usize,
-      pub chunk_tokens: usize,
       pub ask_doc_budget: usize,
       pub ask_hist_budget: usize,
   }
 
   impl DynamicBudget {
-      pub fn new(
-          n_ctx: usize,
-          total_slots: usize,
-          cli_max_tokens: Option<u32>,
-          cli_concurrency: Option<usize>,
-      ) -> Self {
+      pub fn new(n_ctx: usize, cli_max_tokens: Option<u32>) -> Self {
           let n_ctx = n_ctx.clamp(MIN_CONTEXT_WINDOW, MAX_CONTEXT_WINDOW);
           let max_completion_cap = (n_ctx / 3).clamp(512, u32::MAX as usize) as u32;
           let max_completion = match cli_max_tokens {
               Some(m) if m > 0 => m.min(max_completion_cap),
               _ => (n_ctx / 4).clamp(1024, 8192) as u32,
           };
-          let concurrency = cli_concurrency.unwrap_or(total_slots).clamp(1, MAX_CONCURRENCY);
           let system_margin = 500usize;
           let cushion = (n_ctx / 20).clamp(200, 1600); // 5% headroom
           let overhead = (max_completion as usize)
@@ -875,16 +867,13 @@ Rust tasks spawned onto Tokio run cooperatively. An application can comfortably 
               .saturating_add(cushion);
           let usable = n_ctx.saturating_sub(overhead);
           let single_pass_threshold = usable;
-          let chunk_tokens = (usable.saturating_mul(7) / 10).max(1500);
           let ask_doc_budget = usable / 2;
           let ask_hist_budget = usable.saturating_mul(4) / 10;
 
           Self {
               n_ctx,
               max_completion,
-              concurrency,
               single_pass_threshold,
-              chunk_tokens,
               ask_doc_budget,
               ask_hist_budget,
           }
@@ -893,11 +882,11 @@ Rust tasks spawned onto Tokio run cooperatively. An application can comfortably 
   ```
 - 📖 **The Rust Book Reference:** [Chapter 5.3: Method Syntax](https://doc.rust-lang.org/book/ch05-03-method-syntax.html) and [Chapter 3.2: Data Types (Integer Overflow)](https://doc.rust-lang.org/book/ch03-02-data-types.html)
 
-<a id="126-model-aware-caching--invalidation-in-embedded-duckdb"></a>
-### 12.6 Model-Aware Caching & Invalidation in Embedded DuckDB
+<a id="126-model-aware-caching--invalidation-in-embedded-storage"></a>
+### 12.6 Model-Aware Caching & Invalidation in Embedded Storage
 - 💡 **Simple Analogy:** A library card catalog that immediately updates a shelf note if a book is replaced with a revised edition.
-- 💡 **The "Click" Moment: Deterministic Schema Migration & Invalidation:** Probing server properties on every single CLI invocation would add 10–30ms of network latency. To eliminate this, `srz` caches server capabilities (`n_ctx`, `total_slots`, `model_name`) in the unified embedded DuckDB (`srz.duckdb`). If the user switches models in Ollama or `llama.cpp`, the cached model string mismatches: DuckDB automatically invalidates the stale row and executes a fresh probe. All table creation uses `CREATE TABLE IF NOT EXISTS` with explicit column migrations, ensuring zero corrupted cache schemas across versions.
-- 🔍 **Real Code in `srz` ([src/storage/cache.rs](https://github.com/NewGuy012/srz/blob/master/src/storage/cache.rs#L1210-L1250)):**
+- 💡 **The "Click" Moment: Deterministic Schema Migration & Invalidation:** Probing server properties on every single CLI invocation would add 10–30ms of network latency. To eliminate this, `srz` caches server capabilities (`n_ctx`, `model_name`) in the unified embedded storage (`srz.redb`). If the user switches models in Ollama or `llama.cpp`, the cached model string mismatches: the cache automatically invalidates the stale entry and executes a fresh probe.
+- 🔍 **Real Code in `srz` ([src/storage/cache.rs](https://github.com/NewGuy012/srz/blob/master/src/storage/cache.rs)):**
   ```rust
   pub fn get_server_capabilities(
       &self,
@@ -964,7 +953,7 @@ flowchart TD
 
     subgraph Storage ["4. Storage & Persistence (src/storage/)"]
         Cache["Local Disk Cache<br/>(Remembers past web pages)"]
-        DB["DuckDB Database<br/>(Tracks stats, history, chat sessions & server caps)"]
+        DB["redb Database<br/>(Tracks stats, history, chat sessions & server caps)"]
     end
 
     subgraph UI ["5. Presentation & Output (src/ui/)"]
@@ -983,7 +972,7 @@ flowchart TD
     Sources -->|"Extracted Text"| Chunker
     Discovery --> DB
     Discovery --> BudgetEngine
-    NativeTokenize --> Chunker
+    ModelAwareTokenize["Model-Aware Tokenizer<br/>(Zero-drift token estimation)"] --> Chunker
     BudgetEngine --> Chunker
     Chunker -->|"Text Chunks"| LLM
     LLM -->|"Summary & Tokens"| Storage
@@ -999,8 +988,8 @@ flowchart TD
 1. **System & Profiling Layer (`src/system/`)**: Detects physical host memory and CPU architecture via safe native kernel sysctls/WMI and procfs, classifying machines into hardware tiers and recommending optimal high-fidelity Gemma 4 quantization presets (`Q8_0`).
 2. **CLI Layer (`src/main.rs`, `src/config/`, `src/commands/`)**: Parses arguments with `clap`, merges defaults from `config.toml`, probes sub-millisecond cache fast-paths, and resolves user intentions into strongly typed `ResolvedAction` variants using exhaustive `match`—dispatching summaries, grounded Q&A (`srz ask`), model recommendations (`srz recommend`), health checks (`srz doctor`), or self-upgrades (`srz upgrade`).
 3. **Sources Layer (`src/sources/`)**: Fetches data from webpages, YouTube timed-text caption tracks (XML/JSON3), PDF documents, EPUB ebooks (.epub via `quick-xml` and `zip`), local text files, Unix stdin streams, Open Library book candidates, and live Google News RSS feeds. Uses `LazyLock` for regex/selectors and streams bytes defensively to avoid OOM crashes.
-4. **Engine Layer (`src/engine/`)**: Discovers OpenAI/llama.cpp/Ollama server capabilities (`n_ctx`, `total_slots`), eliminates tokenizer drift via native `/tokenize` APIs, and dynamically sizes chunk windows, grounding context, and completion headroom (`DynamicBudget`).
-5. **Storage Layer (`src/storage/`)**: Caches server capabilities, raw documents, and analytical stats in DuckDB using zero-allocation borrowed records (`NewSummaryRecord<'a>`) with model-change invalidation, and persists multi-turn chat sessions (`chat_sessions`) and BM25 stop-word filtered search index (`library_terms`).
+4. **Engine Layer (`src/engine/`)**: Discovers OpenAI/llama.cpp/Ollama server capabilities (`n_ctx`), eliminates tokenizer drift via model-aware `TokenizerKind` profiles, and dynamically sizes single-pass thresholds, grounding context, and completion headroom (`DynamicBudget`).
+5. **Storage Layer (`src/storage/`)**: Caches server capabilities, raw documents, and analytical stats in pure-Rust `redb` using zero-allocation borrowed records (`NewSummaryRecord<'a>`) with model-change invalidation, and persists multi-turn chat sessions (`chat_sessions`) and BM25 stop-word filtered search index (`library_terms`).
 6. **UI Layer (`src/ui/`)**: Renders styled Markdown/HTML, streams dual-channel reasoning `<think>` tokens to `stderr` and summary text to `stdout`, routes tall outputs to the system `$PAGER`, emits subtle 1-line context advisor footers for constrained hardware, and hosts full-screen interactive browsing safely restored on exit via RAII `TerminalSessionGuard`.
 
 ---
@@ -1031,8 +1020,8 @@ flowchart TD
 | **`#![forbid(unsafe_code)]`** | [`src/main.rs#L1`](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L1), [`src/lib.rs#L1`](https://github.com/NewGuy012/srz/blob/master/src/lib.rs#L1) | **Sealed cockpit door**: Mathematical compile-time guarantee of zero memory corruption or segfaults. | [Ch 19.1: Unsafe Rust](https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html) |
 | **Derive Macros** | [`src/config/cli.rs#L5-L14`](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs#L5-L14) | **3D architectural printer**: Generates hundreds of lines of type validation and `--help` CLI text at compile time. | [Ch 19.5: Macros](https://doc.rust-lang.org/book/ch19-06-macros.html#how-to-write-a-custom-derive-macro) |
 | **Safe Hardware Profiling** | [`src/system/hardware.rs#L258-L285`](https://github.com/NewGuy012/srz/blob/master/src/system/hardware.rs#L258-L285) | **Dashboard gauges**: Reads RAM/CPU metrics via native kernel sysctls and procfs with zero `unsafe`. | [Ch 19.1: Unsafe Rust](https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html) |
-| **Dynamic Budgeting** | [`src/engine/budget.rs#L39-L94`](https://github.com/NewGuy012/srz/blob/master/src/engine/budget.rs#L39-L94) | **Vessel weight balancing**: Invariant math sizing prompt chunks and reserve headroom to eliminate OOMs. | [Ch 5.3: Method Syntax](https://doc.rust-lang.org/book/ch05-03-method-syntax.html) |
-| **Model Cache Invalidation** | [`src/storage/cache.rs#L1210-L1250`](https://github.com/NewGuy012/srz/blob/master/src/storage/cache.rs#L1210-L1250) | **Card catalog update**: Embedded DuckDB invalidates cached context size when server switches models. | [Ch 16.3: Shared-State](https://doc.rust-lang.org/book/ch16-03-shared-state.html) |
+| **Dynamic Budgeting** | [`src/engine/budget.rs#L39-L94`](https://github.com/NewGuy012/srz/blob/master/src/engine/budget.rs#L39-L94) | **Vessel weight balancing**: Invariant math sizing prompt thresholds and reserve headroom to eliminate OOMs. | [Ch 5.3: Method Syntax](https://doc.rust-lang.org/book/ch05-03-method-syntax.html) |
+| **Model Cache Invalidation** | [`src/storage/cache.rs#L1210-L1250`](https://github.com/NewGuy012/srz/blob/master/src/storage/cache.rs#L1210-L1250) | **Card catalog update**: Embedded storage invalidates cached context size when server switches models. | [Ch 16.3: Shared-State](https://doc.rust-lang.org/book/ch16-03-shared-state.html) |
 
 ---
 

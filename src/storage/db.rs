@@ -252,10 +252,8 @@ fn chrono_now_iso() -> String {
 fn extract_domain(url: &str) -> Option<String> {
     let without_scheme = if let Some(rest) = url.strip_prefix("https://") {
         rest
-    } else if let Some(rest) = url.strip_prefix("http://") {
-        rest
     } else {
-        return None;
+        url.strip_prefix("http://")?
     };
     let host = without_scheme.split(&['/', ':', '?', '#'][..]).next()?;
     if host.is_empty() {
@@ -700,8 +698,10 @@ impl Database {
 
     pub fn get_stats(&self) -> Result<LibraryStats> {
         let items = self.get_all_library_items()?;
-        let mut stats = LibraryStats::default();
-        stats.total_summaries = items.len() as i64;
+        let mut stats = LibraryStats {
+            total_summaries: items.len() as i64,
+            ..Default::default()
+        };
 
         let now_secs = now_unix_secs();
         let today_ymd = format_date_from_timestamp(now_secs);
@@ -732,13 +732,13 @@ impl Database {
             stats.total_completion_tokens += item.completion_tokens.unwrap_or(0) as i64;
             stats.total_duration_ms += item.duration_ms as i64;
 
-            if let Some(tps) = item.tokens_per_second {
-                if tps > 0.0 {
-                    total_tps += tps;
-                    tps_count += 1;
-                    if tps > stats.max_tokens_per_second {
-                        stats.max_tokens_per_second = tps;
-                    }
+            if let Some(tps) = item.tokens_per_second
+                && tps > 0.0
+            {
+                total_tps += tps;
+                tps_count += 1;
+                if tps > stats.max_tokens_per_second {
+                    stats.max_tokens_per_second = tps;
                 }
             }
 
@@ -771,12 +771,12 @@ impl Database {
             }
             entry.3 += item.duration_ms as i64;
 
-            if let Some(ref u) = item.url {
-                if let Some(domain) = extract_domain(u) {
-                    let d_entry = domain_map.entry(domain).or_insert((0, 0));
-                    d_entry.0 += 1;
-                    d_entry.1 += item.word_count as i64;
-                }
+            if let Some(ref u) = item.url
+                && let Some(domain) = extract_domain(u)
+            {
+                let d_entry = domain_map.entry(domain).or_insert((0, 0));
+                d_entry.0 += 1;
+                d_entry.1 += item.word_count as i64;
             }
         }
 
@@ -842,7 +842,7 @@ impl Database {
                 },
             });
         }
-        stats.models.sort_by(|a, b| b.runs.cmp(&a.runs));
+        stats.models.sort_by_key(|a| std::cmp::Reverse(a.runs));
 
         for (domain, (count, total_words)) in domain_map {
             stats.top_domains.push(DomainStats {
@@ -851,7 +851,9 @@ impl Database {
                 total_words,
             });
         }
-        stats.top_domains.sort_by(|a, b| b.count.cmp(&a.count));
+        stats
+            .top_domains
+            .sort_by_key(|a| std::cmp::Reverse(a.count));
         stats.top_domains.truncate(5);
 
         Ok(stats)
@@ -1134,31 +1136,25 @@ impl Database {
         let now = now_unix_secs();
 
         // 1. Direct cache_key lookup
-        if let Ok(ck_table) = read_txn.open_table(TABLE_CACHE_KEY_TO_ID) {
-            if let Ok(Some(id_val)) = ck_table.get(trimmed_id) {
-                let id = id_val.value();
-                if let Ok(hist_table) = read_txn.open_table(TABLE_HISTORY) {
-                    if let Ok(Some(val)) = hist_table.get(id) {
-                        if let Ok(item) = serde_json::from_slice::<LibraryItem>(val.value()) {
-                            if item.target_type == target_type
-                                && item.style == style
-                                && item.model == model
-                            {
-                                if let Some(created_secs) = parse_iso_to_unix_secs(&item.created_at)
-                                {
-                                    if now.saturating_sub(created_secs) <= ttl.as_secs() {
-                                        return Some(crate::storage::cache::CachedSummary {
-                                            title: item.title,
-                                            summary: item.summary,
-                                            word_count: item.word_count as usize,
-                                            reasoning: item.reasoning,
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+        if let Ok(ck_table) = read_txn.open_table(TABLE_CACHE_KEY_TO_ID)
+            && let Ok(Some(id_val)) = ck_table.get(trimmed_id)
+        {
+            let id = id_val.value();
+            if let Ok(hist_table) = read_txn.open_table(TABLE_HISTORY)
+                && let Ok(Some(val)) = hist_table.get(id)
+                && let Ok(item) = serde_json::from_slice::<LibraryItem>(val.value())
+                && item.target_type == target_type
+                && item.style == style
+                && item.model == model
+                && let Some(created_secs) = parse_iso_to_unix_secs(&item.created_at)
+                && now.saturating_sub(created_secs) <= ttl.as_secs()
+            {
+                return Some(crate::storage::cache::CachedSummary {
+                    title: item.title,
+                    summary: item.summary,
+                    word_count: item.word_count as usize,
+                    reasoning: item.reasoning,
+                });
             }
         }
 
@@ -1280,36 +1276,33 @@ impl Database {
         let mut sum_cnt = 0;
         let mut sum_bytes = 0u64;
 
-        if let Ok(table) = read_txn.open_table(TABLE_CACHE_PAGES) {
-            if let Ok(iter) = table.iter() {
-                for r in iter.flatten() {
-                    pages_cnt += 1;
-                    pages_bytes += (r.0.value().len() + r.1.value().len()) as u64;
-                }
+        if let Ok(table) = read_txn.open_table(TABLE_CACHE_PAGES)
+            && let Ok(iter) = table.iter()
+        {
+            for r in iter.flatten() {
+                pages_cnt += 1;
+                pages_bytes += (r.0.value().len() + r.1.value().len()) as u64;
             }
         }
-        if let Ok(table) = read_txn.open_table(TABLE_CACHE_SEARCH) {
-            if let Ok(iter) = table.iter() {
-                for r in iter.flatten() {
-                    search_cnt += 1;
-                    search_bytes += (r.0.value().len() + r.1.value().len()) as u64;
-                }
+        if let Ok(table) = read_txn.open_table(TABLE_CACHE_SEARCH)
+            && let Ok(iter) = table.iter()
+        {
+            for r in iter.flatten() {
+                search_cnt += 1;
+                search_bytes += (r.0.value().len() + r.1.value().len()) as u64;
             }
         }
-        if let Ok(ck_table) = read_txn.open_table(TABLE_CACHE_KEY_TO_ID) {
-            if let Ok(hist_table) = read_txn.open_table(TABLE_HISTORY) {
-                if let Ok(iter) = ck_table.iter() {
-                    for r in iter.flatten() {
-                        sum_cnt += 1;
-                        let id = r.1.value();
-                        if let Ok(Some(item_val)) = hist_table.get(id) {
-                            if let Ok(item) =
-                                serde_json::from_slice::<LibraryItem>(item_val.value())
-                            {
-                                sum_bytes += item.summary.len() as u64;
-                            }
-                        }
-                    }
+        if let Ok(ck_table) = read_txn.open_table(TABLE_CACHE_KEY_TO_ID)
+            && let Ok(hist_table) = read_txn.open_table(TABLE_HISTORY)
+            && let Ok(iter) = ck_table.iter()
+        {
+            for r in iter.flatten() {
+                sum_cnt += 1;
+                let id = r.1.value();
+                if let Ok(Some(item_val)) = hist_table.get(id)
+                    && let Ok(item) = serde_json::from_slice::<LibraryItem>(item_val.value())
+                {
+                    sum_bytes += item.summary.len() as u64;
                 }
             }
         }
@@ -1331,12 +1324,12 @@ impl Database {
                 let mut updates = Vec::new();
                 if let Ok(iter) = table.iter() {
                     for (k, v) in iter.flatten() {
-                        if let Ok(mut rec) = serde_json::from_slice::<CachedPageRecord>(v.value()) {
-                            if rec.url == url || k.value() == url {
-                                rec.cached_at = rec.cached_at.saturating_sub(delta_secs);
-                                if let Ok(bytes) = serde_json::to_vec(&rec) {
-                                    updates.push((k.value().to_string(), bytes));
-                                }
+                        if let Ok(mut rec) = serde_json::from_slice::<CachedPageRecord>(v.value())
+                            && (rec.url == url || k.value() == url)
+                        {
+                            rec.cached_at = rec.cached_at.saturating_sub(delta_secs);
+                            if let Ok(bytes) = serde_json::to_vec(&rec) {
+                                updates.push((k.value().to_string(), bytes));
                             }
                         }
                     }
@@ -1356,23 +1349,22 @@ impl Database {
                 let mut updates = Vec::new();
                 if let Ok(iter) = table.iter() {
                     for (k, v) in iter.flatten() {
-                        if let Ok(mut item) = serde_json::from_slice::<LibraryItem>(v.value()) {
-                            if item.title == title || item.url.as_deref() == Some(title) {
-                                if let Some(secs) = parse_iso_to_unix_secs(&item.created_at) {
-                                    let new_secs = secs.saturating_sub(delta_secs);
-                                    let date = format_date_from_timestamp(new_secs);
-                                    let time_of_day = new_secs % 86400;
-                                    item.created_at = format!(
-                                        "{}T{:02}:{:02}:{:02}Z",
-                                        date,
-                                        time_of_day / 3600,
-                                        (time_of_day % 3600) / 60,
-                                        time_of_day % 60
-                                    );
-                                    if let Ok(bytes) = serde_json::to_vec(&item) {
-                                        updates.push((k.value(), bytes));
-                                    }
-                                }
+                        if let Ok(mut item) = serde_json::from_slice::<LibraryItem>(v.value())
+                            && (item.title == title || item.url.as_deref() == Some(title))
+                            && let Some(secs) = parse_iso_to_unix_secs(&item.created_at)
+                        {
+                            let new_secs = secs.saturating_sub(delta_secs);
+                            let date = format_date_from_timestamp(new_secs);
+                            let time_of_day = new_secs % 86400;
+                            item.created_at = format!(
+                                "{}T{:02}:{:02}:{:02}Z",
+                                date,
+                                time_of_day / 3600,
+                                (time_of_day % 3600) / 60,
+                                time_of_day % 60
+                            );
+                            if let Ok(bytes) = serde_json::to_vec(&item) {
+                                updates.push((k.value(), bytes));
                             }
                         }
                     }

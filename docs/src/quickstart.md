@@ -173,7 +173,7 @@ srz "https://blog.rust-lang.org/feed.xml"
 
 ## 4. Interactive Grounded Q&A (`srz ask`)
 
-Ask targeted questions or start an interactive chat session grounded directly in document text (persisted to DuckDB):
+Ask targeted questions or start an interactive chat session grounded directly in document text (persisted to local storage):
 
 ```bash
 # Ask a question about your most recently summarized item
@@ -185,7 +185,7 @@ srz ask assets/document.pdf "What are the primary conclusions?"
 # Launch an interactive multi-turn chat REPL (type 'exit' or Ctrl+D to quit)
 srz ask -i
 
-# Inspect and resume saved chat sessions from DuckDB
+# Inspect and resume saved chat sessions from local database
 srz ask --chats
 srz ask --resume 1
 srz ask --show-chat 1
@@ -203,7 +203,7 @@ srz browse
 ```
 
 ### Fast Offline BM25 Search (`srz find`)
-Search through past summaries stored in DuckDB without network access:
+Search through past summaries stored in local database without network access:
 
 ```bash
 srz find "memory safety"

@@ -22,6 +22,21 @@ All notable changes to `srz` are documented in this file.
 
 ---
 
+## v0.7.9
+
+### Summary
+
+> Deeply simplifies the codebase by eliminating vestigial shims, dead flags, and network tokenization roundtrips, consolidating duplicated system and text helpers, flattening command pipelines, and transitioning documentation to pure-Rust redb storage.
+
+### Changes
+- **Dead Code & Shim Pruning (`src/storage/`, `src/config/`, `src/engine/`)**: Purged obsolete DuckDB helper shims, dead cache mutation methods, and unmaintained export formats (`parquet`). Eliminated legacy hidden subcommands (`web`, `book`, `file`) and the obsolete `--concurrency` flag in favor of clean positional argument dispatch.
+- **Network RPC Elimination (`src/engine/llm.rs`, `src/engine/budget.rs`, `src/engine/chunker.rs`)**: Removed remote `/tokenize` endpoint probing and HTTP roundtrips in favor of instant, zero-latency in-process model-aware token estimation (`TokenizerKind`). Cleaned up unused chunker wrappers.
+- **Helper Consolidation & Deduplication (`src/system/`, `src/sources/`, `src/ui/`)**: Centralized path resolution (`home_dir`, `default_data_dir`, `default_cache_dir`) in `fs_util`, unified platform binary replacement logic in `upgrade`, consolidated HTML tag stripping and case-insensitive substring searching in `text_util`, unified string distance metrics to `damerau_levenshtein`, and deduplicated table scans in database maintenance.
+- **Pipeline Flattening & Query Optimization (`src/commands/`)**: Consolidated book reference context discovery into a helper, unified 3 duplicate LLM context synthesis branches into one, removed redundant feed URL checks, and eliminated duplicate database lookups in grounded Q&A.
+- **Documentation & Verification**: Synchronized architecture documentation, command reference, configuration, and learning guides to reflect pure-Rust `redb` storage; passed all 231 tests and verified zero warnings on `cargo clippy --all-targets -- -D warnings`.
+
+---
+
 ## v0.7.8
 
 ### Summary

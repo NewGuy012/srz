@@ -134,11 +134,11 @@ pub fn html_to_plain_text(html_bytes: &[u8]) -> Result<String> {
         .map(std::borrow::Cow::Borrowed)
         .unwrap_or_else(|_| String::from_utf8_lossy(html_bytes));
 
-    if let Ok(md) = HTMD_CONVERTER.convert(&html_str) {
-        if !md.trim().is_empty() {
-            let (cleaned, _) = clean_text(&md, false, 1);
-            return Ok(cleaned);
-        }
+    if let Ok(md) = HTMD_CONVERTER.convert(&html_str)
+        && !md.trim().is_empty()
+    {
+        let (cleaned, _) = clean_text(&md, false, 1);
+        return Ok(cleaned);
     }
 
     let out = crate::system::text_util::strip_html_tags(&html_str);
