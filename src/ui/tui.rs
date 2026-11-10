@@ -585,43 +585,31 @@ fn ui_draw(f: &mut Frame, state: &mut AppState) {
     f.render_widget(footer_widget, root_layout[2]);
 }
 
+fn pipe_to_command(cmd: &str, args: &[&str], text: &str) -> std::io::Result<()> {
+    let mut child = std::process::Command::new(cmd)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        std::io::Write::write_all(&mut stdin, text.as_bytes())?;
+    }
+    let status = child.wait()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!("{cmd} exited with error")))
+    }
+}
+
 /// Copies text to the system clipboard using the platform CLI.
 fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
-    {
-        let mut child = std::process::Command::new("pbcopy")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()?;
-        if let Some(mut stdin) = child.stdin.take() {
-            std::io::Write::write_all(&mut stdin, text.as_bytes())?;
-        }
-        let status = child.wait()?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(std::io::Error::other("pbcopy exited with error"))
-        }
-    }
+    return pipe_to_command("pbcopy", &[], text);
 
     #[cfg(target_os = "windows")]
-    {
-        let mut child = std::process::Command::new("clip")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()?;
-        if let Some(mut stdin) = child.stdin.take() {
-            std::io::Write::write_all(&mut stdin, text.as_bytes())?;
-        }
-        let status = child.wait()?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(std::io::Error::other("clip exited with error"))
-        }
-    }
+    return pipe_to_command("clip", &[], text);
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
@@ -630,21 +618,8 @@ fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
             ("xclip", &["-selection", "clipboard"][..]),
             ("xsel", &["--clipboard", "--input"][..]),
         ] {
-            if let Ok(mut child) = std::process::Command::new(cmd)
-                .args(args)
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-            {
-                if let Some(mut stdin) = child.stdin.take() {
-                    let _ = std::io::Write::write_all(&mut stdin, text.as_bytes());
-                }
-                if let Ok(status) = child.wait()
-                    && status.success()
-                {
-                    return Ok(());
-                }
+            if pipe_to_command(cmd, args, text).is_ok() {
+                return Ok(());
             }
         }
         Err(std::io::Error::other(

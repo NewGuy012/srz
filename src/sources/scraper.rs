@@ -30,19 +30,6 @@ fn starts_with_tag(slice: &[u8], prefix: &[u8]) -> bool {
     }
 }
 
-/// Finds the index of `needle` in `haystack` case-insensitively.
-fn find_subslice_ignore_case(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return None;
-    }
-    haystack.windows(needle.len()).position(|window| {
-        window
-            .iter()
-            .zip(needle.iter())
-            .all(|(a, b)| a.eq_ignore_ascii_case(b))
-    })
-}
-
 /// Quickly strips `<script>...</script>`, `<style>...</style>`, `<svg>...</svg>`,
 /// and `<noscript>...</noscript>` tags from raw HTML to prevent massive DOM bloat in Readability.
 pub fn strip_boilerplate_html_tags(html: &str) -> Cow<'_, str> {
@@ -76,7 +63,8 @@ pub fn strip_boilerplate_html_tags(html: &str) -> Cow<'_, str> {
             };
 
             if let Some(closing) = closing_tag
-                && let Some(close_offset) = find_subslice_ignore_case(&bytes[cursor..], closing)
+                && let Some(close_offset) =
+                    crate::system::text_util::find_subslice_ignore_case(&bytes[cursor..], closing)
             {
                 cursor += close_offset + closing.len();
                 continue;
@@ -153,18 +141,7 @@ pub fn html_to_plain_text(html_bytes: &[u8]) -> Result<String> {
         }
     }
 
-    let mut out = String::with_capacity(html_str.len());
-    let mut in_tag = false;
-    for c in html_str.chars() {
-        if c == '<' {
-            in_tag = true;
-        } else if c == '>' {
-            in_tag = false;
-            out.push(' ');
-        } else if !in_tag {
-            out.push(c);
-        }
-    }
+    let out = crate::system::text_util::strip_html_tags(&html_str);
     let (cleaned, _) = clean_text(&out, false, 1);
     Ok(cleaned)
 }
@@ -428,17 +405,7 @@ pub fn extract_title_from_html(html: &str) -> Option<String> {
             if let Some(end) =
                 crate::system::text_util::find_ascii_case_insensitive(content, "</h1>")
             {
-                let mut stripped = String::new();
-                let mut in_tag = false;
-                for c in content[..end].chars() {
-                    if c == '<' {
-                        in_tag = true;
-                    } else if c == '>' {
-                        in_tag = false;
-                    } else if !in_tag {
-                        stripped.push(c);
-                    }
-                }
+                let stripped = crate::system::text_util::strip_html_tags(&content[..end]);
                 let trimmed = stripped.trim();
                 if !trimmed.is_empty() {
                     return Some(

@@ -227,30 +227,6 @@ pub fn handle_index(db: &Database, cache: &Cache, open_browser: bool) -> Result<
     Ok(())
 }
 
-/// Formats and sanitizes a cell value for safe RFC 4180 CSV emission,
-/// preventing CSV formula injection (CWE-1236) and properly escaping quotes, commas, and newlines.
-pub fn format_csv_cell(cell: &str) -> String {
-    // Neutralize formula injection on non-numeric strings
-    let is_formula = cell.starts_with(['=', '+', '-', '@'])
-        && cell.trim_start_matches(['+', '-']).parse::<f64>().is_err();
-
-    let safe_cell = if is_formula {
-        format!("'{}", cell)
-    } else {
-        cell.to_string()
-    };
-
-    if safe_cell.contains(',')
-        || safe_cell.contains('"')
-        || safe_cell.contains('\n')
-        || safe_cell.contains('\r')
-    {
-        format!("\"{}\"", safe_cell.replace('"', "\"\""))
-    } else {
-        safe_cell
-    }
-}
-
 /// Handles the `srz export` command.
 pub fn handle_export(
     db: &Database,
@@ -275,32 +251,4 @@ pub fn handle_export(
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_format_csv_cell_escaping_and_injection() {
-        // Plain text
-        assert_eq!(format_csv_cell("simple"), "simple");
-
-        // Quotes and commas
-        assert_eq!(format_csv_cell("hello, world"), "\"hello, world\"");
-        assert_eq!(format_csv_cell("he said \"hi\""), "\"he said \"\"hi\"\"\"");
-        assert_eq!(format_csv_cell("line1\nline2"), "\"line1\nline2\"");
-        assert_eq!(format_csv_cell("line1\r\nline2"), "\"line1\r\nline2\"");
-
-        // Formula injection prefixes
-        assert_eq!(format_csv_cell("=1+1"), "'=1+1");
-        assert_eq!(format_csv_cell("@SUM(A1:A10)"), "'@SUM(A1:A10)");
-        assert_eq!(format_csv_cell("+cmd|' /C calc'!A0"), "'+cmd|' /C calc'!A0");
-        assert_eq!(format_csv_cell("-2+3*4"), "'-2+3*4");
-        assert_eq!(format_csv_cell("=SUM(A1, B1)"), "\"'=SUM(A1, B1)\"");
-
-        // Normal numbers should NOT be escaped as formula injection
-        assert_eq!(format_csv_cell("-42"), "-42");
-        assert_eq!(format_csv_cell("+3.14"), "+3.14");
-    }
 }

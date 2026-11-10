@@ -202,96 +202,39 @@ pub fn damerau_levenshtein(a: &str, b: &str) -> usize {
     d[a_len * width + b_len]
 }
 
-/// Computes the Jaro similarity between two character sequences, returning a value between 0.0 and 1.0.
-pub fn jaro(a: &str, b: &str) -> f64 {
-    let a_chars: Vec<char> = a.chars().collect();
-    let b_chars: Vec<char> = b.chars().collect();
-
-    let a_len = a_chars.len();
-    let b_len = b_chars.len();
-
-    if a_len == 0 && b_len == 0 {
-        return 1.0;
-    }
-    if a_len == 0 || b_len == 0 {
-        return 0.0;
-    }
-
-    let match_distance = (a_len.max(b_len) / 2).saturating_sub(1);
-
-    let mut a_matches = vec![false; a_len];
-    let mut b_matches = vec![false; b_len];
-
-    let mut matches = 0;
-    for i in 0..a_len {
-        let start = i.saturating_sub(match_distance);
-        let end = (i + match_distance + 1).min(b_len);
-
-        for j in start..end {
-            if b_matches[j] || a_chars[i] != b_chars[j] {
-                continue;
-            }
-            a_matches[i] = true;
-            b_matches[j] = true;
-            matches += 1;
-            break;
+/// Strips all HTML tags (`<...>`) from a string, preserving only text content.
+pub fn strip_html_tags(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for ch in html.chars() {
+        if ch == '<' {
+            in_tag = true;
+        } else if ch == '>' {
+            in_tag = false;
+            out.push(' ');
+        } else if !in_tag {
+            out.push(ch);
         }
     }
-
-    if matches == 0 {
-        return 0.0;
-    }
-
-    let mut transpositions = 0;
-    let mut k = 0;
-    for i in 0..a_len {
-        if !a_matches[i] {
-            continue;
-        }
-        while !b_matches[k] {
-            k += 1;
-        }
-        if a_chars[i] != b_chars[k] {
-            transpositions += 1;
-        }
-        k += 1;
-    }
-
-    let m = matches as f64;
-    let t = (transpositions / 2) as f64;
-    (m / (a_len as f64) + m / (b_len as f64) + (m - t) / m) / 3.0
-}
-
-/// Computes the Jaro-Winkler similarity between two character sequences.
-pub fn jaro_winkler(a: &str, b: &str) -> f64 {
-    let jaro_sim = jaro(a, b);
-    if jaro_sim < 0.7 {
-        return jaro_sim;
-    }
-
-    let prefix = a
-        .chars()
-        .zip(b.chars())
-        .take(4)
-        .take_while(|(ca, cb)| ca == cb)
-        .count();
-
-    jaro_sim + 0.1 * (prefix as f64) * (1.0 - jaro_sim)
+    out
 }
 
 /// Zero-allocation case-insensitive ASCII substring search returning the first byte index of `needle`.
 pub fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
-    let n_bytes = needle.as_bytes();
-    if n_bytes.is_empty() {
+    find_subslice_ignore_case(haystack.as_bytes(), needle.as_bytes())
+}
+
+/// Finds the byte offset of `needle` in `haystack` case-insensitively.
+pub fn find_subslice_ignore_case(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
         return Some(0);
     }
-    if haystack.len() < n_bytes.len() {
+    if haystack.len() < needle.len() {
         return None;
     }
     haystack
-        .as_bytes()
-        .windows(n_bytes.len())
-        .position(|window| window.eq_ignore_ascii_case(n_bytes))
+        .windows(needle.len())
+        .position(|w| w.eq_ignore_ascii_case(needle))
 }
 
 /// Zero-allocation case-insensitive ASCII substring check (`needle` must already be lowercase ASCII).

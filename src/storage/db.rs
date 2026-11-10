@@ -232,20 +232,6 @@ pub struct Database {
     path: Option<PathBuf>,
 }
 
-fn dirs_home() -> Option<PathBuf> {
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.trim().is_empty() {
-            return Some(PathBuf::from(home));
-        }
-    }
-    if let Ok(userprofile) = std::env::var("USERPROFILE") {
-        if !userprofile.trim().is_empty() {
-            return Some(PathBuf::from(userprofile));
-        }
-    }
-    None
-}
-
 fn now_unix_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -350,20 +336,7 @@ fn init_redb_schema(db: &RedbDb) -> Result<()> {
 
 impl Database {
     pub fn default_path() -> PathBuf {
-        if let Ok(env_dir) = std::env::var("SRZ_DATA_DIR")
-            && !env_dir.trim().is_empty()
-        {
-            return PathBuf::from(env_dir).join("srz.db");
-        }
-        if let Ok(xdg_data) = std::env::var("XDG_DATA_HOME")
-            && !xdg_data.trim().is_empty()
-        {
-            return PathBuf::from(xdg_data).join("srz").join("srz.db");
-        }
-        if let Some(home) = dirs_home() {
-            return home.join(".local").join("share").join("srz").join("srz.db");
-        }
-        PathBuf::from("srz.db")
+        fs_util::default_data_dir().join("srz.db")
     }
 
     pub fn open_default() -> Result<Self> {
@@ -485,22 +458,12 @@ impl Database {
     }
 
     pub fn get_history(&self, limit: usize) -> Result<Vec<HistoryEntry>> {
-        let read_txn = self.db.begin_read()?;
-        let table = match read_txn.open_table(TABLE_HISTORY) {
-            Ok(t) => t,
-            Err(_) => return Ok(Vec::new()),
-        };
-
-        let mut entries = Vec::new();
-        for item_res in table.iter()?.rev() {
-            let (_, val) = item_res?;
-            let item: LibraryItem = serde_json::from_slice(val.value())?;
-            entries.push(item.into_history_entry());
-            if entries.len() >= limit {
-                break;
-            }
-        }
-        Ok(entries)
+        let items = self.get_all_library_items()?;
+        Ok(items
+            .into_iter()
+            .take(limit)
+            .map(LibraryItem::into_history_entry)
+            .collect())
     }
 
     pub fn get_all_for_index(&self) -> Result<Vec<HistoryEntry>> {
@@ -1220,57 +1183,43 @@ impl Database {
         let max_age_secs = max_age.as_secs();
         let mut pruned = 0;
 
+        fn prune_table<T: for<'de> serde::Deserialize<'de>>(
+            table: &mut redb::Table<&str, &[u8]>,
+            now: u64,
+            max_age: u64,
+            get_cached_at: fn(&T) -> u64,
+        ) -> Result<usize> {
+            let mut to_delete = Vec::new();
+            for item_res in table.iter()? {
+                let (k, v) = item_res?;
+                if let Ok(rec) = serde_json::from_slice::<T>(v.value())
+                    && now.saturating_sub(get_cached_at(&rec)) > max_age
+                {
+                    to_delete.push(k.value().to_string());
+                }
+            }
+            let count = to_delete.len();
+            for k in to_delete {
+                let _ = table.remove(k.as_str())?;
+            }
+            Ok(count)
+        }
+
         let write_txn = self.db.begin_write()?;
         {
-            // Prune cache_pages
             let mut table = write_txn.open_table(TABLE_CACHE_PAGES)?;
-            let mut to_delete = Vec::new();
-            for item_res in table.iter()? {
-                let (k, v) = item_res?;
-                if let Ok(rec) = serde_json::from_slice::<CachedPageRecord>(v.value()) {
-                    if now.saturating_sub(rec.cached_at) > max_age_secs {
-                        to_delete.push(k.value().to_string());
-                    }
-                }
-            }
-            for k in to_delete {
-                let _ = table.remove(k.as_str())?;
-                pruned += 1;
-            }
+            pruned +=
+                prune_table::<CachedPageRecord>(&mut table, now, max_age_secs, |r| r.cached_at)?;
         }
         {
-            // Prune cache_search
             let mut table = write_txn.open_table(TABLE_CACHE_SEARCH)?;
-            let mut to_delete = Vec::new();
-            for item_res in table.iter()? {
-                let (k, v) = item_res?;
-                if let Ok(rec) = serde_json::from_slice::<CachedSearchRecord>(v.value()) {
-                    if now.saturating_sub(rec.cached_at) > max_age_secs {
-                        to_delete.push(k.value().to_string());
-                    }
-                }
-            }
-            for k in to_delete {
-                let _ = table.remove(k.as_str())?;
-                pruned += 1;
-            }
+            pruned +=
+                prune_table::<CachedSearchRecord>(&mut table, now, max_age_secs, |r| r.cached_at)?;
         }
         {
-            // Prune cache_caps
             let mut table = write_txn.open_table(TABLE_CACHE_CAPS)?;
-            let mut to_delete = Vec::new();
-            for item_res in table.iter()? {
-                let (k, v) = item_res?;
-                if let Ok(rec) = serde_json::from_slice::<CachedCapsRecord>(v.value()) {
-                    if now.saturating_sub(rec.cached_at) > max_age_secs {
-                        to_delete.push(k.value().to_string());
-                    }
-                }
-            }
-            for k in to_delete {
-                let _ = table.remove(k.as_str())?;
-                pruned += 1;
-            }
+            pruned +=
+                prune_table::<CachedCapsRecord>(&mut table, now, max_age_secs, |r| r.cached_at)?;
         }
         write_txn.commit()?;
         Ok(pruned)
@@ -1316,38 +1265,8 @@ impl Database {
     }
 
     pub fn cache_entry_count_and_bytes(&self) -> (usize, u64) {
-        let Ok(read_txn) = self.db.begin_read() else {
-            return (0, 0);
-        };
-        let mut count = 0;
-        let mut bytes = 0u64;
-
-        if let Ok(table) = read_txn.open_table(TABLE_CACHE_PAGES) {
-            if let Ok(iter) = table.iter() {
-                for r in iter.flatten() {
-                    count += 1;
-                    bytes += (r.0.value().len() + r.1.value().len()) as u64;
-                }
-            }
-        }
-        if let Ok(table) = read_txn.open_table(TABLE_CACHE_SEARCH) {
-            if let Ok(iter) = table.iter() {
-                for r in iter.flatten() {
-                    count += 1;
-                    bytes += (r.0.value().len() + r.1.value().len()) as u64;
-                }
-            }
-        }
-        if let Ok(table) = read_txn.open_table(TABLE_CACHE_CAPS) {
-            if let Ok(iter) = table.iter() {
-                for r in iter.flatten() {
-                    count += 1;
-                    bytes += (r.0.value().len() + r.1.value().len()) as u64;
-                }
-            }
-        }
-
-        (count, bytes)
+        let (p_cnt, p_bytes, s_cnt, s_bytes, sum_cnt, sum_bytes) = self.cache_stats_breakdown();
+        (p_cnt + s_cnt + sum_cnt, p_bytes + s_bytes + sum_bytes)
     }
 
     pub fn cache_stats_breakdown(&self) -> (usize, u64, usize, u64, usize, u64) {

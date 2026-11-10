@@ -652,17 +652,15 @@ impl LlmClient {
                 } else {
                     let best_match = models
                         .iter()
-                        .map(|m| {
-                            (
-                                m,
-                                crate::system::text_util::jaro_winkler(requested_model, m),
-                            )
+                        .filter(|m| {
+                            m.starts_with(requested_model)
+                                || requested_model.starts_with(m.as_str())
+                                || crate::system::text_util::damerau_levenshtein(requested_model, m)
+                                    <= 3
                         })
-                        .filter(|(_, sim)| *sim >= 0.72)
-                        .max_by(|(_, s1), (_, s2)| {
-                            s1.partial_cmp(s2).unwrap_or(std::cmp::Ordering::Equal)
-                        })
-                        .map(|(m, _)| m);
+                        .min_by_key(|m| {
+                            crate::system::text_util::damerau_levenshtein(requested_model, m)
+                        });
 
                     if let Some(suggestion) = best_match {
                         msg.push_str(&format!(" Did you mean '{}'?", suggestion));

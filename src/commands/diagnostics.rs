@@ -158,12 +158,7 @@ pub async fn handle_doctor(
 
     // Print Hardware Profile
     println!("Hardware:");
-    println!(
-        "  • Device: {} ({:.1} GB RAM, {})",
-        hw.chip_name,
-        hw.total_memory_gb,
-        hw.tier.display_name()
-    );
+    print_host_device_info(&hw);
     println!(
         "  • Recommended: {} [{} {}] · {} ({})",
         hw.recommended_model,

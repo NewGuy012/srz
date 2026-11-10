@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -877,39 +876,31 @@ pub fn suggest_command(input: &str) -> Option<&'static str> {
     }
 
     let input_len = input_lower.chars().count();
-    let mut best_match: Option<(&'static str, f64, usize)> = None;
+    let mut best_match: Option<(&'static str, usize)> = None;
 
     for &cmd in TOP_LEVEL_COMMANDS {
         let cmd_len = cmd.chars().count();
         let dist = crate::system::text_util::damerau_levenshtein(&input_lower, cmd);
-        let jaro = crate::system::text_util::jaro(&input_lower, cmd);
 
-        // Strict thresholds to avoid false positives with short book titles (e.g. "Dune"):
-        // 1. For 3-letter inputs, only allow 3-letter commands with edit distance 1 and similarity >= 0.75.
-        // 2. For 4-letter inputs, edit distance must be at most 1.
-        // 3. For 5+ letter inputs, edit distance at most 2.
         let is_candidate = match input_len {
-            3 => cmd_len == 3 && dist == 1 && jaro >= 0.75,
-            4 => dist <= 1 && jaro >= 0.80,
-            _ => dist <= 2 && jaro >= 0.80,
+            0..=2 => false,
+            3 => cmd_len == 3 && dist == 1,
+            4 => cmd_len <= 5 && dist == 1,
+            _ => (cmd_len as isize - input_len as isize).abs() <= 2 && dist <= 2,
         };
 
         if is_candidate {
             match best_match {
-                None => best_match = Some((cmd, jaro, dist)),
-                Some((_, best_jaro, best_dist)) => {
-                    // Prefer higher similarity score; tie-break on lower edit distance
-                    if jaro > best_jaro
-                        || ((jaro - best_jaro).abs() < f64::EPSILON && dist < best_dist)
-                    {
-                        best_match = Some((cmd, jaro, dist));
-                    }
+                None => best_match = Some((cmd, dist)),
+                Some((_, best_dist)) if dist < best_dist => {
+                    best_match = Some((cmd, dist));
                 }
+                _ => {}
             }
         }
     }
 
-    best_match.map(|(cmd, _, _)| cmd)
+    best_match.map(|(cmd, _)| cmd)
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -998,16 +989,7 @@ pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 impl Config {
     /// Returns the default path for `config.toml` (`$SRZ_CONFIG`, `$XDG_CONFIG_HOME/srz/config.toml`, or `~/.config/srz/config.toml`).
     pub fn default_config_path() -> PathBuf {
-        if let Some(env_path) = crate::fs_util::non_empty_env_path("SRZ_CONFIG") {
-            return env_path;
-        }
-        if let Some(xdg) = crate::fs_util::non_empty_env_path("XDG_CONFIG_HOME") {
-            return xdg.join("srz").join("config.toml");
-        }
-        if let Some(home) = crate::fs_util::non_empty_env_path("HOME") {
-            return home.join(".config").join("srz").join("config.toml");
-        }
-        env::temp_dir().join("srz").join("config.toml")
+        crate::fs_util::default_config_path()
     }
 
     /// Loads the configuration file from a specific path.

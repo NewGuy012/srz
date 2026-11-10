@@ -12,6 +12,11 @@ pub fn non_empty_env_path(var: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Returns the user's home directory (`$HOME` or `%USERPROFILE%`).
+pub fn home_dir() -> Option<PathBuf> {
+    non_empty_env_path("HOME").or_else(|| non_empty_env_path("USERPROFILE"))
+}
+
 /// Returns the default persistent data directory for srz (`$SRZ_DATA_DIR`, `$XDG_DATA_HOME/srz`, `~/.local/share/srz`, or `%LOCALAPPDATA%/srz/data`).
 pub fn default_data_dir() -> PathBuf {
     if let Some(srz_data) = non_empty_env_path("SRZ_DATA_DIR") {
@@ -26,13 +31,52 @@ pub fn default_data_dir() -> PathBuf {
             return local_app_data.join("srz").join("data");
         }
     }
-    if let Some(home) = non_empty_env_path("HOME") {
+    if let Some(home) = home_dir() {
         return home.join(".local").join("share").join("srz");
     }
-    if let Some(user_profile) = non_empty_env_path("USERPROFILE") {
-        return user_profile.join(".local").join("share").join("srz");
-    }
     std::env::temp_dir().join("srz-data")
+}
+
+/// Returns the default cache directory (`$SRZ_CACHE_DIR`, `$XDG_CACHE_HOME/srz`, `~/.cache/srz`, `%LOCALAPPDATA%/srz/cache`).
+pub fn default_cache_dir() -> PathBuf {
+    if let Some(srz_cache) = non_empty_env_path("SRZ_CACHE_DIR") {
+        return srz_cache;
+    }
+    if let Some(xdg_cache) = non_empty_env_path("XDG_CACHE_HOME") {
+        return xdg_cache.join("srz");
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(local_app_data) = non_empty_env_path("LOCALAPPDATA") {
+            return local_app_data.join("srz").join("cache");
+        }
+    }
+    if let Some(home) = home_dir() {
+        return home.join(".cache").join("srz");
+    }
+    std::env::temp_dir().join("srz-cache")
+}
+
+/// Returns the default config path (`$SRZ_CONFIG`, `$SRZ_CONFIG_PATH`, `$XDG_CONFIG_HOME/srz/config.toml`, `~/.config/srz/config.toml`).
+pub fn default_config_path() -> PathBuf {
+    if let Some(p) =
+        non_empty_env_path("SRZ_CONFIG").or_else(|| non_empty_env_path("SRZ_CONFIG_PATH"))
+    {
+        return p;
+    }
+    if let Some(xdg) = non_empty_env_path("XDG_CONFIG_HOME") {
+        return xdg.join("srz").join("config.toml");
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(app_data) = non_empty_env_path("APPDATA") {
+            return app_data.join("srz").join("config.toml");
+        }
+    }
+    if let Some(home) = home_dir() {
+        return home.join(".config").join("srz").join("config.toml");
+    }
+    std::env::temp_dir().join("srz").join("config.toml")
 }
 
 /// Sets directory permissions to `0700` on Unix systems (no-op on other platforms).

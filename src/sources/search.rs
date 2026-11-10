@@ -251,17 +251,7 @@ impl BookSearcher {
                         .get("snippet")
                         .and_then(|s| s.as_str())
                         .map(|raw_snippet| {
-                            let mut stripped = String::with_capacity(raw_snippet.len());
-                            let mut in_tag = false;
-                            for c in raw_snippet.chars() {
-                                if c == '<' {
-                                    in_tag = true;
-                                } else if c == '>' {
-                                    in_tag = false;
-                                } else if !in_tag {
-                                    stripped.push(c);
-                                }
-                            }
+                            let stripped = crate::system::text_util::strip_html_tags(raw_snippet);
                             crate::system::text_util::decode_html_entities(stripped.trim())
                                 .into_owned()
                         });
@@ -344,17 +334,7 @@ impl BookSearcher {
             let title = if let Some(a_start) = title_rest.find('>') {
                 let after_a = &title_rest[a_start + 1..];
                 if let Some(a_end) = after_a.find("</a>") {
-                    let mut stripped = String::new();
-                    let mut in_tag = false;
-                    for c in after_a[..a_end].chars() {
-                        if c == '<' {
-                            in_tag = true;
-                        } else if c == '>' {
-                            in_tag = false;
-                        } else if !in_tag {
-                            stripped.push(c);
-                        }
-                    }
+                    let stripped = crate::system::text_util::strip_html_tags(&after_a[..a_end]);
                     crate::system::text_util::decode_html_entities(stripped.trim()).into_owned()
                 } else {
                     String::new()

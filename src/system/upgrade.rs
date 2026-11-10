@@ -539,51 +539,28 @@ pub fn replace_binary(new_binary: &Path, target_exe: &Path) -> std::io::Result<(
         ));
     }
 
-    #[cfg(unix)]
-    {
-        if std::fs::rename(new_binary, target_exe).is_ok() {
-            return Ok(());
-        }
-
-        // Target may be locked or on a filesystem requiring unlink.
-        // Stage a backup so target_exe is preserved if swap fails.
-        let parent = target_exe.parent().unwrap_or_else(|| Path::new("."));
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let backup_path = parent.join(format!(".srz-old-{}-{:x}.tmp", std::process::id(), nonce));
-
-        std::fs::rename(target_exe, &backup_path)?;
-
-        if let Err(err) = std::fs::rename(new_binary, target_exe) {
-            let _ = std::fs::rename(&backup_path, target_exe);
-            return Err(err);
-        }
-
-        let _ = std::fs::remove_file(&backup_path);
-        Ok(())
+    if std::fs::rename(new_binary, target_exe).is_ok() {
+        return Ok(());
     }
 
-    #[cfg(windows)]
-    {
-        let parent = target_exe.parent().unwrap_or_else(|| Path::new("."));
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let backup_path = parent.join(format!(".srz-old-{}-{:x}.tmp", std::process::id(), nonce));
+    // Target may be locked or on a filesystem requiring unlink.
+    // Stage a backup so target_exe is preserved if swap fails.
+    let parent = target_exe.parent().unwrap_or_else(|| Path::new("."));
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let backup_path = parent.join(format!(".srz-old-{}-{:x}.tmp", std::process::id(), nonce));
 
-        std::fs::rename(target_exe, &backup_path)?;
+    std::fs::rename(target_exe, &backup_path)?;
 
-        if let Err(err) = std::fs::rename(new_binary, target_exe) {
-            let _ = std::fs::rename(&backup_path, target_exe);
-            return Err(err);
-        }
-
-        let _ = std::fs::remove_file(&backup_path);
-        Ok(())
+    if let Err(err) = std::fs::rename(new_binary, target_exe) {
+        let _ = std::fs::rename(&backup_path, target_exe);
+        return Err(err);
     }
+
+    let _ = std::fs::remove_file(&backup_path);
+    Ok(())
 }
 
 pub async fn run_upgrade(

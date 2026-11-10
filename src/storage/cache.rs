@@ -239,25 +239,7 @@ impl Cache {
     }
 
     pub fn default_cache_dir() -> PathBuf {
-        if let Ok(env_dir) = std::env::var("SRZ_CACHE_DIR")
-            && !env_dir.trim().is_empty()
-        {
-            return PathBuf::from(env_dir);
-        }
-        if let Ok(env_data) = std::env::var("SRZ_DATA_DIR")
-            && !env_data.trim().is_empty()
-        {
-            return PathBuf::from(env_data);
-        }
-        if let Ok(xdg_cache) = std::env::var("XDG_CACHE_HOME")
-            && !xdg_cache.trim().is_empty()
-        {
-            return PathBuf::from(xdg_cache).join("srz");
-        }
-        if let Some(home) = dirs_home() {
-            return home.join(".cache").join("srz");
-        }
-        PathBuf::from(".cache")
+        crate::fs_util::default_cache_dir()
     }
 
     pub fn stats(&self) -> CacheStats {
@@ -637,18 +619,4 @@ impl Cache {
             db.backdate_history_for_test(title, delta_secs);
         }
     }
-}
-
-fn dirs_home() -> Option<PathBuf> {
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.trim().is_empty() {
-            return Some(PathBuf::from(home));
-        }
-    }
-    if let Ok(userprofile) = std::env::var("USERPROFILE") {
-        if !userprofile.trim().is_empty() {
-            return Some(PathBuf::from(userprofile));
-        }
-    }
-    None
 }
