@@ -28,7 +28,7 @@ struct SpinnerInner {
 
 impl Drop for SpinnerInner {
     fn drop(&mut self) {
-        if !self.finished.swap(true, Ordering::Relaxed) && !self.hidden {
+        if !self.finished.swap(true, Ordering::SeqCst) && !self.hidden {
             eprint!("\r\x1b[2K");
             let _ = std::io::stderr().flush();
         }
@@ -68,12 +68,12 @@ impl ProgressBar {
         if self.inner.hidden {
             return;
         }
-        self.inner.finished.store(false, Ordering::Relaxed);
+        self.inner.finished.store(false, Ordering::SeqCst);
         let inner_clone = Arc::clone(&self.inner);
         let handle = thread::spawn(move || {
             const TICKS: &[char] = &['⠋', '⠙', '⠚', '⠞', '⠖', '⠦', '⠴', '⠲', '⠳', '⠓'];
             let mut idx = 0;
-            while !inner_clone.finished.load(Ordering::Relaxed) {
+            while !inner_clone.finished.load(Ordering::SeqCst) {
                 let msg = inner_clone.message.lock().unwrap().clone();
                 if !msg.is_empty() {
                     let tick = TICKS[idx % TICKS.len()];
@@ -101,7 +101,7 @@ impl ProgressBar {
     }
 
     pub fn finish_and_clear(&self) {
-        if self.inner.finished.swap(true, Ordering::Relaxed) {
+        if self.inner.finished.swap(true, Ordering::SeqCst) {
             return;
         }
         if let Some(h) = self.inner.handle.lock().unwrap().take() {
@@ -118,12 +118,13 @@ impl ProgressBar {
     }
 
     pub fn is_finished(&self) -> bool {
-        self.inner.finished.load(Ordering::Relaxed)
+        self.inner.finished.load(Ordering::SeqCst)
     }
 
     pub fn reset(&self) {
         self.finish_and_clear();
         *self.inner.start_time.lock().unwrap() = Instant::now();
+        self.inner.finished.store(false, Ordering::SeqCst);
         if !self.inner.hidden {
             self.start_ticker();
         }
@@ -833,6 +834,19 @@ mod tests {
         pb.reset();
         assert!(!pb.is_finished());
         pb.finish_and_clear();
+    }
+
+    #[test]
+    fn test_hidden_spinner_lifecycle() {
+        let pb = ProgressBar::hidden();
+        assert!(pb.is_hidden());
+        assert!(!pb.is_finished());
+        pb.finish_and_clear();
+        assert!(pb.is_finished());
+        pb.reset();
+        assert!(!pb.is_finished());
+        pb.finish_and_clear();
+        assert!(pb.is_finished());
     }
 
     #[test]
