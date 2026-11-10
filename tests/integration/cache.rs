@@ -522,7 +522,7 @@ fn test_cache_sha256_hash_keys() {
     drop(cache);
 
     // Query cache_pages in srz.db and verify the key is 64 hex characters (SHA-256)
-    use redb::ReadableTable;
+    use redb::{ReadableDatabase, ReadableTable};
     let redb = redb::Database::open(dir.join("srz.db")).unwrap();
     let read_txn = redb.begin_read().unwrap();
     let table = read_txn.open_table(srz::db::TABLE_CACHE_PAGES).unwrap();

@@ -4,7 +4,7 @@ use crate::scraper::ScrapedPage;
 use crate::sources::search::SearchResult;
 use crate::ui::render::slugify;
 use anyhow::Result;
-use redb::{Database as RedbDb, ReadableTable, TableDefinition};
+use redb::{Database as RedbDb, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
