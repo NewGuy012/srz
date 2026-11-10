@@ -157,7 +157,7 @@ impl SseStreamState {
     pub(crate) fn process_line(
         &mut self,
         line_bytes: &[u8],
-        pb: &indicatif::ProgressBar,
+        pb: &crate::ui::ProgressBar,
         spinner_label: &str,
         mode: StreamMode<'_>,
     ) -> bool {
@@ -242,7 +242,7 @@ impl SseStreamState {
     fn append_reasoning_delta(
         &mut self,
         text: &str,
-        pb: &indicatif::ProgressBar,
+        pb: &crate::ui::ProgressBar,
         mode: StreamMode<'_>,
     ) {
         self.thinking_tokens += 1;
@@ -296,7 +296,7 @@ impl SseStreamState {
 
     pub(crate) fn finish_thinking_ui(
         &mut self,
-        pb: &indicatif::ProgressBar,
+        pb: &crate::ui::ProgressBar,
         spinner_label: &str,
         mode: StreamMode<'_>,
     ) {
@@ -363,7 +363,7 @@ impl SseStreamState {
     fn append_content_delta(
         &mut self,
         delta_text: &str,
-        pb: &indicatif::ProgressBar,
+        pb: &crate::ui::ProgressBar,
         spinner_label: &str,
         mode: StreamMode<'_>,
     ) {
@@ -460,7 +460,7 @@ mod tests {
     #[test]
     fn test_sse_stream_state_process_line() {
         let mut state = SseStreamState::default();
-        let pb = indicatif::ProgressBar::hidden();
+        let pb = crate::ui::ProgressBar::hidden();
 
         // 1. Process reasoning tokens (thinking occurs before visible content)
         let reason_chunk = br#"data: {"choices":[{"delta":{"reasoning_content":"Step 1"}}]}"#;
@@ -520,7 +520,7 @@ mod tests {
 
     #[test]
     fn test_sse_stream_state_clean_spinner_lifecycle() {
-        let pb = indicatif::ProgressBar::hidden();
+        let pb = crate::ui::ProgressBar::hidden();
         let mut state = SseStreamState::new(std::time::Instant::now(), false);
 
         // Step 1: Thinking chunk
@@ -567,7 +567,7 @@ mod tests {
 
     #[test]
     fn test_pb_reset_resumes_spinner() {
-        let pb = indicatif::ProgressBar::new_spinner();
+        let pb = crate::ui::ProgressBar::new_spinner();
         pb.finish_and_clear();
         assert!(pb.is_finished());
         pb.reset();
@@ -576,7 +576,7 @@ mod tests {
 
     #[test]
     fn test_sse_stream_state_compact_vs_verbose_thinking() {
-        let pb = indicatif::ProgressBar::hidden();
+        let pb = crate::ui::ProgressBar::hidden();
 
         // Compact mode (default)
         let mut state_compact = SseStreamState::new(std::time::Instant::now(), false);
@@ -604,7 +604,7 @@ mod tests {
 
     #[test]
     fn test_sse_stream_state_silent_mode() {
-        let pb = indicatif::ProgressBar::hidden();
+        let pb = crate::ui::ProgressBar::hidden();
         let mut state = SseStreamState::new(std::time::Instant::now(), false);
 
         let reason_chunk =

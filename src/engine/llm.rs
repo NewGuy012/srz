@@ -603,7 +603,7 @@ impl LlmClient {
     async fn send_completion_request(
         &self,
         body: &ChatCompletionRequest<'_>,
-        pb: &indicatif::ProgressBar,
+        pb: &crate::ui::ProgressBar,
     ) -> Result<reqwest::Response> {
         let (endpoint, response) = self
             .send_with_fallback("/chat/completions", |c, url| c.post(url).json(body))
@@ -659,7 +659,7 @@ impl LlmClient {
 
     async fn handle_non_streaming_response(
         response: reqwest::Response,
-        pb: &indicatif::ProgressBar,
+        pb: &crate::ui::ProgressBar,
         done_label: &str,
         start_time: std::time::Instant,
     ) -> Result<LlmOutput> {
@@ -720,7 +720,7 @@ impl LlmClient {
         let start_time = std::time::Instant::now();
         let is_silent = matches!(mode, StreamMode::Silent) || spinner_label.trim().is_empty();
         let pb = if is_silent {
-            indicatif::ProgressBar::hidden()
+            crate::ui::ProgressBar::hidden()
         } else {
             Ui::spinner(spinner_label)
         };

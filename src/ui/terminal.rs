@@ -1,5 +1,4 @@
 use crate::config::cli::PagingMode;
-use indicatif::{ProgressBar, ProgressStyle};
 use std::borrow::Cow;
 use std::env;
 use std::future::Future;
@@ -8,7 +7,139 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
+
+#[derive(Clone)]
+pub struct ProgressBar {
+    inner: Arc<SpinnerInner>,
+}
+
+pub type Spinner = ProgressBar;
+
+struct SpinnerInner {
+    hidden: bool,
+    start_time: Mutex<Instant>,
+    finished: AtomicBool,
+    message: Mutex<String>,
+    handle: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl Drop for SpinnerInner {
+    fn drop(&mut self) {
+        if !self.finished.swap(true, Ordering::Relaxed) && !self.hidden {
+            eprint!("\r\x1b[2K");
+            let _ = std::io::stderr().flush();
+        }
+    }
+}
+
+impl ProgressBar {
+    pub fn hidden() -> Self {
+        Self {
+            inner: Arc::new(SpinnerInner {
+                hidden: true,
+                start_time: Mutex::new(Instant::now()),
+                finished: AtomicBool::new(false),
+                message: Mutex::new(String::new()),
+                handle: Mutex::new(None),
+            }),
+        }
+    }
+
+    pub fn new_spinner() -> Self {
+        if Ui::is_quiet() || !*STDERR_IS_TERMINAL {
+            return Self::hidden();
+        }
+        let inner = Arc::new(SpinnerInner {
+            hidden: false,
+            start_time: Mutex::new(Instant::now()),
+            finished: AtomicBool::new(false),
+            message: Mutex::new(String::new()),
+            handle: Mutex::new(None),
+        });
+        let pb = Self { inner };
+        pb.start_ticker();
+        pb
+    }
+
+    fn start_ticker(&self) {
+        if self.inner.hidden {
+            return;
+        }
+        self.inner.finished.store(false, Ordering::Relaxed);
+        let inner_clone = Arc::clone(&self.inner);
+        let handle = thread::spawn(move || {
+            const TICKS: &[char] = &['⠋', '⠙', '⠚', '⠞', '⠖', '⠦', '⠴', '⠲', '⠳', '⠓'];
+            let mut idx = 0;
+            while !inner_clone.finished.load(Ordering::Relaxed) {
+                let msg = inner_clone.message.lock().unwrap().clone();
+                if !msg.is_empty() {
+                    let tick = TICKS[idx % TICKS.len()];
+                    if Ui::use_color() {
+                        eprint!("\r\x1b[2K\x1b[1;36m{}\x1b[0m {}", tick, msg);
+                    } else {
+                        eprint!("\r\x1b[2K{} {}", tick, msg);
+                    }
+                    let _ = std::io::stderr().flush();
+                }
+                idx += 1;
+                thread::sleep(Duration::from_millis(80));
+            }
+        });
+        *self.inner.handle.lock().unwrap() = Some(handle);
+    }
+
+    pub fn set_message(&self, msg: impl Into<Cow<'static, str>>) {
+        let s = msg.into().into_owned();
+        *self.inner.message.lock().unwrap() = s;
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        self.inner.start_time.lock().unwrap().elapsed()
+    }
+
+    pub fn finish_and_clear(&self) {
+        if self.inner.finished.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        if let Some(h) = self.inner.handle.lock().unwrap().take() {
+            let _ = h.join();
+        }
+        if !self.inner.hidden {
+            eprint!("\r\x1b[2K");
+            let _ = std::io::stderr().flush();
+        }
+    }
+
+    pub fn is_hidden(&self) -> bool {
+        self.inner.hidden
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.inner.finished.load(Ordering::Relaxed)
+    }
+
+    pub fn reset(&self) {
+        self.finish_and_clear();
+        *self.inner.start_time.lock().unwrap() = Instant::now();
+        if !self.inner.hidden {
+            self.start_ticker();
+        }
+    }
+
+    pub fn enable_steady_tick(&self, _d: Duration) {}
+
+    pub fn tick(&self) {}
+
+    pub fn println(&self, msg: impl AsRef<str>) {
+        if !self.inner.hidden {
+            eprint!("\r\x1b[2K{}\n", msg.as_ref());
+            let _ = std::io::stderr().flush();
+        }
+    }
+}
 
 static QUIET: AtomicBool = AtomicBool::new(false);
 static VERBOSE: AtomicBool = AtomicBool::new(false);
@@ -31,17 +162,6 @@ static USE_COLOR: LazyLock<bool> = LazyLock::new(|| {
         return false;
     }
     *STDERR_IS_TERMINAL
-});
-
-static SPINNER_STYLE: LazyLock<ProgressStyle> = LazyLock::new(|| {
-    let template = if Ui::use_color() {
-        "{spinner:.cyan.bold} {wide_msg}"
-    } else {
-        "{spinner} {wide_msg}"
-    };
-    ProgressStyle::with_template(template)
-        .expect("Valid spinner template")
-        .tick_chars("⠋⠙⠚⠞⠖⠦⠴⠲⠳⠓")
 });
 
 pub struct Ui;
@@ -82,9 +202,7 @@ impl Ui {
             return ProgressBar::hidden();
         }
         let pb = ProgressBar::new_spinner();
-        pb.set_style(SPINNER_STYLE.clone());
         pb.set_message(msg);
-        pb.enable_steady_tick(Duration::from_millis(80));
         pb
     }
 
@@ -758,14 +876,15 @@ mod tests {
     }
 
     #[test]
-    fn test_spinner_template() {
-        let style = ProgressStyle::with_template("{spinner:.cyan.bold} {wide_msg}")
-            .expect("Valid spinner template")
-            .tick_chars("⠋⠙⠚⠞⠖⠦⠴⠲⠳⠓");
+    fn test_spinner_lifecycle() {
         let pb = ProgressBar::new_spinner();
-        pb.set_style(style);
         pb.set_message("Testing spinner");
-        pb.tick();
+        assert!(!pb.is_finished());
+        pb.finish_and_clear();
+        assert!(pb.is_finished());
+        pb.reset();
+        assert!(!pb.is_finished());
+        pb.finish_and_clear();
     }
 
     #[test]
