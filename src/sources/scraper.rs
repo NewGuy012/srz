@@ -367,7 +367,7 @@ impl WebScraper {
     }
 }
 
-/// Extracts title from raw HTML by inspecting <meta property="og:title">, <title>, or <h1>.
+/// Extracts title from raw HTML by inspecting `<meta property="og:title">`, `<title>`, or `<h1>`.
 pub fn extract_title_from_html(html: &str) -> Option<String> {
     // 1. Try og:title
     if let Some(pos) =
