@@ -325,17 +325,10 @@ impl SseStreamState {
             }
         } else if self.thinking_tokens > 0 {
             let total_duration_str = format_thinking_duration(total_elapsed_s);
-            let thought_line = if Ui::use_color() {
-                format!(
-                    "  \x1b[2m💭 Thought for {} ({} tokens) ›\x1b[0m",
-                    total_duration_str, self.thinking_tokens
-                )
-            } else {
-                format!(
-                    "  Thought for {} ({} tokens) >",
-                    total_duration_str, self.thinking_tokens
-                )
-            };
+            let thought_line = format!(
+                "💭 Thought for {} ({} tokens)",
+                total_duration_str, self.thinking_tokens
+            );
 
             if matches!(mode, StreamMode::Buffered) {
                 pb.println(thought_line);
