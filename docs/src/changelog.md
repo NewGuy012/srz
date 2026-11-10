@@ -26,14 +26,14 @@ All notable changes to `srz` are documented in this file.
 
 ### Summary
 
-> Deeply simplifies the codebase by eliminating vestigial shims, dead flags, and network tokenization roundtrips, consolidating duplicated system and text helpers, flattening command pipelines, and transitioning documentation to pure-Rust redb storage.
+> Migrates storage to pure-Rust embedded `redb` v4, dramatically slashes binary dependencies (dropping DuckDB, indicatif, termimad, rustyline, zip, and tar), hardens web scraping against SSRF, optimizes news relevance ranking, and refines terminal spinner reliability.
 
 ### Changes
-- **Dead Code & Shim Pruning (`src/storage/`, `src/config/`, `src/engine/`)**: Purged obsolete DuckDB helper shims, dead cache mutation methods, and unmaintained export formats (`parquet`). Eliminated legacy hidden subcommands (`web`, `book`, `file`) and the obsolete `--concurrency` flag in favor of clean positional argument dispatch.
-- **Network RPC Elimination (`src/engine/llm.rs`, `src/engine/budget.rs`, `src/engine/chunker.rs`)**: Removed remote `/tokenize` endpoint probing and HTTP roundtrips in favor of instant, zero-latency in-process model-aware token estimation (`TokenizerKind`). Cleaned up unused chunker wrappers.
-- **Helper Consolidation & Deduplication (`src/system/`, `src/sources/`, `src/ui/`)**: Centralized path resolution (`home_dir`, `default_data_dir`, `default_cache_dir`) in `fs_util`, unified platform binary replacement logic in `upgrade`, consolidated HTML tag stripping and case-insensitive substring searching in `text_util`, unified string distance metrics to `damerau_levenshtein`, and deduplicated table scans in database maintenance.
-- **Pipeline Flattening & Query Optimization (`src/commands/`)**: Consolidated book reference context discovery into a helper, unified 3 duplicate LLM context synthesis branches into one, removed redundant feed URL checks, and eliminated duplicate database lookups in grounded Q&A.
-- **Documentation & Verification**: Synchronized architecture documentation, command reference, configuration, and learning guides to reflect pure-Rust `redb` storage; passed all 231 tests and verified zero warnings on `cargo clippy --all-targets -- -D warnings`.
+- **Pure-Rust Storage Migration (`redb` v4)**: Replaced DuckDB with embedded pure-Rust `redb` v4 for caching, library management, and search history, significantly reducing compile times, memory footprint, and C++ toolchain dependencies.
+- **Massive Dependency Pruning & Architecture Streamlining**: Dropped 9 heavy external dependencies (`duckdb`, `indicatif`, `termimad`, `rustyline`, `zip`, `tar`, `tiktoken-rs`, `scraper`, `htmd`) in favor of fast, lightweight in-tree implementations (native ANSI markdown renderer, terminal spinner, DEFLATE/ustar extractors, and in-process token estimation).
+- **Security Hardening (SSRF & Private Network Defense)**: Enforced strict IP validation on URL fetching and HTTP redirects in the scraper, blocking requests to loopback, link-local, carrier-grade NAT, and private network ranges.
+- **News Ranking & Relevance Optimization**: Prioritized top-source relevance and recency over network completion speed, expanded candidate buffers, and automated stop-word cleaning for news digest synthesis.
+- **Terminal UI & Reliability Fixes**: Resolved spinner state resets in non-TTY/CI environments, aligned reasoning step elapsed formatting with terminal logs, and pruned vestigial shims, hidden subcommands, and obsolete flags.
 
 ---
 
