@@ -126,6 +126,22 @@ impl ExportFormat {
     }
 }
 
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Shell {
+    /// Bourne Again SHell (bash)
+    Bash,
+    /// Elvish shell
+    Elvish,
+    /// Friendly Interactive SHell (fish)
+    Fish,
+    /// PowerShell
+    #[value(name = "powershell")]
+    PowerShell,
+    /// Z SHell (zsh)
+    Zsh,
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "srz",
@@ -323,7 +339,7 @@ pub enum Commands {
     Completions {
         /// Target shell to generate completions for
         #[arg(value_enum)]
-        shell: clap_complete::Shell,
+        shell: Shell,
     },
     /// Check for and install the latest srz release
     Upgrade {
@@ -421,7 +437,7 @@ pub enum ResolvedAction<'a> {
         limit: usize,
     },
     Completions {
-        shell: clap_complete::Shell,
+        shell: Shell,
     },
     Upgrade {
         check: bool,

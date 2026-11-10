@@ -86,7 +86,7 @@ fn test_completions_subcommand() {
     assert_eq!(
         bash_cli.resolve_action().unwrap(),
         ResolvedAction::Completions {
-            shell: clap_complete::Shell::Bash
+            shell: srz::cli::Shell::Bash
         }
     );
 
@@ -94,7 +94,7 @@ fn test_completions_subcommand() {
     assert_eq!(
         zsh_cli.resolve_action().unwrap(),
         ResolvedAction::Completions {
-            shell: clap_complete::Shell::Zsh
+            shell: srz::cli::Shell::Zsh
         }
     );
 }

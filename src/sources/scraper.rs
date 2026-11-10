@@ -2,10 +2,7 @@ use anyhow::{Context, Result};
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::sync::LazyLock;
 use std::time::Duration;
-
-static HTMD_CONVERTER: LazyLock<htmd::HtmlToMarkdown> = LazyLock::new(htmd::HtmlToMarkdown::new);
 
 pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
@@ -120,29 +117,110 @@ pub fn truncate_wikipedia_html_before_references(html: &str) -> Cow<'_, str> {
     Cow::Borrowed(html)
 }
 
-/// Converts HTML to clean semantic Markdown preserving headings, lists, code blocks, and tables.
+/// Converts HTML to clean semantic Markdown preserving headings, lists, code blocks, and formatting.
 pub fn html_to_markdown(html: &str) -> String {
-    match HTMD_CONVERTER.convert(html) {
-        Ok(md) if !md.trim().is_empty() => md,
-        _ => html_to_plain_text(html.as_bytes()).unwrap_or_else(|_| html.to_string()),
+    use quick_xml::events::Event;
+    use quick_xml::reader::Reader;
+
+    let mut reader = Reader::from_str(html);
+    reader.config_mut().check_end_names = false;
+
+    let mut out = String::with_capacity(html.len());
+    let mut list_depth: usize = 0;
+
+    while let Ok(event) = reader.read_event() {
+        match event {
+            Event::Start(ref e) | Event::Empty(ref e) => {
+                let name = e.local_name();
+                match name.as_ref() {
+                    "h1" => out.push_str("\n\n# "),
+                    "h2" => out.push_str("\n\n## "),
+                    "h3" => out.push_str("\n\n### "),
+                    "h4" => out.push_str("\n\n#### "),
+                    "h5" => out.push_str("\n\n##### "),
+                    "h6" => out.push_str("\n\n###### "),
+                    "p" | "div" | "article" | "section" => {
+                        if !out.ends_with("\n\n") && !out.is_empty() {
+                            out.push_str("\n\n");
+                        }
+                    }
+                    "br" => out.push('\n'),
+                    "hr" => out.push_str("\n\n---\n\n"),
+                    "ul" | "ol" => {
+                        list_depth = list_depth.saturating_add(1);
+                        if !out.ends_with('\n') {
+                            out.push('\n');
+                        }
+                    }
+                    "li" => {
+                        let indent = "  ".repeat(list_depth.saturating_sub(1));
+                        out.push_str(&format!("\n{}* ", indent));
+                    }
+                    "pre" => {
+                        out.push_str("\n```\n");
+                    }
+                    "code" => {
+                        out.push('`');
+                    }
+                    "strong" | "b" => out.push_str("**"),
+                    "em" | "i" => out.push('*'),
+                    "blockquote" => out.push_str("\n> "),
+                    _ => {}
+                }
+            }
+            Event::End(ref e) => {
+                let name = e.local_name();
+                match name.as_ref() {
+                    "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" => {
+                        if !out.ends_with("\n\n") {
+                            out.push_str("\n\n");
+                        }
+                    }
+                    "ul" | "ol" => {
+                        list_depth = list_depth.saturating_sub(1);
+                        if !out.ends_with('\n') {
+                            out.push('\n');
+                        }
+                    }
+                    "pre" => {
+                        out.push_str("\n```\n\n");
+                    }
+                    "code" => {
+                        out.push('`');
+                    }
+                    "strong" | "b" => out.push_str("**"),
+                    "em" | "i" => out.push('*'),
+                    _ => {}
+                }
+            }
+            Event::Text(ref e) => {
+                let text = e.as_ref();
+                if let Ok(unescaped) = quick_xml::escape::unescape(text) {
+                    out.push_str(&unescaped);
+                } else {
+                    out.push_str(text);
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+
+    if out.trim().is_empty() {
+        crate::system::text_util::strip_html_tags(html)
+    } else {
+        out
     }
 }
 
-/// Converts HTML bytes to plain text without table borders or footnote links.
+/// Converts HTML bytes to plain text without markup.
 pub fn html_to_plain_text(html_bytes: &[u8]) -> Result<String> {
     let html_str = std::str::from_utf8(html_bytes)
         .map(std::borrow::Cow::Borrowed)
         .unwrap_or_else(|_| String::from_utf8_lossy(html_bytes));
 
-    if let Ok(md) = HTMD_CONVERTER.convert(&html_str)
-        && !md.trim().is_empty()
-    {
-        let (cleaned, _) = clean_text(&md, false, 1);
-        return Ok(cleaned);
-    }
-
-    let out = crate::system::text_util::strip_html_tags(&html_str);
-    let (cleaned, _) = clean_text(&out, false, 1);
+    let md = html_to_markdown(&html_str);
+    let (cleaned, _) = clean_text(&md, false, 1);
     Ok(cleaned)
 }
 
