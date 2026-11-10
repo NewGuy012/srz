@@ -220,7 +220,7 @@ pub async fn fetch_url_content(
                 crate::sources::document::MAX_FILE_BYTES as usize,
             )
             .await?;
-            crate::sources::pdf::PdfExtractor::extract_from_bytes(&bytes, None)
+            crate::sources::document::PdfExtractor::extract_from_bytes(&bytes, None)
         })
         .await
     } else {

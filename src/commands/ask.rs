@@ -7,7 +7,7 @@ use crate::commands::open_db_or_warn;
 use crate::engine::llm::{LlmClient, RequestMessage, StreamMode};
 use crate::scraper::WebScraper;
 use crate::storage::db::Database;
-use crate::ui::{Ui, display_summary, render_markdown};
+use crate::ui::{Ui, display_summary_full, render_markdown};
 
 async fn resolve_cached_page_or_fetch(
     scraper: &WebScraper,
@@ -433,11 +433,13 @@ pub async fn handle_ask(
             .await?;
 
         if !output.streamed_to_stdout {
-            display_summary(
+            display_summary_full(
                 &answer_header,
                 &output.content,
                 args.effective_paging(),
                 args.plain,
+                None,
+                None,
             )?;
         }
 

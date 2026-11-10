@@ -19,18 +19,6 @@ pub struct CachedSummary {
     pub reasoning: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-pub struct SetBookSummaryParams<'a> {
-    pub title: &'a str,
-    pub author: Option<&'a str>,
-    pub style: SummaryStyle,
-    pub model: &'a str,
-    pub display_title: &'a str,
-    pub summary: &'a str,
-    pub word_count: usize,
-    pub reasoning: Option<&'a str>,
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CacheStats {
     pub pages: usize,
@@ -68,18 +56,10 @@ impl Default for CachePolicy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CacheNamespace {
-    Pages,
-    Search,
-    Views,
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PruneOptions {
     pub older_than: Option<Duration>,
     pub max_bytes: Option<u64>,
-    pub namespace: Option<CacheNamespace>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -247,13 +227,6 @@ impl Cache {
         }
         let mut guard = self.db.lock().ok()?;
         if guard.is_none() {
-            // Clean up legacy files if present
-            let legacy_cache_db = self.base_dir.join("cache.duckdb");
-            if legacy_cache_db.exists() {
-                let _ = fs::remove_file(&legacy_cache_db);
-                let _ = fs::remove_file(self.base_dir.join("cache.duckdb.wal"));
-            }
-
             if let Ok(database) = Database::open_at(&self.db_path) {
                 *guard = Some(database);
             }
@@ -401,7 +374,6 @@ impl Cache {
         self.prune(PruneOptions {
             older_than: Some(self.policy.pages_ttl),
             max_bytes: Some(self.policy.max_bytes),
-            namespace: None,
         })
         .ok()
     }
@@ -572,32 +544,6 @@ impl Cache {
         )
     }
 
-    pub fn set_web_summary(
-        &self,
-        url: &str,
-        style: SummaryStyle,
-        model: &str,
-        title: &str,
-        summary: &str,
-    ) {
-        let record = crate::db::NewSummaryRecord {
-            target_type: "web",
-            title,
-            author: None,
-            url: Some(url),
-            style: style.as_str(),
-            model,
-            word_count: summary.split_ascii_whitespace().count(),
-            prompt_tokens: None,
-            completion_tokens: None,
-            duration_ms: 0,
-            tokens_per_second: None,
-            summary,
-            reasoning: None,
-        };
-        self.set_summary_record(&record, Some(url));
-    }
-
     pub fn get_file_summary(
         &self,
         file_key: &str,
@@ -611,34 +557,6 @@ impl Cache {
             model,
             self.policy.summaries_ttl,
         )
-    }
-
-    pub fn set_file_summary(
-        &self,
-        file_key: &str,
-        style: SummaryStyle,
-        model: &str,
-        title: &str,
-        summary: &str,
-        reasoning: Option<&str>,
-        word_count: usize,
-    ) {
-        let record = crate::db::NewSummaryRecord {
-            target_type: "file",
-            title,
-            author: None,
-            url: None,
-            style: style.as_str(),
-            model,
-            word_count,
-            prompt_tokens: None,
-            completion_tokens: None,
-            duration_ms: 0,
-            tokens_per_second: None,
-            summary,
-            reasoning,
-        };
-        self.set_summary_record(&record, Some(file_key));
     }
 
     pub fn get_book_summary(
@@ -658,26 +576,6 @@ impl Cache {
         )
     }
 
-    pub fn set_book_summary(&self, params: SetBookSummaryParams<'_>) {
-        let key = Self::book_cache_title(params.title, params.author);
-        let record = crate::db::NewSummaryRecord {
-            target_type: "book",
-            title: params.display_title,
-            author: params.author,
-            url: None,
-            style: params.style.as_str(),
-            model: params.model,
-            word_count: params.word_count,
-            prompt_tokens: None,
-            completion_tokens: None,
-            duration_ms: 0,
-            tokens_per_second: None,
-            summary: params.summary,
-            reasoning: params.reasoning,
-        };
-        self.set_summary_record(&record, Some(&key));
-    }
-
     pub fn get_news_summary(
         &self,
         topic: &str,
@@ -687,39 +585,6 @@ impl Cache {
     ) -> Option<CachedSummary> {
         let key = Self::news_cache_title(topic, timeframe);
         self.get_summary_from_db_with_ttl("news", &key, style.as_str(), model, self.policy.news_ttl)
-    }
-
-    #[doc(hidden)]
-    #[allow(clippy::too_many_arguments)]
-    pub fn set_news_summary(
-        &self,
-        topic: &str,
-        timeframe: crate::cli::NewsTimeframe,
-        style: SummaryStyle,
-        model: &str,
-        title: &str,
-        summary: &str,
-        word_count: usize,
-        reasoning: Option<&str>,
-    ) {
-        let key = Self::news_cache_title(topic, timeframe);
-        let search_url = crate::sources::news::GoogleNewsClient::search_url_for_topic(topic);
-        let record = crate::db::NewSummaryRecord {
-            target_type: "news",
-            title,
-            author: None,
-            url: Some(&search_url),
-            style: style.as_str(),
-            model,
-            word_count,
-            prompt_tokens: None,
-            completion_tokens: None,
-            duration_ms: 0,
-            tokens_per_second: None,
-            summary,
-            reasoning,
-        };
-        self.set_summary_record(&record, Some(&key));
     }
 
     fn get_summary_from_db_with_ttl(
@@ -735,19 +600,6 @@ impl Cache {
         }
         let db = self.get_or_init_db()?;
         db.get_cached_summary(target_type, identifier, style, model, ttl)
-    }
-
-    fn set_summary_record(
-        &self,
-        record: &crate::db::NewSummaryRecord<'_>,
-        cache_key: Option<&str>,
-    ) {
-        if !self.enabled {
-            return;
-        }
-        if let Some(db) = self.get_or_init_db() {
-            let _ = db.record_summary_with_key(record, cache_key);
-        }
     }
 
     // Caps cache
@@ -772,9 +624,17 @@ impl Cache {
         }
     }
 
-    pub fn update_cached_at_for_test(&self, table: &str, where_clause: &str, delta_secs: i64) {
+    #[doc(hidden)]
+    pub fn backdate_page_cache_for_test(&self, url: &str, delta_secs: u64) {
         if let Some(db) = self.get_or_init_db() {
-            db.update_cached_at_for_test(table, where_clause, delta_secs);
+            db.backdate_page_cache_for_test(url, delta_secs);
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn backdate_history_for_test(&self, title: &str, delta_secs: u64) {
+        if let Some(db) = self.get_or_init_db() {
+            db.backdate_history_for_test(title, delta_secs);
         }
     }
 }

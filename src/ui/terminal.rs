@@ -461,16 +461,6 @@ impl StreamMarkdownRenderer {
     }
 }
 
-/// Prints formatted summary to terminal, launching a pager if the text exceeds terminal height.
-pub fn display_summary(
-    title: &str,
-    content: &str,
-    paging_mode: PagingMode,
-    plain: bool,
-) -> io::Result<()> {
-    display_summary_full(title, content, paging_mode, plain, None, None)
-}
-
 /// Prints a unified terminal summary document (including optional view file links and context hints),
 /// launching a pager if the combined document exceeds terminal height.
 pub fn display_summary_full(

@@ -123,7 +123,6 @@ pub fn handle_cache(cmd: CacheCommand, cache: &Cache) -> Result<()> {
             let options = crate::cache::PruneOptions {
                 older_than: parsed_older_than,
                 max_bytes: parsed_max_size,
-                namespace: None,
             };
 
             let prune_stats = cache.prune(options).context("Failed to prune cache")?;

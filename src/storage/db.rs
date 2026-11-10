@@ -204,12 +204,6 @@ pub struct ChatMessage {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct QueryResult {
-    pub columns: Vec<String>,
-    pub rows: Vec<Vec<serde_json::Value>>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedPageRecord {
     pub url: String,
@@ -419,10 +413,6 @@ impl Database {
 
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
-    }
-
-    pub fn attach_database(&self, _path: &Path, _alias: &str) -> Result<()> {
-        Ok(())
     }
 
     pub fn reset(&self) -> Result<()> {
@@ -1007,12 +997,6 @@ impl Database {
         Ok(())
     }
 
-    pub fn export_parquet(&self, _path: &Path) -> Result<()> {
-        anyhow::bail!(
-            "Parquet export is not supported with the pure-Rust storage backend; please use CSV, JSON, or Markdown."
-        );
-    }
-
     pub fn export_json(&self, path: &Path) -> Result<()> {
         prepare_export_file(path)?;
         let items = self.get_all_library_items()?;
@@ -1421,101 +1405,42 @@ impl Database {
         )
     }
 
-    pub fn update_cached_at_for_test(&self, table_name: &str, where_clause: &str, delta_secs: i64) {
-        let Ok(write_txn) = self.db.begin_write() else {
-            return;
-        };
-        let filter_target = where_clause.split('\'').nth(1);
+    #[doc(hidden)]
+    pub fn backdate_page_cache_for_test(&self, url: &str, delta_secs: u64) {
+        if let Ok(write_txn) = self.db.begin_write() {
+            if let Ok(mut table) = write_txn.open_table(TABLE_CACHE_PAGES) {
+                let mut updates = Vec::new();
+                if let Ok(iter) = table.iter() {
+                    for (k, v) in iter.flatten() {
+                        if let Ok(mut rec) = serde_json::from_slice::<CachedPageRecord>(v.value()) {
+                            if rec.url == url || k.value() == url {
+                                rec.cached_at = rec.cached_at.saturating_sub(delta_secs);
+                                if let Ok(bytes) = serde_json::to_vec(&rec) {
+                                    updates.push((k.value().to_string(), bytes));
+                                }
+                            }
+                        }
+                    }
+                }
+                for (k, bytes) in updates {
+                    let _ = table.insert(k.as_str(), bytes.as_slice());
+                }
+            }
+            let _ = write_txn.commit();
+        }
+    }
 
-        match table_name {
-            "cache_pages" => {
-                if let Ok(mut table) = write_txn.open_table(TABLE_CACHE_PAGES) {
-                    let mut updates = Vec::new();
-                    if let Ok(iter) = table.iter() {
-                        for (k, v) in iter.flatten() {
-                            if let Ok(mut rec) =
-                                serde_json::from_slice::<CachedPageRecord>(v.value())
-                            {
-                                if let Some(target) = filter_target {
-                                    if rec.url != target && k.value() != target {
-                                        continue;
-                                    }
-                                }
-                                rec.cached_at = (rec.cached_at as i64 - delta_secs).max(0) as u64;
-                                if let Ok(bytes) = serde_json::to_vec(&rec) {
-                                    updates.push((k.value().to_string(), bytes));
-                                }
-                            }
-                        }
-                    }
-                    for (k, bytes) in updates {
-                        let _ = table.insert(k.as_str(), bytes.as_slice());
-                    }
-                }
-            }
-            "cache_search" => {
-                if let Ok(mut table) = write_txn.open_table(TABLE_CACHE_SEARCH) {
-                    let mut updates = Vec::new();
-                    if let Ok(iter) = table.iter() {
-                        for (k, v) in iter.flatten() {
-                            if let Ok(mut rec) =
-                                serde_json::from_slice::<CachedSearchRecord>(v.value())
-                            {
-                                if let Some(target) = filter_target {
-                                    if rec.query != target && k.value() != target {
-                                        continue;
-                                    }
-                                }
-                                rec.cached_at = (rec.cached_at as i64 - delta_secs).max(0) as u64;
-                                if let Ok(bytes) = serde_json::to_vec(&rec) {
-                                    updates.push((k.value().to_string(), bytes));
-                                }
-                            }
-                        }
-                    }
-                    for (k, bytes) in updates {
-                        let _ = table.insert(k.as_str(), bytes.as_slice());
-                    }
-                }
-            }
-            "cache_caps" => {
-                if let Ok(mut table) = write_txn.open_table(TABLE_CACHE_CAPS) {
-                    let mut updates = Vec::new();
-                    if let Ok(iter) = table.iter() {
-                        for (k, v) in iter.flatten() {
-                            if let Ok(mut rec) =
-                                serde_json::from_slice::<CachedCapsRecord>(v.value())
-                            {
-                                if let Some(target) = filter_target {
-                                    if rec.caps.endpoint != target && k.value() != target {
-                                        continue;
-                                    }
-                                }
-                                rec.cached_at = (rec.cached_at as i64 - delta_secs).max(0) as u64;
-                                if let Ok(bytes) = serde_json::to_vec(&rec) {
-                                    updates.push((k.value().to_string(), bytes));
-                                }
-                            }
-                        }
-                    }
-                    for (k, bytes) in updates {
-                        let _ = table.insert(k.as_str(), bytes.as_slice());
-                    }
-                }
-            }
-            "history" => {
-                if let Ok(mut table) = write_txn.open_table(TABLE_HISTORY) {
-                    let mut updates = Vec::new();
-                    if let Ok(iter) = table.iter() {
-                        for (k, v) in iter.flatten() {
-                            if let Ok(mut item) = serde_json::from_slice::<LibraryItem>(v.value()) {
-                                if let Some(target) = filter_target {
-                                    if item.title != target && item.url.as_deref() != Some(target) {
-                                        continue;
-                                    }
-                                }
+    #[doc(hidden)]
+    pub fn backdate_history_for_test(&self, title: &str, delta_secs: u64) {
+        if let Ok(write_txn) = self.db.begin_write() {
+            if let Ok(mut table) = write_txn.open_table(TABLE_HISTORY) {
+                let mut updates = Vec::new();
+                if let Ok(iter) = table.iter() {
+                    for (k, v) in iter.flatten() {
+                        if let Ok(mut item) = serde_json::from_slice::<LibraryItem>(v.value()) {
+                            if item.title == title || item.url.as_deref() == Some(title) {
                                 if let Some(secs) = parse_iso_to_unix_secs(&item.created_at) {
-                                    let new_secs = (secs as i64 - delta_secs).max(0) as u64;
+                                    let new_secs = secs.saturating_sub(delta_secs);
                                     let date = format_date_from_timestamp(new_secs);
                                     let time_of_day = new_secs % 86400;
                                     item.created_at = format!(
@@ -1532,39 +1457,14 @@ impl Database {
                             }
                         }
                     }
-                    for (k, bytes) in updates {
-                        let _ = table.insert(k, bytes.as_slice());
-                    }
+                }
+                for (k, bytes) in updates {
+                    let _ = table.insert(k, bytes.as_slice());
                 }
             }
-            _ => {}
+            let _ = write_txn.commit();
         }
-        let _ = write_txn.commit();
     }
-}
-
-pub fn open_hardened_duckdb_file(path: &Path) -> Result<(Database, bool)> {
-    if path.is_symlink() {
-        anyhow::bail!(
-            "Database path cannot be a symbolic link: {}",
-            path.display()
-        );
-    }
-    let exists = path.exists();
-    let db = Database::open_at(path)?;
-    Ok((db, exists))
-}
-
-pub fn open_hardened_duckdb_file_with_retry(path: &Path, _retries: usize) -> Result<Database> {
-    Database::open_at(path)
-}
-
-pub fn is_duckdb_schema_ready(_db: &Database) -> bool {
-    true
-}
-
-pub fn init_duckdb_schema(_db: &Database) -> Result<()> {
-    Ok(())
 }
 
 fn parse_iso_to_unix_secs(s: &str) -> Option<u64> {

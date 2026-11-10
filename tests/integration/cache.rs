@@ -1,4 +1,4 @@
-use srz::cache::{Cache, SetBookSummaryParams};
+use srz::cache::Cache;
 use srz::cli::SummaryStyle;
 use srz::scraper::ScrapedPage;
 use srz::search::{BookMetadata, SearchResult};
@@ -60,16 +60,24 @@ fn test_disabled_cache_bypasses_reads() {
     let cache_enabled = Cache::with_dir(dir.clone(), true);
     let cache_disabled = Cache::with_dir(dir.clone(), false);
 
-    cache_enabled.set_book_summary(SetBookSummaryParams {
-        title: "Dune",
+    let db = cache_enabled.open_database().unwrap();
+    let record = srz::db::NewSummaryRecord {
+        target_type: "book",
+        title: "\"Dune\"",
         author: None,
-        style: SummaryStyle::Detailed,
+        url: None,
+        style: SummaryStyle::Detailed.as_str(),
         model: "gemma-4",
-        display_title: "\"Dune\"",
-        summary: "Great sci-fi novel.",
         word_count: 420,
+        prompt_tokens: None,
+        completion_tokens: None,
+        duration_ms: 0,
+        tokens_per_second: None,
+        summary: "Great sci-fi novel.",
         reasoning: Some("Thought process about Dune"),
-    });
+    };
+    db.record_summary_with_key(&record, Some(&Cache::book_cache_title("Dune", None)))
+        .unwrap();
 
     assert!(
         cache_disabled
@@ -222,7 +230,7 @@ fn test_cache_ttl_expiration() {
     assert!(cache.get_page("https://expiring.com").is_some());
 
     // Deterministically backdate the entry past the 60s TTL without sleeping
-    cache.update_cached_at_for_test("cache_pages", "url = 'https://expiring.com'", 120);
+    cache.backdate_page_cache_for_test("https://expiring.com", 120);
 
     // Entry should have expired and returned None
     assert!(cache.get_page("https://expiring.com").is_none());
@@ -254,11 +262,7 @@ fn test_news_cache_short_ttl_expiration() {
     );
 
     // Backdate past 2 hours (e.g. 3 hours = 10800s)
-    cache.update_cached_at_for_test(
-        "cache_pages",
-        "url = 'https://news.google.com/articles/123'",
-        10800,
-    );
+    cache.backdate_page_cache_for_test("https://news.google.com/articles/123", 10800);
 
     // Should expire under news TTL
     assert!(
@@ -289,16 +293,30 @@ fn test_news_summary_cache_and_short_ttl_expiration() {
     );
 
     // Store news summary
-    cache.set_news_summary(
-        "python language news",
-        NewsTimeframe::Week,
-        SummaryStyle::Concise,
-        "default",
-        "News: python language news",
-        "# Python News Briefing\nPython 3.13 released.",
-        350,
-        Some("Model reasoning trace"),
-    );
+    let db = cache.open_database().unwrap();
+    let news_record = srz::db::NewSummaryRecord {
+        target_type: "news",
+        title: "News: python language news",
+        author: None,
+        url: Some("https://news.google.com/search?q=python"),
+        style: SummaryStyle::Concise.as_str(),
+        model: "default",
+        word_count: 350,
+        prompt_tokens: None,
+        completion_tokens: None,
+        duration_ms: 0,
+        tokens_per_second: None,
+        summary: "# Python News Briefing\nPython 3.13 released.",
+        reasoning: Some("Model reasoning trace"),
+    };
+    db.record_summary_with_key(
+        &news_record,
+        Some(&Cache::news_cache_title(
+            "python language news",
+            NewsTimeframe::Week,
+        )),
+    )
+    .unwrap();
 
     // Immediate read hits
     let cached = cache
@@ -327,16 +345,26 @@ fn test_news_summary_cache_and_short_ttl_expiration() {
     );
 
     // Book summary with author test
-    cache.set_book_summary(srz::cache::SetBookSummaryParams {
-        title: "Dune",
+    let book_record = srz::db::NewSummaryRecord {
+        target_type: "book",
+        title: "\"Dune\" by Frank Herbert",
         author: Some("Frank Herbert"),
-        style: SummaryStyle::Concise,
+        url: None,
+        style: SummaryStyle::Concise.as_str(),
         model: "default",
-        display_title: "\"Dune\" by Frank Herbert",
-        summary: "Arrakis and spice.",
         word_count: 100,
+        prompt_tokens: None,
+        completion_tokens: None,
+        duration_ms: 0,
+        tokens_per_second: None,
+        summary: "Arrakis and spice.",
         reasoning: None,
-    });
+    };
+    db.record_summary_with_key(
+        &book_record,
+        Some(&Cache::book_cache_title("Dune", Some("Frank Herbert"))),
+    )
+    .unwrap();
 
     assert!(
         cache
@@ -354,12 +382,12 @@ fn test_news_summary_cache_and_short_ttl_expiration() {
             .is_none()
     );
 
-    // Verify stats accurately counts the cached summaries in DuckDB
+    // Verify stats accurately counts the cached summaries in DB
     let stats = cache.stats();
     assert!(stats.summaries >= 2);
 
     // Backdate past 2 hours (e.g. 3 hours = 10800s)
-    cache.update_cached_at_for_test("history", "title = 'News: python language news'", 10800);
+    cache.backdate_history_for_test("News: python language news", 10800);
 
     // Should expire under news TTL (default: 2 hours)
     assert!(
@@ -376,7 +404,7 @@ fn test_news_summary_cache_and_short_ttl_expiration() {
 
 #[test]
 fn test_cache_prune_by_age() {
-    use srz::cache::{CacheNamespace, PruneOptions};
+    use srz::cache::PruneOptions;
     use std::time::Duration;
 
     let tmp = temp_test_dir("prune_age");
@@ -393,14 +421,13 @@ fn test_cache_prune_by_age() {
     assert_eq!(cache.stats().pages, 1);
 
     // Deterministically backdate the entry by 2 days without sleeping
-    cache.update_cached_at_for_test("cache_pages", "url = 'https://prune-test.com'", 2 * 86400);
+    cache.backdate_page_cache_for_test("https://prune-test.com", 2 * 86400);
 
     // Pruning with older_than 1 day should prune the entry
     let stats = cache
         .prune(PruneOptions {
             older_than: Some(Duration::from_secs(86400)),
             max_bytes: None,
-            namespace: Some(CacheNamespace::Pages),
         })
         .unwrap();
 
@@ -432,8 +459,7 @@ fn test_cache_prune_by_max_size_lru() {
 
     // Deterministically set LRU order: page 0 is oldest, page 4 is newest
     for i in 0..5 {
-        let where_clause = format!("url = 'https://example.com/{}'", i);
-        cache.update_cached_at_for_test("cache_pages", &where_clause, (4 - i) * 600);
+        cache.backdate_page_cache_for_test(&format!("https://example.com/{}", i), (4 - i) * 600);
     }
 
     // Prune so total cache doesn't exceed 2500 bytes (should evict oldest)
@@ -441,7 +467,6 @@ fn test_cache_prune_by_max_size_lru() {
         .prune(PruneOptions {
             older_than: None,
             max_bytes: Some(2500),
-            namespace: None,
         })
         .unwrap();
 
@@ -521,13 +546,24 @@ fn test_cache_duckdb_consolidation() {
     };
     cache.set_page("https://duckdb-cached.com", &page);
 
-    cache.set_web_summary(
-        "https://duckdb-cached.com",
-        SummaryStyle::Concise,
-        "gemma-4",
-        "DuckDB Cache",
-        "Consolidated cache in DuckDB",
-    );
+    let db = cache.open_database().unwrap();
+    let record = srz::db::NewSummaryRecord {
+        target_type: "web",
+        title: "DuckDB Cache",
+        author: None,
+        url: Some("https://duckdb-cached.com"),
+        style: SummaryStyle::Concise.as_str(),
+        model: "gemma-4",
+        word_count: 4,
+        prompt_tokens: None,
+        completion_tokens: None,
+        duration_ms: 0,
+        tokens_per_second: None,
+        summary: "Consolidated cache in DuckDB",
+        reasoning: None,
+    };
+    db.record_summary_with_key(&record, Some("https://duckdb-cached.com"))
+        .unwrap();
 
     let db_path = dir.join("srz.db");
     assert!(db_path.exists(), "srz.db database file must exist");

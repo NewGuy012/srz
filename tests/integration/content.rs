@@ -1,6 +1,8 @@
 use srz::chunker::TextChunker;
 use srz::llm::truncate_words_preserving_lines;
-use srz::render::{ensure_view_files, markdown_to_html, render_html_document, slugify};
+use srz::render::{
+    ensure_view_files_unique, markdown_to_html, render_html_document_with_reasoning, slugify,
+};
 use srz::scraper::WebScraper;
 use std::borrow::Cow;
 use std::fs;
@@ -99,33 +101,36 @@ fn test_markdown_to_styled_html_rendering() {
     assert!(gfm_html.contains("<td>Cell 1</td>"));
     assert!(gfm_html.contains("<del>strikethrough</del>"));
 
-    let full_doc = render_html_document("\"Dune\"", md);
+    let full_doc = render_html_document_with_reasoning("\"Dune\"", md, None);
     assert!(full_doc.contains("<!DOCTYPE html>"));
     assert!(full_doc.contains("Summary: &quot;Dune&quot;"));
     assert!(full_doc.contains("<meta http-equiv=\"Content-Security-Policy\""));
 
-    let escaped_quote = render_html_document("O'Reilly", "It's a test");
+    let escaped_quote = render_html_document_with_reasoning("O'Reilly", "It's a test", None);
     assert!(escaped_quote.contains("O&#39;Reilly"));
     assert!(escaped_quote.contains("<p>It's a test</p>"));
 
-    // Verify ensure_view_files skips rewrite when force_write is false and files exist
+    // Verify ensure_view_files_unique skips rewrite when force_write is false and files exist
     let tmp = srz::fs_util::tempdir().unwrap();
     let tmp_dir = tmp.path().to_path_buf();
-    let rendered = ensure_view_files(&tmp_dir, "Dune", "Initial summary", true).unwrap();
+    let rendered =
+        ensure_view_files_unique(&tmp_dir, "Dune", "Initial summary", None, None, true).unwrap();
     assert_eq!(
         fs::read_to_string(&rendered.md_path).unwrap(),
         "Initial summary"
     );
 
     // With force_write = false, existing files are reused untouched
-    let reused = ensure_view_files(&tmp_dir, "Dune", "Updated summary", false).unwrap();
+    let reused =
+        ensure_view_files_unique(&tmp_dir, "Dune", "Updated summary", None, None, false).unwrap();
     assert_eq!(
         fs::read_to_string(&reused.md_path).unwrap(),
         "Initial summary"
     );
 
     // With force_write = true, files are overwritten
-    let overwritten = ensure_view_files(&tmp_dir, "Dune", "Updated summary", true).unwrap();
+    let overwritten =
+        ensure_view_files_unique(&tmp_dir, "Dune", "Updated summary", None, None, true).unwrap();
     assert_eq!(
         fs::read_to_string(&overwritten.md_path).unwrap(),
         "Updated summary"
@@ -251,7 +256,7 @@ fn test_ask_prompt_injection_guardrails() {
 
 #[test]
 fn test_pdf_extractor_bounds_and_type_checks() {
-    use srz::sources::pdf::PdfExtractor;
+    use srz::sources::document::PdfExtractor;
 
     // Non-existent file
     let non_existent = std::path::Path::new("/tmp/does_not_exist_srz_test.pdf");
@@ -264,7 +269,7 @@ fn test_pdf_extractor_bounds_and_type_checks() {
 
 #[test]
 fn test_sample_pdf_generation_and_extraction() {
-    use srz::sources::pdf::PdfExtractor;
+    use srz::sources::document::PdfExtractor;
 
     let bytes = PdfExtractor::build_sample_pdf_bytes();
     let page = PdfExtractor::extract_from_bytes(&bytes, None).unwrap();
@@ -278,7 +283,7 @@ fn test_sample_pdf_generation_and_extraction() {
 
 #[test]
 fn test_assets_document_pdf_cli_access_and_extraction() {
-    use srz::sources::pdf::PdfExtractor;
+    use srz::sources::document::PdfExtractor;
 
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/document.pdf");
     assert!(
@@ -305,7 +310,7 @@ fn test_assets_document_pdf_cli_access_and_extraction() {
 
 #[test]
 fn test_pdf_crlf_line_ending_recovery() {
-    use srz::sources::pdf::PdfExtractor;
+    use srz::sources::document::PdfExtractor;
 
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/document.pdf");
     let original_bytes = std::fs::read(&path).unwrap();
@@ -381,7 +386,7 @@ fn test_escape_closing_tag_case_insensitive_and_whitespace_variations() {
 #[test]
 fn test_epub_extractor_and_document_loader() {
     use srz::document::DocumentLoader;
-    use srz::epub::EpubExtractor;
+    use srz::document::EpubExtractor;
     use std::io::Write;
 
     let mut zip_buf = std::io::Cursor::new(Vec::new());

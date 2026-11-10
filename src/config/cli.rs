@@ -115,8 +115,6 @@ pub enum ExportFormat {
     Json,
     /// Comma-separated values (CSV)
     Csv,
-    /// Apache Parquet binary file
-    Parquet,
 }
 
 impl ExportFormat {
@@ -125,7 +123,6 @@ impl ExportFormat {
             Self::Markdown => "markdown",
             Self::Json => "json",
             Self::Csv => "csv",
-            Self::Parquet => "parquet",
         }
     }
 }
@@ -295,13 +292,13 @@ pub enum Commands {
     /// Launch the interactive terminal UI library explorer
     #[command(alias = "tui", alias = "library")]
     Browse,
-    /// Export summarized library to Markdown, JSON, CSV, or Parquet
+    /// Export summarized library to Markdown, JSON, or CSV
     Export {
-        /// Target export format (markdown, json, csv, parquet; default: markdown)
+        /// Target export format (markdown, json, csv; default: markdown)
         #[arg(short, long, value_enum, default_value = "markdown")]
         format: ExportFormat,
 
-        /// Output destination path (directory for markdown vault; file for json/csv/parquet)
+        /// Output destination path (directory for markdown vault; file for json/csv)
         #[arg(short, long)]
         output: PathBuf,
     },

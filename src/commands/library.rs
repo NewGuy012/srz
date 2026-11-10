@@ -273,10 +273,6 @@ pub fn handle_export(
             db.export_csv(output)?;
             Ui::success(&format!("Exported library CSV to {:?}", output));
         }
-        crate::config::cli::ExportFormat::Parquet => {
-            db.export_parquet(output)?;
-            Ui::success(&format!("Exported library Parquet to {:?}", output));
-        }
     }
     Ok(())
 }

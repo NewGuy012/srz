@@ -135,5 +135,5 @@ pub use crate::commands::ask::format_grounded_context;
 pub use crate::config::cli::Config;
 pub use crate::engine::chunker::TextChunker;
 pub use crate::sources::scraper::clean_raw_text;
-pub use crate::ui::render::{ensure_view_files, render_html_document};
+pub use crate::ui::render::{ensure_view_files_unique, render_html_document_with_reasoning};
 pub use crate::ui::terminal::Ui;

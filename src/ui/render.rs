@@ -13,18 +13,6 @@ pub fn is_html_path(path: &Path) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"))
 }
 
-/// Ensures both `.md` and `.html` view files exist in `views_dir`.
-/// When `force_write` is `false` (e.g., on a cache hit) and both files already exist on disk,
-/// skips Markdown-to-HTML rendering and disk writes.
-pub fn ensure_view_files(
-    views_dir: &Path,
-    title: &str,
-    markdown: &str,
-    force_write: bool,
-) -> std::io::Result<RenderedFiles> {
-    ensure_view_files_unique(views_dir, title, markdown, None, None, force_write)
-}
-
 /// Ensures both `.md` and `.html` view files exist in `views_dir` with collision-safe unique key support
 /// and an optional model reasoning trace.
 pub fn ensure_view_files_unique(
@@ -154,11 +142,6 @@ const SHARED_THEME_CSS: &str = r#"    :root {
       }
     }
     * { box-sizing: border-box; }"#;
-
-/// Renders a standalone HTML5 document with editorial typography and automatic light/dark mode.
-pub fn render_html_document(title: &str, markdown: &str) -> String {
-    render_html_document_with_reasoning(title, markdown, None)
-}
 
 /// Renders a standalone HTML5 document including an optional collapsible model reasoning trace.
 pub fn render_html_document_with_reasoning(

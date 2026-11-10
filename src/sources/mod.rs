@@ -4,9 +4,6 @@ pub mod scraper;
 pub mod search;
 pub mod youtube;
 
-pub use document as epub;
-pub use document as pdf;
-
 pub use document::{
     DocumentLoader, EpubExtractor, LocalDocument, MAX_EPUB_CHAPTER_BYTES, MAX_EPUB_CHAPTER_COUNT,
     MAX_EPUB_TOTAL_BYTES, MAX_EPUB_XML_BYTES, MAX_FILE_BYTES, PdfExtractor,
