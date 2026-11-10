@@ -174,17 +174,6 @@ impl HardwareProfile {
         )
     }
 
-    /// Formatted badge string matching Llama GUI (e.g. `gemma-4 [E4B] [Q8_0] (32k ctx)`).
-    pub fn llama_gui_badge_summary(&self) -> String {
-        format!(
-            "{} [{}] [{}] ({})",
-            self.concise_model,
-            self.recommended_size,
-            self.recommended_quant,
-            self.recommended_context_display
-        )
-    }
-
     /// Returns the approximate single-pass token ceiling (~70% of context window) before chunking kicks in.
     pub fn one_pass_token_ceiling(&self) -> usize {
         self.recommended_context * 7 / 10
@@ -413,10 +402,6 @@ mod tests {
         assert_eq!(
             profile.llama_gui_selection(),
             "gemma-4  |  E4B  |  Q8_0  |  32k ctx"
-        );
-        assert_eq!(
-            profile.llama_gui_badge_summary(),
-            "gemma-4 [E4B] [Q8_0] (32k ctx)"
         );
     }
 

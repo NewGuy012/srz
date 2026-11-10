@@ -1078,12 +1078,6 @@ max_tokens = 8192
             hw.recommended_context,
         )
     }
-
-    /// Generates a starter `config.toml` template string using detected host hardware.
-    #[doc(hidden)]
-    pub fn default_template() -> String {
-        Self::template_for_hardware(&crate::system::hardware::HardwareProfile::detect())
-    }
 }
 
 #[cfg(test)]
@@ -1091,10 +1085,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_default_template_is_valid_toml() {
-        let template = Config::default_template();
+    fn test_template_for_hardware_is_valid_toml() {
+        let template =
+            Config::template_for_hardware(&crate::system::hardware::HardwareProfile::detect());
         let cfg: Config =
-            toml::from_str(&template).expect("default template must parse as valid TOML");
+            toml::from_str(&template).expect("hardware template must parse as valid TOML");
         assert_eq!(cfg.base_url.as_deref(), Some("http://localhost:9931/v1"));
         assert!(cfg.model.is_some());
         assert!(cfg.context_window.is_some());

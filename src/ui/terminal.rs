@@ -236,32 +236,6 @@ impl Ui {
         }
     }
 
-    /// Formats an LLM live progress message with stage, token count, elapsed time, and optional rate.
-    pub fn format_llm_status(
-        label: &str,
-        stage: &str,
-        tokens: usize,
-        elapsed: Duration,
-        rate: Option<f64>,
-    ) -> String {
-        let elapsed_str = format_duration_short(elapsed);
-        let token_unit = if tokens == 1 { "token" } else { "tokens" };
-        let mut meta = format!("{} · {} {}", stage, tokens, token_unit);
-        if let Some(r) = rate
-            && r > 0.0
-            && tokens >= 8
-        {
-            meta.push_str(&format!(" · {:.1} t/s", r));
-        }
-        meta.push_str(&format!(" · {}", elapsed_str));
-
-        if Self::use_color() {
-            format!("{} \x1b[2m[{}]\x1b[0m", label, meta)
-        } else {
-            format!("{} [{}]", label, meta)
-        }
-    }
-
     /// Runs an async operation with a spinner, cleanly clearing the spinner before printing
     /// the completion message or propagating an error.
     pub async fn with_spinner<T, E, F>(
@@ -728,32 +702,6 @@ mod tests {
         assert_eq!(format_duration_short(Duration::from_millis(1400)), "1.4s");
         assert_eq!(format_duration_short(Duration::from_secs(65)), "1m 5s");
         assert_eq!(format_duration_short(Duration::from_secs(120)), "2m 0s");
-    }
-
-    #[test]
-    fn test_format_llm_status() {
-        let status = Ui::format_llm_status(
-            "Synthesizing",
-            "thinking",
-            42,
-            Duration::from_millis(1800),
-            None,
-        );
-        assert!(status.contains("Synthesizing"));
-        assert!(status.contains("thinking"));
-        assert!(status.contains("42 tokens"));
-        assert!(status.contains("1.8s"));
-
-        let gen_status = Ui::format_llm_status(
-            "Synthesizing",
-            "generating",
-            128,
-            Duration::from_millis(3200),
-            Some(40.0),
-        );
-        assert!(gen_status.contains("generating"));
-        assert!(gen_status.contains("128 tokens"));
-        assert!(gen_status.contains("40.0 t/s"));
     }
 
     #[test]
