@@ -59,7 +59,7 @@ pub fn handle_stats(db: &Database, as_json: bool) -> Result<()> {
         return Ok(());
     }
 
-    Ui::header("Library & LLM Performance Telemetry (DuckDB)");
+    Ui::header("Library & LLM Performance Telemetry");
     println!(
         "  Total Summaries:     {} ({} books, {} web, {} videos, {} news, {} files, {} stdin)",
         stats.total_summaries,
@@ -249,140 +249,6 @@ pub fn format_csv_cell(cell: &str) -> String {
     } else {
         safe_cell
     }
-}
-
-/// Handles the `srz query` command to execute arbitrary SQL on DuckDB.
-pub fn handle_query(db: &Database, sql: &str, csv: bool, as_json: bool) -> Result<()> {
-    let res = db.query_raw(sql)?;
-    if as_json {
-        let objects: Vec<serde_json::Value> = res
-            .rows
-            .iter()
-            .map(|r| {
-                let mut map = serde_json::Map::new();
-                for (col, val) in res.columns.iter().zip(r.iter()) {
-                    map.insert(col.clone(), val.clone());
-                }
-                serde_json::Value::Object(map)
-            })
-            .collect();
-        println!("{}", serde_json::to_string_pretty(&objects)?);
-        return Ok(());
-    }
-
-    if csv {
-        let header = res
-            .columns
-            .iter()
-            .map(|c| format_csv_cell(c))
-            .collect::<Vec<_>>()
-            .join(",");
-        println!("{}", header);
-        for row in &res.rows {
-            let row_strs: Vec<String> = row
-                .iter()
-                .map(|v| match v {
-                    serde_json::Value::String(s) => format_csv_cell(s),
-                    serde_json::Value::Null => String::new(),
-                    serde_json::Value::Number(n) => n.to_string(),
-                    serde_json::Value::Bool(b) => b.to_string(),
-                    other => format_csv_cell(&other.to_string()),
-                })
-                .collect();
-            println!("{}", row_strs.join(","));
-        }
-        return Ok(());
-    }
-
-    // Default: Formatted terminal table
-    if res.columns.is_empty() {
-        Ui::info("Query executed successfully (0 columns returned).");
-        return Ok(());
-    }
-
-    let sanitized_columns: Vec<String> = res
-        .columns
-        .iter()
-        .map(|c| crate::ui::terminal::sanitize_terminal_text(c))
-        .collect();
-
-    let mut col_widths: Vec<usize> = sanitized_columns
-        .iter()
-        .map(|c| c.chars().count().max(4))
-        .collect();
-
-    let string_rows: Vec<Vec<String>> = res
-        .rows
-        .iter()
-        .map(|row| {
-            row.iter()
-                .enumerate()
-                .map(|(idx, val)| {
-                    let raw_str = match val {
-                        serde_json::Value::String(s) => s.replace('\n', " "),
-                        serde_json::Value::Null => "NULL".to_string(),
-                        other => other.to_string(),
-                    };
-                    let s = crate::ui::terminal::sanitize_terminal_text(&raw_str);
-                    if idx < col_widths.len() {
-                        col_widths[idx] = col_widths[idx].max(s.chars().count()).min(50);
-                    }
-                    s
-                })
-                .collect()
-        })
-        .collect();
-
-    // Print header
-    let header_line = sanitized_columns
-        .iter()
-        .enumerate()
-        .map(|(i, col)| {
-            let w = col_widths[i];
-            let col_len = col.chars().count();
-            let pad = w.saturating_sub(col_len);
-            format!("{}{}", col, " ".repeat(pad))
-        })
-        .collect::<Vec<_>>()
-        .join(" │ ");
-    println!("│ {} │", header_line);
-
-    // Print separator
-    let sep_line = col_widths
-        .iter()
-        .map(|w| "─".repeat(*w))
-        .collect::<Vec<_>>()
-        .join("─┼─");
-    println!("├─{}─┤", sep_line);
-
-    // Print rows
-    for row in string_rows {
-        let row_line = row
-            .iter()
-            .enumerate()
-            .map(|(i, cell)| {
-                let w = col_widths
-                    .get(i)
-                    .copied()
-                    .unwrap_or_else(|| cell.chars().count());
-                let cell_len = cell.chars().count();
-                if cell_len > w {
-                    let keep = w.saturating_sub(1);
-                    let truncated: String = cell.chars().take(keep).collect();
-                    format!("{}…", truncated)
-                } else {
-                    let pad = w.saturating_sub(cell_len);
-                    format!("{}{}", cell, " ".repeat(pad))
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" │ ");
-        println!("│ {} │", row_line);
-    }
-
-    println!("\n\x1b[2m({} row(s) returned)\x1b[0m", res.rows.len());
-
-    Ok(())
 }
 
 /// Handles the `srz export` command.

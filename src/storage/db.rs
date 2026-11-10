@@ -1,36 +1,30 @@
-use crate::cache::Cache;
+use crate::engine::ServerCapabilities;
 use crate::fs_util;
-use anyhow::{Context, Result};
-use duckdb::types::ValueRef;
-use duckdb::{Connection, params};
-
-pub fn value_ref_to_json(val: ValueRef<'_>) -> serde_json::Value {
-    match val {
-        ValueRef::Null => serde_json::Value::Null,
-        ValueRef::Boolean(b) => serde_json::Value::Bool(b),
-        ValueRef::TinyInt(i) => serde_json::json!(i),
-        ValueRef::SmallInt(i) => serde_json::json!(i),
-        ValueRef::Int(i) => serde_json::json!(i),
-        ValueRef::BigInt(i) => serde_json::json!(i),
-        ValueRef::HugeInt(i) => serde_json::json!(i.to_string()),
-        ValueRef::UTinyInt(i) => serde_json::json!(i),
-        ValueRef::USmallInt(i) => serde_json::json!(i),
-        ValueRef::UInt(i) => serde_json::json!(i),
-        ValueRef::UBigInt(i) => serde_json::json!(i),
-        ValueRef::Float(f) => serde_json::json!(f),
-        ValueRef::Double(d) => serde_json::json!(d),
-        ValueRef::Text(t) => serde_json::Value::String(String::from_utf8_lossy(t).into_owned()),
-        _ => serde_json::Value::String(format!("{:?}", val)),
-    }
-}
+use crate::scraper::ScrapedPage;
+use crate::sources::search::SearchResult;
+use crate::ui::render::slugify;
+use anyhow::Result;
+use redb::{Database as RedbDb, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 
-pub const DUCKDB_SECURITY_LOCKDOWN: &str =
-    "SET autoinstall_known_extensions = false; SET autoload_known_extensions = false;";
+pub use crate::system::text_util::{tokenize_search_terms, tokenize_terms};
+
+pub const TABLE_HISTORY: TableDefinition<u64, &[u8]> = TableDefinition::new("history");
+pub const TABLE_CACHE_KEY_TO_ID: TableDefinition<&str, u64> =
+    TableDefinition::new("cache_key_to_id");
+pub const TABLE_CHAT_SESSIONS: TableDefinition<u64, &[u8]> = TableDefinition::new("chat_sessions");
+pub const TABLE_CHAT_MESSAGES: TableDefinition<u64, &[u8]> = TableDefinition::new("chat_messages");
+pub const TABLE_CACHE_PAGES: TableDefinition<&str, &[u8]> = TableDefinition::new("cache_pages");
+pub const TABLE_CACHE_SEARCH: TableDefinition<&str, &[u8]> = TableDefinition::new("cache_search");
+pub const TABLE_CACHE_CAPS: TableDefinition<&str, &[u8]> = TableDefinition::new("cache_caps");
+pub const TABLE_META: TableDefinition<&str, u64> = TableDefinition::new("meta");
 
 pub struct NewSummaryRecord<'a> {
-    pub target_type: &'a str, // 'book' or 'web'
+    pub target_type: &'a str,
     pub title: &'a str,
     pub author: Option<&'a str>,
     pub url: Option<&'a str>,
@@ -63,6 +57,93 @@ pub struct HistoryEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibraryItem {
+    pub id: i64,
+    pub target_type: String,
+    pub title: String,
+    pub author: Option<String>,
+    pub url: Option<String>,
+    pub summary: String,
+    #[serde(default)]
+    pub reasoning: Option<String>,
+    pub style: String,
+    pub model: String,
+    pub word_count: u32,
+    pub prompt_tokens: Option<u32>,
+    pub completion_tokens: Option<u32>,
+    pub duration_ms: u64,
+    pub tokens_per_second: Option<f64>,
+    pub created_at: String,
+}
+
+impl LibraryItem {
+    pub fn matches_query(&self, query: &str) -> bool {
+        let q = query.trim();
+        if q.is_empty() {
+            return true;
+        }
+
+        let q_lower = if q.is_ascii() {
+            None
+        } else {
+            Some(q.to_lowercase())
+        };
+
+        let matches_field = |field: &str| -> bool {
+            if let Some(ref q_low) = q_lower {
+                field.to_lowercase().contains(q_low)
+            } else {
+                crate::system::text_util::contains_ascii_case_insensitive(field, q)
+            }
+        };
+
+        matches_field(&self.title)
+            || matches_field(&self.target_type)
+            || self.author.as_deref().is_some_and(matches_field)
+            || self.url.as_deref().is_some_and(matches_field)
+            || matches_field(&self.summary)
+    }
+
+    pub fn into_history_entry(self) -> HistoryEntry {
+        HistoryEntry {
+            id: self.id,
+            target_type: self.target_type,
+            title: self.title,
+            author: self.author,
+            url: self.url,
+            style: self.style,
+            model: self.model,
+            word_count: self.word_count,
+            prompt_tokens: self.prompt_tokens,
+            completion_tokens: self.completion_tokens,
+            duration_ms: self.duration_ms,
+            tokens_per_second: self.tokens_per_second,
+            created_at: self.created_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibrarySearchResult {
+    pub id: i64,
+    pub target_type: String,
+    pub title: String,
+    pub author: Option<String>,
+    pub url: Option<String>,
+    pub snippet: String,
+    pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DomainStats {
+    pub domain: String,
+    pub count: i64,
+    pub total_words: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelStats {
     pub model: String,
     pub runs: i64,
@@ -71,13 +152,6 @@ pub struct ModelStats {
     pub p50_tokens_per_second: f64,
     pub p95_tokens_per_second: f64,
     pub avg_duration_ms: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DomainStats {
-    pub domain: String,
-    pub count: i64,
-    pub total_words: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -130,942 +204,87 @@ pub struct ChatMessage {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct QueryResult {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LibrarySearchResult {
-    pub id: i64,
-    pub target_type: String,
-    pub title: String,
-    pub author: Option<String>,
-    pub url: Option<String>,
-    pub snippet: String,
-    pub created_at: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub score: Option<f64>,
+pub struct CachedPageRecord {
+    pub url: String,
+    pub title: Option<String>,
+    pub content: String,
+    pub word_count: usize,
+    pub cached_at: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LibraryItem {
-    pub id: i64,
-    pub target_type: String,
-    pub title: String,
-    pub author: Option<String>,
-    pub url: Option<String>,
-    pub summary: String,
-    #[serde(default)]
-    pub reasoning: Option<String>,
-    pub style: String,
-    pub model: String,
-    pub word_count: u32,
-    pub prompt_tokens: Option<u32>,
-    pub completion_tokens: Option<u32>,
-    pub duration_ms: u64,
-    pub tokens_per_second: Option<f64>,
-    pub created_at: String,
+pub struct CachedSearchRecord {
+    pub query: String,
+    pub results_json: String,
+    pub cached_at: u64,
 }
 
-impl LibraryItem {
-    /// Returns true if this item's title, author, url, summary, or target type matches `query` (case-insensitively).
-    pub fn matches_query(&self, query: &str) -> bool {
-        let q = query.trim();
-        if q.is_empty() {
-            return true;
-        }
-
-        let q_lower = if q.is_ascii() {
-            None
-        } else {
-            Some(q.to_lowercase())
-        };
-
-        let matches_field = |field: &str| -> bool {
-            if let Some(ref q_low) = q_lower {
-                field.to_lowercase().contains(q_low)
-            } else {
-                crate::system::text_util::contains_ascii_case_insensitive(field, q)
-            }
-        };
-
-        matches_field(&self.title)
-            || matches_field(&self.target_type)
-            || self.author.as_deref().is_some_and(matches_field)
-            || self.url.as_deref().is_some_and(matches_field)
-            || matches_field(&self.summary)
-    }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedCapsRecord {
+    pub caps: ServerCapabilities,
+    pub cached_at: u64,
 }
 
+#[derive(Clone)]
 pub struct Database {
-    conn: Connection,
+    db: Arc<RedbDb>,
+    path: Option<PathBuf>,
 }
 
-/// Opens a file-backed DuckDB connection with security hardening: rejects symlinks,
-/// creates parent directory with private permissions if missing, sets private file permissions,
-/// retries with backoff if locked by a concurrent process, and executes `DUCKDB_SECURITY_LOCKDOWN`.
-/// Returns `(Connection, already_existed_with_data)`.
-pub fn open_hardened_duckdb_file(path: &Path) -> Result<(Connection, bool)> {
-    open_hardened_duckdb_file_with_retry(path, 5)
-}
-
-/// Opens a file-backed DuckDB connection with specified retry attempts on lock contention.
-pub fn open_hardened_duckdb_file_with_retry(
-    path: &Path,
-    max_retries: usize,
-) -> Result<(Connection, bool)> {
-    if let Ok(meta) = std::fs::symlink_metadata(path)
-        && meta.file_type().is_symlink()
-    {
-        anyhow::bail!("Refusing to open DuckDB database: {:?} is a symlink", path);
-    }
-    let already_exists = path.exists()
-        && std::fs::metadata(path)
-            .map(|m| m.len() > 0)
-            .unwrap_or(false);
-    if let Some(parent) = path.parent() {
-        let _ = fs_util::create_private_dir_all(parent);
-    }
-
-    let mut attempts = 0;
-    let mut backoff = std::time::Duration::from_millis(50);
-
-    let conn = loop {
-        match Connection::open(path) {
-            Ok(c) => break c,
-            Err(err) => {
-                let err_str = err.to_string();
-                let is_lock_error = err_str.contains("lock")
-                    || err_str.contains("busy")
-                    || err_str.contains("IO Error")
-                    || err_str.contains("Could not set lock");
-                let is_corrupt = err_str.contains("corrupt")
-                    || err_str.contains("not a valid DuckDB")
-                    || err_str.contains("Serialization Error");
-                if is_corrupt && attempts == 0 {
-                    attempts += 1;
-                    let _ = std::fs::remove_file(path);
-                    let wal_path = path.with_extension("duckdb.wal");
-                    let _ = std::fs::remove_file(wal_path);
-                    continue;
-                }
-                if is_lock_error && attempts < max_retries {
-                    attempts += 1;
-                    std::thread::sleep(backoff);
-                    backoff = (backoff * 2).min(std::time::Duration::from_millis(400));
-                } else {
-                    return Err(err)
-                        .with_context(|| format!("Failed to open DuckDB database at {:?}", path));
-                }
-            }
+fn dirs_home() -> Option<PathBuf> {
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.trim().is_empty() {
+            return Some(PathBuf::from(home));
         }
+    }
+    if let Ok(userprofile) = std::env::var("USERPROFILE") {
+        if !userprofile.trim().is_empty() {
+            return Some(PathBuf::from(userprofile));
+        }
+    }
+    None
+}
+
+fn now_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn chrono_now_iso() -> String {
+    let now_secs = now_unix_secs();
+    let date = format_date_from_timestamp(now_secs);
+    let time_of_day = now_secs % 86400;
+    let hours = time_of_day / 3600;
+    let mins = (time_of_day % 3600) / 60;
+    let secs = time_of_day % 60;
+    format!("{}T{:02}:{:02}:{:02}Z", date, hours, mins, secs)
+}
+
+fn extract_domain(url: &str) -> Option<String> {
+    let without_scheme = if let Some(rest) = url.strip_prefix("https://") {
+        rest
+    } else if let Some(rest) = url.strip_prefix("http://") {
+        rest
+    } else {
+        return None;
     };
-
-    if path.exists() {
-        fs_util::set_private_file_perms(path);
-    }
-    let _ = conn.execute_batch(DUCKDB_SECURITY_LOCKDOWN);
-    Ok((conn, already_exists))
-}
-
-/// Records a summary and its terms onto an existing DuckDB connection.
-pub fn record_summary_on_conn(
-    conn: &duckdb::Connection,
-    record: &NewSummaryRecord<'_>,
-    cache_key: Option<&str>,
-) -> Result<()> {
-    conn.execute(
-        "INSERT INTO history (
-            target_type, title, author, url, style, model,
-            word_count, prompt_tokens, completion_tokens,
-            duration_ms, tokens_per_second, cache_key
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        params![
-            record.target_type,
-            record.title,
-            record.author,
-            record.url,
-            record.style,
-            record.model,
-            record.word_count as u32,
-            record.prompt_tokens,
-            record.completion_tokens,
-            record.duration_ms as u32,
-            record.tokens_per_second,
-            cache_key,
-        ],
-    )
-    .context("Failed to record entry in DuckDB history table")?;
-
-    let doc_id: i64 = conn.query_row("SELECT currval('history_id_seq')", [], |r| r.get(0))?;
-
-    conn.execute(
-        "INSERT INTO library (id, summary, reasoning) VALUES (?, ?, ?)",
-        params![doc_id, record.summary, record.reasoning],
-    )
-    .context("Failed to record entry in DuckDB library table")?;
-
-    insert_doc_terms(conn, doc_id, record.title, record.summary)?;
-
-    Ok(())
-}
-
-impl Database {
-    /// Returns the default path for the persistent DuckDB database:
-    /// Checks $SRZ_DATA_DIR/srz.duckdb, $XDG_DATA_HOME/srz/srz.duckdb, ~/.local/share/srz/srz.duckdb.
-    /// If legacy database exists at ~/.cache/srz/srz.duckdb and new path does not, seamlessly migrates it.
-    pub fn default_path() -> PathBuf {
-        let data_dir = fs_util::default_data_dir();
-        let target_path = data_dir.join("srz.duckdb");
-
-        // Transparent migration from legacy ~/.cache/srz/srz.duckdb
-        if !target_path.exists() {
-            let legacy_path = Cache::default_cache_dir().join("srz.duckdb");
-            if legacy_path.exists() {
-                if let Ok(()) = fs_util::create_private_dir_all(&data_dir)
-                    && let Ok(_) = std::fs::copy(&legacy_path, &target_path)
-                {
-                    fs_util::set_private_file_perms(&target_path);
-                    let _ = std::fs::remove_file(&legacy_path);
-                    return target_path;
-                }
-                return legacy_path;
-            }
-        }
-
-        target_path
-    }
-
-    /// Opens the default DuckDB database located at `~/.cache/srz/srz.duckdb`.
-    pub fn open_default() -> Result<Self> {
-        let db_path = Self::default_path();
-        Self::open_at(&db_path)
-    }
-
-    /// Opens a DuckDB database at the specified file path.
-    pub fn open_at(path: &Path) -> Result<Self> {
-        let (conn, exists) = open_hardened_duckdb_file(path)?;
-        let db = Self { conn };
-        if !exists || !db.is_schema_initialized() {
-            db.init_schema()?;
-        }
-        Ok(db)
-    }
-
-    /// Wraps an existing, already-initialized DuckDB connection.
-    pub fn from_connection(conn: Connection) -> Self {
-        Self { conn }
-    }
-
-    /// Opens an in-memory DuckDB database (useful for testing).
-    pub fn open_in_memory() -> Result<Self> {
-        let conn = Connection::open_in_memory().context("Failed to open in-memory DuckDB")?;
-        let _ = conn.execute_batch(DUCKDB_SECURITY_LOCKDOWN);
-        let db = Self { conn };
-        db.init_schema()?;
-        Ok(db)
-    }
-
-    /// Attaches an external DuckDB database (such as cache.duckdb) as an attached schema (exposed for integration testing).
-    #[doc(hidden)]
-    pub fn attach_database(&self, path: &Path, alias: &str) -> Result<()> {
-        if alias.is_empty()
-            || !alias.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-            || !alias
-                .chars()
-                .next()
-                .map(|c| c.is_ascii_alphabetic() || c == '_')
-                .unwrap_or(false)
-        {
-            anyhow::bail!(
-                "Invalid database alias '{}': must be a valid SQL identifier",
-                alias
-            );
-        }
-        let path_str = path.to_string_lossy();
-        let sql = format!(
-            "ATTACH IF NOT EXISTS '{}' AS {};",
-            path_str.replace('\'', "''"),
-            alias
-        );
-        self.conn
-            .execute_batch(&sql)
-            .with_context(|| format!("Failed to attach database {:?} as {}", path, alias))?;
-        Ok(())
-    }
-
-    fn is_schema_initialized(&self) -> bool {
-        is_duckdb_schema_ready(&self.conn)
-    }
-
-    fn init_schema(&self) -> Result<()> {
-        init_duckdb_schema(&self.conn)?;
-        self.backfill_terms_if_needed()?;
-        Ok(())
-    }
-
-    fn backfill_terms_if_needed(&self) -> Result<()> {
-        let unindexed_count: i64 = self.conn.query_row(
-            "SELECT count(*) FROM library l WHERE NOT EXISTS (SELECT 1 FROM library_terms lt WHERE lt.doc_id = l.id)",
-            [],
-            |row| row.get(0),
-        ).unwrap_or(0);
-
-        if unindexed_count > 0 {
-            let mut stmt = self.conn.prepare(
-                "SELECT l.id, h.title, l.summary
-                 FROM library l
-                 JOIN history h ON l.id = h.id
-                 WHERE NOT EXISTS (SELECT 1 FROM library_terms lt WHERE lt.doc_id = l.id)",
-            )?;
-            let items: Vec<(i64, String, String)> = stmt
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-                .collect::<duckdb::Result<Vec<_>>>()?;
-
-            self.with_transaction(|conn| {
-                for (id, title, summary) in items {
-                    insert_doc_terms(conn, id, &title, &summary)?;
-                }
-                Ok(())
-            })?;
-        }
-        Ok(())
-    }
-
-    /// Resets all DuckDB tables and sequences, clearing reading history, cache, and search library.
-    pub fn reset(&self) -> Result<()> {
-        self.conn
-            .execute_batch(
-                "DROP TABLE IF EXISTS chat_messages;
-             DROP TABLE IF EXISTS chat_sessions;
-             DROP TABLE IF EXISTS library_terms;
-             DROP TABLE IF EXISTS library;
-             DROP TABLE IF EXISTS history;
-             DROP TABLE IF EXISTS cache_pages;
-             DROP TABLE IF EXISTS cache_search;
-             DROP TABLE IF EXISTS cache_server_capabilities;
-             DROP TABLE IF EXISTS cache_summaries;
-             DROP SEQUENCE IF EXISTS chat_messages_id_seq;
-             DROP SEQUENCE IF EXISTS chat_sessions_id_seq;
-             DROP SEQUENCE IF EXISTS history_id_seq;
-             DROP SEQUENCE IF EXISTS library_id_seq;",
-            )
-            .context("Failed to drop DuckDB tables")?;
-
-        self.init_schema()?;
-        Ok(())
-    }
-
-    /// Executes a closure within a single DuckDB transaction, automatically rolling back on error.
-    pub fn with_transaction<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
-        self.conn
-            .execute_batch("BEGIN TRANSACTION;")
-            .context("Failed to start DuckDB transaction")?;
-
-        match f(&self.conn) {
-            Ok(res) => {
-                self.conn
-                    .execute_batch("COMMIT;")
-                    .context("Failed to commit DuckDB transaction")?;
-                Ok(res)
-            }
-            Err(err) => {
-                let _ = self.conn.execute_batch("ROLLBACK;");
-                Err(err)
-            }
-        }
-    }
-
-    /// Records a newly generated summary into both the `history` and `library` tables within a single transaction.
-    #[doc(hidden)]
-    pub fn record_summary(&self, record: &NewSummaryRecord<'_>) -> Result<()> {
-        self.record_summary_with_key(record, None)
-    }
-
-    /// Records a newly generated summary with an optional explicit cache key.
-    pub fn record_summary_with_key(
-        &self,
-        record: &NewSummaryRecord<'_>,
-        explicit_cache_key: Option<&str>,
-    ) -> Result<()> {
-        let fallback_key = match record.target_type {
-            "file" => record
-                .url
-                .and_then(|p| crate::commands::summarize::file_cache_key(std::path::Path::new(p))),
-            "web" => record.url.map(|u| u.to_string()),
-            _ => Some(record.title.to_string()),
-        };
-        let effective_cache_key = explicit_cache_key
-            .or(fallback_key.as_deref())
-            .or(record.url)
-            .unwrap_or(record.title);
-
-        self.with_transaction(|conn| {
-            record_summary_on_conn(conn, record, Some(effective_cache_key))
-        })
-    }
-
-    /// Fetches the most recent `limit` entries from the summarization history.
-    pub fn get_history(&self, limit: usize) -> Result<Vec<HistoryEntry>> {
-        let sql = format!("{SELECT_HISTORY_SQL} LIMIT ?");
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![limit as i64], map_history_row)?;
-        rows.collect::<duckdb::Result<Vec<_>>>().map_err(Into::into)
-    }
-
-    /// Fetches all records from history ordered descending by ID for the library index view.
-    pub fn get_all_for_index(&self) -> Result<Vec<HistoryEntry>> {
-        let mut stmt = self.conn.prepare(SELECT_HISTORY_SQL)?;
-        let rows = stmt.query_map([], map_history_row)?;
-        rows.collect::<duckdb::Result<Vec<_>>>().map_err(Into::into)
-    }
-
-    /// Fetches all library items joined with history metadata for the interactive TUI browser.
-    pub fn get_all_library_items(&self) -> Result<Vec<LibraryItem>> {
-        let mut stmt = self.conn.prepare(SELECT_LIBRARY_ITEMS_SQL)?;
-        let rows = stmt.query_map([], map_library_item_row)?;
-        rows.collect::<duckdb::Result<Vec<_>>>().map_err(Into::into)
-    }
-
-    /// Fetches a specific library item by its ID.
-    pub fn get_library_item_by_id(&self, id: i64) -> Result<Option<LibraryItem>> {
-        let mut stmt = self.conn.prepare(SELECT_LIBRARY_ITEM_BY_ID_SQL)?;
-        let mut rows = stmt.query_map(params![id], map_library_item_row)?;
-        if let Some(row) = rows.next() {
-            Ok(Some(row?))
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// Fetches the single most recently generated summary item from the library.
-    pub fn get_latest_summary(&self) -> Result<Option<LibraryItem>> {
-        let sql = format!("{SELECT_LIBRARY_ITEMS_SQL} LIMIT 1");
-        let mut stmt = self.conn.prepare(&sql)?;
-        let mut rows = stmt.query_map([], map_library_item_row)?;
-        if let Some(row) = rows.next() {
-            Ok(Some(row?))
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// Deletes a summary from both library and history tables by its ID within a single transaction.
-    pub fn delete_library_item(&self, id: i64) -> Result<()> {
-        self.with_transaction(|conn| {
-            conn.execute("DELETE FROM library_terms WHERE doc_id = ?", params![id])?;
-            conn.execute("DELETE FROM library WHERE id = ?", params![id])?;
-            conn.execute("DELETE FROM history WHERE id = ?", params![id])?;
-            Ok(())
-        })
-    }
-
-    /// Creates a new persistent multi-turn chat session in DuckDB and returns its generated ID.
-    pub fn create_chat_session(
-        &self,
-        title: &str,
-        target_type: &str,
-        target_url: Option<&str>,
-        model: &str,
-    ) -> Result<i64> {
-        self.conn.execute(
-            "INSERT INTO chat_sessions (title, target_type, target_url, model)
-             VALUES (?, ?, ?, ?)",
-            params![title, target_type, target_url, model],
-        )?;
-        let id: i64 = self
-            .conn
-            .query_row("SELECT currval('chat_sessions_id_seq')", [], |r| r.get(0))?;
-        Ok(id)
-    }
-
-    /// Appends a question and assistant answer turn to an existing chat session.
-    pub fn add_chat_turn(&self, session_id: i64, question: &str, answer: &str) -> Result<()> {
-        self.with_transaction(|conn| {
-            conn.execute(
-                "INSERT INTO chat_messages (session_id, role, content)
-                 VALUES (?, 'user', ?)",
-                params![session_id, question],
-            )?;
-            conn.execute(
-                "INSERT INTO chat_messages (session_id, role, content)
-                 VALUES (?, 'assistant', ?)",
-                params![session_id, answer],
-            )?;
-            conn.execute(
-                "UPDATE chat_sessions
-                 SET updated_at = current_timestamp
-                 WHERE id = ?",
-                params![session_id],
-            )?;
-            Ok(())
-        })
-    }
-
-    /// Retrieves all saved chat sessions ordered by most recently active.
-    pub fn get_chat_sessions(&self, limit: usize) -> Result<Vec<ChatSession>> {
-        let sql = format!(
-            "{}
-             GROUP BY s.id, s.title, s.target_type, s.target_url, s.model, s.created_at, s.updated_at
-             ORDER BY s.updated_at DESC
-             LIMIT ?",
-            SELECT_CHAT_SESSIONS_BASE_SQL
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![limit as i64], map_chat_session_row)?;
-        rows.collect::<duckdb::Result<Vec<_>>>().map_err(Into::into)
-    }
-
-    /// Retrieves a chat session and all its associated messages.
-    pub fn get_chat_session(
-        &self,
-        session_id: i64,
-    ) -> Result<Option<(ChatSession, Vec<ChatMessage>)>> {
-        let sql = format!(
-            "{}
-             WHERE s.id = ?
-             GROUP BY s.id, s.title, s.target_type, s.target_url, s.model, s.created_at, s.updated_at",
-            SELECT_CHAT_SESSIONS_BASE_SQL
-        );
-        let mut session_stmt = self.conn.prepare(&sql)?;
-        let mut session_rows = session_stmt.query_map(params![session_id], map_chat_session_row)?;
-        let session = match session_rows.next() {
-            Some(res) => res?,
-            None => return Ok(None),
-        };
-
-        let mut msg_stmt = self.conn.prepare(
-            "SELECT id, session_id, role, content, strftime(created_at, '%Y-%m-%d %H:%M')
-             FROM chat_messages
-             WHERE session_id = ?
-             ORDER BY id ASC",
-        )?;
-
-        let msgs = msg_stmt
-            .query_map(params![session_id], |row| {
-                Ok(ChatMessage {
-                    id: row.get(0)?,
-                    session_id: row.get(1)?,
-                    role: row.get(2)?,
-                    content: row.get(3)?,
-                    created_at: row.get(4)?,
-                })
-            })?
-            .collect::<duckdb::Result<Vec<_>>>()?;
-
-        Ok(Some((session, msgs)))
-    }
-
-    /// Deletes a chat session and all its messages.
-    pub fn delete_chat_session(&self, session_id: i64) -> Result<bool> {
-        self.with_transaction(|conn| {
-            conn.execute(
-                "DELETE FROM chat_messages WHERE session_id = ?",
-                params![session_id],
-            )?;
-            let affected = conn.execute(
-                "DELETE FROM chat_sessions WHERE id = ?",
-                params![session_id],
-            )?;
-            Ok(affected > 0)
-        })
-    }
-
-    /// Computes aggregated analytics across all past summarization runs.
-    pub fn get_stats(&self) -> Result<LibraryStats> {
-        let now_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let today_str = format_date_from_timestamp(now_secs);
-        let week_str = format_date_from_timestamp(now_secs.saturating_sub(7 * 86400));
-        let month_str = format_date_from_timestamp(now_secs.saturating_sub(30 * 86400));
-
-        let mut total_stmt = self.conn.prepare(
-            "SELECT count(*),
-                    coalesce(sum(case when target_type = 'book' then 1 else 0 end), 0),
-                    coalesce(sum(case when target_type = 'web' then 1 else 0 end), 0),
-                    coalesce(sum(case when target_type = 'file' then 1 else 0 end), 0),
-                    coalesce(sum(case when target_type = 'stdin' then 1 else 0 end), 0),
-                    coalesce(sum(case when target_type = 'news' then 1 else 0 end), 0),
-                    coalesce(sum(case when target_type = 'youtube' then 1 else 0 end), 0),
-                    coalesce(sum(word_count), 0),
-                    coalesce(sum(prompt_tokens), 0),
-                    coalesce(sum(completion_tokens), 0),
-                    coalesce(avg(tokens_per_second), 0.0),
-                    coalesce(max(tokens_per_second), 0.0),
-                    coalesce(sum(duration_ms), 0),
-                    coalesce(sum(case when strftime(created_at, '%Y-%m-%d') = ? then 1 else 0 end), 0),
-                    coalesce(sum(case when strftime(created_at, '%Y-%m-%d') >= ? then 1 else 0 end), 0),
-                    coalesce(sum(case when strftime(created_at, '%Y-%m-%d') >= ? then 1 else 0 end), 0)
-             FROM history"
-        )?;
-
-        let mut stats =
-            total_stmt.query_row(params![&today_str, &week_str, &month_str], |row| {
-                Ok(LibraryStats {
-                    total_summaries: row.get(0)?,
-                    book_summaries: row.get(1)?,
-                    web_summaries: row.get(2)?,
-                    file_summaries: row.get(3)?,
-                    stdin_summaries: row.get(4)?,
-                    news_summaries: row.get(5)?,
-                    video_summaries: row.get(6)?,
-                    total_source_words: row.get(7)?,
-                    total_summary_words: 0,
-                    total_prompt_tokens: row.get(8)?,
-                    total_completion_tokens: row.get(9)?,
-                    avg_tokens_per_second: row.get(10)?,
-                    max_tokens_per_second: row.get(11)?,
-                    total_duration_ms: row.get(12)?,
-                    estimated_minutes_saved: 0.0,
-                    reads_today: row.get(13)?,
-                    reads_this_week: row.get(14)?,
-                    reads_this_month: row.get(15)?,
-                    active_reading_days: 0,
-                    current_streak_days: 0,
-                    models: Vec::new(),
-                    top_domains: Vec::new(),
-                })
-            })?;
-
-        // Summary words and time saved
-        let total_summary_words: i64 = self
-            .conn
-            .query_row(
-                "SELECT coalesce(sum(length(summary) - length(replace(summary, ' ', '')) + 1), 0) FROM library",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
-        stats.total_summary_words = total_summary_words;
-        if stats.total_source_words > total_summary_words {
-            stats.estimated_minutes_saved =
-                (stats.total_source_words - total_summary_words) as f64 / 225.0;
-        }
-
-        // Active days and current streak
-        let mut days_stmt = self.conn.prepare(
-            "SELECT DISTINCT strftime(created_at, '%Y-%m-%d') AS day_str
-             FROM history
-             ORDER BY day_str DESC",
-        )?;
-        let days: Vec<String> = days_stmt
-            .query_map([], |row| row.get(0))?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        stats.active_reading_days = days.len() as i64;
-        let day_nums: Vec<i64> = days.iter().filter_map(|d| ymd_to_day_number(d)).collect();
-        let today_num = ymd_to_day_number(&today_str).unwrap_or(0);
-
-        if let Some(&most_recent) = day_nums.first()
-            && (most_recent == today_num || most_recent == today_num - 1)
-        {
-            let mut streak = 1;
-            for i in 1..day_nums.len() {
-                if day_nums[i] == day_nums[i - 1] - 1 {
-                    streak += 1;
-                } else {
-                    break;
-                }
-            }
-            stats.current_streak_days = streak;
-        }
-
-        // Model Performance Breakdown
-        let mut model_stmt = self.conn.prepare(
-            "SELECT
-                 model,
-                 count(*)::BIGINT AS runs,
-                 coalesce(sum(completion_tokens), 0)::BIGINT AS total_completion_tokens,
-                 coalesce(avg(tokens_per_second), 0.0)::DOUBLE AS avg_tps,
-                 coalesce(quantile_cont(tokens_per_second, 0.50), 0.0)::DOUBLE AS p50_tps,
-                 coalesce(quantile_cont(tokens_per_second, 0.95), 0.0)::DOUBLE AS p95_tps,
-                 coalesce(avg(duration_ms), 0.0)::DOUBLE AS avg_duration_ms
-             FROM history
-             GROUP BY model
-             ORDER BY runs DESC",
-        )?;
-        let models: Vec<ModelStats> = model_stmt
-            .query_map([], |row| {
-                Ok(ModelStats {
-                    model: row.get(0)?,
-                    runs: row.get(1)?,
-                    total_completion_tokens: row.get(2)?,
-                    avg_tokens_per_second: row.get(3)?,
-                    p50_tokens_per_second: row.get(4)?,
-                    p95_tokens_per_second: row.get(5)?,
-                    avg_duration_ms: row.get(6)?,
-                })
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-        stats.models = models;
-
-        // Top Domains
-        let mut domain_stmt = self.conn.prepare(
-            "SELECT
-                 regexp_extract(url, '^https?://([^/:]+)', 1) AS domain,
-                 count(*)::BIGINT AS count,
-                 coalesce(sum(word_count), 0)::BIGINT AS total_words
-             FROM history
-             WHERE url IS NOT NULL AND length(regexp_extract(url, '^https?://([^/:]+)', 1)) > 0
-             GROUP BY domain
-             ORDER BY count DESC
-             LIMIT 5",
-        )?;
-        let top_domains: Vec<DomainStats> = domain_stmt
-            .query_map([], |row| {
-                Ok(DomainStats {
-                    domain: row.get(0)?,
-                    count: row.get(1)?,
-                    total_words: row.get(2)?,
-                })
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-        stats.top_domains = top_domains;
-
-        Ok(stats)
-    }
-
-    /// Performs a full-text search across all summarized books and webpages in the library
-    /// using BM25 relevance ranking with fallback to substring matching.
-    pub fn search(&self, query: &str) -> Result<Vec<LibrarySearchResult>> {
-        let trimmed = query.trim();
-        if trimmed.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let query_terms = tokenize_search_terms(trimmed);
-        let mut results: Vec<LibrarySearchResult> = Vec::new();
-        let mut seen_ids = std::collections::HashSet::new();
-
-        if !query_terms.is_empty() {
-            let placeholders = query_terms
-                .iter()
-                .map(|_| "?")
-                .collect::<Vec<_>>()
-                .join(", ");
-            let bm25_sql = format!(
-                "WITH doc_stats AS (
-                     SELECT COUNT(*)::DOUBLE AS total_docs,
-                            COALESCE(AVG(word_count), 1.0)::DOUBLE AS avg_doc_len
-                     FROM history
-                 ),
-                 matched_terms AS (
-                     SELECT
-                         lt.doc_id,
-                         lt.term,
-                         lt.term_freq,
-                         lt.in_title,
-                         h.word_count::DOUBLE AS doc_len
-                     FROM library_terms lt
-                     JOIN history h ON lt.doc_id = h.id
-                     WHERE lt.term IN ({placeholders})
-                 ),
-                 term_df AS (
-                     SELECT term, COUNT(DISTINCT doc_id)::DOUBLE AS df
-                     FROM matched_terms
-                     GROUP BY term
-                 ),
-                 scored_docs AS (
-                     SELECT
-                         mt.doc_id,
-                         SUM(
-                             ln(((ds.total_docs - td.df + 0.5) / (td.df + 0.5)) + 1.0) *
-                             (CASE WHEN mt.in_title THEN 2.5 ELSE 1.0 END) *
-                             ((mt.term_freq * 2.2) / (mt.term_freq + 1.2 * (0.25 + 0.75 * (mt.doc_len / ds.avg_doc_len))))
-                         ) AS bm25_score
-                     FROM matched_terms mt
-                     JOIN term_df td ON mt.term = td.term
-                     CROSS JOIN doc_stats ds
-                     GROUP BY mt.doc_id
-                 )
-                 SELECT
-                     l.id, h.target_type, h.title, h.author, h.url, l.summary,
-                     strftime(h.created_at, '%Y-%m-%d %H:%M'),
-                     sd.bm25_score
-                 FROM scored_docs sd
-                 JOIN library l ON sd.doc_id = l.id
-                 JOIN history h ON l.id = h.id
-                 ORDER BY sd.bm25_score DESC, l.id DESC
-                 LIMIT 15"
-            );
-
-            if let Ok(mut stmt) = self.conn.prepare(&bm25_sql) {
-                let params: Vec<&dyn duckdb::ToSql> = query_terms
-                    .iter()
-                    .map(|t| t as &dyn duckdb::ToSql)
-                    .collect();
-                if let Ok(rows) = stmt.query_map(params.as_slice(), |row| {
-                    let score: f64 = row.get(7)?;
-                    map_search_result_row(row, trimmed, &query_terms, Some(score))
-                }) {
-                    for r in rows.flatten() {
-                        seen_ids.insert(r.id);
-                        results.push(r);
-                    }
-                }
-            }
-        }
-
-        // Fallback / complement with substring ILIKE matching if fewer than 15 results
-        if results.len() < 15 {
-            let mut stmt = self.conn.prepare(
-                "SELECT l.id, h.target_type, h.title, h.author, h.url, l.summary,
-                        strftime(h.created_at, '%Y-%m-%d %H:%M')
-                 FROM library l
-                 JOIN history h ON l.id = h.id
-                 WHERE l.summary ILIKE '%' || ? || '%'
-                    OR h.title ILIKE '%' || ? || '%'
-                    OR coalesce(h.author, '') ILIKE '%' || ? || '%'
-                 ORDER BY l.id DESC
-                 LIMIT 15",
-            )?;
-
-            let rows = stmt.query_map(params![trimmed, trimmed, trimmed], |row| {
-                map_search_result_row(row, trimmed, &query_terms, None)
-            })?;
-
-            for r in rows.flatten() {
-                if seen_ids.insert(r.id) {
-                    results.push(r);
-                    if results.len() >= 15 {
-                        break;
-                    }
-                }
-            }
-        }
-
-        Ok(results)
-    }
-
-    /// Executes an arbitrary analytical SQL query against the DuckDB database.
-    pub fn query_raw(&self, sql: &str) -> Result<QueryResult> {
-        let mut stmt = self.conn.prepare(sql)?;
-        stmt.execute([])?;
-        let columns = stmt.column_names();
-        let col_count = columns.len();
-
-        let mut rows = Vec::new();
-        let mut query_rows = stmt.query([])?;
-        while let Some(row) = query_rows.next()? {
-            let mut row_vals = Vec::with_capacity(col_count);
-            for i in 0..col_count {
-                let val_ref = row.get_ref(i)?;
-                row_vals.push(value_ref_to_json(val_ref));
-            }
-            rows.push(row_vals);
-        }
-
-        Ok(QueryResult { columns, rows })
-    }
-
-    /// Exports the summarized library to a CSV file.
-    pub fn export_csv(&self, path: &Path) -> Result<()> {
-        prepare_export_file(path)?;
-        let path_str = path.to_string_lossy();
-        let sql = format!(
-            "COPY (
-                SELECT h.id, h.target_type, h.title, coalesce(h.author, '') AS author,
-                       coalesce(h.url, '') AS url, h.style, h.model,
-                       h.word_count, coalesce(h.prompt_tokens, 0) AS prompt_tokens,
-                       coalesce(h.completion_tokens, 0) AS completion_tokens,
-                       h.duration_ms, coalesce(h.tokens_per_second, 0.0) AS tokens_per_second,
-                       strftime(h.created_at, '%Y-%m-%d %H:%M') AS created_at,
-                       l.summary
-                FROM history h
-                JOIN library l ON h.id = l.id
-                ORDER BY h.id ASC
-            ) TO '{}' (HEADER, DELIMITER ',');",
-            path_str.replace('\'', "''")
-        );
-        self.conn
-            .execute_batch(&sql)
-            .context("Failed to export library to CSV")?;
-        fs_util::set_private_file_perms(path);
-        Ok(())
-    }
-
-    /// Exports the summarized library to Parquet.
-    pub fn export_parquet(&self, path: &Path) -> Result<()> {
-        prepare_export_file(path)?;
-        let path_str = path.to_string_lossy();
-        let sql = format!(
-            "COPY (
-                SELECT h.id, h.target_type, h.title, h.author, h.url, h.style, h.model,
-                       h.word_count, h.prompt_tokens, h.completion_tokens, h.duration_ms,
-                       h.tokens_per_second, h.created_at, l.summary
-                FROM history h
-                JOIN library l ON h.id = l.id
-                ORDER BY h.id ASC
-            ) TO '{}' (FORMAT PARQUET);",
-            path_str.replace('\'', "''")
-        );
-        self.conn
-            .execute_batch(&sql)
-            .context("Failed to export library to Parquet (requires DuckDB parquet extension)")?;
-        fs_util::set_private_file_perms(path);
-        Ok(())
-    }
-
-    /// Exports the summarized library to a single structured JSON file.
-    pub fn export_json(&self, path: &Path) -> Result<()> {
-        let items = self.get_all_library_items()?;
-        let json_bytes = serde_json::to_vec_pretty(&items)?;
-        fs_util::write_private_file(path, json_bytes)?;
-        Ok(())
-    }
-
-    /// Exports the summarized library to an Obsidian / Logseq compatible Markdown vault directory.
-    pub fn export_markdown_vault(&self, dir: &Path) -> Result<usize> {
-        let items = self.get_all_library_items()?;
-        fs_util::create_private_dir_all(dir)?;
-        let mut count = 0;
-        let mut used_filenames = std::collections::HashSet::new();
-
-        for item in items {
-            let base_slug = crate::render::slugify(&item.title);
-            let mut filename = format!("{}.md", base_slug);
-            if used_filenames.contains(&filename) || dir.join(&filename).exists() {
-                filename = format!("{}-{}.md", base_slug, item.id);
-            }
-            used_filenames.insert(filename.clone());
-            let file_path = dir.join(filename);
-
-            let mut frontmatter = format!(
-                "---\ntitle: \"{}\"\ntarget_type: \"{}\"\nmodel: \"{}\"\nstyle: \"{}\"\nword_count: {}\ncreated_at: \"{}\"\n",
-                escape_yaml_string(&item.title),
-                escape_yaml_string(&item.target_type),
-                escape_yaml_string(&item.model),
-                escape_yaml_string(&item.style),
-                item.word_count,
-                escape_yaml_string(&item.created_at)
-            );
-            if let Some(author) = &item.author {
-                frontmatter.push_str(&format!("author: \"{}\"\n", escape_yaml_string(author)));
-            }
-            if let Some(url) = &item.url {
-                frontmatter.push_str(&format!("url: \"{}\"\n", escape_yaml_string(url)));
-            }
-            frontmatter.push_str("---\n\n");
-            let clean_title = item.title.replace(['\n', '\r'], " ");
-            frontmatter.push_str(&format!("# {}\n\n", clean_title));
-            frontmatter.push_str(&item.summary);
-            frontmatter.push('\n');
-
-            fs_util::write_private_file(&file_path, frontmatter.as_bytes())?;
-            count += 1;
-        }
-        Ok(count)
+    let host = without_scheme.split(&['/', ':', '?', '#'][..]).next()?;
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_string())
     }
 }
 
-/// Escapes characters in a string for safe embedding in a double-quoted YAML scalar.
 pub fn escape_yaml_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -1085,285 +304,1293 @@ pub fn escape_yaml_string(s: &str) -> String {
     out
 }
 
-pub use crate::system::text_util::{tokenize_search_terms, tokenize_terms};
+pub fn format_csv_cell(cell: &str) -> String {
+    let is_formula = cell.starts_with(['=', '+', '-', '@'])
+        && cell.trim_start_matches(['+', '-']).parse::<f64>().is_err();
 
-/// Indexes document title and summary terms into `library_terms`.
-pub(crate) fn insert_doc_terms(
-    conn: &Connection,
-    doc_id: i64,
-    title: &str,
-    summary: &str,
-) -> Result<()> {
-    let mut term_counts: std::collections::HashMap<String, (usize, bool)> =
-        std::collections::HashMap::new();
+    let safe_cell = if is_formula {
+        format!("'{}", cell)
+    } else {
+        cell.to_string()
+    };
 
-    for term in tokenize_search_terms(title) {
-        let entry = term_counts.entry(term).or_insert((0, true));
-        entry.0 += 1;
-        entry.1 = true;
+    if safe_cell.contains(',')
+        || safe_cell.contains('"')
+        || safe_cell.contains('\n')
+        || safe_cell.contains('\r')
+    {
+        format!("\"{}\"", safe_cell.replace('"', "\"\""))
+    } else {
+        safe_cell
     }
-
-    for term in tokenize_search_terms(summary) {
-        let entry = term_counts.entry(term).or_insert((0, false));
-        entry.0 += 1;
-    }
-
-    conn.execute(
-        "DELETE FROM library_terms WHERE doc_id = ?",
-        params![doc_id],
-    )?;
-
-    let mut stmt = conn.prepare(
-        "INSERT INTO library_terms (doc_id, term, term_freq, in_title)
-         VALUES (?, ?, ?, ?)",
-    )?;
-
-    for (term, (freq, in_title)) in term_counts {
-        stmt.execute(params![doc_id, term, freq as i64, in_title])?;
-    }
-
-    Ok(())
-}
-
-/// Checks whether the DuckDB schema has already been initialized on the given connection.
-pub fn is_duckdb_schema_ready(conn: &Connection) -> bool {
-    conn.execute(
-        "SELECT 1 FROM history, cache_pages, cache_search, cache_server_capabilities, chat_sessions LIMIT 0",
-        [],
-    )
-    .is_ok()
-        && conn
-            .execute("SELECT target_type FROM library LIMIT 0", [])
-            .is_err()
-}
-
-/// Initializes the unified DuckDB schema, tables, sequences, and indexes.
-pub fn init_duckdb_schema(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "CREATE SEQUENCE IF NOT EXISTS history_id_seq;
-         CREATE TABLE IF NOT EXISTS history (
-             id INTEGER DEFAULT nextval('history_id_seq') PRIMARY KEY,
-             target_type VARCHAR NOT NULL,
-             title VARCHAR NOT NULL,
-             author VARCHAR,
-             url VARCHAR,
-             style VARCHAR NOT NULL,
-             model VARCHAR NOT NULL,
-             word_count UINTEGER NOT NULL,
-             prompt_tokens UINTEGER,
-             completion_tokens UINTEGER,
-             duration_ms UINTEGER NOT NULL,
-             tokens_per_second FLOAT,
-             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-             cache_key VARCHAR
-         );
-         ALTER TABLE history ADD COLUMN IF NOT EXISTS cache_key VARCHAR;
-
-         CREATE TABLE IF NOT EXISTS library (
-             id INTEGER PRIMARY KEY,
-             summary TEXT NOT NULL,
-             reasoning TEXT
-         );
-         ALTER TABLE library ADD COLUMN IF NOT EXISTS reasoning TEXT;
-         ALTER TABLE library ALTER COLUMN id DROP DEFAULT;
-         ALTER TABLE library DROP COLUMN IF EXISTS target_type;
-         ALTER TABLE library DROP COLUMN IF EXISTS title;
-         ALTER TABLE library DROP COLUMN IF EXISTS author;
-         ALTER TABLE library DROP COLUMN IF EXISTS url;
-         ALTER TABLE library DROP COLUMN IF EXISTS created_at;
-         DROP SEQUENCE IF EXISTS library_id_seq;
-
-         -- Drop obsolete separate cache_summaries table if present from older versions
-         DROP TABLE IF EXISTS cache_summaries;
-
-         CREATE TABLE IF NOT EXISTS cache_pages (
-             cache_key VARCHAR PRIMARY KEY,
-             url VARCHAR NOT NULL,
-             title VARCHAR,
-             content TEXT NOT NULL,
-             word_count UINTEGER NOT NULL,
-             cached_at TIMESTAMP NOT NULL DEFAULT current_timestamp
-         );
-
-         CREATE TABLE IF NOT EXISTS cache_search (
-             cache_key VARCHAR PRIMARY KEY,
-             data TEXT NOT NULL,
-             cached_at TIMESTAMP NOT NULL DEFAULT current_timestamp
-         );
-
-         CREATE TABLE IF NOT EXISTS cache_server_capabilities (
-             endpoint VARCHAR PRIMARY KEY,
-             model_id VARCHAR NOT NULL,
-             n_ctx UBIGINT NOT NULL,
-             total_slots UINTEGER NOT NULL DEFAULT 1,
-             supports_tokenize BOOLEAN NOT NULL DEFAULT FALSE,
-             tokenize_endpoint VARCHAR,
-             backend_kind VARCHAR NOT NULL,
-             cached_ms BIGINT NOT NULL DEFAULT 0
-         );
-
-         CREATE TABLE IF NOT EXISTS library_terms (
-             doc_id INTEGER NOT NULL,
-             term VARCHAR NOT NULL,
-             term_freq INTEGER NOT NULL,
-             in_title BOOLEAN NOT NULL DEFAULT FALSE,
-             PRIMARY KEY (doc_id, term)
-         );
-         CREATE INDEX IF NOT EXISTS idx_library_terms_term ON library_terms(term);
-         CREATE INDEX IF NOT EXISTS idx_history_cache_key ON history(cache_key);
-
-         CREATE SEQUENCE IF NOT EXISTS chat_sessions_id_seq;
-         CREATE TABLE IF NOT EXISTS chat_sessions (
-             id INTEGER DEFAULT nextval('chat_sessions_id_seq') PRIMARY KEY,
-             title VARCHAR NOT NULL,
-             target_type VARCHAR NOT NULL,
-             target_url VARCHAR,
-             model VARCHAR NOT NULL,
-             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-             updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp
-         );
-
-         CREATE SEQUENCE IF NOT EXISTS chat_messages_id_seq;
-         CREATE TABLE IF NOT EXISTS chat_messages (
-             id INTEGER DEFAULT nextval('chat_messages_id_seq') PRIMARY KEY,
-             session_id INTEGER NOT NULL,
-             role VARCHAR NOT NULL,
-             content TEXT NOT NULL,
-             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
-         );",
-    )
-    .context("Failed to initialize DuckDB schema")?;
-    Ok(())
 }
 
 fn prepare_export_file(path: &Path) -> Result<()> {
-    if let Ok(meta) = std::fs::symlink_metadata(path)
-        && meta.file_type().is_symlink()
-    {
-        anyhow::bail!("Refusing to export to symlink: {}", path.display());
+    if path.is_symlink() {
+        anyhow::bail!(
+            "Refusing to export to a symbolic link (CWE-59): {}",
+            path.display()
+        );
     }
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    if !parent.as_os_str().is_empty() && !parent.exists() {
+    if let Some(parent) = path.parent() {
         fs_util::create_private_dir_all(parent)?;
     }
     Ok(())
 }
 
-const SELECT_CHAT_SESSIONS_BASE_SQL: &str =
-    "SELECT s.id, s.title, s.target_type, s.target_url, s.model,
-            count(m.id)::BIGINT AS msg_count,
-            (SELECT m2.content FROM chat_messages m2 WHERE m2.session_id = s.id AND m2.role = 'user' ORDER BY m2.id DESC LIMIT 1) AS last_q,
-            strftime(s.created_at, '%Y-%m-%d %H:%M'),
-            strftime(s.updated_at, '%Y-%m-%d %H:%M')
-     FROM chat_sessions s
-     LEFT JOIN chat_messages m ON s.id = m.session_id";
-
-fn map_chat_session_row(row: &duckdb::Row<'_>) -> duckdb::Result<ChatSession> {
-    Ok(ChatSession {
-        id: row.get(0)?,
-        title: row.get(1)?,
-        target_type: row.get(2)?,
-        target_url: row.get(3)?,
-        model: row.get(4)?,
-        message_count: row.get(5)?,
-        last_question: row.get(6)?,
-        created_at: row.get(7)?,
-        updated_at: row.get(8)?,
-    })
+fn init_redb_schema(db: &RedbDb) -> Result<()> {
+    let write_txn = db.begin_write()?;
+    {
+        let _ = write_txn.open_table(TABLE_HISTORY)?;
+        let _ = write_txn.open_table(TABLE_CACHE_KEY_TO_ID)?;
+        let _ = write_txn.open_table(TABLE_CHAT_SESSIONS)?;
+        let _ = write_txn.open_table(TABLE_CHAT_MESSAGES)?;
+        let _ = write_txn.open_table(TABLE_CACHE_PAGES)?;
+        let _ = write_txn.open_table(TABLE_CACHE_SEARCH)?;
+        let _ = write_txn.open_table(TABLE_CACHE_CAPS)?;
+        let _ = write_txn.open_table(TABLE_META)?;
+    }
+    write_txn.commit()?;
+    Ok(())
 }
 
-const SELECT_HISTORY_SQL: &str = "SELECT id, target_type, title, author, url, style, model,
-            word_count, prompt_tokens, completion_tokens,
-            duration_ms, tokens_per_second,
-            strftime(created_at, '%Y-%m-%d %H:%M')
-     FROM history
-     ORDER BY id DESC";
+impl Database {
+    pub fn default_path() -> PathBuf {
+        if let Ok(env_dir) = std::env::var("SRZ_DATA_DIR")
+            && !env_dir.trim().is_empty()
+        {
+            return PathBuf::from(env_dir).join("srz.db");
+        }
+        if let Ok(xdg_data) = std::env::var("XDG_DATA_HOME")
+            && !xdg_data.trim().is_empty()
+        {
+            return PathBuf::from(xdg_data).join("srz").join("srz.db");
+        }
+        if let Some(home) = dirs_home() {
+            return home.join(".local").join("share").join("srz").join("srz.db");
+        }
+        PathBuf::from("srz.db")
+    }
 
-macro_rules! select_library_base_sql {
-    () => {
-        "SELECT l.id, h.target_type, h.title, h.author, h.url, l.summary,
-            coalesce(h.style, 'concise'), coalesce(h.model, 'unknown'),
-            coalesce(h.word_count, 0), h.prompt_tokens, h.completion_tokens,
-            coalesce(h.duration_ms, 0), h.tokens_per_second,
-            strftime(h.created_at, '%Y-%m-%d %H:%M'), l.reasoning
-     FROM library l
-     JOIN history h ON l.id = h.id"
-    };
+    pub fn open_default() -> Result<Self> {
+        Self::open_at(&Self::default_path())
+    }
+
+    pub fn open_at(path: &Path) -> Result<Self> {
+        if path.is_symlink() {
+            anyhow::bail!("Refusing to open database: {:?} is a symlink", path);
+        }
+        if let Some(parent) = path.parent() {
+            fs_util::create_private_dir_all(parent)?;
+        }
+        let mut last_err = None;
+        for attempt in 0..5 {
+            match RedbDb::create(path) {
+                Ok(db) => {
+                    fs_util::set_private_file_perms(path);
+                    init_redb_schema(&db)?;
+                    return Ok(Self {
+                        db: Arc::new(db),
+                        path: Some(path.to_path_buf()),
+                    });
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    let sleep_ms = 50 * (1 << attempt) + (attempt * 13) % 25;
+                    std::thread::sleep(Duration::from_millis(sleep_ms as u64));
+                }
+            }
+        }
+        Err(anyhow::anyhow!(
+            "Failed to open database at {}: {:?}",
+            path.display(),
+            last_err
+        ))
+    }
+
+    pub fn open_in_memory() -> Result<Self> {
+        let db = redb::Builder::new().create_with_backend(redb::backends::InMemoryBackend::new())?;
+        init_redb_schema(&db)?;
+        Ok(Self {
+            db: Arc::new(db),
+            path: None,
+        })
+    }
+
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    pub fn attach_database(&self, _path: &Path, _alias: &str) -> Result<()> {
+        Ok(())
+    }
+
+    pub fn reset(&self) -> Result<()> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let _ = write_txn.delete_table(TABLE_HISTORY);
+            let _ = write_txn.delete_table(TABLE_CACHE_KEY_TO_ID);
+            let _ = write_txn.delete_table(TABLE_CHAT_SESSIONS);
+            let _ = write_txn.delete_table(TABLE_CHAT_MESSAGES);
+            let _ = write_txn.delete_table(TABLE_CACHE_PAGES);
+            let _ = write_txn.delete_table(TABLE_CACHE_SEARCH);
+            let _ = write_txn.delete_table(TABLE_CACHE_CAPS);
+            let _ = write_txn.delete_table(TABLE_META);
+        }
+        write_txn.commit()?;
+        init_redb_schema(&self.db)?;
+        Ok(())
+    }
+
+    pub fn record_summary(&self, record: &NewSummaryRecord<'_>) -> Result<()> {
+        self.record_summary_with_key(record, None)
+    }
+
+    pub fn record_summary_with_key(
+        &self,
+        record: &NewSummaryRecord<'_>,
+        cache_key: Option<&str>,
+    ) -> Result<()> {
+        let write_txn = self.db.begin_write()?;
+        let mut id = 1u64;
+        {
+            let mut meta_table = write_txn.open_table(TABLE_META)?;
+            if let Some(val) = meta_table.get("next_history_id")? {
+                id = val.value();
+            }
+            meta_table.insert("next_history_id", id + 1)?;
+        }
+
+        let item = LibraryItem {
+            id: id as i64,
+            target_type: record.target_type.to_string(),
+            title: record.title.to_string(),
+            author: record.author.map(|s| s.to_string()),
+            url: record.url.map(|s| s.to_string()),
+            summary: record.summary.to_string(),
+            reasoning: record.reasoning.map(|s| s.to_string()),
+            style: record.style.to_string(),
+            model: record.model.to_string(),
+            word_count: record.word_count as u32,
+            prompt_tokens: record.prompt_tokens,
+            completion_tokens: record.completion_tokens,
+            duration_ms: record.duration_ms,
+            tokens_per_second: record.tokens_per_second,
+            created_at: chrono_now_iso(),
+        };
+
+        let bytes = serde_json::to_vec(&item)?;
+        {
+            let mut hist_table = write_txn.open_table(TABLE_HISTORY)?;
+            hist_table.insert(id, bytes.as_slice())?;
+        }
+
+        if let Some(ck) = cache_key {
+            let mut ck_table = write_txn.open_table(TABLE_CACHE_KEY_TO_ID)?;
+            ck_table.insert(ck, id)?;
+        }
+
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    pub fn get_history(&self, limit: usize) -> Result<Vec<HistoryEntry>> {
+        let read_txn = self.db.begin_read()?;
+        let table = match read_txn.open_table(TABLE_HISTORY) {
+            Ok(t) => t,
+            Err(_) => return Ok(Vec::new()),
+        };
+
+        let mut entries = Vec::new();
+        for item_res in table.iter()?.rev() {
+            let (_, val) = item_res?;
+            let item: LibraryItem = serde_json::from_slice(val.value())?;
+            entries.push(item.into_history_entry());
+            if entries.len() >= limit {
+                break;
+            }
+        }
+        Ok(entries)
+    }
+
+    pub fn get_all_for_index(&self) -> Result<Vec<HistoryEntry>> {
+        self.get_history(usize::MAX)
+    }
+
+    pub fn get_all_library_items(&self) -> Result<Vec<LibraryItem>> {
+        let read_txn = self.db.begin_read()?;
+        let table = match read_txn.open_table(TABLE_HISTORY) {
+            Ok(t) => t,
+            Err(_) => return Ok(Vec::new()),
+        };
+
+        let mut items = Vec::new();
+        for item_res in table.iter()?.rev() {
+            let (_, val) = item_res?;
+            let item: LibraryItem = serde_json::from_slice(val.value())?;
+            items.push(item);
+        }
+        Ok(items)
+    }
+
+    pub fn get_library_item_by_id(&self, id: i64) -> Result<Option<LibraryItem>> {
+        let read_txn = self.db.begin_read()?;
+        let table = match read_txn.open_table(TABLE_HISTORY) {
+            Ok(t) => t,
+            Err(_) => return Ok(None),
+        };
+
+        if let Some(val) = table.get(id as u64)? {
+            let item: LibraryItem = serde_json::from_slice(val.value())?;
+            return Ok(Some(item));
+        }
+        Ok(None)
+    }
+
+    pub fn get_latest_summary(&self) -> Result<Option<LibraryItem>> {
+        let read_txn = self.db.begin_read()?;
+        let table = match read_txn.open_table(TABLE_HISTORY) {
+            Ok(t) => t,
+            Err(_) => return Ok(None),
+        };
+
+        if let Some(last_res) = table.iter()?.next_back() {
+            let (_, val) = last_res?;
+            let item: LibraryItem = serde_json::from_slice(val.value())?;
+            return Ok(Some(item));
+        }
+        Ok(None)
+    }
+
+    pub fn delete_library_item(&self, id: i64) -> Result<()> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(TABLE_HISTORY)?;
+            table.remove(id as u64)?;
+            if let Ok(mut ck_table) = write_txn.open_table(TABLE_CACHE_KEY_TO_ID) {
+                let mut keys_to_delete = Vec::new();
+                if let Ok(iter) = ck_table.iter() {
+                    for (k, v) in iter.flatten() {
+                        if v.value() == id as u64 {
+                            keys_to_delete.push(k.value().to_string());
+                        }
+                    }
+                }
+                for k in keys_to_delete {
+                    let _ = ck_table.remove(k.as_str());
+                }
+            }
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    pub fn create_chat_session(
+        &self,
+        title: &str,
+        target_type: &str,
+        target_url: Option<&str>,
+        model: &str,
+    ) -> Result<i64> {
+        let write_txn = self.db.begin_write()?;
+        let mut id = 1u64;
+        {
+            let mut meta_table = write_txn.open_table(TABLE_META)?;
+            if let Some(val) = meta_table.get("next_session_id")? {
+                id = val.value();
+            }
+            meta_table.insert("next_session_id", id + 1)?;
+        }
+
+        let now = chrono_now_iso();
+        let session = ChatSession {
+            id: id as i64,
+            title: title.to_string(),
+            target_type: target_type.to_string(),
+            target_url: target_url.map(|s| s.to_string()),
+            model: model.to_string(),
+            message_count: 0,
+            last_question: None,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+
+        let bytes = serde_json::to_vec(&session)?;
+        {
+            let mut sess_table = write_txn.open_table(TABLE_CHAT_SESSIONS)?;
+            sess_table.insert(id, bytes.as_slice())?;
+        }
+
+        write_txn.commit()?;
+        Ok(id as i64)
+    }
+
+    pub fn add_chat_turn(&self, session_id: i64, question: &str, answer: &str) -> Result<()> {
+        let write_txn = self.db.begin_write()?;
+        let now = chrono_now_iso();
+
+        let mut next_msg_idx = 1u64;
+        {
+            let mut sess_table = write_txn.open_table(TABLE_CHAT_SESSIONS)?;
+            let updated = if let Some(val) = sess_table.get(session_id as u64)? {
+                let mut session: ChatSession = serde_json::from_slice(val.value())?;
+                next_msg_idx = (session.message_count as u64) + 1;
+                session.message_count += 2;
+                session.last_question = Some(question.to_string());
+                session.updated_at = now.clone();
+                Some(serde_json::to_vec(&session)?)
+            } else {
+                None
+            };
+            if let Some(bytes) = updated {
+                sess_table.insert(session_id as u64, bytes.as_slice())?;
+            }
+        }
+
+        {
+            let mut msg_table = write_txn.open_table(TABLE_CHAT_MESSAGES)?;
+            let key_q = ((session_id as u64) << 32) | next_msg_idx;
+            let msg_q = ChatMessage {
+                id: next_msg_idx as i64,
+                session_id,
+                role: "user".to_string(),
+                content: question.to_string(),
+                created_at: now.clone(),
+            };
+            msg_table.insert(key_q, serde_json::to_vec(&msg_q)?.as_slice())?;
+
+            let key_a = ((session_id as u64) << 32) | (next_msg_idx + 1);
+            let msg_a = ChatMessage {
+                id: (next_msg_idx + 1) as i64,
+                session_id,
+                role: "assistant".to_string(),
+                content: answer.to_string(),
+                created_at: now,
+            };
+            msg_table.insert(key_a, serde_json::to_vec(&msg_a)?.as_slice())?;
+        }
+
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    pub fn get_chat_sessions(&self, limit: usize) -> Result<Vec<ChatSession>> {
+        let read_txn = self.db.begin_read()?;
+        let table = match read_txn.open_table(TABLE_CHAT_SESSIONS) {
+            Ok(t) => t,
+            Err(_) => return Ok(Vec::new()),
+        };
+
+        let mut sessions = Vec::new();
+        for item_res in table.iter()? {
+            let (_, val) = item_res?;
+            let session: ChatSession = serde_json::from_slice(val.value())?;
+            sessions.push(session);
+        }
+        sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        sessions.truncate(limit);
+        Ok(sessions)
+    }
+
+    pub fn get_chat_session(
+        &self,
+        session_id: i64,
+    ) -> Result<Option<(ChatSession, Vec<ChatMessage>)>> {
+        let read_txn = self.db.begin_read()?;
+        let sess_table = match read_txn.open_table(TABLE_CHAT_SESSIONS) {
+            Ok(t) => t,
+            Err(_) => return Ok(None),
+        };
+
+        let Some(val) = sess_table.get(session_id as u64)? else {
+            return Ok(None);
+        };
+        let session: ChatSession = serde_json::from_slice(val.value())?;
+
+        let mut messages = Vec::new();
+        if let Ok(msg_table) = read_txn.open_table(TABLE_CHAT_MESSAGES) {
+            let start_key = (session_id as u64) << 32;
+            let end_key = ((session_id as u64) + 1) << 32;
+            for item_res in msg_table.range(start_key..end_key)? {
+                let (_, m_val) = item_res?;
+                let msg: ChatMessage = serde_json::from_slice(m_val.value())?;
+                messages.push(msg);
+            }
+        }
+
+        Ok(Some((session, messages)))
+    }
+
+    pub fn delete_chat_session(&self, session_id: i64) -> Result<bool> {
+        let write_txn = self.db.begin_write()?;
+        let removed = {
+            let mut sess_table = write_txn.open_table(TABLE_CHAT_SESSIONS)?;
+            sess_table.remove(session_id as u64)?.is_some()
+        };
+
+        if removed {
+            let mut msg_table = write_txn.open_table(TABLE_CHAT_MESSAGES)?;
+            let start_key = (session_id as u64) << 32;
+            let end_key = ((session_id as u64) + 1) << 32;
+            let keys_to_delete: Vec<u64> = msg_table
+                .range(start_key..end_key)?
+                .filter_map(|r| r.ok().map(|(k, _)| k.value()))
+                .collect();
+            for k in keys_to_delete {
+                let _ = msg_table.remove(k)?;
+            }
+        }
+
+        write_txn.commit()?;
+        Ok(removed)
+    }
+
+    pub fn get_stats(&self) -> Result<LibraryStats> {
+        let items = self.get_all_library_items()?;
+        let mut stats = LibraryStats::default();
+        stats.total_summaries = items.len() as i64;
+
+        let now_secs = now_unix_secs();
+        let today_ymd = format_date_from_timestamp(now_secs);
+        let week_ago_ymd = format_date_from_timestamp(now_secs.saturating_sub(7 * 86400));
+        let month_ago_ymd = format_date_from_timestamp(now_secs.saturating_sub(30 * 86400));
+
+        let mut model_map: HashMap<String, (i64, i64, f64, i64, Vec<f64>)> = HashMap::new();
+        let mut domain_map: HashMap<String, (i64, i64)> = HashMap::new();
+        let mut active_days: HashSet<String> = HashSet::new();
+
+        let mut total_tps = 0.0;
+        let mut tps_count = 0;
+
+        for item in &items {
+            match item.target_type.as_str() {
+                "book" => stats.book_summaries += 1,
+                "web" => stats.web_summaries += 1,
+                "file" => stats.file_summaries += 1,
+                "stdin" => stats.stdin_summaries += 1,
+                "news" => stats.news_summaries += 1,
+                "youtube" => stats.video_summaries += 1,
+                _ => {}
+            }
+
+            stats.total_source_words += item.word_count as i64;
+            stats.total_summary_words += item.summary.split_ascii_whitespace().count() as i64;
+            stats.total_prompt_tokens += item.prompt_tokens.unwrap_or(0) as i64;
+            stats.total_completion_tokens += item.completion_tokens.unwrap_or(0) as i64;
+            stats.total_duration_ms += item.duration_ms as i64;
+
+            if let Some(tps) = item.tokens_per_second {
+                if tps > 0.0 {
+                    total_tps += tps;
+                    tps_count += 1;
+                    if tps > stats.max_tokens_per_second {
+                        stats.max_tokens_per_second = tps;
+                    }
+                }
+            }
+
+            let item_ymd = if item.created_at.len() >= 10 {
+                &item.created_at[..10]
+            } else {
+                ""
+            };
+            if !item_ymd.is_empty() {
+                active_days.insert(item_ymd.to_string());
+                if item_ymd == today_ymd {
+                    stats.reads_today += 1;
+                }
+                if item_ymd >= week_ago_ymd.as_str() {
+                    stats.reads_this_week += 1;
+                }
+                if item_ymd >= month_ago_ymd.as_str() {
+                    stats.reads_this_month += 1;
+                }
+            }
+
+            let entry = model_map
+                .entry(item.model.clone())
+                .or_insert((0, 0, 0.0, 0, Vec::new()));
+            entry.0 += 1;
+            entry.1 += item.completion_tokens.unwrap_or(0) as i64;
+            if let Some(tps) = item.tokens_per_second {
+                entry.2 += tps;
+                entry.4.push(tps);
+            }
+            entry.3 += item.duration_ms as i64;
+
+            if let Some(ref u) = item.url {
+                if let Some(domain) = extract_domain(u) {
+                    let d_entry = domain_map.entry(domain).or_insert((0, 0));
+                    d_entry.0 += 1;
+                    d_entry.1 += item.word_count as i64;
+                }
+            }
+        }
+
+        if tps_count > 0 {
+            stats.avg_tokens_per_second = total_tps / tps_count as f64;
+        }
+        stats.active_reading_days = active_days.len() as i64;
+        if stats.total_source_words > stats.total_summary_words {
+            stats.estimated_minutes_saved =
+                (stats.total_source_words - stats.total_summary_words) as f64 / 225.0;
+        }
+
+        let mut sorted_days: Vec<String> = active_days.into_iter().collect();
+        sorted_days.sort_by(|a, b| b.cmp(a));
+        let day_nums: Vec<i64> = sorted_days
+            .iter()
+            .filter_map(|d| ymd_to_day_number(d))
+            .collect();
+        let today_num = ymd_to_day_number(&today_ymd).unwrap_or(0);
+
+        if let Some(&most_recent) = day_nums.first()
+            && (most_recent == today_num || most_recent == today_num - 1)
+        {
+            let mut streak = 1;
+            for i in 1..day_nums.len() {
+                if day_nums[i] == day_nums[i - 1] - 1 {
+                    streak += 1;
+                } else {
+                    break;
+                }
+            }
+            stats.current_streak_days = streak;
+        }
+
+        for (model, (runs, completion_tokens, tps_sum, duration_sum, mut tps_vec)) in model_map {
+            let avg_tps = if runs > 0 && !tps_vec.is_empty() {
+                tps_sum / tps_vec.len() as f64
+            } else {
+                0.0
+            };
+            tps_vec.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let p50 = if !tps_vec.is_empty() {
+                tps_vec[tps_vec.len() / 2]
+            } else {
+                0.0
+            };
+            let p95 = if !tps_vec.is_empty() {
+                tps_vec[(tps_vec.len() * 95) / 100]
+            } else {
+                0.0
+            };
+            stats.models.push(ModelStats {
+                model,
+                runs,
+                total_completion_tokens: completion_tokens,
+                avg_tokens_per_second: avg_tps,
+                p50_tokens_per_second: p50,
+                p95_tokens_per_second: p95,
+                avg_duration_ms: if runs > 0 {
+                    (duration_sum as f64) / (runs as f64)
+                } else {
+                    0.0
+                },
+            });
+        }
+        stats.models.sort_by(|a, b| b.runs.cmp(&a.runs));
+
+        for (domain, (count, total_words)) in domain_map {
+            stats.top_domains.push(DomainStats {
+                domain,
+                count,
+                total_words,
+            });
+        }
+        stats.top_domains.sort_by(|a, b| b.count.cmp(&a.count));
+        stats.top_domains.truncate(5);
+
+        Ok(stats)
+    }
+
+    pub fn search(&self, query: &str) -> Result<Vec<LibrarySearchResult>> {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return Ok(Vec::new());
+        }
+        let query_terms = tokenize_search_terms(trimmed);
+        if query_terms.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let items = self.get_all_library_items()?;
+        let mut results = Vec::new();
+
+        let find_in_text = |haystack: &str, needle: &str| -> Option<usize> {
+            if needle.is_empty() {
+                return None;
+            }
+            if needle.is_ascii() {
+                crate::system::text_util::find_ascii_case_insensitive(haystack, needle)
+            } else {
+                let hay_low = haystack.to_lowercase();
+                let need_low = needle.to_lowercase();
+                hay_low.find(&need_low).and_then(|byte_idx| {
+                    let char_count = hay_low[..byte_idx].chars().count();
+                    haystack.char_indices().nth(char_count).map(|(idx, _)| idx)
+                })
+            }
+        };
+
+        for item in items {
+            let mut title_matches = 0usize;
+            let mut summary_matches = 0usize;
+
+            for term in &query_terms {
+                if find_in_text(&item.title, term).is_some() {
+                    title_matches += 1;
+                }
+                if find_in_text(&item.summary, term).is_some() {
+                    summary_matches += 1;
+                }
+            }
+
+            if title_matches > 0 || summary_matches > 0 {
+                let score = (title_matches as f64 * 10.0) + (summary_matches as f64 * 1.0);
+                let snippet = extract_snippet(&item.summary, trimmed, &query_terms);
+
+                results.push(LibrarySearchResult {
+                    id: item.id,
+                    target_type: item.target_type,
+                    title: item.title,
+                    author: item.author,
+                    url: item.url,
+                    snippet,
+                    created_at: item.created_at,
+                    score: Some(score),
+                });
+            }
+        }
+
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| b.id.cmp(&a.id))
+        });
+
+        Ok(results)
+    }
+
+    pub fn export_csv(&self, path: &Path) -> Result<()> {
+        prepare_export_file(path)?;
+        let items = self.get_all_library_items()?;
+        let mut csv = String::new();
+        csv.push_str("id,target_type,title,author,url,style,model,word_count,prompt_tokens,completion_tokens,duration_ms,tokens_per_second,created_at,summary\n");
+        for item in items {
+            csv.push_str(&format!(
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+                item.id,
+                format_csv_cell(&item.target_type),
+                format_csv_cell(&item.title),
+                format_csv_cell(item.author.as_deref().unwrap_or("")),
+                format_csv_cell(item.url.as_deref().unwrap_or("")),
+                format_csv_cell(&item.style),
+                format_csv_cell(&item.model),
+                item.word_count,
+                item.prompt_tokens
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                item.completion_tokens
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                item.duration_ms,
+                item.tokens_per_second
+                    .map(|v| format!("{:.1}", v))
+                    .unwrap_or_default(),
+                format_csv_cell(&item.created_at),
+                format_csv_cell(&item.summary),
+            ));
+        }
+        fs_util::write_private_file(path, csv.as_bytes())?;
+        Ok(())
+    }
+
+    pub fn export_parquet(&self, _path: &Path) -> Result<()> {
+        anyhow::bail!(
+            "Parquet export is not supported with the pure-Rust storage backend; please use CSV, JSON, or Markdown."
+        );
+    }
+
+    pub fn export_json(&self, path: &Path) -> Result<()> {
+        prepare_export_file(path)?;
+        let items = self.get_all_library_items()?;
+        let json_bytes = serde_json::to_vec_pretty(&items)?;
+        fs_util::write_private_file(path, json_bytes)?;
+        Ok(())
+    }
+
+    pub fn export_markdown_vault(&self, dir: &Path) -> Result<usize> {
+        fs_util::create_private_dir_all(dir)?;
+        let items = self.get_all_library_items()?;
+        let mut written = 0;
+        let mut used_filenames: HashSet<String> = HashSet::new();
+
+        for item in items {
+            let base_slug = slugify(&item.title);
+            let mut filename = format!("{}.md", base_slug);
+            let mut counter = 2;
+            while used_filenames.contains(&filename) {
+                filename = format!("{}-{}.md", base_slug, counter);
+                counter += 1;
+            }
+            used_filenames.insert(filename.clone());
+
+            let file_path = dir.join(&filename);
+            let mut content = String::with_capacity(item.summary.len() + 256);
+            content.push_str("---\n");
+            content.push_str(&format!("title: \"{}\"\n", escape_yaml_string(&item.title)));
+            content.push_str(&format!(
+                "target_type: \"{}\"\n",
+                escape_yaml_string(&item.target_type)
+            ));
+            if let Some(author) = &item.author {
+                content.push_str(&format!("author: \"{}\"\n", escape_yaml_string(author)));
+            }
+            if let Some(url) = &item.url {
+                content.push_str(&format!("url: \"{}\"\n", escape_yaml_string(url)));
+            }
+            content.push_str(&format!("model: \"{}\"\n", escape_yaml_string(&item.model)));
+            content.push_str(&format!("style: \"{}\"\n", escape_yaml_string(&item.style)));
+            content.push_str(&format!("word_count: {}\n", item.word_count));
+            content.push_str(&format!(
+                "created_at: \"{}\"\n",
+                escape_yaml_string(&item.created_at)
+            ));
+            content.push_str("---\n\n");
+            let clean_title = item.title.replace(['\n', '\r'], " ");
+            content.push_str(&format!("# {}\n\n", clean_title));
+            content.push_str(&item.summary);
+            content.push('\n');
+
+            fs_util::write_private_file(&file_path, content.as_bytes())?;
+            written += 1;
+        }
+
+        Ok(written)
+    }
+
+    // Unified cache table helpers
+    pub fn get_cached_page(&self, hash: &str, ttl: Duration) -> Option<ScrapedPage> {
+        let read_txn = self.db.begin_read().ok()?;
+        let table = read_txn.open_table(TABLE_CACHE_PAGES).ok()?;
+        let val = table.get(hash).ok()??;
+        let record: CachedPageRecord = serde_json::from_slice(val.value()).ok()?;
+        let now = now_unix_secs();
+        if now.saturating_sub(record.cached_at) > ttl.as_secs() {
+            return None;
+        }
+        Some(ScrapedPage {
+            url: record.url,
+            title: record.title,
+            content: record.content,
+            word_count: record.word_count,
+        })
+    }
+
+    pub fn set_cached_page(&self, hash: &str, page: &ScrapedPage) -> Result<()> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(TABLE_CACHE_PAGES)?;
+            let record = CachedPageRecord {
+                url: page.url.clone(),
+                title: page.title.clone(),
+                content: page.content.clone(),
+                word_count: page.word_count,
+                cached_at: now_unix_secs(),
+            };
+            table.insert(hash, serde_json::to_vec(&record)?.as_slice())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    pub fn get_cached_search(&self, key: &str, ttl: Duration) -> Option<Vec<SearchResult>> {
+        let read_txn = self.db.begin_read().ok()?;
+        let table = read_txn.open_table(TABLE_CACHE_SEARCH).ok()?;
+        let val = table.get(key).ok()??;
+        let record: CachedSearchRecord = serde_json::from_slice(val.value()).ok()?;
+        let now = now_unix_secs();
+        if now.saturating_sub(record.cached_at) > ttl.as_secs() {
+            return None;
+        }
+        serde_json::from_str(&record.results_json).ok()
+    }
+
+    pub fn set_cached_search(&self, key: &str, results: &[SearchResult]) -> Result<()> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(TABLE_CACHE_SEARCH)?;
+            let record = CachedSearchRecord {
+                query: key.to_string(),
+                results_json: serde_json::to_string(results)?,
+                cached_at: now_unix_secs(),
+            };
+            table.insert(key, serde_json::to_vec(&record)?.as_slice())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    pub fn get_cached_caps(
+        &self,
+        endpoint: &str,
+        model: &str,
+        ttl: Duration,
+    ) -> Option<ServerCapabilities> {
+        let read_txn = self.db.begin_read().ok()?;
+        let table = read_txn.open_table(TABLE_CACHE_CAPS).ok()?;
+        let val = table.get(endpoint).ok()??;
+        let record: CachedCapsRecord = serde_json::from_slice(val.value()).ok()?;
+        let now = now_unix_secs();
+        if now.saturating_sub(record.cached_at) > ttl.as_secs() || record.caps.model_id != model {
+            drop(read_txn);
+            if let Ok(write_txn) = self.db.begin_write() {
+                if let Ok(mut mut_table) = write_txn.open_table(TABLE_CACHE_CAPS) {
+                    let _ = mut_table.remove(endpoint);
+                }
+                let _ = write_txn.commit();
+            }
+            return None;
+        }
+        Some(record.caps)
+    }
+
+    pub fn set_cached_caps(&self, caps: &ServerCapabilities) -> Result<()> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(TABLE_CACHE_CAPS)?;
+            let record = CachedCapsRecord {
+                caps: caps.clone(),
+                cached_at: now_unix_secs(),
+            };
+            table.insert(
+                caps.endpoint.as_str(),
+                serde_json::to_vec(&record)?.as_slice(),
+            )?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    pub fn get_cached_summary(
+        &self,
+        target_type: &str,
+        identifier: &str,
+        style: &str,
+        model: &str,
+        ttl: Duration,
+    ) -> Option<crate::storage::cache::CachedSummary> {
+        let read_txn = self.db.begin_read().ok()?;
+        let trimmed_id = identifier.trim();
+        let now = now_unix_secs();
+
+        // 1. Direct cache_key lookup
+        if let Ok(ck_table) = read_txn.open_table(TABLE_CACHE_KEY_TO_ID) {
+            if let Ok(Some(id_val)) = ck_table.get(trimmed_id) {
+                let id = id_val.value();
+                if let Ok(hist_table) = read_txn.open_table(TABLE_HISTORY) {
+                    if let Ok(Some(val)) = hist_table.get(id) {
+                        if let Ok(item) = serde_json::from_slice::<LibraryItem>(val.value()) {
+                            if item.target_type == target_type
+                                && item.style == style
+                                && item.model == model
+                            {
+                                if let Some(created_secs) = parse_iso_to_unix_secs(&item.created_at)
+                                {
+                                    if now.saturating_sub(created_secs) <= ttl.as_secs() {
+                                        return Some(crate::storage::cache::CachedSummary {
+                                            title: item.title,
+                                            summary: item.summary,
+                                            word_count: item.word_count as usize,
+                                            reasoning: item.reasoning,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    pub fn clear_cache_tables(&self) -> Result<()> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let _ = write_txn.delete_table(TABLE_CACHE_PAGES);
+            let _ = write_txn.delete_table(TABLE_CACHE_SEARCH);
+            let _ = write_txn.delete_table(TABLE_CACHE_CAPS);
+            let _ = write_txn.delete_table(TABLE_CACHE_KEY_TO_ID);
+        }
+        write_txn.commit()?;
+        init_redb_schema(&self.db)?;
+        Ok(())
+    }
+
+    pub fn prune_cache_by_age(&self, max_age: Duration) -> Result<usize> {
+        let now = now_unix_secs();
+        let max_age_secs = max_age.as_secs();
+        let mut pruned = 0;
+
+        let write_txn = self.db.begin_write()?;
+        {
+            // Prune cache_pages
+            let mut table = write_txn.open_table(TABLE_CACHE_PAGES)?;
+            let mut to_delete = Vec::new();
+            for item_res in table.iter()? {
+                let (k, v) = item_res?;
+                if let Ok(rec) = serde_json::from_slice::<CachedPageRecord>(v.value()) {
+                    if now.saturating_sub(rec.cached_at) > max_age_secs {
+                        to_delete.push(k.value().to_string());
+                    }
+                }
+            }
+            for k in to_delete {
+                let _ = table.remove(k.as_str())?;
+                pruned += 1;
+            }
+        }
+        {
+            // Prune cache_search
+            let mut table = write_txn.open_table(TABLE_CACHE_SEARCH)?;
+            let mut to_delete = Vec::new();
+            for item_res in table.iter()? {
+                let (k, v) = item_res?;
+                if let Ok(rec) = serde_json::from_slice::<CachedSearchRecord>(v.value()) {
+                    if now.saturating_sub(rec.cached_at) > max_age_secs {
+                        to_delete.push(k.value().to_string());
+                    }
+                }
+            }
+            for k in to_delete {
+                let _ = table.remove(k.as_str())?;
+                pruned += 1;
+            }
+        }
+        {
+            // Prune cache_caps
+            let mut table = write_txn.open_table(TABLE_CACHE_CAPS)?;
+            let mut to_delete = Vec::new();
+            for item_res in table.iter()? {
+                let (k, v) = item_res?;
+                if let Ok(rec) = serde_json::from_slice::<CachedCapsRecord>(v.value()) {
+                    if now.saturating_sub(rec.cached_at) > max_age_secs {
+                        to_delete.push(k.value().to_string());
+                    }
+                }
+            }
+            for k in to_delete {
+                let _ = table.remove(k.as_str())?;
+                pruned += 1;
+            }
+        }
+        write_txn.commit()?;
+        Ok(pruned)
+    }
+
+    pub fn prune_cache_lru(&self, max_bytes: usize) -> Result<usize> {
+        let (total_entries, total_bytes) = self.cache_entry_count_and_bytes();
+        if total_bytes <= max_bytes as u64 || total_entries == 0 {
+            return Ok(0);
+        }
+
+        let mut all_pages: Vec<(String, u64, usize)> = Vec::new();
+        {
+            let read_txn = self.db.begin_read()?;
+            if let Ok(table) = read_txn.open_table(TABLE_CACHE_PAGES) {
+                for item_res in table.iter()? {
+                    let (k, v) = item_res?;
+                    if let Ok(rec) = serde_json::from_slice::<CachedPageRecord>(v.value()) {
+                        all_pages.push((k.value().to_string(), rec.cached_at, v.value().len()));
+                    }
+                }
+            }
+        }
+
+        all_pages.sort_by_key(|a| a.1); // Sort oldest first
+        let mut pruned = 0;
+        let mut cur_bytes = total_bytes;
+
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(TABLE_CACHE_PAGES)?;
+            for (key, _, size) in all_pages {
+                if cur_bytes <= max_bytes as u64 {
+                    break;
+                }
+                let _ = table.remove(key.as_str())?;
+                cur_bytes = cur_bytes.saturating_sub(size as u64);
+                pruned += 1;
+            }
+        }
+        write_txn.commit()?;
+        Ok(pruned)
+    }
+
+    pub fn cache_entry_count_and_bytes(&self) -> (usize, u64) {
+        let Ok(read_txn) = self.db.begin_read() else {
+            return (0, 0);
+        };
+        let mut count = 0;
+        let mut bytes = 0u64;
+
+        if let Ok(table) = read_txn.open_table(TABLE_CACHE_PAGES) {
+            if let Ok(iter) = table.iter() {
+                for r in iter.flatten() {
+                    count += 1;
+                    bytes += (r.0.value().len() + r.1.value().len()) as u64;
+                }
+            }
+        }
+        if let Ok(table) = read_txn.open_table(TABLE_CACHE_SEARCH) {
+            if let Ok(iter) = table.iter() {
+                for r in iter.flatten() {
+                    count += 1;
+                    bytes += (r.0.value().len() + r.1.value().len()) as u64;
+                }
+            }
+        }
+        if let Ok(table) = read_txn.open_table(TABLE_CACHE_CAPS) {
+            if let Ok(iter) = table.iter() {
+                for r in iter.flatten() {
+                    count += 1;
+                    bytes += (r.0.value().len() + r.1.value().len()) as u64;
+                }
+            }
+        }
+
+        (count, bytes)
+    }
+
+    pub fn cache_stats_breakdown(&self) -> (usize, u64, usize, u64, usize, u64) {
+        let Ok(read_txn) = self.db.begin_read() else {
+            return (0, 0, 0, 0, 0, 0);
+        };
+        let mut pages_cnt = 0;
+        let mut pages_bytes = 0u64;
+        let mut search_cnt = 0;
+        let mut search_bytes = 0u64;
+        let mut sum_cnt = 0;
+        let mut sum_bytes = 0u64;
+
+        if let Ok(table) = read_txn.open_table(TABLE_CACHE_PAGES) {
+            if let Ok(iter) = table.iter() {
+                for r in iter.flatten() {
+                    pages_cnt += 1;
+                    pages_bytes += (r.0.value().len() + r.1.value().len()) as u64;
+                }
+            }
+        }
+        if let Ok(table) = read_txn.open_table(TABLE_CACHE_SEARCH) {
+            if let Ok(iter) = table.iter() {
+                for r in iter.flatten() {
+                    search_cnt += 1;
+                    search_bytes += (r.0.value().len() + r.1.value().len()) as u64;
+                }
+            }
+        }
+        if let Ok(ck_table) = read_txn.open_table(TABLE_CACHE_KEY_TO_ID) {
+            if let Ok(hist_table) = read_txn.open_table(TABLE_HISTORY) {
+                if let Ok(iter) = ck_table.iter() {
+                    for r in iter.flatten() {
+                        sum_cnt += 1;
+                        let id = r.1.value();
+                        if let Ok(Some(item_val)) = hist_table.get(id) {
+                            if let Ok(item) =
+                                serde_json::from_slice::<LibraryItem>(item_val.value())
+                            {
+                                sum_bytes += item.summary.len() as u64;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        (
+            pages_cnt,
+            pages_bytes,
+            search_cnt,
+            search_bytes,
+            sum_cnt,
+            sum_bytes,
+        )
+    }
+
+    pub fn update_cached_at_for_test(&self, table_name: &str, where_clause: &str, delta_secs: i64) {
+        let Ok(write_txn) = self.db.begin_write() else {
+            return;
+        };
+        let filter_target = where_clause.split('\'').nth(1);
+
+        match table_name {
+            "cache_pages" => {
+                if let Ok(mut table) = write_txn.open_table(TABLE_CACHE_PAGES) {
+                    let mut updates = Vec::new();
+                    if let Ok(iter) = table.iter() {
+                        for (k, v) in iter.flatten() {
+                            if let Ok(mut rec) =
+                                serde_json::from_slice::<CachedPageRecord>(v.value())
+                            {
+                                if let Some(target) = filter_target {
+                                    if rec.url != target && k.value() != target {
+                                        continue;
+                                    }
+                                }
+                                rec.cached_at = (rec.cached_at as i64 - delta_secs).max(0) as u64;
+                                if let Ok(bytes) = serde_json::to_vec(&rec) {
+                                    updates.push((k.value().to_string(), bytes));
+                                }
+                            }
+                        }
+                    }
+                    for (k, bytes) in updates {
+                        let _ = table.insert(k.as_str(), bytes.as_slice());
+                    }
+                }
+            }
+            "cache_search" => {
+                if let Ok(mut table) = write_txn.open_table(TABLE_CACHE_SEARCH) {
+                    let mut updates = Vec::new();
+                    if let Ok(iter) = table.iter() {
+                        for (k, v) in iter.flatten() {
+                            if let Ok(mut rec) =
+                                serde_json::from_slice::<CachedSearchRecord>(v.value())
+                            {
+                                if let Some(target) = filter_target {
+                                    if rec.query != target && k.value() != target {
+                                        continue;
+                                    }
+                                }
+                                rec.cached_at = (rec.cached_at as i64 - delta_secs).max(0) as u64;
+                                if let Ok(bytes) = serde_json::to_vec(&rec) {
+                                    updates.push((k.value().to_string(), bytes));
+                                }
+                            }
+                        }
+                    }
+                    for (k, bytes) in updates {
+                        let _ = table.insert(k.as_str(), bytes.as_slice());
+                    }
+                }
+            }
+            "cache_caps" => {
+                if let Ok(mut table) = write_txn.open_table(TABLE_CACHE_CAPS) {
+                    let mut updates = Vec::new();
+                    if let Ok(iter) = table.iter() {
+                        for (k, v) in iter.flatten() {
+                            if let Ok(mut rec) =
+                                serde_json::from_slice::<CachedCapsRecord>(v.value())
+                            {
+                                if let Some(target) = filter_target {
+                                    if rec.caps.endpoint != target && k.value() != target {
+                                        continue;
+                                    }
+                                }
+                                rec.cached_at = (rec.cached_at as i64 - delta_secs).max(0) as u64;
+                                if let Ok(bytes) = serde_json::to_vec(&rec) {
+                                    updates.push((k.value().to_string(), bytes));
+                                }
+                            }
+                        }
+                    }
+                    for (k, bytes) in updates {
+                        let _ = table.insert(k.as_str(), bytes.as_slice());
+                    }
+                }
+            }
+            "history" => {
+                if let Ok(mut table) = write_txn.open_table(TABLE_HISTORY) {
+                    let mut updates = Vec::new();
+                    if let Ok(iter) = table.iter() {
+                        for (k, v) in iter.flatten() {
+                            if let Ok(mut item) = serde_json::from_slice::<LibraryItem>(v.value()) {
+                                if let Some(target) = filter_target {
+                                    if item.title != target && item.url.as_deref() != Some(target) {
+                                        continue;
+                                    }
+                                }
+                                if let Some(secs) = parse_iso_to_unix_secs(&item.created_at) {
+                                    let new_secs = (secs as i64 - delta_secs).max(0) as u64;
+                                    let date = format_date_from_timestamp(new_secs);
+                                    let time_of_day = new_secs % 86400;
+                                    item.created_at = format!(
+                                        "{}T{:02}:{:02}:{:02}Z",
+                                        date,
+                                        time_of_day / 3600,
+                                        (time_of_day % 3600) / 60,
+                                        time_of_day % 60
+                                    );
+                                    if let Ok(bytes) = serde_json::to_vec(&item) {
+                                        updates.push((k.value(), bytes));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    for (k, bytes) in updates {
+                        let _ = table.insert(k, bytes.as_slice());
+                    }
+                }
+            }
+            _ => {}
+        }
+        let _ = write_txn.commit();
+    }
 }
 
-const SELECT_LIBRARY_ITEMS_SQL: &str = concat!(select_library_base_sql!(), " ORDER BY l.id DESC");
-
-const SELECT_LIBRARY_ITEM_BY_ID_SQL: &str =
-    concat!(select_library_base_sql!(), " WHERE l.id = ? LIMIT 1");
-
-fn map_library_item_row(row: &duckdb::Row<'_>) -> duckdb::Result<LibraryItem> {
-    Ok(LibraryItem {
-        id: row.get(0)?,
-        target_type: row.get(1)?,
-        title: row.get(2)?,
-        author: row.get(3)?,
-        url: row.get(4)?,
-        summary: row.get(5)?,
-        style: row.get(6)?,
-        model: row.get(7)?,
-        word_count: row.get::<_, u32>(8)?,
-        prompt_tokens: row.get(9)?,
-        completion_tokens: row.get(10)?,
-        duration_ms: row.get::<_, u32>(11)? as u64,
-        tokens_per_second: row.get(12)?,
-        created_at: row.get(13)?,
-        reasoning: row.get(14).ok(),
-    })
+pub fn open_hardened_duckdb_file(path: &Path) -> Result<(Database, bool)> {
+    if path.is_symlink() {
+        anyhow::bail!(
+            "Database path cannot be a symbolic link: {}",
+            path.display()
+        );
+    }
+    let exists = path.exists();
+    let db = Database::open_at(path)?;
+    Ok((db, exists))
 }
 
-fn map_history_row(row: &duckdb::Row<'_>) -> duckdb::Result<HistoryEntry> {
-    Ok(HistoryEntry {
-        id: row.get(0)?,
-        target_type: row.get(1)?,
-        title: row.get(2)?,
-        author: row.get(3)?,
-        url: row.get(4)?,
-        style: row.get(5)?,
-        model: row.get(6)?,
-        word_count: row.get(7)?,
-        prompt_tokens: row.get(8)?,
-        completion_tokens: row.get(9)?,
-        duration_ms: row.get::<_, u32>(10)? as u64,
-        tokens_per_second: row.get(11)?,
-        created_at: row.get(12)?,
-    })
+pub fn open_hardened_duckdb_file_with_retry(path: &Path, _retries: usize) -> Result<Database> {
+    Database::open_at(path)
 }
 
-fn map_search_result_row(
-    row: &duckdb::Row<'_>,
-    query: &str,
-    terms: &[String],
-    score: Option<f64>,
-) -> duckdb::Result<LibrarySearchResult> {
-    let id: i64 = row.get(0)?;
-    let target_type: String = row.get(1)?;
-    let title: String = row.get(2)?;
-    let author: Option<String> = row.get(3)?;
-    let url: Option<String> = row.get(4)?;
-    let summary: String = row.get(5)?;
-    let created_at: String = row.get(6)?;
-    let snippet = extract_snippet(&summary, query, terms);
-
-    Ok(LibrarySearchResult {
-        id,
-        target_type,
-        title,
-        author,
-        url,
-        snippet,
-        created_at,
-        score,
-    })
+pub fn is_duckdb_schema_ready(_db: &Database) -> bool {
+    true
 }
 
-/// Extracts a surrounding text excerpt (~200 characters) around the first match of `query`
-/// without allocating a lowercase copy of `text`.
-/// Uses UTF-8 character boundaries to prevent indexing panics on multi-byte characters.
+pub fn init_duckdb_schema(_db: &Database) -> Result<()> {
+    Ok(())
+}
+
+fn parse_iso_to_unix_secs(s: &str) -> Option<u64> {
+    if s.len() < 10 {
+        return None;
+    }
+    let ymd = &s[..10];
+    let days = ymd_to_day_number(ymd)?;
+    if days < 719468 {
+        return None;
+    }
+    let unix_days = (days - 719468) as u64;
+    let mut secs = unix_days * 86400;
+    if s.len() >= 16 && (s.as_bytes()[10] == b'T' || s.as_bytes()[10] == b' ') {
+        let h: u64 = s[11..13].parse().ok()?;
+        let m: u64 = s[14..16].parse().ok()?;
+        let s_part: u64 = if s.len() >= 19 {
+            s[17..19].parse().unwrap_or(0)
+        } else {
+            0
+        };
+        secs += h * 3600 + m * 60 + s_part;
+    }
+    Some(secs)
+}
+
 #[allow(clippy::incompatible_msrv)]
 fn extract_snippet(text: &str, query: &str, terms: &[String]) -> String {
     let match_pos =
@@ -1406,7 +1633,6 @@ fn extract_snippet(text: &str, query: &str, terms: &[String]) -> String {
     out
 }
 
-/// Converts Unix epoch seconds to UTC date string formatted as `YYYY-MM-DD`.
 fn format_date_from_timestamp(secs: u64) -> String {
     let z = (secs / 86400) as i64 + 719468;
     let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
@@ -1421,7 +1647,6 @@ fn format_date_from_timestamp(secs: u64) -> String {
     format!("{:04}-{:02}-{:02}", y, m, d)
 }
 
-/// Converts a `YYYY-MM-DD` date string to continuous day number for streak comparisons.
 fn ymd_to_day_number(s: &str) -> Option<i64> {
     let mut parts = s.split('-');
     let y: i64 = parts.next()?.parse().ok()?;

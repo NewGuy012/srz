@@ -65,6 +65,15 @@ pub enum NewsTimeframe {
 }
 
 impl NewsTimeframe {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Day => "day",
+            Self::Week => "week",
+            Self::Month => "month",
+            Self::All => "all",
+        }
+    }
+
     pub fn as_google_query_suffix(&self) -> &'static str {
         match self {
             Self::Day => "when:1d",
@@ -286,15 +295,6 @@ pub enum Commands {
     /// Launch the interactive terminal UI library explorer
     #[command(alias = "tui", alias = "library")]
     Browse,
-    /// Execute an analytical SQL query against your DuckDB database
-    Query {
-        /// SQL query string to execute (e.g. "SELECT model, count(*) FROM history GROUP BY model")
-        sql: String,
-
-        /// Format query results as CSV (default: formatted terminal table or --json)
-        #[arg(long)]
-        csv: bool,
-    },
     /// Export summarized library to Markdown, JSON, CSV, or Parquet
     Export {
         /// Target export format (markdown, json, csv, parquet; default: markdown)
@@ -376,7 +376,7 @@ pub enum CacheCommand {
     /// Remove cached files (pages, search, summaries, views)
     #[command(alias = "clear", alias = "purge", alias = "wipe")]
     Clean {
-        /// Also reset and wipe the DuckDB analytics/history database
+        /// Also reset and wipe the analytics/history database
         #[arg(long)]
         reset_db: bool,
     },
@@ -428,10 +428,6 @@ pub enum ResolvedAction<'a> {
     Recommend,
     Index,
     Browse,
-    Query {
-        sql: String,
-        csv: bool,
-    },
     Export {
         format: ExportFormat,
         output: PathBuf,
@@ -495,10 +491,6 @@ impl Cli {
                 Commands::Recommend => Ok(ResolvedAction::Recommend),
                 Commands::Index => Ok(ResolvedAction::Index),
                 Commands::Browse => Ok(ResolvedAction::Browse),
-                Commands::Query { sql, csv } => Ok(ResolvedAction::Query {
-                    sql: sql.trim().to_string(),
-                    csv: *csv,
-                }),
                 Commands::Export { format, output } => Ok(ResolvedAction::Export {
                     format: *format,
                     output: output.clone(),
@@ -853,7 +845,6 @@ pub const TOP_LEVEL_COMMANDS: &[&str] = &[
     "library",
     "models",
     "news",
-    "query",
     "recommend",
     "stats",
     "tui",

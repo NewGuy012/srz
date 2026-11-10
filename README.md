@@ -15,7 +15,7 @@
 
 ## Highlights
 
-> 💡 **What makes `srz` different?** Unlike cloud-dependent AI tools that require subscriptions and upload private reading data, `srz` runs 100% locally with zero telemetry—pairing instant streaming synthesis and unified multi-format ingestion with embedded offline DuckDB search.
+> 💡 **What makes `srz` different?** Unlike cloud-dependent AI tools that require subscriptions and upload private reading data, `srz` runs 100% locally with zero telemetry—pairing instant streaming synthesis and unified multi-format ingestion with embedded offline search and storage.
 
 ```mermaid
 %%{init: {"flowchart": {"minNodeWidth": 210, "minNodeHeight": 54}}}%%
@@ -126,7 +126,7 @@ srz ask -i                                         # Interactive chat
 ```bash
 srz browse                                      # Terminal dashboard (press 'a' for grounded chat)
 srz find "keyword"                              # Search past summaries
-srz query "SELECT model, count(*) FROM history GROUP BY model" # SQL analytics
+srz stats                                       # Library and LLM telemetry
 srz export --format markdown ~/Notes/Vault/     # Export vault for Obsidian / Logseq
 srz export --format json library.json           # Export as structured JSON
 ```

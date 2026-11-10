@@ -159,7 +159,7 @@ fn test_cache_file_permissions() {
     let dir_meta = fs::metadata(&dir).unwrap();
     assert_eq!(dir_meta.permissions().mode() & 0o777, 0o700);
 
-    let db_meta = fs::metadata(dir.join("srz.duckdb")).unwrap();
+    let db_meta = fs::metadata(dir.join("srz.db")).unwrap();
     assert_eq!(db_meta.permissions().mode() & 0o777, 0o600);
 
     // Ensure no redundant legacy JSON files were written to pages/
@@ -496,15 +496,15 @@ fn test_cache_sha256_hash_keys() {
     // Explicitly drop cache to release DuckDB file locks before direct inspection (required on Windows)
     drop(cache);
 
-    // Query cache_pages in srz.duckdb and verify the key is 64 hex characters (SHA-256)
-    let conn = duckdb::Connection::open(dir.join("srz.duckdb")).unwrap();
-    let key: String = conn
-        .query_row("SELECT cache_key FROM cache_pages LIMIT 1", [], |r| {
-            r.get(0)
-        })
-        .unwrap();
-    assert_eq!(key.len(), 64);
-    assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+    // Query cache_pages in srz.db and verify the key is 64 hex characters (SHA-256)
+    use redb::ReadableTable;
+    let redb = redb::Database::open(dir.join("srz.db")).unwrap();
+    let read_txn = redb.begin_read().unwrap();
+    let table = read_txn.open_table(srz::db::TABLE_CACHE_PAGES).unwrap();
+    let (key, _) = table.iter().unwrap().next().unwrap().unwrap();
+    let key_str = key.value();
+    assert_eq!(key_str.len(), 64);
+    assert!(key_str.chars().all(|c| c.is_ascii_hexdigit()));
 }
 
 #[test]
@@ -529,8 +529,8 @@ fn test_cache_duckdb_consolidation() {
         "Consolidated cache in DuckDB",
     );
 
-    let db_path = dir.join("srz.duckdb");
-    assert!(db_path.exists(), "srz.duckdb database file must exist");
+    let db_path = dir.join("srz.db");
+    assert!(db_path.exists(), "srz.db database file must exist");
     assert!(
         !dir.join("cache.duckdb").exists(),
         "legacy cache.duckdb should not exist"

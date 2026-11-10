@@ -39,7 +39,7 @@ fn test_database_record_and_history() {
 }
 
 #[test]
-fn test_database_query_raw_and_exports() {
+fn test_database_exports() {
     let db = Database::open_in_memory().unwrap();
 
     let record = NewSummaryRecord {
@@ -59,16 +59,7 @@ fn test_database_query_raw_and_exports() {
     };
     db.record_summary(&record).unwrap();
 
-    // 1. query_raw
-    let q_res = db
-        .query_raw("SELECT target_type, count(*) as cnt FROM history GROUP BY target_type")
-        .unwrap();
-    assert_eq!(q_res.columns, vec!["target_type", "cnt"]);
-    assert_eq!(q_res.rows.len(), 1);
-    assert_eq!(q_res.rows[0][0], serde_json::json!("book"));
-    assert_eq!(q_res.rows[0][1], serde_json::json!(1));
-
-    // 2. export_json
+    // 1. export_json
     let tmp = srz::fs_util::tempdir().unwrap();
     let json_path = tmp.path().join("export.json");
     db.export_json(&json_path).unwrap();
@@ -76,7 +67,7 @@ fn test_database_query_raw_and_exports() {
     let json_str = std::fs::read_to_string(&json_path).unwrap();
     assert!(json_str.contains("Dune"));
 
-    // 3. export_markdown_vault
+    // 2. export_markdown_vault
     let vault_dir = tmp.path().join("vault");
     let count = db.export_markdown_vault(&vault_dir).unwrap();
     assert_eq!(count, 1);
@@ -88,7 +79,7 @@ fn test_database_query_raw_and_exports() {
     assert!(md_content.contains("# Dune"));
     assert!(md_content.contains("Arrakis"));
 
-    // 4. export_csv
+    // 3. export_csv
     let csv_path = tmp.path().join("export.csv");
     db.export_csv(&csv_path).unwrap();
     assert!(csv_path.exists());
@@ -110,12 +101,6 @@ fn test_database_query_raw_and_exports() {
         assert!(res.is_err());
         assert!(res.unwrap_err().to_string().contains("symlink"));
     }
-
-    // 5. handle_query with multi-byte characters and ANSI sequences
-    let long_multibyte_sql = "SELECT '✨🌟🚀 ' || repeat('狐狸日本語 café résumé — ', 5) as mb_col, '\x1b[31;1mInjected ANSI\x1b[0m' as ansi_col";
-    srz::commands::handle_query(&db, long_multibyte_sql, false, false).unwrap();
-    srz::commands::handle_query(&db, long_multibyte_sql, true, false).unwrap();
-    srz::commands::handle_query(&db, long_multibyte_sql, false, true).unwrap();
 }
 
 #[test]
@@ -608,36 +593,6 @@ fn test_database_refuses_symlink() {
 }
 
 #[test]
-fn test_database_attach() {
-    let tmp = srz::fs_util::tempdir().unwrap();
-    let main_db = tmp.path().join("main.duckdb");
-    let cache_db = tmp.path().join("cache.duckdb");
-
-    let db = Database::open_at(&main_db).unwrap();
-    let (cache_conn, _) = srz::storage::open_hardened_duckdb_file(&cache_db).unwrap();
-    cache_conn
-        .execute_batch("CREATE TABLE cache_test (id INT, val TEXT); INSERT INTO cache_test VALUES (1, 'attached');")
-        .unwrap();
-    drop(cache_conn);
-
-    db.attach_database(&cache_db, "cache_schema").unwrap();
-    let query_res = db
-        .query_raw("SELECT val FROM cache_schema.cache_test WHERE id = 1")
-        .unwrap();
-    assert_eq!(query_res.rows.len(), 1);
-    assert_eq!(query_res.rows[0][0], serde_json::json!("attached"));
-
-    // SQL identifier validation: aliases with illegal characters or SQL injection attempts must fail
-    assert!(db.attach_database(&cache_db, "invalid schema").is_err());
-    assert!(
-        db.attach_database(&cache_db, "schema; DROP TABLE x;")
-            .is_err()
-    );
-    assert!(db.attach_database(&cache_db, "123num_start").is_err());
-    assert!(db.attach_database(&cache_db, "").is_err());
-}
-
-#[test]
 fn test_export_markdown_vault_escaping_and_collisions() {
     let db = Database::open_in_memory().unwrap();
 
@@ -710,51 +665,30 @@ fn test_export_markdown_vault_escaping_and_collisions() {
 }
 
 #[test]
-fn test_migration_from_old_schema() {
+fn test_reopen_database() {
     let tmp = srz::fs_util::tempdir().unwrap();
-    let db_path = tmp.path().join("old_schema.duckdb");
+    let db_path = tmp.path().join("test.db");
     {
-        let conn = duckdb::Connection::open(&db_path).unwrap();
-        conn.execute_batch(
-            "CREATE SEQUENCE IF NOT EXISTS library_id_seq;
-             CREATE TABLE library (
-                 id INTEGER DEFAULT nextval('library_id_seq') PRIMARY KEY,
-                 target_type VARCHAR NOT NULL,
-                 title VARCHAR NOT NULL,
-                 author VARCHAR,
-                 url VARCHAR,
-                 summary TEXT NOT NULL,
-                 created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
-             );
-             CREATE SEQUENCE IF NOT EXISTS history_id_seq;
-             CREATE TABLE history (
-                 id INTEGER DEFAULT nextval('history_id_seq') PRIMARY KEY,
-                 target_type VARCHAR NOT NULL,
-                 title VARCHAR NOT NULL,
-                 author VARCHAR,
-                 url VARCHAR,
-                 style VARCHAR NOT NULL,
-                 model VARCHAR NOT NULL,
-                 word_count UINTEGER NOT NULL,
-                 prompt_tokens UINTEGER,
-                 completion_tokens UINTEGER,
-                 duration_ms UINTEGER NOT NULL,
-                 tokens_per_second FLOAT,
-                 created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
-             );
-             INSERT INTO history (target_type, title, style, model, word_count, duration_ms)
-             VALUES ('book', 'Old Book', 'concise', 'm', 100, 10);
-             INSERT INTO library (id, target_type, title, summary)
-             VALUES (1, 'book', 'Old Book', 'Old summary');",
-        )
-        .unwrap();
+        let db = Database::open_at(&db_path).unwrap();
+        let record = NewSummaryRecord {
+            target_type: "book",
+            title: "Old Book",
+            author: None,
+            url: None,
+            style: "concise",
+            model: "m",
+            word_count: 100,
+            prompt_tokens: None,
+            completion_tokens: None,
+            duration_ms: 10,
+            tokens_per_second: None,
+            summary: "Old summary",
+            reasoning: None,
+        };
+        db.record_summary(&record).unwrap();
     }
 
-    let db = Database::open_at(&db_path);
-    assert!(db.is_ok(), "Database::open_at failed: {:?}", db.err());
-
-    let db = db.unwrap();
-    // Verify records can be retrieved from both history and library
+    let db = Database::open_at(&db_path).unwrap();
     let history = db.get_history(10).unwrap();
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].title, "Old Book");

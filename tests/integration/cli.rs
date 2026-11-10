@@ -1046,7 +1046,6 @@ fn test_suggest_command_typo_detection() {
     assert_eq!(suggest_command("confg"), Some("config"));
     assert_eq!(suggest_command("tu1"), Some("tui"));
     assert_eq!(suggest_command("librery"), Some("library"));
-    assert_eq!(suggest_command("qeury"), Some("query"));
     assert_eq!(suggest_command("exprot"), Some("export"));
 }
 
@@ -1083,25 +1082,7 @@ fn test_resolve_action_command_typo_error() {
 }
 
 #[test]
-fn test_query_and_export_cli_resolution() {
-    let query_cli = Cli::parse_from(["srz", "query", "SELECT count(*) FROM history"]);
-    assert_eq!(
-        query_cli.resolve_action().unwrap(),
-        ResolvedAction::Query {
-            sql: "SELECT count(*) FROM history".to_string(),
-            csv: false,
-        }
-    );
-
-    let query_csv_cli = Cli::parse_from(["srz", "query", "SELECT 1", "--csv"]);
-    assert_eq!(
-        query_csv_cli.resolve_action().unwrap(),
-        ResolvedAction::Query {
-            sql: "SELECT 1".to_string(),
-            csv: true,
-        }
-    );
-
+fn test_export_cli_resolution() {
     let export_cli = Cli::parse_from(["srz", "export", "-f", "json", "-o", "/tmp/out.json"]);
     assert_eq!(
         export_cli.resolve_action().unwrap(),

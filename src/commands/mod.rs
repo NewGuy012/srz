@@ -14,8 +14,7 @@ use std::path::Path;
 pub use ask::{AskArgs, handle_ask, handle_ask_management};
 pub use diagnostics::{handle_doctor, handle_models, handle_recommend};
 pub use library::{
-    handle_export, handle_find, handle_history, handle_index, handle_query, handle_stats,
-    update_index_dashboard,
+    handle_export, handle_find, handle_history, handle_index, handle_stats, update_index_dashboard,
 };
 pub use summarize::{
     PreparedBookQuery, SummaryOutcome, fetch_or_cache_page, fetch_or_cache_page_with,
@@ -44,12 +43,12 @@ pub async fn init_llm_with_capabilities_or_exit(
     llm.init_with_capabilities(cache).await
 }
 
-/// Safely opens the DuckDB database, issuing a UI warning on failure.
+/// Safely opens the database, issuing a UI warning on failure.
 pub fn open_db_or_warn() -> Option<Database> {
     match Database::open_default() {
         Ok(d) => Some(d),
         Err(err) => {
-            Ui::warn(&format!("Could not open DuckDB database: {:#}", err));
+            Ui::warn(&format!("Could not open database: {:#}", err));
             None
         }
     }
@@ -60,7 +59,7 @@ pub fn with_db<T: Default>(f: impl FnOnce(&Database) -> Result<T>) -> Result<T> 
     if let Some(db) = open_db_or_warn() {
         f(&db)
     } else {
-        Ui::error("DuckDB database unavailable.");
+        Ui::error("Database unavailable.");
         Ok(T::default())
     }
 }
@@ -87,24 +86,22 @@ pub fn handle_cache(cmd: CacheCommand, cache: &Cache) -> Result<()> {
             let stats = cache.clean().context("Failed to clean cache directory")?;
             let mut db_reset = false;
             if reset_db && let Some(database) = open_db_or_warn() {
-                database
-                    .reset()
-                    .context("Failed to reset DuckDB database")?;
+                database.reset().context("Failed to reset database")?;
                 db_reset = true;
             }
             if stats.total_files == 0 && !db_reset {
                 Ui::info("Cache is already empty.");
             } else if stats.total_files == 0 && db_reset {
-                Ui::success("Cache was already empty. DuckDB database tables reset.");
+                Ui::success("Cache was already empty. Database tables reset.");
             } else if db_reset {
                 Ui::success(&format!(
-                    "Removed {} cached file(s) ({}) and reset DuckDB database tables.",
+                    "Removed {} cached file(s) ({}) and reset database tables.",
                     stats.total_files,
                     Cache::format_bytes(stats.total_bytes)
                 ));
             } else {
                 Ui::success(&format!(
-                    "Removed {} cached file(s) ({}). DuckDB database preserved.",
+                    "Removed {} cached file(s) ({}). Database preserved.",
                     stats.total_files,
                     Cache::format_bytes(stats.total_bytes)
                 ));
@@ -301,9 +298,6 @@ pub async fn dispatch_cli(
                 }
             }
             return Ok(());
-        }
-        crate::cli::ResolvedAction::Query { sql, csv } => {
-            return with_db(|db| handle_query(db, &sql, csv, args.json));
         }
         crate::cli::ResolvedAction::Export { format, output } => {
             return with_db(|db| handle_export(db, format, &output));

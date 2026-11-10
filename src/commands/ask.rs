@@ -111,8 +111,8 @@ async fn resolve_document_context(
 
         anyhow::bail!("Could not resolve target document: '{}'", target_str);
     } else {
-        // No target provided: look up the most recent summary in DuckDB
-        let db = db_opt.context("DuckDB database unavailable to look up previous summary")?;
+        // No target provided: look up the most recent summary in the database
+        let db = db_opt.context("Database unavailable to look up previous summary")?;
         let latest = db.get_latest_summary()?.context(
             "No previous summary found in history. Please specify a document or URL to ask about:\n  srz ask <URL_OR_FILE> <QUESTION>",
         )?;
@@ -192,7 +192,7 @@ pub fn handle_ask_management(
     if list_chats {
         let db_ref = db
             .as_ref()
-            .context("DuckDB database unavailable to view chat sessions")?;
+            .context("Database unavailable to view chat sessions")?;
         let sessions = db_ref.get_chat_sessions(30)?;
         if as_json {
             println!("{}", serde_json::to_string_pretty(&sessions)?);
@@ -230,7 +230,7 @@ pub fn handle_ask_management(
     if let Some(del_id) = delete_chat {
         let db_ref = db
             .as_ref()
-            .context("DuckDB database unavailable to delete chat session")?;
+            .context("Database unavailable to delete chat session")?;
         let deleted = db_ref.delete_chat_session(del_id)?;
         if deleted {
             Ui::info(&format!("Chat session #{} deleted.", del_id));
@@ -244,7 +244,7 @@ pub fn handle_ask_management(
     if let Some(show_id) = show_chat {
         let db_ref = db
             .as_ref()
-            .context("DuckDB database unavailable to view chat session")?;
+            .context("Database unavailable to view chat session")?;
         let (session, msgs) = db_ref
             .get_chat_session(show_id)?
             .context(format!("Chat session #{} not found", show_id))?;
@@ -335,7 +335,7 @@ pub async fn handle_ask(
     let (title, content, target_type, target_url) = if let Some(res_id) = resume {
         let db_ref = db
             .as_ref()
-            .context("DuckDB database unavailable to resume chat session")?;
+            .context("Database unavailable to resume chat session")?;
         let (session, msgs) = db_ref
             .get_chat_session(res_id)?
             .context(format!("Chat session #{} not found", res_id))?;

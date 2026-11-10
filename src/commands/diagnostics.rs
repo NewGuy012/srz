@@ -245,8 +245,8 @@ pub async fn handle_doctor(
     }
     println!();
 
-    // Print DuckDB status
-    println!("DuckDB Database:");
+    // Print database status
+    println!("Embedded Database (redb):");
     if db_ok {
         println!(
             "  ✓ Healthy: {} ({} summaries)",
