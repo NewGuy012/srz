@@ -930,7 +930,7 @@ flowchart TD
         direction TB
         Args["User Inputs & Flags<br/>(clap derive)"] --> Resolver["Action Resolver<br/>(What does the user want?)"]
         ConfigFile["config.toml<br/>(User settings)"] -. merged into .-> Args
-        AskFlow["Grounded Q&A & REPL<br/>(srz ask with rustyline)"]
+        AskFlow["Grounded Q&A & REPL<br/>(srz ask interactive session)"]
     end
 
     subgraph Sources ["2. Ingestion & Sources (src/sources/)"]

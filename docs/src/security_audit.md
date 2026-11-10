@@ -1308,14 +1308,16 @@ cargo clippy --all-targets -- -D warnings
 <a id="recommendations"></a>
 ## 🔒 Production Hardening & Residual Risk Recommendations
 
-While `srz` is hardened for local CLI usage across macOS, Linux, and Windows, the following recommendations are advised for production and enterprise deployment:
+While `srz` is hardened for local CLI usage across macOS, Linux, and Windows, the following recommendations and completed security remediations are documented:
 
-### 1. Server-Side Request Forgery (SSRF) Guardrails (if wrapped in a service)
-* **Current Context:** As a personal CLI tool, querying `localhost` or private network addresses is expected behavior (e.g., connecting to a local `llama.cpp` instance at `http://localhost:9931` or `http://127.0.0.1:11434`). YouTube caption downloads are strictly pinned to `https://*.youtube.com/api/timedtext`.
-* **Recommendation:** If `srz` is ever exposed as an HTTP backend, API microservice, or automated chat bot, implement an IP filter in `WebScraper` to block requests targeting loopback addresses (`127.0.0.1`), private subnets (`10.0.0.0/8`, `192.168.0.0/16`, `172.16.0.0/12`), and cloud metadata endpoints (`169.254.169.254`).
+### 1. Server-Side Request Forgery (SSRF) Guardrails (✅ Completed in Supply Chain & Security Hardening)
+* **Implementation:** `WebScraper` enforces `validate_public_http_url` before issuing external requests and installs a custom redirect policy blocking redirection to private RFC 1918 subnets, IPv6 unique-local/link-local addresses, loopback addresses (`127.0.0.1`, `localhost`, `[::1]`), and cloud metadata IP (`169.254.169.254`).
 
 ### 2. Automated Dependency Auditing in CI (✅ Completed in Audit #3 & Audit #4)
 * **Implementation:** Deployed `.github/workflows/ci.yml` integrating `rustsec/audit-check@v1.4.1` and dual-OS matrix testing on every push and PR to `master`, triggered on all code and `Cargo.toml`/`Cargo.lock` changes.
 
 ### 3. Cryptographically Fixed Cache Hashing (✅ Completed in Audit #4)
 * **Implementation:** `Cache::hash_key` upgraded from 64-bit `DefaultHasher` to 256-bit cryptographic SHA-256 generating persistent 64-character lowercase hex keys, ensuring permanent collision safety and cross-platform cache persistence.
+
+### 4. Supply Chain Attack Surface Reduction & Dependency Elimination (✅ Completed)
+* **Implementation:** Eliminated redundant and unmaintained external dependencies (`rustyline`, `termimad`, `tar`, `indicatif`, `zip`, `htmd`, `clap_complete`) in favor of standard library streaming and zero-dependency implementations, shrinking transitive dependencies by dozens of crates and removing entire classes of supply-chain vulnerabilities.
