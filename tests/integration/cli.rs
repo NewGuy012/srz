@@ -131,12 +131,6 @@ fn test_auto_detect_stdin_and_file() {
     let stdin_cli = Cli::parse_from(["srz", "-"]);
     assert_eq!(stdin_cli.resolve_action().unwrap(), ResolvedAction::Stdin);
 
-    let stdin_subcmd = Cli::parse_from(["srz", "file", "-"]);
-    assert_eq!(
-        stdin_subcmd.resolve_action().unwrap(),
-        ResolvedAction::Stdin
-    );
-
     // Existing local file (Cargo.toml)
     let file_cli = Cli::parse_from(["srz", "Cargo.toml"]);
     match file_cli.resolve_action().unwrap() {
@@ -144,14 +138,6 @@ fn test_auto_detect_stdin_and_file() {
             assert_eq!(path, std::path::PathBuf::from("Cargo.toml"));
         }
         _ => panic!("Expected File action for Cargo.toml"),
-    }
-
-    let file_subcmd = Cli::parse_from(["srz", "file", "README.md"]);
-    match file_subcmd.resolve_action().unwrap() {
-        ResolvedAction::File { path } => {
-            assert_eq!(path, std::path::PathBuf::from("README.md"));
-        }
-        _ => panic!("Expected File action for README.md"),
     }
 }
 
@@ -177,19 +163,10 @@ fn test_auto_detect_book_with_global_flags() {
 }
 
 #[test]
-fn test_book_subcommand_flags() {
-    let cli = Cli::parse_from([
-        "srz",
-        "book",
-        "Dune",
-        "--max-tokens",
-        "4096",
-        "--concurrency",
-        "4",
-    ]);
+fn test_book_positional_flags() {
+    let cli = Cli::parse_from(["srz", "Dune", "--max-tokens", "4096"]);
 
     assert_eq!(cli.max_tokens, 4096);
-    assert_eq!(cli.concurrency, 4);
 
     match cli.resolve_action().unwrap() {
         ResolvedAction::Book { title } => {
@@ -370,7 +347,7 @@ fn test_quiet_and_verbose_flags() {
     assert!(quiet_cli.quiet);
     assert!(!quiet_cli.verbose);
 
-    let verbose_cli = Cli::parse_from(["srz", "web", "https://example.com", "--verbose"]);
+    let verbose_cli = Cli::parse_from(["srz", "https://example.com", "--verbose"]);
     assert!(!verbose_cli.quiet);
     assert!(verbose_cli.verbose);
 }
@@ -388,7 +365,6 @@ fn test_json_flag() {
 fn test_open_flag() {
     let open_cli = Cli::parse_from(["srz", "The Hobbit", "-b"]);
     assert!(open_cli.open);
-    assert_eq!(open_cli.concurrency, 1);
 
     let long_open_cli = Cli::parse_from(["srz", "The Hobbit", "--open"]);
     assert!(long_open_cli.open);
@@ -1071,14 +1047,6 @@ fn test_resolve_action_command_typo_error() {
     let err = cli.resolve_action().unwrap_err();
     assert!(err.contains("Unrecognized command 'doctur'"));
     assert!(err.contains("tip: a similar command exists: 'doctor'"));
-    assert!(err.contains("srz book \"doctur\""));
-
-    // Explicit book subcommand bypasses typo check
-    let book_cli = Cli::parse_from(["srz", "book", "doctur"]);
-    assert_eq!(
-        book_cli.resolve_action().unwrap(),
-        srz::cli::ResolvedAction::Book { title: "doctur" }
-    );
 }
 
 #[test]

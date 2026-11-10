@@ -209,10 +209,6 @@ pub struct Cli {
     #[arg(short = 'b', long, global = true)]
     pub open: bool,
 
-    /// Concurrency limit for parallel map-reduce document chunking (configured via CLI or config.toml; default: 1)
-    #[arg(long, global = true, default_value_t = 1)]
-    pub concurrency: usize,
-
     /// Stream LLM output tokens live to stdout as they are generated (default: false)
     #[arg(long, global = true)]
     pub stream: bool,
@@ -239,24 +235,6 @@ impl Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Scrape and summarize a webpage from a URL (hidden; prefer `srz <URL>`)
-    #[command(hide = true)]
-    Web {
-        /// Webpage URL (http:// or https://)
-        url: String,
-    },
-    /// Summarize a book by title (hidden; prefer `srz <TITLE>`)
-    #[command(hide = true)]
-    Book {
-        /// Title of the book
-        title: String,
-    },
-    /// Summarize a local file or piped input from standard input (-) (hidden; prefer `srz <FILE>`)
-    #[command(hide = true)]
-    File {
-        /// Path to the local file, or '-' for stdin
-        path: PathBuf,
-    },
     /// Manage the local disk cache (dir, size, clean)
     Cache {
         #[command(subcommand)]
@@ -464,17 +442,6 @@ impl Cli {
     pub fn resolve_action(&self) -> Result<ResolvedAction<'_>, String> {
         if let Some(cmd) = &self.command {
             match cmd {
-                Commands::Web { url } => Ok(ResolvedAction::Web { url: url.trim() }),
-                Commands::Book { title } => Ok(ResolvedAction::Book {
-                    title: title.trim(),
-                }),
-                Commands::File { path } => {
-                    if path.as_os_str() == "-" {
-                        Ok(ResolvedAction::Stdin)
-                    } else {
-                        Ok(ResolvedAction::File { path: path.clone() })
-                    }
-                }
                 Commands::Cache { action } => Ok(ResolvedAction::Cache(action.clone())),
                 Commands::Config { action } => Ok(ResolvedAction::Config(*action)),
                 Commands::History { limit } => Ok(ResolvedAction::History { limit: *limit }),
@@ -584,8 +551,7 @@ impl Cli {
                 } else if let Some(suggestion) = suggest_command(trimmed) {
                     Err(format!(
                         "Unrecognized command '{trimmed}'.\n\n  \
-                         tip: a similar command exists: '{suggestion}'\n  \
-                         (To summarize a book with this title, run: srz book \"{trimmed}\")"
+                         tip: a similar command exists: '{suggestion}'"
                     ))
                 } else {
                     Ok(ResolvedAction::Book { title: trimmed })
@@ -656,7 +622,6 @@ impl Cli {
         apply_field!(quiet);
         apply_field!(verbose);
         apply_field!(open);
-        apply_field!(concurrency);
         apply_field!(stream);
         apply_field!(show_thinking);
         apply_opt_field!(context_window);
@@ -914,7 +879,6 @@ pub struct ProfileConfig {
     pub quiet: Option<bool>,
     pub verbose: Option<bool>,
     pub open: Option<bool>,
-    pub concurrency: Option<usize>,
     pub stream: Option<bool>,
     pub show_thinking: Option<bool>,
     pub context_window: Option<usize>,
@@ -1050,9 +1014,6 @@ max_tokens = 8192
 
 # Auto-open generated HTML view in your browser (default: false)
 open = false
-
-# Parallel chunk concurrency for map-reduce
-concurrency = 1
 
 # Stream tokens live to stdout (default: false)
 stream = false

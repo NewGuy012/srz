@@ -206,15 +206,7 @@ pub async fn handle_doctor(
 
         if let Some(caps) = &server_caps {
             let ctx_label = crate::system::hardware::format_context_tokens(caps.n_ctx);
-            let tok_label = if caps.supports_tokenize {
-                "native tokenizer"
-            } else {
-                "fallback tokenizer"
-            };
-            println!(
-                "  ✓ Context: {} ({} tokens) · {} slot(s) · {}",
-                ctx_label, caps.n_ctx, caps.total_slots, tok_label
-            );
+            println!("  ✓ Context: {} ({} tokens)", ctx_label, caps.n_ctx);
 
             if caps.n_ctx < hw.recommended_context {
                 println!(

@@ -36,7 +36,6 @@ pub struct LlmClient {
     fallback_base_url: Option<String>,
     model: String,
     max_tokens: u32,
-    concurrency: usize,
     context_window_override: Option<usize>,
     capabilities: Option<ServerCapabilities>,
     show_thinking: bool,
@@ -80,7 +79,6 @@ impl LlmClient {
             fallback_base_url,
             model: model.to_string(),
             max_tokens,
-            concurrency: 1,
             context_window_override: None,
             capabilities: None,
             show_thinking: false,
@@ -90,7 +88,6 @@ impl LlmClient {
     pub fn from_cli(args: &crate::cli::Cli) -> Result<Self> {
         Ok(
             Self::new(&args.base_url, &args.model, &args.api_key, args.max_tokens)?
-                .with_concurrency(args.concurrency)
                 .with_context_window(args.context_window)
                 .with_show_thinking(args.show_thinking || args.verbose),
         )
@@ -110,28 +107,13 @@ impl LlmClient {
         self.capabilities.as_ref()
     }
 
-    /// Derives dynamic token budgeting parameters from the server's detected context window and slots.
+    /// Derives dynamic token budgeting parameters from the server's detected context window.
     pub fn budget(&self) -> DynamicBudget {
         let n_ctx = self
             .context_window_override
             .or_else(|| self.capabilities.as_ref().map(|c| c.n_ctx))
             .unwrap_or(32_768);
-        let total_slots = self
-            .capabilities
-            .as_ref()
-            .map(|c| c.total_slots)
-            .unwrap_or(1);
-        DynamicBudget::new(
-            n_ctx,
-            total_slots,
-            Some(self.max_tokens),
-            (self.concurrency > 1).then_some(self.concurrency),
-        )
-    }
-
-    pub fn with_concurrency(mut self, concurrency: usize) -> Self {
-        self.concurrency = concurrency.max(1);
-        self
+        DynamicBudget::new(n_ctx, Some(self.max_tokens))
     }
 
     pub fn base_url(&self) -> &str {
@@ -191,34 +173,6 @@ impl LlmClient {
             .await
     }
 
-    async fn probe_tokenize_endpoint(&self, endpoint: &str, body: serde_json::Value) -> bool {
-        self.send_root_request(endpoint, |c, u| {
-            c.post(u).json(&body).timeout(Duration::from_millis(1500))
-        })
-        .await
-        .map(|resp| resp.status().is_success())
-        .unwrap_or(false)
-    }
-
-    async fn probe_standard_tokenize_endpoint(&self) -> bool {
-        if !self.model.is_empty() {
-            let (token_with_model, token_bare) = tokio::join!(
-                self.probe_tokenize_endpoint(
-                    "/tokenize",
-                    serde_json::json!({ "model": &self.model, "content": "test" }),
-                ),
-                self.probe_tokenize_endpoint(
-                    "/tokenize",
-                    serde_json::json!({ "content": "test" }),
-                ),
-            );
-            token_with_model || token_bare
-        } else {
-            self.probe_tokenize_endpoint("/tokenize", serde_json::json!({ "content": "test" }))
-                .await
-        }
-    }
-
     async fn fetch_root_json<B>(&self, path: &str, build_req: B) -> Option<serde_json::Value>
     where
         B: Fn(&reqwest::Client, String) -> reqwest::RequestBuilder,
@@ -233,15 +187,12 @@ impl LlmClient {
         serde_json::from_slice::<serde_json::Value>(&bytes).ok()
     }
 
-    /// Extracts operational capabilities from the backend server (context window, total slots, native tokenizer).
+    /// Extracts operational capabilities from the backend server (context window).
     pub async fn probe_server_capabilities(&self) -> ServerCapabilities {
         let mut caps = ServerCapabilities {
             endpoint: self.base_url.clone(),
             model_id: self.model.clone(),
             n_ctx: clamp_context_window(self.context_window_override.unwrap_or(32_768)),
-            total_slots: 1,
-            supports_tokenize: false,
-            tokenize_endpoint: None,
             backend_kind: "default".to_string(),
         };
 
@@ -253,54 +204,44 @@ impl LlmClient {
 
         // If context window is explicitly configured, skip remote inspection
         if self.context_window_override.is_some() {
-            if self.probe_standard_tokenize_endpoint().await {
-                caps.supports_tokenize = true;
-                caps.tokenize_endpoint = Some("/tokenize".to_string());
-            }
             return caps;
         }
 
-        // 1. Try llama.cpp GET /props and tokenize probe concurrently
-        let (props_json, tokenize_supported) = tokio::join!(
-            async {
-                let mut props_json: Option<serde_json::Value> = None;
-                if !self.model.is_empty() {
-                    let model_path = format!(
-                        "/props?model={}",
-                        crate::system::text_util::url_encode(&self.model)
-                    );
-                    let (model_res, root_res) = tokio::join!(
-                        self.fetch_root_json(&model_path, |c, u| {
-                            c.get(u).timeout(Duration::from_millis(1500))
-                        }),
-                        self.fetch_root_json("/props", |c, u| {
-                            c.get(u).timeout(Duration::from_millis(1500))
-                        }),
-                    );
-                    if let Some(json) = model_res {
-                        let n_ctx = json
-                            .pointer("/default_generation_settings/n_ctx")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
-                        if n_ctx > 0 {
-                            props_json = Some(json);
-                        }
-                    }
-                    if props_json.is_none() {
-                        props_json = root_res;
-                    }
-                } else if let Some(json) = self
-                    .fetch_root_json("/props", |c, u| {
-                        c.get(u).timeout(Duration::from_millis(1500))
-                    })
-                    .await
-                {
+        // 1. Try llama.cpp GET /props
+        let mut props_json: Option<serde_json::Value> = None;
+        if !self.model.is_empty() {
+            let model_path = format!(
+                "/props?model={}",
+                crate::system::text_util::url_encode(&self.model)
+            );
+            let (model_res, root_res) = tokio::join!(
+                self.fetch_root_json(&model_path, |c, u| {
+                    c.get(u).timeout(Duration::from_millis(1500))
+                }),
+                self.fetch_root_json("/props", |c, u| {
+                    c.get(u).timeout(Duration::from_millis(1500))
+                }),
+            );
+            if let Some(json) = model_res {
+                let n_ctx = json
+                    .pointer("/default_generation_settings/n_ctx")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                if n_ctx > 0 {
                     props_json = Some(json);
                 }
-                props_json
-            },
-            self.probe_standard_tokenize_endpoint()
-        );
+            }
+            if props_json.is_none() {
+                props_json = root_res;
+            }
+        } else if let Some(json) = self
+            .fetch_root_json("/props", |c, u| {
+                c.get(u).timeout(Duration::from_millis(1500))
+            })
+            .await
+        {
+            props_json = Some(json);
+        }
 
         if let Some(json) = props_json {
             caps.backend_kind = "llama.cpp".to_string();
@@ -310,18 +251,6 @@ impl LlmClient {
                 .filter(|&v| v > 0)
             {
                 caps.n_ctx = clamp_context_window(n_ctx as usize);
-            }
-            if let Some(slots) = json
-                .get("total_slots")
-                .and_then(|v| v.as_u64())
-                .filter(|&v| v > 0)
-            {
-                caps.total_slots = (slots as usize).clamp(1, crate::budget::MAX_CONCURRENCY);
-            }
-
-            if tokenize_supported {
-                caps.supports_tokenize = true;
-                caps.tokenize_endpoint = Some("/tokenize".to_string());
             }
 
             // Fallback check against /v1/models if context window could not be resolved from props
@@ -372,18 +301,6 @@ impl LlmClient {
                 caps.n_ctx = clamp_context_window(ctx);
             }
 
-            // Probe POST /api/tokenize on Ollama
-            if self
-                .probe_tokenize_endpoint(
-                    "/api/tokenize",
-                    serde_json::json!({ "model": &self.model, "prompt": "test" }),
-                )
-                .await
-            {
-                caps.supports_tokenize = true;
-                caps.tokenize_endpoint = Some("/api/tokenize".to_string());
-            }
-
             return caps;
         }
 
@@ -394,11 +311,6 @@ impl LlmClient {
                 && let Some(ctx) = matching.context_window()
             {
                 caps.n_ctx = clamp_context_window(ctx);
-            }
-
-            if self.probe_standard_tokenize_endpoint().await {
-                caps.supports_tokenize = true;
-                caps.tokenize_endpoint = Some("/tokenize".to_string());
             }
             if !models.is_empty() {
                 return caps;
@@ -423,63 +335,6 @@ impl LlmClient {
         }
         self.capabilities = Some(caps);
         self
-    }
-
-    /// Queries the server's native tokenization endpoint if supported, returning exact token count (0% drift).
-    pub async fn tokenize_text(&self, text: &str) -> Option<usize> {
-        let caps = self.capabilities.as_ref()?;
-        if !caps.supports_tokenize {
-            return None;
-        }
-        let tok_endpoint = caps.tokenize_endpoint.as_ref()?;
-        let path = if tok_endpoint.contains("/api/tokenize") {
-            "/api/tokenize"
-        } else {
-            "/tokenize"
-        };
-
-        let is_ollama = caps.backend_kind == "ollama";
-        let body = if is_ollama {
-            serde_json::json!({
-                "model": &self.model,
-                "prompt": text,
-            })
-        } else if !self.model.is_empty() {
-            serde_json::json!({
-                "model": &self.model,
-                "content": text,
-            })
-        } else {
-            serde_json::json!({
-                "content": text,
-            })
-        };
-
-        let mut json = self
-            .fetch_root_json(path, |c, u| {
-                c.post(u).json(&body).timeout(Duration::from_secs(3))
-            })
-            .await;
-
-        if json.is_none() && !is_ollama && !self.model.is_empty() {
-            let fallback_body = serde_json::json!({ "content": text });
-            json = self
-                .fetch_root_json(path, |c, u| {
-                    c.post(u)
-                        .json(&fallback_body)
-                        .timeout(Duration::from_secs(3))
-                })
-                .await;
-        }
-
-        let json = json?;
-        if let Some(tokens) = json.get("tokens").and_then(|t| t.as_array()) {
-            return Some(tokens.len());
-        }
-        if let Some(count) = json.get("count").and_then(|c| c.as_u64()) {
-            return Some(count as usize);
-        }
-        None
     }
 
     /// Sends a request to `{base_url}{path}`, automatically retrying against `127.0.0.1`
@@ -1059,11 +914,7 @@ impl LlmClient {
             // High-confidence word-count heuristic: English text averages ~1.3 tokens/word.
             (false, Some(wc.saturating_mul(4) / 3))
         } else {
-            // Authoritative server token query if supported (0% drift), otherwise model-aware embedded tokenizer
-            let tokens = match self.tokenize_text(content).await {
-                Some(t) => t,
-                None => tok_kind.count_tokens(content),
-            };
+            let tokens = tok_kind.count_tokens(content);
             (tokens > budget.single_pass_threshold, Some(tokens))
         };
 
@@ -1141,10 +992,7 @@ impl LlmClient {
 
         let budget = self.budget();
         let tok_kind = self.tokenizer_kind();
-        let tokens_count = match self.tokenize_text(web_context).await {
-            Some(t) => t,
-            None => tok_kind.count_tokens(web_context),
-        };
+        let tokens_count = tok_kind.count_tokens(web_context);
 
         // If reference context exceeds single-pass threshold, compress using stratified salience compression
         let reference_material = if tokens_count > budget.single_pass_threshold {

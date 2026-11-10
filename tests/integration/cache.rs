@@ -631,9 +631,6 @@ fn test_cache_server_capabilities_model_change_invalidation() {
         endpoint: "http://localhost:9931".to_string(),
         model_id: "ggml-org/gemma-4-E4B-it-GGUF:Q8_0".to_string(),
         n_ctx: 32768,
-        total_slots: 4,
-        supports_tokenize: true,
-        tokenize_endpoint: Some("http://localhost:9931/tokenize".to_string()),
         backend_kind: "llama.cpp".to_string(),
     };
 
@@ -645,8 +642,6 @@ fn test_cache_server_capabilities_model_change_invalidation() {
     assert!(cached.is_some());
     let hit = cached.unwrap();
     assert_eq!(hit.n_ctx, 32768);
-    assert_eq!(hit.total_slots, 4);
-    assert!(hit.supports_tokenize);
     assert_eq!(hit.backend_kind, "llama.cpp");
 
     // 2. Different model loaded -> Cache miss / invalidation!

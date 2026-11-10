@@ -59,11 +59,6 @@ impl TokenizerKind {
 pub struct TextChunker;
 
 impl TextChunker {
-    /// Counts tokens in `text` using fast token estimation.
-    pub fn count_tokens(text: &str) -> usize {
-        estimate_tokens(text)
-    }
-
     /// Counts tokens in `text` using a specified model-aware tokenizer profile.
     pub fn count_tokens_with_kind(text: &str, kind: TokenizerKind) -> usize {
         kind.count_tokens(text)
@@ -92,35 +87,6 @@ impl TextChunker {
         Cow::Owned(format!("{prefix}\n\n[Context trimmed for token budget]"))
     }
 
-    /// Splits text into chunks of roughly `max_tokens` with `overlap_tokens` overlap,
-    /// using accurate BPE token counts while preserving paragraph boundaries and zero-copy slices.
-    #[doc(hidden)]
-    pub fn chunk_by_tokens<'a>(
-        text: &'a str,
-        max_tokens: usize,
-        overlap_tokens: usize,
-    ) -> Vec<Cow<'a, str>> {
-        Self::chunk_by_tokens_with_counts(text, max_tokens, overlap_tokens)
-            .into_iter()
-            .map(|(c, _)| c)
-            .collect()
-    }
-
-    /// Splits text into chunks of roughly `max_tokens` with `overlap_tokens` overlap,
-    /// returning each chunk alongside its pre-computed token count to avoid re-tokenization.
-    pub fn chunk_by_tokens_with_counts<'a>(
-        text: &'a str,
-        max_tokens: usize,
-        overlap_tokens: usize,
-    ) -> Vec<(Cow<'a, str>, usize)> {
-        Self::chunk_by_tokens_with_counts_and_kind(
-            text,
-            max_tokens,
-            overlap_tokens,
-            TokenizerKind::Cl100k,
-        )
-    }
-
     /// Splits text into chunks of roughly `max_tokens` with `overlap_tokens` overlap using the specified tokenizer kind,
     /// returning each chunk alongside its pre-computed token count to avoid re-tokenization.
     pub fn chunk_by_tokens_with_counts_and_kind<'a>(
@@ -135,18 +101,6 @@ impl TextChunker {
         Self::chunk_with_metric_with_counts(text, max_tokens, overlap_tokens, |s| {
             kind.count_tokens(s)
         })
-    }
-
-    /// Splits text into chunks of roughly `max_words` with `overlap_words` overlap.
-    /// Preserves paragraph boundaries wherever possible and returns zero-copy `Cow::Borrowed`
-    /// slices whenever the input or a chunk does not require concatenation.
-    pub fn chunk<'a>(text: &'a str, max_words: usize, overlap_words: usize) -> Vec<Cow<'a, str>> {
-        Self::chunk_with_metric_with_counts(text, max_words, overlap_words, |s| {
-            s.split_whitespace().count()
-        })
-        .into_iter()
-        .map(|(c, _)| c)
-        .collect()
     }
 
     fn chunk_with_metric_with_counts<'a, F>(
@@ -412,18 +366,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_count_tokens() {
+    fn test_count_tokens_with_kind() {
         let text = "Hello, world! This is a test.";
-        let tokens = TextChunker::count_tokens(text);
+        let tokens = TextChunker::count_tokens_with_kind(text, TokenizerKind::Cl100k);
         assert!((6..=10).contains(&tokens));
     }
 
     #[test]
     fn test_chunk_by_tokens_under_budget() {
         let text = "First paragraph.\n\nSecond paragraph.";
-        let chunks = TextChunker::chunk_by_tokens(text, 100, 10);
+        let chunks =
+            TextChunker::chunk_by_tokens_with_counts_and_kind(text, 100, 10, TokenizerKind::Cl100k);
         assert_eq!(chunks.len(), 1);
-        assert!(matches!(chunks[0], Cow::Borrowed(_)));
+        assert!(matches!(chunks[0].0, Cow::Borrowed(_)));
     }
 
     #[test]
@@ -432,16 +387,21 @@ mod tests {
         let p2 = "Another different paragraph with several words repeated. ".repeat(20);
         let text = format!("{}\n\n{}", p1.trim(), p2.trim());
 
-        let chunks = TextChunker::chunk_by_tokens(&text, 120, 20);
+        let chunks = TextChunker::chunk_by_tokens_with_counts_and_kind(
+            &text,
+            120,
+            20,
+            TokenizerKind::Cl100k,
+        );
         assert_eq!(chunks.len(), 2);
-        assert!(matches!(chunks[0], Cow::Borrowed(_)));
-        assert!(matches!(chunks[1], Cow::Borrowed(_)));
+        assert!(matches!(chunks[0].0, Cow::Borrowed(_)));
+        assert!(matches!(chunks[1].0, Cow::Borrowed(_)));
 
-        let chunks_with_counts = TextChunker::chunk_by_tokens_with_counts(&text, 120, 20);
-        assert_eq!(chunks_with_counts.len(), chunks.len());
-        for (i, (chunk, count)) in chunks_with_counts.into_iter().enumerate() {
-            assert_eq!(chunk, chunks[i]);
-            assert_eq!(count, TextChunker::count_tokens(&chunk));
+        for (chunk, count) in &chunks {
+            assert_eq!(
+                *count,
+                TextChunker::count_tokens_with_kind(chunk, TokenizerKind::Cl100k)
+            );
         }
     }
 
@@ -455,7 +415,7 @@ mod tests {
         let long = "token ".repeat(200);
         let truncated = TextChunker::truncate_by_tokens(&long, 30);
         assert!(truncated.ends_with("[Context trimmed for token budget]"));
-        assert!(TextChunker::count_tokens(&truncated) <= 45);
+        assert!(TextChunker::count_tokens_with_kind(&truncated, TokenizerKind::Cl100k) <= 45);
     }
 
     #[test]
@@ -492,23 +452,29 @@ mod tests {
         let sentence =
             "This is a detailed analysis of the system architecture without any double newlines. ";
         let monolithic = sentence.repeat(40); // ~560 tokens
-        let total_tokens = TextChunker::count_tokens(&monolithic);
+        let total_tokens = TextChunker::count_tokens_with_kind(&monolithic, TokenizerKind::Cl100k);
         assert!(total_tokens > 400);
 
-        let chunks = TextChunker::chunk_by_tokens(&monolithic, 100, 15);
+        let chunks = TextChunker::chunk_by_tokens_with_counts_and_kind(
+            &monolithic,
+            100,
+            15,
+            TokenizerKind::Cl100k,
+        );
         assert!(
             chunks.len() >= 4,
             "Expected at least 4 chunks, got {}",
             chunks.len()
         );
-        for (i, c) in chunks.iter().enumerate() {
-            let tokens = TextChunker::count_tokens(c);
+        for (i, (c, count)) in chunks.iter().enumerate() {
             assert!(
-                tokens <= 125,
+                *count <= 125,
                 "Chunk #{} has {} tokens, exceeding limit of 125",
                 i,
-                tokens
+                count
             );
+            let measured = TextChunker::count_tokens_with_kind(c, TokenizerKind::Cl100k);
+            assert!(measured <= 125);
         }
     }
 
@@ -519,22 +485,24 @@ mod tests {
             .map(|i| format!("Line #{}: system event telemetry metric logging item.", i))
             .collect();
         let text = lines.join("\n"); // strictly single \n, no \n\n
-        let total_tokens = TextChunker::count_tokens(&text);
+        let total_tokens = TextChunker::count_tokens_with_kind(&text, TokenizerKind::Cl100k);
         assert!(total_tokens > 300);
 
-        let chunks = TextChunker::chunk_by_tokens(&text, 80, 10);
+        let chunks =
+            TextChunker::chunk_by_tokens_with_counts_and_kind(&text, 80, 10, TokenizerKind::Cl100k);
         assert!(
             chunks.len() >= 4,
             "Expected >= 4 chunks, got {}",
             chunks.len()
         );
-        for c in &chunks {
-            let tokens = TextChunker::count_tokens(c);
+        for (c, count) in &chunks {
             assert!(
-                tokens <= 100,
+                *count <= 100,
                 "Chunk tokens {} exceeded expected budget",
-                tokens
+                count
             );
+            let measured = TextChunker::count_tokens_with_kind(c, TokenizerKind::Cl100k);
+            assert!(measured <= 100);
         }
     }
 
@@ -547,15 +515,21 @@ mod tests {
         let p_outro = "Concluding summary paragraph.";
         let text = format!("{}\n\n{}\n\n{}", p_intro, p_huge, p_outro);
 
-        let chunks = TextChunker::chunk_by_tokens(&text, 100, 15);
+        let chunks = TextChunker::chunk_by_tokens_with_counts_and_kind(
+            &text,
+            100,
+            15,
+            TokenizerKind::Cl100k,
+        );
         assert!(
             chunks.len() >= 3,
             "Expected >= 3 chunks for oversized paragraph, got {}",
             chunks.len()
         );
-        for c in &chunks {
-            let tokens = TextChunker::count_tokens(c);
-            assert!(tokens <= 130, "Chunk tokens {} exceeded budget", tokens);
+        for (c, count) in &chunks {
+            assert!(*count <= 130, "Chunk tokens {} exceeded budget", count);
+            let measured = TextChunker::count_tokens_with_kind(c, TokenizerKind::Cl100k);
+            assert!(measured <= 130);
         }
     }
 
@@ -563,7 +537,12 @@ mod tests {
     fn test_chunk_unbroken_giant_token() {
         // Unbroken sequence with zero whitespace
         let giant_token = "A".repeat(1000);
-        let chunks = TextChunker::chunk_by_tokens(&giant_token, 50, 5);
+        let chunks = TextChunker::chunk_by_tokens_with_counts_and_kind(
+            &giant_token,
+            50,
+            5,
+            TokenizerKind::Cl100k,
+        );
         assert!(
             chunks.len() >= 2,
             "Expected unbroken string to be sliced into multiple chunks"
