@@ -274,6 +274,99 @@ pub async fn read_response_text_limited(
     }
 }
 
+/// Returns true if the given IPv4 address belongs to a private, loopback, link-local,
+/// or non-routable subnet (RFC 1918, RFC 3927, RFC 6598, etc.).
+pub fn is_private_ipv4(ipv4: std::net::Ipv4Addr) -> bool {
+    let o = ipv4.octets();
+    o[0] == 0
+        || o[0] == 127
+        || o[0] == 10
+        || (o[0] == 172 && (16..=31).contains(&o[1]))
+        || (o[0] == 192 && o[1] == 168)
+        || (o[0] == 169 && o[1] == 254)
+        || (o[0] == 100 && (64..=127).contains(&o[1]))
+        || (o[0] == 192 && o[1] == 0 && o[2] == 0)
+        || (o[0] == 192 && o[1] == 0 && o[2] == 2)
+        || (o[0] == 198 && o[1] == 51 && o[2] == 100)
+        || (o[0] == 203 && o[1] == 0 && o[2] == 113)
+        || o[0] >= 224
+}
+
+/// Returns true if the given IPv6 address belongs to a loopback, unique-local, link-local,
+/// or IPv4-mapped private address.
+pub fn is_private_ipv6(ipv6: std::net::Ipv6Addr) -> bool {
+    let s = ipv6.segments();
+    if ipv6.is_loopback() || s == [0, 0, 0, 0, 0, 0, 0, 0] {
+        return true;
+    }
+    if s[0] == 0
+        && s[1] == 0
+        && s[2] == 0
+        && s[3] == 0
+        && s[4] == 0
+        && (s[5] == 0 || s[5] == 0xffff)
+    {
+        let ip4 = std::net::Ipv4Addr::new(
+            (s[6] >> 8) as u8,
+            (s[6] & 0xff) as u8,
+            (s[7] >> 8) as u8,
+            (s[7] & 0xff) as u8,
+        );
+        return is_private_ipv4(ip4);
+    }
+    let o = ipv6.octets();
+    if (o[0] & 0xfe) == 0xfc {
+        return true;
+    }
+    if o[0] == 0xfe && (o[1] & 0xc0) == 0x80 {
+        return true;
+    }
+    false
+}
+
+/// Checks if a host name or IP address resolves to a local or private network destination.
+pub fn is_private_or_local_host(host: &str) -> bool {
+    let unbracketed = host.trim_start_matches('[').trim_end_matches(']');
+    let lower = unbracketed.to_ascii_lowercase();
+    let lower_trim = lower.trim_end_matches('.');
+    if lower_trim == "localhost"
+        || lower_trim.ends_with(".localhost")
+        || lower_trim.ends_with(".local")
+        || lower_trim.ends_with(".internal")
+        || lower_trim.ends_with(".lan")
+    {
+        return true;
+    }
+    if let Ok(ipv4) = unbracketed.parse::<std::net::Ipv4Addr>() {
+        return is_private_ipv4(ipv4);
+    }
+    if let Ok(ipv6) = unbracketed.parse::<std::net::Ipv6Addr>() {
+        return is_private_ipv6(ipv6);
+    }
+    false
+}
+
+/// Validates that `url_str` uses HTTP or HTTPS and does not target private or local network hosts (SSRF mitigation).
+pub fn validate_public_http_url(url_str: &str) -> Result<()> {
+    let parsed =
+        reqwest::Url::parse(url_str).with_context(|| format!("Invalid URL: {}", url_str))?;
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
+        anyhow::bail!(
+            "Unsupported URL scheme '{}': only http and https are permitted",
+            scheme
+        );
+    }
+    let host = parsed.host_str().context("URL is missing a host")?;
+    if is_private_or_local_host(host) {
+        anyhow::bail!(
+            "Blocked request to private or local network address '{}' (SSRF protection)",
+            host
+        );
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScrapedPage {
     pub url: String,
@@ -340,7 +433,24 @@ impl WebScraper {
             .default_headers(headers)
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(20))
-            .redirect(reqwest::redirect::Policy::limited(10))
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 10 {
+                    return attempt.error("Too many redirects (max 10)");
+                }
+                let next_url = attempt.url();
+                let scheme = next_url.scheme();
+                if scheme != "http" && scheme != "https" {
+                    return attempt.error("Redirect to non-HTTP/HTTPS scheme blocked");
+                }
+                if let Some(host) = next_url.host_str()
+                    && is_private_or_local_host(host)
+                {
+                    return attempt.error(
+                        "Redirect to private or local network address blocked (SSRF protection)",
+                    );
+                }
+                attempt.follow()
+            }))
             .build()
             .context("Failed to initialize HTTP client")?;
 
@@ -357,6 +467,8 @@ impl WebScraper {
 
     /// Fetches and normalizes the text from the given URL with a strict maximum response limit (10 MB).
     pub async fn scrape(&self, url: &str) -> Result<ScrapedPage> {
+        validate_public_http_url(url)?;
+
         let response = self
             .client
             .get(url)
@@ -930,5 +1042,40 @@ mod tests {
         assert!(cleaned.contains("More details."));
         assert!(!cleaned.contains("References"));
         assert!(!cleaned.contains("Citation link"));
+    }
+
+    #[test]
+    fn test_ssrf_validation_blocks_private_and_local_targets() {
+        // Blocked: localhost & local domains
+        assert!(validate_public_http_url("http://localhost/").is_err());
+        assert!(validate_public_http_url("http://localhost:8080/admin").is_err());
+        assert!(validate_public_http_url("http://server.local/").is_err());
+        assert!(validate_public_http_url("http://service.internal/").is_err());
+
+        // Blocked: IPv4 loopback & RFC1918 & link-local
+        assert!(validate_public_http_url("http://127.0.0.1/").is_err());
+        assert!(validate_public_http_url("http://127.0.0.2:9000/").is_err());
+        assert!(validate_public_http_url("http://10.0.0.1/status").is_err());
+        assert!(validate_public_http_url("http://172.16.0.1/").is_err());
+        assert!(validate_public_http_url("http://172.31.255.254/").is_err());
+        assert!(validate_public_http_url("http://192.168.1.1/router").is_err());
+        assert!(validate_public_http_url("http://169.254.169.254/latest/meta-data").is_err());
+        assert!(validate_public_http_url("http://0.0.0.0/").is_err());
+
+        // Blocked: IPv6 loopback & link-local
+        assert!(validate_public_http_url("http://[::1]/").is_err());
+        assert!(validate_public_http_url("http://[fe80::1]/").is_err());
+        assert!(validate_public_http_url("http://[::ffff:127.0.0.1]/").is_err());
+        assert!(validate_public_http_url("http://[::ffff:169.254.169.254]/").is_err());
+
+        // Blocked: non-HTTP schemes
+        assert!(validate_public_http_url("ftp://example.com/file").is_err());
+        assert!(validate_public_http_url("file:///etc/passwd").is_err());
+        assert!(validate_public_http_url("gopher://example.com/").is_err());
+
+        // Allowed: public HTTP/HTTPS URLs
+        assert!(validate_public_http_url("https://example.com").is_ok());
+        assert!(validate_public_http_url("https://en.wikipedia.org/wiki/Rust").is_ok());
+        assert!(validate_public_http_url("http://93.184.216.34/").is_ok());
     }
 }
