@@ -313,15 +313,7 @@ impl BookSearcher {
                 continue;
             };
             let title_rest = &block[title_pos..];
-            let href = if let Some(hpos) = title_rest.find("href=\"") {
-                let rest = &title_rest[hpos + 6..];
-                rest.split('\"').next()
-            } else if let Some(hpos) = title_rest.find("href='") {
-                let rest = &title_rest[hpos + 6..];
-                rest.split('\'').next()
-            } else {
-                None
-            };
+            let href = crate::system::text_util::extract_attr_value(title_rest, "href=");
 
             let Some(raw_href) = href else {
                 continue;

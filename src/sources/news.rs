@@ -1,6 +1,8 @@
 use crate::cli::NewsTimeframe;
 use crate::scraper::{ScrapedPage, WebScraper};
-use crate::system::text_util::{XmlEvent, XmlScanner, xml_attr, xml_local_name};
+use crate::system::text_util::{
+    XmlEvent, XmlScanner, extract_attr_value, xml_attr, xml_local_name,
+};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -787,18 +789,6 @@ pub fn extract_article_id(url: &str) -> Option<&str> {
         }
     }
     None
-}
-
-pub fn extract_attr_value<'a>(html: &'a str, attr_prefix: &str) -> Option<&'a str> {
-    let start_pos = html.find(attr_prefix)?;
-    let remainder = &html[start_pos + attr_prefix.len()..];
-    let quote = remainder.chars().next()?;
-    if quote != '"' && quote != '\'' {
-        return None;
-    }
-    let rest = &remainder[1..];
-    let end_pos = rest.find(quote)?;
-    Some(&rest[..end_pos])
 }
 
 pub fn parse_batchexecute_destination_url(text: &str) -> Option<String> {

@@ -549,26 +549,11 @@ pub fn extract_title_from_html(html: &str) -> Option<String> {
         let tag_start = html[..pos].rfind('<').unwrap_or(pos);
         let tag_end = html[pos..].find('>').map(|p| pos + p).unwrap_or(html.len());
         let tag = &html[tag_start..tag_end];
-        if let Some(c_pos) = tag.find("content=\"") {
-            let val = &tag[c_pos + 9..];
-            if let Some(end) = val.find('\"') {
-                let trimmed = val[..end].trim();
-                if !trimmed.is_empty() {
-                    return Some(
-                        crate::system::text_util::decode_html_entities(trimmed).into_owned(),
-                    );
-                }
-            }
-        } else if let Some(c_pos) = tag.find("content='") {
-            let val = &tag[c_pos + 9..];
-            if let Some(end) = val.find('\'') {
-                let trimmed = val[..end].trim();
-                if !trimmed.is_empty() {
-                    return Some(
-                        crate::system::text_util::decode_html_entities(trimmed).into_owned(),
-                    );
-                }
-            }
+        if let Some(trimmed) = crate::system::text_util::extract_attr_value(tag, "content=")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            return Some(crate::system::text_util::decode_html_entities(trimmed).into_owned());
         }
     }
 

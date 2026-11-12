@@ -64,27 +64,17 @@ impl TextChunker {
         kind.count_tokens(text)
     }
 
-    /// Truncates `text` so its token count does not exceed `max_tokens`, preserving paragraph
-    /// boundaries when possible and returning a zero-copy `Cow::Borrowed` slice when under budget.
+    /// Truncates `text` to `max_tokens` (estimated) while preserving paragraph boundaries and
+    /// returning `Cow::Borrowed` when under budget.
     pub fn truncate_by_tokens(text: &str, max_tokens: usize) -> Cow<'_, str> {
         if max_tokens == 0 {
             return Cow::Borrowed("[Context trimmed for token budget]");
         }
-        if text.len() <= max_tokens {
+        if text.len() <= max_tokens || estimate_tokens(text) <= max_tokens {
             return Cow::Borrowed(text);
         }
-        let estimated = estimate_tokens(text);
-        if estimated <= max_tokens {
-            return Cow::Borrowed(text);
-        }
-        let max_words = (max_tokens * 3) / 4;
-        let mut words = text.split_ascii_whitespace();
-        let Some(nth_word) = words.nth(max_words.max(1) - 1) else {
-            return Cow::Borrowed(text);
-        };
-        let end_offset = (nth_word.as_ptr() as usize) - (text.as_ptr() as usize) + nth_word.len();
-        let prefix = text[..end_offset.min(text.len())].trim_end();
-        Cow::Owned(format!("{prefix}\n\n[Context trimmed for token budget]"))
+        let max_words = ((max_tokens * 3) / 4).max(1);
+        crate::engine::prompts::truncate_words_preserving_lines(text, max_words)
     }
 
     /// Splits text into chunks of roughly `max_tokens` with `overlap_tokens` overlap using the specified tokenizer kind,

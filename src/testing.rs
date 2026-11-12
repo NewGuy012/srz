@@ -24,14 +24,7 @@ impl TempDir {
         if !parent.exists() {
             std::fs::create_dir_all(parent)?;
         }
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir_name = format!("{}-{}-{:x}-{}", prefix, std::process::id(), nonce, count);
-        let path = parent.join(dir_name);
+        let path = crate::system::fs_util::create_temp_file_path(parent, prefix, "");
         crate::system::fs_util::create_private_dir_all(&path)?;
         Ok(Self { path })
     }

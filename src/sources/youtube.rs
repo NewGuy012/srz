@@ -212,17 +212,9 @@ pub fn parse_chapters_from_description(desc: &str) -> Vec<VideoChapter> {
             continue;
         }
 
-        // Try extracting timestamp from start of line, e.g. "00:00 Intro", "[01:30] Architecture"
-        if let Some((secs, title)) = parse_chapter_line_start(trimmed) {
-            chapters.push(VideoChapter {
-                seconds: secs,
-                title,
-            });
-            continue;
-        }
-
-        // Try extracting timestamp from end of line, e.g. "Architecture - 01:30"
-        if let Some((secs, title)) = parse_chapter_line_end(trimmed) {
+        if let Some((secs, title)) =
+            parse_chapter_line(trimmed, true).or_else(|| parse_chapter_line(trimmed, false))
+        {
             chapters.push(VideoChapter {
                 seconds: secs,
                 title,
@@ -245,36 +237,28 @@ pub fn parse_chapters_from_description(desc: &str) -> Vec<VideoChapter> {
     }
 }
 
-fn parse_chapter_line_start(line: &str) -> Option<(u64, String)> {
-    let first_token = line.split_whitespace().next()?;
-    let secs = parse_timestamp_token(first_token)?;
-    let remainder = line[first_token.len()..].trim();
-    let clean_title = remainder
-        .trim_start_matches(|c: char| {
-            c == '-' || c == '–' || c == '—' || c == ':' || c == '.' || c == ' '
-        })
-        .trim();
-    if !clean_title.is_empty() {
-        Some((secs, clean_title.to_string()))
-    } else {
-        None
-    }
+fn is_chapter_sep(c: char) -> bool {
+    matches!(c, '-' | '–' | '—' | ':' | '.' | ' ')
 }
 
-fn parse_chapter_line_end(line: &str) -> Option<(u64, String)> {
-    let last_token = line.split_whitespace().last()?;
-    let secs = parse_timestamp_token(last_token)?;
-    let remainder = line[..line.len() - last_token.len()].trim();
-    let clean_title = remainder
-        .trim_end_matches(|c: char| {
-            c == '-' || c == '–' || c == '—' || c == ':' || c == '.' || c == ' '
-        })
-        .trim();
-    if !clean_title.is_empty() {
-        Some((secs, clean_title.to_string()))
+fn parse_chapter_line(line: &str, at_start: bool) -> Option<(u64, String)> {
+    let token = if at_start {
+        line.split_whitespace().next()?
     } else {
-        None
-    }
+        line.split_whitespace().last()?
+    };
+    let secs = parse_timestamp_token(token)?;
+    let remainder = if at_start {
+        line[token.len()..]
+            .trim()
+            .trim_start_matches(is_chapter_sep)
+    } else {
+        line[..line.len() - token.len()]
+            .trim()
+            .trim_end_matches(is_chapter_sep)
+    };
+    let clean_title = remainder.trim();
+    (!clean_title.is_empty()).then(|| (secs, clean_title.to_string()))
 }
 
 fn parse_timestamp_token(token: &str) -> Option<u64> {

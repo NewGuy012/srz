@@ -767,6 +767,19 @@ impl<'a> XmlScanner<'a> {
     }
 }
 
+/// Extracts the value of a quoted attribute given its `attr=` prefix.
+pub fn extract_attr_value<'a>(html: &'a str, attr_prefix: &str) -> Option<&'a str> {
+    let start_pos = html.find(attr_prefix)?;
+    let remainder = &html[start_pos + attr_prefix.len()..];
+    let quote = remainder.chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let rest = &remainder[1..];
+    let end_pos = rest.find(quote)?;
+    Some(&rest[..end_pos])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -895,5 +908,11 @@ mod tests {
         assert!(is_empty);
         assert_eq!(xml_attr(attrs, "id").as_deref(), Some("i1"));
         assert_eq!(xml_attr(attrs, "label").as_deref(), Some("x > y"));
+        assert_eq!(
+            extract_attr_value(xml, "xmlns:dc="),
+            Some("http://purl.org")
+        );
+        assert_eq!(extract_attr_value(xml, "id="), Some("i1"));
+        assert_eq!(extract_attr_value(xml, "missing="), None);
     }
 }

@@ -197,36 +197,26 @@ impl SseStreamState {
         if let Some(delta_text) = &choice.delta.content
             && !delta_text.is_empty()
         {
-            if !self.started_visible {
-                if let Some(think_start) = delta_text.find("<think>") {
-                    self.in_think_tag = true;
-                    let after_tag = &delta_text[think_start + 7..];
-                    if let Some(think_end) = after_tag.find("</think>") {
-                        let think_part = &after_tag[..think_end];
-                        self.append_reasoning_delta(think_part, pb, mode);
-                        self.in_think_tag = false;
-                        let visible_part = &after_tag[think_end + 8..];
-                        if !visible_part.is_empty() {
-                            self.append_content_delta(visible_part, pb, spinner_label, mode);
-                        }
-                    } else {
-                        self.append_reasoning_delta(after_tag, pb, mode);
+            if !self.started_visible
+                && let Some(reasoning_slice) = delta_text
+                    .find("<think>")
+                    .map(|idx| {
+                        self.in_think_tag = true;
+                        &delta_text[idx + 7..]
+                    })
+                    .or_else(|| self.in_think_tag.then_some(delta_text))
+            {
+                if let Some(think_end) = reasoning_slice.find("</think>") {
+                    self.append_reasoning_delta(&reasoning_slice[..think_end], pb, mode);
+                    self.in_think_tag = false;
+                    let visible_part = &reasoning_slice[think_end + 8..];
+                    if !visible_part.is_empty() {
+                        self.append_content_delta(visible_part, pb, spinner_label, mode);
                     }
-                    return false;
-                } else if self.in_think_tag {
-                    if let Some(think_end) = delta_text.find("</think>") {
-                        let think_part = &delta_text[..think_end];
-                        self.append_reasoning_delta(think_part, pb, mode);
-                        self.in_think_tag = false;
-                        let visible_part = &delta_text[think_end + 8..];
-                        if !visible_part.is_empty() {
-                            self.append_content_delta(visible_part, pb, spinner_label, mode);
-                        }
-                    } else {
-                        self.append_reasoning_delta(delta_text, pb, mode);
-                    }
-                    return false;
+                } else {
+                    self.append_reasoning_delta(reasoning_slice, pb, mode);
                 }
+                return false;
             }
 
             if self.content_buf.len().saturating_add(delta_text.len()) > MAX_CONTENT_BUFFER_BYTES {
@@ -343,13 +333,7 @@ impl SseStreamState {
                 pb.reset();
                 pb.enable_steady_tick(Duration::from_millis(80));
             }
-            let clean_label = spinner_label.trim_end_matches('.');
-            let gen_label = if clean_label.eq_ignore_ascii_case("thinking") {
-                "Generating response"
-            } else {
-                clean_label
-            };
-            pb.set_message(format!("{}...", gen_label));
+            update_generating_spinner(pb, spinner_label);
         }
     }
 
@@ -396,17 +380,21 @@ impl SseStreamState {
             }
             StreamMode::Buffered => {
                 if is_first && !spinner_label.trim().is_empty() {
-                    let clean_label = spinner_label.trim_end_matches('.');
-                    let gen_label = if clean_label.eq_ignore_ascii_case("thinking") {
-                        "Generating response"
-                    } else {
-                        clean_label
-                    };
-                    pb.set_message(format!("{}...", gen_label));
+                    update_generating_spinner(pb, spinner_label);
                 }
             }
         }
     }
+}
+
+fn update_generating_spinner(pb: &crate::ui::ProgressBar, spinner_label: &str) {
+    let clean_label = spinner_label.trim_end_matches('.');
+    let gen_label = if clean_label.eq_ignore_ascii_case("thinking") {
+        "Generating response"
+    } else {
+        clean_label
+    };
+    pb.set_message(format!("{}...", gen_label));
 }
 
 /// Formats an elapsed thinking duration into a clean Antigravity/Gemini style string (e.g., "4s", "19s", "35s", "0.4s").
