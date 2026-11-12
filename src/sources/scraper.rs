@@ -293,12 +293,13 @@ pub fn is_private_ipv4(ipv4: std::net::Ipv4Addr) -> bool {
 }
 
 /// Returns true if the given IPv6 address belongs to a loopback, unique-local, link-local,
-/// or IPv4-mapped private address.
+/// multicast, transitional, documentation, or IPv4-mapped private address.
 pub fn is_private_ipv6(ipv6: std::net::Ipv6Addr) -> bool {
     let s = ipv6.segments();
-    if ipv6.is_loopback() || s == [0, 0, 0, 0, 0, 0, 0, 0] {
+    if ipv6.is_loopback() || ipv6.is_unspecified() || ipv6.is_multicast() {
         return true;
     }
+    // IPv4-compatible (::/96) and IPv4-mapped (::ffff:0:0/96)
     if s[0] == 0
         && s[1] == 0
         && s[2] == 0
@@ -314,19 +315,31 @@ pub fn is_private_ipv6(ipv6: std::net::Ipv6Addr) -> bool {
         );
         return is_private_ipv4(ip4);
     }
+    // NAT64 (64:ff9b::/96, 64:ff9b:1::/48)
+    if s[0] == 0x0064 && s[1] == 0xff9b && ((s[2..=5] == [0, 0, 0, 0]) || s[2] == 0x0001) {
+        return true;
+    }
+    // Discard-Only (100::/64)
+    if s[0] == 0x0100 && s[1] == 0 && s[2] == 0 && s[3] == 0 {
+        return true;
+    }
+    // Teredo (2001::/32), Benchmarking (2001:2::/48), Documentation (2001:db8::/32), 6to4 (2002::/16)
+    if (s[0] == 0x2001 && (s[1] == 0 || (s[1] == 0x0002 && s[2] == 0) || s[1] == 0x0db8))
+        || s[0] == 0x2002
+    {
+        return true;
+    }
     let o = ipv6.octets();
-    if (o[0] & 0xfe) == 0xfc {
-        return true;
-    }
-    if o[0] == 0xfe && (o[1] & 0xc0) == 0x80 {
-        return true;
-    }
-    false
+    // Unique local (fc00::/7) and link-local unicast (fe80::/10)
+    (o[0] & 0xfe) == 0xfc || (o[0] == 0xfe && (o[1] & 0xc0) == 0x80)
 }
 
 /// Checks if a host name or IP address resolves to a local or private network destination.
 pub fn is_private_or_local_host(host: &str) -> bool {
     let unbracketed = host.trim_start_matches('[').trim_end_matches(']');
+    if unbracketed.contains('%') {
+        return true;
+    }
     let lower = unbracketed.to_ascii_lowercase();
     let lower_trim = lower.trim_end_matches('.');
     if lower_trim == "localhost"
@@ -346,16 +359,17 @@ pub fn is_private_or_local_host(host: &str) -> bool {
     false
 }
 
-/// Validates that `url_str` uses HTTP or HTTPS and does not target private or local network hosts (SSRF mitigation).
-pub fn validate_public_http_url(url_str: &str) -> Result<()> {
-    let parsed =
-        reqwest::Url::parse(url_str).with_context(|| format!("Invalid URL: {}", url_str))?;
+/// Validates a parsed URL for SSRF safety (HTTP/HTTPS only, no userinfo, no private/local hosts).
+pub fn validate_parsed_public_http_url(parsed: &reqwest::Url) -> Result<()> {
     let scheme = parsed.scheme();
     if scheme != "http" && scheme != "https" {
         anyhow::bail!(
             "Unsupported URL scheme '{}': only http and https are permitted",
             scheme
         );
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        anyhow::bail!("URLs containing embedded credentials are not permitted");
     }
     let host = parsed.host_str().context("URL is missing a host")?;
     if is_private_or_local_host(host) {
@@ -365,6 +379,13 @@ pub fn validate_public_http_url(url_str: &str) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Validates that `url_str` uses HTTP or HTTPS and does not target private or local network hosts (SSRF mitigation).
+pub fn validate_public_http_url(url_str: &str) -> Result<()> {
+    let parsed =
+        reqwest::Url::parse(url_str).with_context(|| format!("Invalid URL: {}", url_str))?;
+    validate_parsed_public_http_url(&parsed)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -437,17 +458,8 @@ impl WebScraper {
                 if attempt.previous().len() >= 10 {
                     return attempt.error("Too many redirects (max 10)");
                 }
-                let next_url = attempt.url();
-                let scheme = next_url.scheme();
-                if scheme != "http" && scheme != "https" {
-                    return attempt.error("Redirect to non-HTTP/HTTPS scheme blocked");
-                }
-                if let Some(host) = next_url.host_str()
-                    && is_private_or_local_host(host)
-                {
-                    return attempt.error(
-                        "Redirect to private or local network address blocked (SSRF protection)",
-                    );
+                if let Err(err) = validate_parsed_public_http_url(attempt.url()) {
+                    return attempt.error(err.to_string());
                 }
                 attempt.follow()
             }))
@@ -1062,11 +1074,21 @@ mod tests {
         assert!(validate_public_http_url("http://169.254.169.254/latest/meta-data").is_err());
         assert!(validate_public_http_url("http://0.0.0.0/").is_err());
 
-        // Blocked: IPv6 loopback & link-local
+        // Blocked: IPv6 loopback, link-local, special/transitional, and zone-scoped targets
         assert!(validate_public_http_url("http://[::1]/").is_err());
         assert!(validate_public_http_url("http://[fe80::1]/").is_err());
+        assert!(validate_public_http_url("http://[fe80::1%25eth0]/").is_err());
         assert!(validate_public_http_url("http://[::ffff:127.0.0.1]/").is_err());
         assert!(validate_public_http_url("http://[::ffff:169.254.169.254]/").is_err());
+        assert!(validate_public_http_url("http://[64:ff9b::7f00:1]/").is_err());
+        assert!(validate_public_http_url("http://[2002:7f00:1::]/").is_err());
+        assert!(validate_public_http_url("http://[2001::1]/").is_err());
+        assert!(validate_public_http_url("http://[2001:db8::1]/").is_err());
+        assert!(validate_public_http_url("http://[ff02::1]/").is_err());
+
+        // Blocked: embedded userinfo credentials
+        assert!(validate_public_http_url("http://user:pass@example.com/").is_err());
+        assert!(validate_public_http_url("https://token@example.com/").is_err());
 
         // Blocked: non-HTTP schemes
         assert!(validate_public_http_url("ftp://example.com/file").is_err());

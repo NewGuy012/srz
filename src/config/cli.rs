@@ -972,23 +972,40 @@ impl Config {
         crate::fs_util::default_config_path()
     }
 
-    /// Loads the configuration file from a specific path.
+    /// Loads the configuration file from a specific path (refusing symlinks and oversized files).
     pub fn load_from_path(path: &Path) -> Result<Self> {
-        let meta = fs::metadata(path)
+        use std::io::Read;
+
+        let sym_meta = fs::symlink_metadata(path)
             .with_context(|| format!("Failed to read config file metadata at {:?}", path))?;
-        if !meta.is_file() {
+        if sym_meta.file_type().is_symlink() {
+            anyhow::bail!("Refusing to load config from symlink path: {:?}", path);
+        }
+        if !sym_meta.is_file() {
             anyhow::bail!("Config path {:?} is not a regular file", path);
         }
-        if meta.len() > MAX_CONFIG_BYTES {
+        if sym_meta.len() > MAX_CONFIG_BYTES {
             anyhow::bail!(
                 "Config file {:?} exceeds maximum allowed size ({} bytes > {} bytes)",
                 path,
-                meta.len(),
+                sym_meta.len(),
                 MAX_CONFIG_BYTES
             );
         }
-        let content = fs::read_to_string(path)
+        let file = fs::File::open(path)
+            .with_context(|| format!("Failed to open config file at {:?}", path))?;
+        let mut content = String::new();
+        let bytes_read = file
+            .take(MAX_CONFIG_BYTES + 1)
+            .read_to_string(&mut content)
             .with_context(|| format!("Failed to read config file at {:?}", path))?;
+        if bytes_read as u64 > MAX_CONFIG_BYTES {
+            anyhow::bail!(
+                "Config file {:?} exceeds maximum allowed size ({} bytes)",
+                path,
+                MAX_CONFIG_BYTES
+            );
+        }
         let config: Config = toml::from_str(&content)
             .with_context(|| format!("Failed to parse TOML configuration from {:?}", path))?;
         Ok(config)
@@ -1140,5 +1157,15 @@ mod tests {
         let file = fs::File::create(&large_config).unwrap();
         file.set_len(MAX_CONFIG_BYTES + 1).unwrap();
         assert!(Config::load_from_path(&large_config).is_err());
+
+        #[cfg(unix)]
+        {
+            let real_config = tmp.path().join("real_config.toml");
+            let sym_config = tmp.path().join("sym_config.toml");
+            fs::write(&real_config, "model = \"test\"\n").unwrap();
+            std::os::unix::fs::symlink(&real_config, &sym_config).unwrap();
+            let err = Config::load_from_path(&sym_config).unwrap_err();
+            assert!(err.to_string().contains("symlink"));
+        }
     }
 }

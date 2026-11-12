@@ -202,6 +202,7 @@ pub async fn fetch_url_content(
         .await
     } else if is_pdf {
         fetch_or_cache_page_with(url, cache, cache_msg, spinner_msg, done_msg, async {
+            crate::scraper::validate_public_http_url(url)?;
             let resp = scraper
                 .client()
                 .get(url)
@@ -1097,5 +1098,21 @@ mod tests {
             "file"
         );
         assert_eq!(target_type_for_url("https://example.com/article"), "web");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_url_content_blocks_private_remote_pdf() {
+        let tmp = crate::fs_util::tempdir().unwrap();
+        let cache = Cache::with_dir(tmp.path().to_path_buf(), false);
+        let scraper = WebScraper::new().unwrap();
+        let err = fetch_url_content(
+            "http://169.254.169.254/latest/meta-data.pdf",
+            &scraper,
+            &cache,
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("SSRF protection"));
     }
 }

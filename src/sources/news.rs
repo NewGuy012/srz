@@ -71,6 +71,7 @@ impl GoogleNewsClient {
     ) -> Result<Vec<NewsArticleItem>> {
         let trimmed = topic.trim();
         let endpoint = if crate::system::text_util::is_http_url(trimmed) {
+            crate::scraper::validate_public_http_url(trimmed)?;
             trimmed.to_string()
         } else {
             let suffix = timeframe.as_google_query_suffix();
@@ -1137,5 +1138,15 @@ mod tests {
             items[0].snippet.as_deref(),
             Some("This is a descriptive summary of the breaking story.")
         );
+    }
+
+    #[tokio::test]
+    async fn test_fetch_feed_blocks_private_direct_url() {
+        let client = GoogleNewsClient::with_client(reqwest::Client::new());
+        let err = client
+            .fetch_feed("http://127.0.0.1:8080/feed.xml", NewsTimeframe::Day, 5)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("SSRF protection"));
     }
 }
