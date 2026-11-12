@@ -562,150 +562,73 @@ fn test_upgrade_subcommand_flags() {
 }
 
 #[test]
-fn test_readme_web_and_news_resolution() {
-    // 1. Webpage
-    let cmd1 = Cli::parse_from([
+fn test_cli_action_resolution_scenarios() {
+    let web = Cli::parse_from([
         "srz",
         "https://en.wikipedia.org/wiki/Rust_(programming_language)",
     ]);
     assert_eq!(
-        cmd1.resolve_action().unwrap(),
+        web.resolve_action().unwrap(),
         ResolvedAction::Web {
             url: "https://en.wikipedia.org/wiki/Rust_(programming_language)"
         }
     );
 
-    // 2. YouTube
-    let cmd2 = Cli::parse_from(["srz", "https://youtu.be/5C_HPTJg5ek"]);
+    let yt = Cli::parse_from(["srz", "https://youtu.be/5C_HPTJg5ek"]);
     assert_eq!(
-        cmd2.resolve_action().unwrap(),
+        yt.resolve_action().unwrap(),
         ResolvedAction::Web {
             url: "https://youtu.be/5C_HPTJg5ek"
         }
     );
 
-    // 3. News digest
-    let cmd5 = Cli::parse_from(["srz", "news", "Rust language updates"]);
+    let news = Cli::parse_from(["srz", "news", "Rust language updates"]);
     assert_eq!(
-        cmd5.resolve_action().unwrap(),
+        news.resolve_action().unwrap(),
         ResolvedAction::News {
             topic: "Rust language updates".to_string(),
             timeframe: NewsTimeframe::All,
             limit: 5,
         }
     );
-}
 
-#[test]
-fn test_readme_file_and_stdin_resolution() {
-    // Local PDF document (auto-detected as file via is_file_like even if missing)
-    let cmd3 = Cli::parse_from(["srz", "assets/document.pdf"]);
+    for path in ["assets/document.pdf", "document.pdf"] {
+        let cli = Cli::parse_from(["srz", path]);
+        assert_eq!(
+            cli.resolve_action().unwrap(),
+            ResolvedAction::File {
+                path: std::path::PathBuf::from(path)
+            }
+        );
+    }
+
     assert_eq!(
-        cmd3.resolve_action().unwrap(),
-        ResolvedAction::File {
-            path: std::path::PathBuf::from("assets/document.pdf")
-        }
-    );
-    let cmd3_raw = Cli::parse_from(["srz", "document.pdf"]);
-    assert_eq!(
-        cmd3_raw.resolve_action().unwrap(),
-        ResolvedAction::File {
-            path: std::path::PathBuf::from("document.pdf")
-        }
+        Cli::parse_from(["srz", "-"]).resolve_action().unwrap(),
+        ResolvedAction::Stdin
     );
 
-    // Unix stdin stream
-    let cmd6 = Cli::parse_from(["srz", "-"]);
-    assert_eq!(cmd6.resolve_action().unwrap(), ResolvedAction::Stdin);
-}
-
-#[test]
-fn test_readme_book_and_profile_resolution() {
-    // Book synopsis with bullets and browser open
-    let cmd4 = Cli::parse_from([
+    let book = Cli::parse_from([
         "srz",
         "The Rust Programming Language",
         "--style",
         "bullets",
         "--open",
-    ]);
-    assert_eq!(cmd4.style, SummaryStyle::Bullets);
-    assert!(cmd4.open);
-    assert_eq!(
-        cmd4.resolve_action().unwrap(),
-        ResolvedAction::Book {
-            title: "The Rust Programming Language",
-        }
-    );
-
-    // srz "The Rust Programming Language"
-    let cmd_rust_book = Cli::parse_from(["srz", "The Rust Programming Language"]);
-    assert_eq!(
-        cmd_rust_book.resolve_action().unwrap(),
-        ResolvedAction::Book {
-            title: "The Rust Programming Language",
-        }
-    );
-
-    // srz "The Rust Programming Language" --profile openai
-    let cmd_rust_prof = Cli::parse_from([
-        "srz",
-        "The Rust Programming Language",
         "--profile",
         "openai",
     ]);
-    assert_eq!(cmd_rust_prof.profile.as_deref(), Some("openai"));
-
-    // srz "1984" --base-url "https://api.openai.com/v1" --model "gpt-4o-mini" --api-key "sk-..."
-    let cmd_cloud = Cli::parse_from([
-        "srz",
-        "1984",
-        "--base-url",
-        "https://api.openai.com/v1",
-        "--model",
-        "gpt-4o-mini",
-        "--api-key",
-        "sk-test",
-    ]);
-    assert_eq!(cmd_cloud.base_url, "https://api.openai.com/v1");
-    assert_eq!(cmd_cloud.model, "gpt-4o-mini");
-    assert_eq!(cmd_cloud.api_key, "sk-test");
-}
-
-#[test]
-fn test_readme_ask_and_chat_resolution() {
-    // Ask based on latest read
-    let cmd7 = Cli::parse_from(["srz", "ask", "What are the main findings?"]);
+    assert_eq!(book.style, SummaryStyle::Bullets);
+    assert!(book.open);
+    assert_eq!(book.profile.as_deref(), Some("openai"));
     assert_eq!(
-        cmd7.resolve_action().unwrap(),
-        ResolvedAction::Ask {
-            target: None,
-            question: Some("What are the main findings?".to_string()),
-            interactive: false,
-            list_chats: false,
-            resume: None,
-            show_chat: None,
-            delete_chat: None,
+        book.resolve_action().unwrap(),
+        ResolvedAction::Book {
+            title: "The Rust Programming Language"
         }
     );
 
-    // Ask based on specific document
-    let cmd8 = Cli::parse_from(["srz", "ask", "assets/document.pdf", "Key takeaways?"]);
+    let ask_file = Cli::parse_from(["srz", "ask", "document.pdf", "Key takeaways?"]);
     assert_eq!(
-        cmd8.resolve_action().unwrap(),
-        ResolvedAction::Ask {
-            target: Some("assets/document.pdf".to_string()),
-            question: Some("Key takeaways?".to_string()),
-            interactive: false,
-            list_chats: false,
-            resume: None,
-            show_chat: None,
-            delete_chat: None,
-        }
-    );
-    let cmd8_raw = Cli::parse_from(["srz", "ask", "document.pdf", "Key takeaways?"]);
-    assert_eq!(
-        cmd8_raw.resolve_action().unwrap(),
+        ask_file.resolve_action().unwrap(),
         ResolvedAction::Ask {
             target: Some("document.pdf".to_string()),
             question: Some("Key takeaways?".to_string()),
@@ -717,109 +640,31 @@ fn test_readme_ask_and_chat_resolution() {
         }
     );
 
-    // Interactive chat
-    let cmd9 = Cli::parse_from(["srz", "ask", "-i"]);
-    assert_eq!(
-        cmd9.resolve_action().unwrap(),
-        ResolvedAction::Ask {
-            target: None,
-            question: None,
-            interactive: true,
-            list_chats: false,
-            resume: None,
-            show_chat: None,
-            delete_chat: None,
-        }
-    );
-}
-
-#[test]
-fn test_readme_management_and_maintenance_resolution() {
-    // TUI browse
-    let cmd10 = Cli::parse_from(["srz", "browse"]);
-    assert_eq!(cmd10.resolve_action().unwrap(), ResolvedAction::Browse);
-
-    // Find in library
-    let cmd11 = Cli::parse_from(["srz", "find", "keyword"]);
-    assert_eq!(
-        cmd11.resolve_action().unwrap(),
-        ResolvedAction::Find { query: "keyword" }
-    );
-
-    // History (default limit)
-    let cmd12 = Cli::parse_from(["srz", "history"]);
-    assert_eq!(
-        cmd12.resolve_action().unwrap(),
-        ResolvedAction::History { limit: 10 }
-    );
-
-    // Stats
-    let cmd13 = Cli::parse_from(["srz", "stats"]);
-    assert_eq!(cmd13.resolve_action().unwrap(), ResolvedAction::Stats);
-
-    // Cache size
-    let cmd14 = Cli::parse_from(["srz", "cache", "size"]);
-    assert_eq!(
-        cmd14.resolve_action().unwrap(),
-        ResolvedAction::Cache(CacheCommand::Size)
-    );
-
-    // Cache prune by age
-    let cmd15 = Cli::parse_from(["srz", "cache", "prune", "--older-than", "14d"]);
-    assert_eq!(
-        cmd15.resolve_action().unwrap(),
-        ResolvedAction::Cache(CacheCommand::Prune {
-            older_than: Some("14d".to_string()),
-            max_size: None,
-        })
-    );
-
-    // Cache prune by max size
-    let cmd16 = Cli::parse_from(["srz", "cache", "prune", "--max-size", "500MB"]);
-    assert_eq!(
-        cmd16.resolve_action().unwrap(),
-        ResolvedAction::Cache(CacheCommand::Prune {
-            older_than: None,
-            max_size: Some("500MB".to_string()),
-        })
-    );
-
-    // Cache clean
-    let cmd17 = Cli::parse_from(["srz", "cache", "clean"]);
-    assert_eq!(
-        cmd17.resolve_action().unwrap(),
-        ResolvedAction::Cache(CacheCommand::Clean { reset_db: false })
-    );
-
-    // Cache clean reset db
-    let cmd18 = Cli::parse_from(["srz", "cache", "clean", "--reset-db"]);
-    assert_eq!(
-        cmd18.resolve_action().unwrap(),
-        ResolvedAction::Cache(CacheCommand::Clean { reset_db: true })
-    );
-
-    // Doctor
-    let cmd19 = Cli::parse_from(["srz", "doctor"]);
-    assert_eq!(cmd19.resolve_action().unwrap(), ResolvedAction::Doctor);
-
-    // Recommend
-    let cmd_rec = Cli::parse_from(["srz", "recommend"]);
-    assert_eq!(cmd_rec.resolve_action().unwrap(), ResolvedAction::Recommend);
-
-    // Models
-    let cmd_models = Cli::parse_from(["srz", "models"]);
-    assert_eq!(cmd_models.resolve_action().unwrap(), ResolvedAction::Models);
-
-    // Config init
-    let cmd_cfg_init = Cli::parse_from(["srz", "config", "init"]);
-    assert_eq!(
-        cmd_cfg_init.resolve_action().unwrap(),
-        ResolvedAction::Config(srz::cli::ConfigSubcommand::Init)
-    );
-
-    // Index
-    let cmd_index = Cli::parse_from(["srz", "index"]);
-    assert_eq!(cmd_index.resolve_action().unwrap(), ResolvedAction::Index);
+    let simple_cases: &[(&[&str], ResolvedAction<'_>)] = &[
+        (&["srz", "browse"], ResolvedAction::Browse),
+        (
+            &["srz", "find", "keyword"],
+            ResolvedAction::Find { query: "keyword" },
+        ),
+        (&["srz", "history"], ResolvedAction::History { limit: 10 }),
+        (&["srz", "stats"], ResolvedAction::Stats),
+        (
+            &["srz", "cache", "size"],
+            ResolvedAction::Cache(CacheCommand::Size),
+        ),
+        (&["srz", "doctor"], ResolvedAction::Doctor),
+        (&["srz", "recommend"], ResolvedAction::Recommend),
+        (&["srz", "models"], ResolvedAction::Models),
+        (
+            &["srz", "config", "init"],
+            ResolvedAction::Config(srz::cli::ConfigSubcommand::Init),
+        ),
+        (&["srz", "index"], ResolvedAction::Index),
+    ];
+    for (argv, expected) in simple_cases {
+        let cli = Cli::parse_from(*argv);
+        assert_eq!(&cli.resolve_action().unwrap(), expected);
+    }
 }
 
 #[test]

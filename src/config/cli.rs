@@ -822,11 +822,7 @@ pub const TOP_LEVEL_COMMANDS: &[&str] = &[
     "version",
 ];
 
-/// Suggests a command name if `input` is likely a misspelled top-level command.
-///
-/// Returns `Some(suggested_cmd)` if a command is sufficiently close, or `None`
-/// if `input` does not look like a typo of any known subcommand (e.g. multi-word
-/// book titles or unrelated inputs).
+/// Suggests a matching subcommand for a single-token typo, or `None` for non-commands.
 pub fn suggest_command(input: &str) -> Option<&'static str> {
     let trimmed = input.trim();
 

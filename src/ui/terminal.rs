@@ -320,12 +320,7 @@ fn is_bidi_control(c: char) -> bool {
     )
 }
 
-/// Sanitizes a string for safe terminal display by stripping ANSI escape sequences,
-/// string-type controls (OSC, DCS, SOS, PM, APC), 8-bit C1 controls, BiDi overrides,
-/// and unprintable ASCII control characters (CWE-150 / CWE-451).
-///
-/// Returns a borrowed `Cow::Borrowed` when the input contains no suspicious characters,
-/// avoiding heap allocations on clean inputs.
+/// Strips ANSI/C1/BiDi/control sequences (CWE-150/CWE-451), borrowing clean inputs zero-copy.
 pub fn sanitize_terminal_text_cow<'a>(input: &'a str) -> Cow<'a, str> {
     let has_suspicious = input.chars().any(|c| {
         c == '\x1b'

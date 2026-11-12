@@ -674,11 +674,7 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
     items
 }
 
-/// Attempts zero-network offline decoding of an obfuscated Google News URL (`CBMi...`).
-///
-/// Google News article IDs starting with `CBMi` are URL-safe base64-encoded protobuf messages
-/// that contain the canonical destination URL in cleartext. Decoding them offline eliminates
-/// up to two HTTP roundtrips (page fetch + `batchexecute` RPC).
+/// Decodes a `CBMi...` Google News URL offline from its URL-safe base64 protobuf ID.
 pub fn decode_google_news_url(url: &str) -> Option<String> {
     let id = extract_article_id(url)?;
     decode_cbmi_id(id)

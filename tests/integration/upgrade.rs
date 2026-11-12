@@ -94,22 +94,6 @@ fn test_detect_install_origin() {
 }
 
 #[test]
-fn test_parse_clean_version() {
-    let v1 = parse_clean_version("v0.1.0").unwrap();
-    assert_eq!(v1, Version::new(0, 1, 0));
-
-    let v2 = parse_clean_version("0.2.5").unwrap();
-    assert_eq!(v2, Version::new(0, 2, 5));
-
-    let v3 = parse_clean_version("  v1.3.4-alpha.1 \n").unwrap();
-    assert_eq!(v3.major, 1);
-    assert_eq!(v3.minor, 3);
-    assert_eq!(v3.patch, 4);
-
-    assert!(parse_clean_version("invalid-version").is_err());
-}
-
-#[test]
 fn test_parse_sha256_checksum() {
     let test_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
@@ -204,6 +188,13 @@ fn test_sha256_verification_computation() {
 #[test]
 fn test_parse_clean_version_canonicalization_and_rejection() {
     assert_eq!(
+        parse_clean_version("v0.1.0").unwrap(),
+        Version::new(0, 1, 0)
+    );
+    assert_eq!(parse_clean_version("0.2.5").unwrap(), Version::new(0, 2, 5));
+    let pre = parse_clean_version("  v1.3.4-alpha.1 \n").unwrap();
+    assert_eq!((pre.major, pre.minor, pre.patch), (1, 3, 4));
+    assert_eq!(
         parse_clean_version("v0.7.1").unwrap(),
         Version::new(0, 7, 1)
     );
@@ -212,10 +203,15 @@ fn test_parse_clean_version_canonicalization_and_rejection() {
         Version::new(0, 7, 1)
     );
     // Malicious or invalid tags must fail to parse as semver
-    assert!(parse_clean_version("../../../evil").is_err());
-    assert!(parse_clean_version("latest").is_err());
-    assert!(parse_clean_version("v0.7.1/payload").is_err());
-    assert!(parse_clean_version("; rm -rf /").is_err());
+    for invalid in [
+        "invalid-version",
+        "../../../evil",
+        "latest",
+        "v0.7.1/payload",
+        "; rm -rf /",
+    ] {
+        assert!(parse_clean_version(invalid).is_err());
+    }
 }
 
 #[test]

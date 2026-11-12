@@ -700,11 +700,7 @@ fn skip_citation_whitespace(out: &mut String, bytes: &[u8], next_idx: usize, i: 
     }
 }
 
-/// Cleans markdown links and citations from a single line of text:
-/// - Strips destination URLs from `[anchor](url)` to retain clean prose without URL token bloat.
-/// - Drops footnote citations (`[1]`, `[1, 2]`, `[citation needed]`, `[edit]`).
-/// - Drops image markdown (`![alt](url)`).
-/// - Preserves inline code (backticks) and code syntax like `arr[0]`.
+/// Strips link URLs, images, and citation tags from prose while preserving inline code.
 pub fn clean_markdown_line(line: &str) -> Cow<'_, str> {
     if !line.contains('[') && !line.contains('!') {
         return Cow::Borrowed(line);

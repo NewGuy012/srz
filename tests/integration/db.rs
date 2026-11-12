@@ -362,9 +362,8 @@ fn test_database_reset() {
 #[test]
 fn test_database_file_open_and_reopen() {
     let tmp = srz::fs_util::tempdir().unwrap();
-    let db_path = tmp.path().join("reopen.duckdb");
+    let db_path = tmp.path().join("reopen.db");
 
-    // First open initializes schema
     {
         let db = Database::open_at(&db_path).unwrap();
         let record = NewSummaryRecord {
@@ -385,13 +384,14 @@ fn test_database_file_open_and_reopen() {
         db.record_summary(&record).unwrap();
     }
 
-    // Second open skips redundant init_schema and loads existing records
-    {
-        let db = Database::open_at(&db_path).unwrap();
-        let history = db.get_history(10).unwrap();
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].title, "Reopen Test");
-    }
+    let db = Database::open_at(&db_path).unwrap();
+    let history = db.get_history(10).unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].title, "Reopen Test");
+
+    let latest = db.get_latest_summary().unwrap();
+    assert!(latest.is_some());
+    assert_eq!(latest.unwrap().summary, "Reopen content");
 }
 
 #[test]
@@ -573,8 +573,8 @@ fn test_database_search_special_characters_and_sql_injection() {
 #[cfg(unix)]
 fn test_database_refuses_symlink() {
     let tmp = srz::fs_util::tempdir().unwrap();
-    let real_db = tmp.path().join("real.duckdb");
-    let symlink_db = tmp.path().join("symlink.duckdb");
+    let real_db = tmp.path().join("real.db");
+    let symlink_db = tmp.path().join("symlink.db");
 
     // Open and initialize a real DB
     {
@@ -662,38 +662,4 @@ fn test_export_markdown_vault_escaping_and_collisions() {
             .iter()
             .any(|c| c.contains("\\nmalicious_key: true"))
     );
-}
-
-#[test]
-fn test_reopen_database() {
-    let tmp = srz::fs_util::tempdir().unwrap();
-    let db_path = tmp.path().join("test.db");
-    {
-        let db = Database::open_at(&db_path).unwrap();
-        let record = NewSummaryRecord {
-            target_type: "book",
-            title: "Old Book",
-            author: None,
-            url: None,
-            style: "concise",
-            model: "m",
-            word_count: 100,
-            prompt_tokens: None,
-            completion_tokens: None,
-            duration_ms: 10,
-            tokens_per_second: None,
-            summary: "Old summary",
-            reasoning: None,
-        };
-        db.record_summary(&record).unwrap();
-    }
-
-    let db = Database::open_at(&db_path).unwrap();
-    let history = db.get_history(10).unwrap();
-    assert_eq!(history.len(), 1);
-    assert_eq!(history[0].title, "Old Book");
-
-    let latest = db.get_latest_summary().unwrap();
-    assert!(latest.is_some());
-    assert_eq!(latest.unwrap().summary, "Old summary");
 }

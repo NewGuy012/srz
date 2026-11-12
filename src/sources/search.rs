@@ -576,11 +576,7 @@ fn normalize_title_for_comparison(title: &str) -> String {
     out
 }
 
-/// Extracts a focused narrative synopsis or non-fiction overview from a Wikipedia page's Markdown.
-///
-/// Looks for the introductory overview (lead section before the first `## `) along with
-/// the canonical narrative section (`## Plot`, `## Synopsis`, `## Summary`, `## Content`, or `## Overview`),
-/// discarding sprawling infoboxes, cast lists, discographies, adaptations, and publication tables.
+/// Extracts the lead section and main narrative/summary section from a Wikipedia page.
 pub fn extract_wikipedia_synopsis(markdown: &str) -> Option<String> {
     // 1. Identify lead section (text before the first `## ` heading)
     let lead_end = markdown.find("\n## ").unwrap_or(markdown.len());

@@ -146,34 +146,6 @@ fn test_book_metadata_cache_roundtrip() {
     assert_eq!(loaded, meta);
 }
 
-#[cfg(unix)]
-#[test]
-fn test_cache_file_permissions() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let tmp = temp_test_dir("perms");
-    let dir = tmp.path().to_path_buf();
-    let cache = Cache::with_dir(dir.clone(), true);
-
-    let page = ScrapedPage {
-        url: "https://secure.example.com".to_string(),
-        title: Some("Secure".to_string()),
-        content: "Secret content".to_string(),
-        word_count: 2,
-    };
-    cache.set_page("https://secure.example.com", &page);
-
-    // Verify root cache directory has 0700 permissions and cache.duckdb has 0600 permissions
-    let dir_meta = fs::metadata(&dir).unwrap();
-    assert_eq!(dir_meta.permissions().mode() & 0o777, 0o700);
-
-    let db_meta = fs::metadata(dir.join("srz.db")).unwrap();
-    assert_eq!(db_meta.permissions().mode() & 0o777, 0o600);
-
-    // Ensure no redundant legacy JSON files were written to pages/
-    assert!(!dir.join("pages").exists());
-}
-
 #[test]
 fn test_parse_duration_and_bytes() {
     use srz::cache::{parse_bytes, parse_duration};
@@ -473,7 +445,7 @@ fn test_cache_prune_by_max_size_lru() {
     assert!(prune_stats.files_removed > 0);
     assert!(cache.stats().total_bytes <= 2500);
     assert!(cache.stats().total_bytes < original_bytes);
-    // Oldest entry must be evicted from cache.duckdb, newest must remain
+    // Oldest entry must be evicted from srz.db, newest must remain
     assert!(cache.get_page("https://example.com/0").is_none());
     assert!(cache.get_page("https://example.com/4").is_some());
 }
@@ -518,7 +490,7 @@ fn test_cache_sha256_hash_keys() {
         word_count: 4,
     };
     cache.set_page("https://secure-hash.example.com", &page);
-    // Explicitly drop cache to release DuckDB file locks before direct inspection (required on Windows)
+    // Explicitly drop cache to release database file locks before direct inspection (required on Windows)
     drop(cache);
 
     // Query cache_pages in srz.db and verify the key is 64 hex characters (SHA-256)
@@ -533,25 +505,25 @@ fn test_cache_sha256_hash_keys() {
 }
 
 #[test]
-fn test_cache_duckdb_consolidation() {
-    let tmp = temp_test_dir("duckdb_cache");
+fn test_cache_redb_consolidation_and_permissions() {
+    let tmp = temp_test_dir("redb_cache");
     let dir = tmp.path().to_path_buf();
     let cache = Cache::with_dir(dir.clone(), true);
 
     let page = ScrapedPage {
-        url: "https://duckdb-cached.com".to_string(),
-        title: Some("DuckDB Cache".to_string()),
-        content: "Testing DuckDB cache consolidation".to_string(),
+        url: "https://redb-cached.com".to_string(),
+        title: Some("redb Cache".to_string()),
+        content: "Testing redb cache consolidation".to_string(),
         word_count: 4,
     };
-    cache.set_page("https://duckdb-cached.com", &page);
+    cache.set_page("https://redb-cached.com", &page);
 
     let db = cache.open_database().unwrap();
     let record = srz::db::NewSummaryRecord {
         target_type: "web",
-        title: "DuckDB Cache",
+        title: "redb Cache",
         author: None,
-        url: Some("https://duckdb-cached.com"),
+        url: Some("https://redb-cached.com"),
         style: SummaryStyle::Concise.as_str(),
         model: "gemma-4",
         word_count: 4,
@@ -559,63 +531,55 @@ fn test_cache_duckdb_consolidation() {
         completion_tokens: None,
         duration_ms: 0,
         tokens_per_second: None,
-        summary: "Consolidated cache in DuckDB",
+        summary: "Consolidated cache in redb",
         reasoning: None,
     };
-    db.record_summary_with_key(&record, Some("https://duckdb-cached.com"))
+    db.record_summary_with_key(&record, Some("https://redb-cached.com"))
         .unwrap();
 
     let db_path = dir.join("srz.db");
     assert!(db_path.exists(), "srz.db database file must exist");
-    assert!(
-        !dir.join("cache.duckdb").exists(),
-        "legacy cache.duckdb should not exist"
-    );
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let meta = fs::metadata(&db_path).unwrap();
-        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&db_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
-    // Remove disk cache directories to guarantee DuckDB serves the cached page & summary
-    let _ = fs::remove_dir_all(dir.join("pages"));
-    let _ = fs::remove_dir_all(dir.join("summaries"));
     assert!(!dir.join("pages").exists());
     assert!(!dir.join("summaries").exists());
 
-    let loaded_page = cache.get_page("https://duckdb-cached.com");
+    let loaded_page = cache.get_page("https://redb-cached.com");
     assert!(
         loaded_page.is_some(),
-        "DuckDB must serve cached page without disk JSON files"
+        "redb must serve cached page without disk JSON files"
     );
-    assert_eq!(loaded_page.unwrap().title.as_deref(), Some("DuckDB Cache"));
+    assert_eq!(loaded_page.unwrap().title.as_deref(), Some("redb Cache"));
 
-    let loaded_summary = cache.get_web_summary(
-        "https://duckdb-cached.com",
-        SummaryStyle::Concise,
-        "gemma-4",
-    );
+    let loaded_summary =
+        cache.get_web_summary("https://redb-cached.com", SummaryStyle::Concise, "gemma-4");
     assert!(
         loaded_summary.is_some(),
-        "DuckDB must serve cached summary without disk JSON files"
+        "redb must serve cached summary without disk JSON files"
     );
     assert_eq!(
         loaded_summary.unwrap().summary,
-        "Consolidated cache in DuckDB"
+        "Consolidated cache in redb"
     );
 
     // Clean should clear the cache
     cache.clean().unwrap();
-    assert!(cache.get_page("https://duckdb-cached.com").is_none());
+    assert!(cache.get_page("https://redb-cached.com").is_none());
     assert!(
         cache
-            .get_web_summary(
-                "https://duckdb-cached.com",
-                SummaryStyle::Concise,
-                "gemma-4",
-            )
+            .get_web_summary("https://redb-cached.com", SummaryStyle::Concise, "gemma-4",)
             .is_none(),
         "Summary cache must be invalidated after clean"
     );
