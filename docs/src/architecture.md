@@ -20,7 +20,7 @@ flowchart TD
         Router -->|"EPUB Book (.epub)"| EPUBFlow["Pure-Rust Zero-Dependency EPUB Extractor"]
         Router -->|"Local Path or Stdin (-)"| FileFlow["File / Stdin Reader"]
         Router -->|"Book Title"| BookFlow["Book Pipeline"]
-        Router -->|"News Query, RSS or Atom"| NewsFlow["Universal Feed Parser (quick-xml)"]
+        Router -->|"News Query, RSS or Atom"| NewsFlow["Universal Feed Parser (XmlScanner)"]
         Router -->|"ask [TARGET] [Q]"| AskFlow["Grounded Q&A Handler"]
         Router -->|"browse / tui"| TuiFlow["Ratatui TUI Library Explorer"]
         Router -->|"Utility Subcommands"| UtilFlow["Utility Handlers"]
@@ -62,7 +62,7 @@ flowchart TD
         Orchestrator -->|"--output <PATH>"| FileSink["Direct File Sink (.html / .md)"]
         Orchestrator -->|"Piped / --plain / --json"| RawStdout["Clean stdout (No escapes / leaks)"]
         Orchestrator -->|"Interactive TTY (Buffered)"| UnifiedDoc["Unified Composite Pager (less -RFX)"]
-        Orchestrator -->|"Unified Storage & Cache"| RedbStore["Single Database (srz.redb)"]
+        Orchestrator -->|"Unified Storage & Cache"| RedbStore["Single Database (srz.db)"]
         Orchestrator -->|"--open / --output"| Views["Opt-In Reader Views (views/)"]
     end
 ```
@@ -73,14 +73,14 @@ The codebase is organized into seven domain modules under `src/`, separating com
 
 ```text
 src/
-├── commands/     # CLI subcommand workflows (summarize, ask, library, diagnostics)
+├── commands/     # CLI subcommand workflows (summarize, ask, library, diagnostics, completions)
 ├── config/       # CLI parsing, auto-detection heuristics, and config file profiles
 ├── engine/       # SSE streaming client, dynamic token budgeting, and chunkers
 ├── sources/      # Content ingestion: web scraper, book search, YouTube, and feeds
 ├── storage/      # Embedded redb cache, library database, and pruning
-├── system/       # Hardware profiling, text sanitization, atomic filesystem, and updater
+├── system/       # Hardware profiling, text/XML utilities, atomic filesystem, and updater
 ├── testing.rs    # Integration & unit test fixtures (RAII TempDir, PDF generator)
-├── ui/           # Terminal console formatting, spinners, streaming renderer, and TUI
+├── ui/           # Shared Markdown parser, terminal formatting/spinners, HTML reader, and TUI
 ├── lib.rs        # Library crate root and public module exports
 └── main.rs       # Binary entry point and CLI orchestration
 ```
@@ -93,12 +93,12 @@ src/
 | :--- | :--- | :--- | :--- |
 | **Entry Points** | [`src/main.rs`](https://github.com/NewGuy012/srz/blob/master/src/main.rs) | `main` | Application lifecycle, config resolution, signal routing, and CLI dispatch. |
 | | [`src/lib.rs`](https://github.com/NewGuy012/srz/blob/master/src/lib.rs) | `lib` | Root library interface and backward-compatible module re-exports. |
-| **Commands** | [`src/commands/mod.rs`](https://github.com/NewGuy012/srz/blob/master/src/commands/mod.rs) | `commands` | Command routing, CLI dispatch (`dispatch_cli`), database loan manager (`with_db`), cache commands, and dashboard updates. |
+| **Commands** | [`src/commands/mod.rs`](https://github.com/NewGuy012/srz/blob/master/src/commands/mod.rs) | `commands` | Command routing, CLI dispatch (`dispatch_cli`), shell completion generation, database loan manager (`with_db`), cache commands, and dashboard updates. |
 | | [`src/commands/summarize.rs`](https://github.com/NewGuy012/srz/blob/master/src/commands/summarize.rs) | `commands::summarize` | Summarization workflows for web, YouTube, documents, stdin, and books. |
 | | [`src/commands/ask.rs`](https://github.com/NewGuy012/srz/blob/master/src/commands/ask.rs) | `commands::ask` | Grounded Q&A, shared BM25 context retrieval, automatic re-fetching on cache expiration, standard I/O REPL, and chat persistence. |
 | | [`src/commands/library.rs`](https://github.com/NewGuy012/srz/blob/master/src/commands/library.rs) | `commands::library` | Handlers for `history`, `stats`, `find` (BM25), and `export`. |
 | | [`src/commands/diagnostics.rs`](https://github.com/NewGuy012/srz/blob/master/src/commands/diagnostics.rs) | `commands::diagnostics` | Backend verification (`doctor`), model enumeration, and config inspection. |
-| **Configuration** | [`src/config/cli.rs`](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs) | `config::cli` | `clap` CLI parser, style presets, flags, target auto-detection heuristics, `config.toml` profiles, configuration loading, shell completion templates, and template generation. |
+| **Configuration** | [`src/config/cli.rs`](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs) | `config::cli` | `clap` CLI parser, style presets, flags, target auto-detection heuristics, `config.toml` profiles, symlink-safe config loading, and template generation. |
 | **Engine** | [`src/engine/compressor.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/compressor.rs) | `engine::compressor` | CPU Stratified Salience Compression, centroid BM25 term ranking, heading/lead/tail structural preservation, and shared grounding retrieval. |
 | | [`src/engine/llm.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/llm.rs) | `engine::llm` | High-level LLM client, single-pass streaming orchestration, book summarization, and news digest synthesis. |
 | | [`src/engine/sse.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/sse.rs) | `engine::sse` | Zero-copy SSE parser, streaming state machine, sentence-cased thought headline extraction, thinking duration formatting, and rate tracking. |
@@ -106,17 +106,18 @@ src/
 | | [`src/engine/budget.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/budget.rs) | `engine::budget` | Dynamic token budgeting (`DynamicBudget`), server capability discovery (`/props`, `/api/show`), context window discovery, and context clamping. |
 | | [`src/engine/chunker.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/chunker.rs) | `engine::chunker` | In-process model-aware token estimation (`TokenizerKind`), $O(1)$ fast paths, and hierarchical paragraph chunking. |
 | **Sources** | [`src/sources/document.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/document.rs) | `sources::document` | Consolidated document loader, pure-Rust single-pass PDF text layer extraction, pure-Rust zero-dependency EPUB chapter & metadata extraction, format dispatch, and file size bounding (`MAX_FILE_BYTES`). |
-| | [`src/sources/scraper.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/scraper.rs) | `sources::scraper` | HTTP client (10 MB cap), SSRF mitigation blocking private/loopback/cloud metadata targets, Mozilla Readability DOM parsing (`dom_smoothie`), and streaming HTML-to-Markdown conversion (`quick-xml`). |
+| | [`src/sources/scraper.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/scraper.rs) | `sources::scraper` | HTTP client (10 MB cap), SSRF mitigation blocking private/loopback/metadata/transition IPv6 targets, Mozilla Readability DOM parsing (`dom_smoothie`), and streaming HTML-to-Markdown conversion (`XmlScanner`). |
 | | [`src/sources/youtube.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/youtube.rs) | `sources::youtube` | Video ID parsing, Innertube client, XML/JSON3 caption streaming, chapter cue grouping (`parse_chapters_from_description`), and auto-translate (`&tlang=en`) fallback. |
 | | [`src/sources/search.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/search.rs) | `sources::search` | Concurrent fan-out Open Library metadata & search candidates with strict `work_key` path traversal validation, candidate ranking, and targeted Wikipedia synopsis extraction (`extract_wikipedia_synopsis`). |
-| | [`src/sources/news.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/news.rs) | `sources::news` | Syndication feeds (RSS/Atom via `quick-xml`), zero-network offline `CBMi` protobuf decoding, pre-scrape caching, RPC fallback, and RSS snippet fallback on paywalled links. |
-| **Storage** | [`src/storage/cache.rs`](https://github.com/NewGuy012/srz/blob/master/src/storage/cache.rs) | `storage::cache` | Unified redb cache (`srz.redb`), 2h news TTL, opt-in views, and LRU pruning. |
-| | [`src/storage/db.rs`](https://github.com/NewGuy012/srz/blob/master/src/storage/db.rs) | `storage::db` | Embedded pure-Rust redb database (`srz.redb`), BM25 index with secondary term indexing, bounded history pagination, ACID transactions, and chat tables. |
-| **UI & Render** | [`src/ui/terminal.rs`](https://github.com/NewGuy012/srz/blob/master/src/ui/terminal.rs) | `ui::terminal` | Zero-dependency background thread progress spinners, terminal escape sanitization, ANSI CommonMark terminal rendering (`pulldown-cmark`), line-buffered stream rendering, and pager integration. |
+| | [`src/sources/news.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/news.rs) | `sources::news` | Syndication feeds (RSS/Atom via `XmlScanner`), SSRF validation on direct feed URLs, offline `CBMi` protobuf decoding, pre-scrape caching, RPC fallback, and RSS snippet fallback on paywalled links. |
+| **Storage** | [`src/storage/cache.rs`](https://github.com/NewGuy012/srz/blob/master/src/storage/cache.rs) | `storage::cache` | Unified redb cache (`srz.db`), 2h news TTL, opt-in views, and LRU pruning. |
+| | [`src/storage/db.rs`](https://github.com/NewGuy012/srz/blob/master/src/storage/db.rs) | `storage::db` | Embedded pure-Rust redb database (`srz.db`), generic TTL JSON cache helpers, BM25 index with secondary term indexing, bounded history pagination, ACID transactions, and chat tables. |
+| **UI & Render** | [`src/ui/markdown.rs`](https://github.com/NewGuy012/srz/blob/master/src/ui/markdown.rs) | `ui::markdown` | Zero-dependency shared CommonMark + GFM parser, XSS-safe link filter (`is_safe_markdown_url`), and ANSI terminal / HTML5 renderer. |
+| | [`src/ui/terminal.rs`](https://github.com/NewGuy012/srz/blob/master/src/ui/terminal.rs) | `ui::terminal` | Zero-dependency background thread progress spinners, terminal escape sanitization, ANSI terminal Markdown rendering (`ui::markdown`), line-buffered stream rendering, and pager integration. |
 | | [`src/ui/tui.rs`](https://github.com/NewGuy012/srz/blob/master/src/ui/tui.rs) | `ui::tui` | Full-screen interactive terminal explorer (`ratatui`) with RAII `TerminalSessionGuard` cleanup, live search, and system clipboard integration. |
-| | [`src/ui/render.rs`](https://github.com/NewGuy012/srz/blob/master/src/ui/render.rs) | `ui::render` | HTML reader generator (`pulldown-cmark`) with collapsible thought drawers. |
+| | [`src/ui/render.rs`](https://github.com/NewGuy012/srz/blob/master/src/ui/render.rs) | `ui::render` | HTML reader generator (`ui::markdown`) with collapsible thought drawers. |
 | **System** | [`src/system/hardware.rs`](https://github.com/NewGuy012/srz/blob/master/src/system/hardware.rs) | `system::hardware` | Host RAM/CPU detection (cached via `LazyLock`, native kernel `sysctl`/`/proc/meminfo`) and Gemma 4 model advisories. |
-| | [`src/system/text_util.rs`](https://github.com/NewGuy012/srz/blob/master/src/system/text_util.rs) | `system::text_util` | Flattened single-allocation Damerau-Levenshtein distance, zero-copy ASCII tokenizers, fast HTML decoding, and string utilities. |
+| | [`src/system/text_util.rs`](https://github.com/NewGuy012/srz/blob/master/src/system/text_util.rs) | `system::text_util` | Streaming pull-based `XmlScanner`, quoted attribute extraction, flattened Damerau-Levenshtein distance, zero-copy ASCII tokenizers, fast HTML decoding, and string utilities. |
 | | [`src/system/fs_util.rs`](https://github.com/NewGuy012/srz/blob/master/src/system/fs_util.rs) | `system::fs_util` | Platform filesystem helpers, `0700`/`0600` permissions, consolidated safe unique tempfile creation, and atomic file writes. |
 | | [`src/system/zip.rs`](https://github.com/NewGuy012/srz/blob/master/src/system/zip.rs) | `system::zip` | Lightweight safe ZIP archive extractor & deflate decompressor (`flate2`). |
 | | [`src/system/upgrade.rs`](https://github.com/NewGuy012/srz/blob/master/src/system/upgrade.rs) | `system::upgrade` | In-place self-updater with release queries, SHA-256 verification, zero-dependency streaming USTAR tar decoder, and atomic swap with automatic rollback. |
@@ -136,7 +137,7 @@ sequenceDiagram
     participant Search as BookSearcher & Open Library
     participant Scraper as WebScraper
     participant LLM as LlmClient (SseStreamState)
-    participant DB as Single Database (srz.redb)
+    participant DB as Single Database (srz.db)
 
     User->>CLI: srz "The Hobbit"
     CLI->>DB: Check summary cache (history & library via cache_key)
@@ -152,7 +153,7 @@ sequenceDiagram
             CLI->>User: Prompt selection [1-4, Enter for 1]
         end
         CLI->>Scraper: Fetch & clean canonical reference article
-        CLI->>DB: Cache scraped page into cache_pages (srz.redb)
+        CLI->>DB: Cache scraped page into cache_pages (srz.db)
         CLI->>LLM: POST /v1/chat/completions (stream: true)
         loop Zero-Copy SSE Stream
             LLM-->>CLI: Live one-liner spinner & completion line on stderr (💭 Thought for Xs (N tokens))
@@ -173,7 +174,7 @@ sequenceDiagram
 ### Execution Lifecycle Phases
 
 #### Sub-Millisecond Cache Fast-Path & Offline Dispatch
-Every summarization request begins by constructing a deterministic cache key from the target identifier (URLs, canonical book titles, or local file hashes/mtimes), model name, and summary style preset. `srz` probes `srz.redb` directly (`history` joined with `library`) using `cache_key` before initializing network clients or the LLM inference client. On a cache hit, the stored summary and preserved chain-of-thought reasoning are returned in under a millisecond. If `--open` was supplied, existing HTML/Markdown reader views on disk are verified or generated on demand. Offline chat session management commands (`--chats`, `--show-chat`, `--delete-chat`) are similarly intercepted and served directly from storage before any LLM connectivity check. During these fast paths, network connections and unnecessary database locks are avoided entirely.
+Every summarization request begins by constructing a deterministic cache key from the target identifier (URLs, canonical book titles, or local file hashes/mtimes), model name, and summary style preset. `srz` probes `srz.db` directly (`history` joined with `library`) using `cache_key` before initializing network clients or the LLM inference client. On a cache hit, the stored summary and preserved chain-of-thought reasoning are returned in under a millisecond. If `--open` was supplied, existing HTML/Markdown reader views on disk are verified or generated on demand. Offline chat session management commands (`--chats`, `--show-chat`, `--delete-chat`) are similarly intercepted and served directly from storage before any LLM connectivity check. During these fast paths, network connections and unnecessary database locks are avoided entirely.
 
 #### Quarantined Content Ingestion
 On a cache miss, the router dispatches the target to its specialized source pipeline. Network and filesystem reads enforce strict resource ceilings (10 MB for web payloads and stdin, 20 MB for local files). Scraped web pages are cached in `cache_pages` (with news items adhering to a 2-hour TTL), stripped of navigation menus, ads, and boilerplate via Mozilla's Readability algorithm (`dom_smoothie`), while book lookups concurrently fan out across Open Library and search endpoints to extract lead and plot synopses. All untrusted source text is then quarantined inside `<source_document>` XML boundary tags with case-insensitive delimiter escaping before reaching the prompt builder.
@@ -182,7 +183,7 @@ On a cache miss, the router dispatches the target to its specialized source pipe
 With the prompt assembled and sized according to the server's active context window, `srz` initiates an HTTP POST request with Server-Sent Events enabled (`stream: true`). Incoming byte chunks are parsed zero-copy using borrowed string slices (`Cow<str>`). Model reasoning tokens (`reasoning_content` deltas or in-band `<think>` blocks) dynamically update a live single-line spinner with the active step summary (e.g. `💭 Thinking: Analyzing the request...`) and settle into a clean completion line (`💭 Thought for 35s (633 tokens)`), while content tokens are either rendered incrementally via `StreamMarkdownRenderer` when `--stream` is passed or buffered behind a clean spinner until completion. Full raw trace streaming to `stderr` can be opted into via `--show-thinking` or `--verbose`.
 
 #### Unified Persistence & Opt-In View Generation
-Once inference completes, `srz` persists the outcome into the unified `srz.redb` database. Reading telemetry, token metrics, and `cache_key` are committed to `history`, while full summary text and chain-of-thought reasoning traces reside in `library` within a single ACID transaction. Standalone HTML5 and Markdown reader views (`views/{slug}-{hash8}.html` and `.md`) are generated strictly on an opt-in basis via `--open` or explicit output flags (`--output`), avoiding disk file clutter.
+Once inference completes, `srz` persists the outcome into the unified `srz.db` database. Reading telemetry, token metrics, and `cache_key` are committed to `history`, while full summary text and chain-of-thought reasoning traces reside in `library` within a single ACID transaction. Standalone HTML5 and Markdown reader views (`views/{slug}-{hash8}.html` and `.md`) are generated strictly on an opt-in basis via `--open` or explicit output flags (`--output`), avoiding disk file clutter.
 
 #### Clean Unix Stream Separation
 At the presentation boundary, `srz` strictly separates data streams from UI diagnostics. When standard output is piped or `--plain` / `--json` is active, `stdout` receives pure Markdown or JSON free of ANSI escape sequences, banners, or file links, while diagnostics are routed to `stderr`. On interactive terminals, the metadata header, styled Markdown body, clickable `file://` view links, and context hints are composed into a single buffer and piped into `$PAGER` (`less -RFX`) whenever the output exceeds the terminal viewport height.
@@ -233,7 +234,7 @@ Before treating remaining freeform text as a book title, `suggest_command` compu
 Within the web workflow, `fetch_url_content` performs secondary protocol inspection. YouTube URLs (`youtube.com/watch`, `youtu.be/`, `/shorts/`) are intercepted by `extract_youtube_video_id` and routed to the Innertube timed-text client, which downloads XML/JSON3 subtitle tracks without fetching video streams. Remote links ending in `.pdf` stream directly into the pure-Rust PDF extractor, and all remaining web pages are fetched via `reqwest` and cleaned with `dom_smoothie`.
 
 #### Grounded Q&A Disambiguation (`srz ask`)
-The `srz ask` command accepts either a target paired with a question or a standalone question. `is_probable_question` identifies questions by trailing question marks or interrogative prefixes (`what`, `how`, `why`, `explain`, etc.). When a user provides only a question, the target defaults to `None` and automatically grounds the query against the most recent summary in `srz.redb`. If the underlying source page cache has expired, `srz ask` automatically re-fetches the live URL or local document before ranking relevant passages.
+The `srz ask` command accepts either a target paired with a question or a standalone question. `is_probable_question` identifies questions by trailing question marks or interrogative prefixes (`what`, `how`, `why`, `explain`, etc.). When a user provides only a question, the target defaults to `None` and automatically grounds the query against the most recent summary in `srz.db`. If the underlying source page cache has expired, `srz ask` automatically re-fetches the live URL or local document before ranking relevant passages.
 
 #### Multi-Model Router & Proxy Probing
 When `probe_server_capabilities` queries `GET /props` on `llama.cpp` routers or proxy gateways, the server often responds with `role: "router"` or `n_ctx: 0`. `srz` detects this topology automatically and issues a follow-up request to `GET /props?model=<MODEL>` to retrieve accurate, model-specific context window (`n_ctx`) allocations.
@@ -255,8 +256,8 @@ When summarizing a book (`srz <TITLE>`), `srz` accelerates uncached runs across 
 ```mermaid
 graph TD
     subgraph DataRoot["~/.local/share/srz/ (XDG_DATA_HOME, 0700)"]
-        subgraph UnifiedDB["Unified redb Database (srz.redb, 0600)"]
-            D["srz.redb (ACID Transactions & Safe Reader Concurrency)"]
+        subgraph UnifiedDB["Unified redb Database (srz.db, 0600)"]
+            D["srz.db (ACID Transactions & Safe Reader Concurrency)"]
             D --> T1["history (metadata, words, tokens, latency, cache_key)"]
             D --> T2["library (normalized id, summary & reasoning trace)"]
             D --> T3["library_terms (Stop-word filtered BM25 index)"]
@@ -289,7 +290,7 @@ graph TD
 ### Storage Engine Design
 
 #### Unified Single-File Pure-Rust redb Architecture
-Instead of depending on external C/C++ database libraries or heavy analytical engines, `srz` unifies all persistent library records, chat sessions, and transient cache tables into a single pure-Rust `redb` file (`srz.redb`). `redb` provides embedded key-value storage with zero C FFI overhead, atomic ACID transactions, table-level isolation, and safe concurrent readers. Summaries and reasoning traces stored in `history` and `library` serve as the single source of truth for both user reading history and cache lookup hits via deterministic `cache_key` indexing.
+Instead of depending on external C/C++ database libraries or heavy analytical engines, `srz` unifies all persistent library records, chat sessions, and transient cache tables into a single pure-Rust `redb` file (`srz.db`). `redb` provides embedded key-value storage with zero C FFI overhead, atomic ACID transactions, table-level isolation, and safe concurrent readers. Summaries and reasoning traces stored in `history` and `library` serve as the single source of truth for both user reading history and cache lookup hits via deterministic `cache_key` indexing.
 
 #### Short-Lived News Caching (2-Hour TTL)
 Fast-moving news feeds and syndication channels require timely updates. To prevent readers from receiving stale briefings, web pages matching news patterns (`news.google.com`, `news.ycombinator.com`, `/rss`, `/feed`) automatically use a 2-hour TTL (`news_ttl`). Standard web articles retain a 7-day TTL, while YouTube transcripts and static PDF documents retain a 30-day TTL.
@@ -299,7 +300,7 @@ Cache eviction operates directly on `redb` table iterators, scanning timestamps 
 When total cached bytes exceed the storage budget, the oldest entries past the budget are deleted in a single atomic transaction without CPU or memory overhead.
 
 #### Opt-In View Generation
-Because modern terminal rendering is styled and formatted cleanly via `MadSkin`, automatic generation of standalone `.html` and `.md` view files on every run is disabled. View files in `views/` are generated strictly when requested via `--open` or explicit output flags (`--output`), eliminating disk clutter while preserving one-click browser viewing when desired.
+Because modern terminal rendering is styled and formatted cleanly via `ui::markdown`, automatic generation of standalone `.html` and `.md` view files on every run is disabled. View files in `views/` are generated strictly when requested via `--open` or explicit output flags (`--output`), eliminating disk clutter while preserving one-click browser viewing when desired.
 
 #### Collision-Safe Reader Views
 Standalone HTML5 and Markdown reader files in `views/` are named using `slugify_unique(title, key)`, which appends an 8-character SHA-256 digest of the source URL or file path (`{slug}-{hash8}.html`). This guarantees zero filename collisions when summarizing different pages that share generic titles like "Documentation" or "Home". Each HTML view embeds the model's reasoning trace inside a collapsible `<details class="thought-drawer">` element.
@@ -384,7 +385,7 @@ To eliminate the 15–25% token count drift typical when applying generic BPE to
 | **Unix Stream Separation** | Strict stream routing: clean stdout for pipelines; diagnostics and links on `stderr` | Seamless piping into UNIX tools (`jq`, `cat`, files) without ANSI code contamination. |
 | **Terminal & Pager** | Unified document composition piped directly into `$PAGER` (`less -RFX`) | Header, body, links, and hints kept together without viewport truncation. |
 | **Content Ingestion** | Mozilla Readability (`dom_smoothie`), streaming XML, chapters & auto-translation, and bounded semaphores | Clean text stripped of web noise; chapter-aligned caption pulls; bounded worker concurrency. |
-| **Storage & Caching** | Unified redb (`srz.redb`), LRU pruning, 2h news TTL, and opt-in reader views | Sub-millisecond hits, zero cache duplication, instant LRU pruning, and clean disk views. |
+| **Storage & Caching** | Unified redb (`srz.db`), LRU pruning, 2h news TTL, and opt-in reader views | Sub-millisecond hits, zero cache duplication, instant LRU pruning, and clean disk views. |
 | **Resolution & Grounding** | Offline `CBMi` protobuf decoding, targeted Wikipedia synopsis extraction, and in-memory BM25 chunking | Zero-network Google News link resolution; 70% fewer prompt tokens for books; discriminative Q&A retrieval. |
 | **Offline Search** | Inverted index (`library_terms`) evaluated with Robertson-Sparck Jones BM25 | Sub-2ms Google-style BM25 search without external search engines or daemons. |
 
@@ -419,7 +420,7 @@ Before parsing web pages with Mozilla Readability, raw HTML is scanned to strip 
 The entire codebase enforces `#![forbid(unsafe_code)]` at both `src/lib.rs` and `src/main.rs`. Every parser, network stream, and database query is written in 100% safe Rust, providing compile-time mathematical guarantees against buffer overflows, use-after-free bugs, and data races.
 
 ### Local Privacy & Atomic Filesystem Isolation
-`srz` operates with zero telemetry, analytics, or cloud dependencies. Cache and data directories are created with owner-only `0700` permissions, and files are written atomically using temporary files (`O_CREAT | O_EXCL` with `0600` permissions) while explicitly rejecting pre-planted symlinks to prevent directory traversal and symlink swap attacks.
+`srz` operates with zero telemetry, analytics, or cloud dependencies. Cache and data directories are created with owner-only `0700` permissions, `config.toml` loading rejects symlinks and bounds file size to prevent `CWE-59` exposure, and files are written atomically using temporary files (`O_CREAT | O_EXCL` with `0600` permissions) while explicitly rejecting pre-planted symlinks to prevent directory traversal and symlink swap attacks.
 
 ### Defensive Prompt Quarantining
 Because web pages and documents may contain adversarial instructions, all ingested content is isolated within `<source_document>` XML boundary tags. The prompt framing layer performs case-insensitive scanning to neutralize embedded closing tags, preventing untrusted text from escaping its quarantine container and hijacking system instructions.
@@ -427,8 +428,8 @@ Because web pages and documents may contain adversarial instructions, all ingest
 ### Terminal Escape & BiDi Sanitization
 Rendering untrusted text in terminal emulators carries risks of clipboard hijacking (via OSC 52 sequences) and visual spoofing. `srz` passes all titles, metadata, and streaming LLM outputs through `sanitize_terminal_text`, stripping ANSI CSI/OSC control sequences, C1 control characters, and Unicode Bidirectional (BiDi) override codepoints.
 
-### Bounded Resource Ceilings & Verified Upgrades
-Strict byte ceilings protect the host from resource exhaustion: 10 MB for web responses and stdin streams, 20 MB for local documents, and 50 MB for release archives, reinforced by connection and read timeouts on all HTTP clients. Self-updates via `srz upgrade` verify release binaries against cryptographic SHA-256 checksums before performing an atomic binary swap.
+### SSRF Guardrails, Bounded Resource Ceilings & Verified Upgrades
+All outbound public web fetches — including articles, remote PDFs, RSS/OPML feeds, and HTTP redirect hops (capped at 10) — enforce `validate_public_http_url` / `validate_parsed_public_http_url` to reject non-HTTP(S) schemes, embedded userinfo, and private, loopback, link-local, or cloud-metadata IP/host targets. Strict byte ceilings protect the host from resource exhaustion: 10 MB for web responses and stdin streams, 20 MB for local documents, and 50 MB for release archives, reinforced by connection and read timeouts on all HTTP clients. Self-updates via `srz upgrade` verify release binaries against cryptographic SHA-256 checksums before performing an atomic binary swap.
 
 ---
 

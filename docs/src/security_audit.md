@@ -1310,14 +1310,17 @@ cargo clippy --all-targets -- -D warnings
 
 While `srz` is hardened for local CLI usage across macOS, Linux, and Windows, the following recommendations and completed security remediations are documented:
 
-### 1. Server-Side Request Forgery (SSRF) Guardrails (✅ Completed in Supply Chain & Security Hardening)
-* **Implementation:** `WebScraper` enforces `validate_public_http_url` before issuing external requests and installs a custom redirect policy blocking redirection to private RFC 1918 subnets, IPv6 unique-local/link-local addresses, loopback addresses (`127.0.0.1`, `localhost`, `[::1]`), and cloud metadata IP (`169.254.169.254`).
+### 1. Server-Side Request Forgery (SSRF) Guardrails (✅ Completed & Hardened)
+* **Implementation:** `validate_public_http_url` and `validate_parsed_public_http_url` enforce strict public-host validation across `WebScraper` (including HTTP redirects), remote PDF fetches (`fetch_url_content`), and direct RSS/Atom feed URLs (`GoogleNewsClient::fetch_feed`), rejecting embedded userinfo credentials, IPv6 zone IDs (`%`), loopback/private RFC 1918 subnets, cloud metadata (`169.254.169.254`), link-local/ULA/multicast/unspecified ranges, and special-purpose IPv6 blocks (NAT64, Teredo, 6to4, Discard-Only, Benchmarking, Documentation).
 
 ### 2. Automated Dependency Auditing in CI (✅ Completed in Audit #3 & Audit #4)
 * **Implementation:** Deployed `.github/workflows/ci.yml` integrating `rustsec/audit-check@v1.4.1` and dual-OS matrix testing on every push and PR to `master`, triggered on all code and `Cargo.toml`/`Cargo.lock` changes.
 
 ### 3. Cryptographically Fixed Cache Hashing (✅ Completed in Audit #4)
-* **Implementation:** `Cache::hash_key` upgraded from 64-bit `DefaultHasher` to 256-bit cryptographic SHA-256 generating persistent 64-character lowercase hex keys, ensuring permanent collision safety and cross-platform cache persistence.
+* **Implementation:** Cache keys use 256-bit SHA-256 (`system::sha256::Sha256`) generating persistent 64-character lowercase hex digests, ensuring collision safety and cross-platform persistence.
 
 ### 4. Supply Chain Attack Surface Reduction & Dependency Elimination (✅ Completed)
-* **Implementation:** Eliminated redundant and unmaintained external dependencies (`rustyline`, `termimad`, `tar`, `indicatif`, `zip`, `htmd`, `clap_complete`) in favor of standard library streaming and zero-dependency implementations, shrinking transitive dependencies by dozens of crates and removing entire classes of supply-chain vulnerabilities.
+* **Implementation:** Eliminated redundant external dependencies (`rustyline`, `termimad`, `tar`, `indicatif`, `zip`, `htmd`, `clap_complete`, `quick-xml`, `pulldown-cmark`, `scraper`, `duckdb`) in favor of `redb` plus zero-dependency in-tree streaming parsers (`text_util::XmlScanner`, `ui::markdown`), terminal controls, deflate/ustar extractors, and shell completions, dramatically shrinking the transitive dependency tree and supply-chain exposure.
+
+### 5. Symlink & Configuration File Hardening (✅ Completed)
+* **Implementation:** `Config::load_from_path`, `Database::open_at`, and `upgrade::replace_binary` inspect `fs::symlink_metadata` to refuse symlinks (`CWE-59`) and non-regular files, and bound config reads with `.take(MAX_CONFIG_BYTES + 1)` to prevent TOCTOU oversized reads.

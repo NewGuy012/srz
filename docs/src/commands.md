@@ -40,7 +40,7 @@
 | | `srz recommend` | Recommends optimal model and context window for host hardware. |
 | | `srz doctor` | Tests backend reachability, latency, cache health, and database integrity. |
 | | `srz upgrade [--check\|--force]` | Safe, in-place binary self-updater with SHA-256 integrity verification. |
-| | `srz completions <SHELL>` | Generates autocomplete scripts for bash, zsh, fish, and powershell. |
+| | `srz completions <SHELL>` | Generates autocomplete scripts for bash, zsh, fish, powershell, and elvish. |
 
 ---
 
@@ -62,8 +62,8 @@ Local targets receive similarly intelligent routing. If `<TARGET>` matches an ex
 
 | Flag | Short | Description |
 | :--- | :--- | :--- |
-| `--style <STYLE>` | `-s` | Summary format preset: `concise` (default), `bullets`, `detailed`. |
-| `--model <MODEL>` | `-m` | Override the configured LLM model name. |
+| `--style <STYLE>` | | Summary format preset: `concise` (default), `bullets`, `detailed`. |
+| `--model <MODEL>` | | Override the configured LLM model name. |
 | `--base-url <URL>` | | Local or remote OpenAI-compatible base URL (default: `http://localhost:9931/v1`). |
 | `--api-key <KEY>` | | OpenAI API key (optional for local LLMs). |
 | `--profile <NAME>` | | Load a named configuration profile from `~/.config/srz/config.toml`. |
@@ -231,7 +231,7 @@ srz cache <SUBCOMMAND>
   srz cache prune --max-size 500MB
   ```
 * `srz cache clean`: Clear all cached web pages and view files.
-  * `--reset-db`: Also wipes the permanent `srz.redb` analytics database.
+  * `--reset-db`: Also wipes the permanent `srz.db` analytics database.
 
 ---
 
@@ -280,7 +280,7 @@ For the complete tier-by-tier hardware breakdown, refer to the canonical [Hardwa
 srz upgrade --check
 srz upgrade
 
-# Generate autocomplete scripts (bash, zsh, fish, powershell)
+# Generate autocomplete scripts (bash, zsh, fish, powershell, elvish)
 # Zsh (add to ~/.zshrc):
 eval "$(srz completions zsh)"
 
@@ -292,4 +292,7 @@ srz completions fish | source
 
 # PowerShell (add to $PROFILE):
 srz completions powershell | Out-String | Invoke-Expression
+
+# Elvish (add to ~/.config/elvish/rc.elv):
+eval (srz completions elvish | slurp)
 ```

@@ -108,19 +108,19 @@ Runtime configuration follows a predictable layered resolution model. Explicit c
 
 ## Cache & Storage Settings
 
-The `[cache]` table controls how `srz` manages disk storage across `srz.redb` and `~/.cache/srz/`:
+The `[cache]` table controls how `srz` manages disk storage across `srz.db` and `~/.cache/srz/`:
 
 | Setting | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `max_size_mb` | integer | `500` | Total storage budget in megabytes across `srz.redb` and `views/`. LRU eviction triggers when exceeded. |
+| `max_size_mb` | integer | `500` | Total storage budget in megabytes across `srz.db` and `views/`. LRU eviction triggers when exceeded. |
 | `pages_ttl_days` | integer | `7` | Retention for scraped DOM and web article text (YouTube and PDFs retain for 30 days). |
 | `news_ttl_hours` | integer | `2` | Short-lived retention for news articles and syndication feeds to prevent stale briefings. |
 | `search_ttl_days` | integer | `14` | Retention for Open Library book metadata and search query candidates. |
-| `summaries_ttl_days` | integer | `90` | Cache lookup retention window for generated summaries in `srz.redb` (`(target, model, style)`). |
+| `summaries_ttl_days` | integer | `90` | Cache lookup retention window for generated summaries in `srz.db` (`(target, model, style)`). |
 | `views_ttl_days` | integer | `14` | Retention for opt-in standalone HTML and Markdown view files in `views/` (generated via `--open`). |
 | `auto_prune` | boolean | `true` | Enables opportunistic background cache cleanup (throttled to once every 24 hours via `~/.cache/srz/.last_prune`). |
 
-> 🔒 **Privacy & Isolation**: All databases and view files are created with owner-only Unix permissions (`0700` directories, `0600` files). To completely bypass caching for a single command, pass `--no-cache`. View file export (`.html`/`.md`) is strictly opt-in via `--open` or explicit output flags (`--output`).
+> 🔒 **Privacy & Isolation**: All databases and view files are created with owner-only Unix permissions (`0700` directories, `0600` files), and `config.toml` rejects symlinks and oversized files (`CWE-59`). To completely bypass caching for a single command, pass `--no-cache`. View file export (`.html`/`.md`) is strictly opt-in via `--open` or explicit output flags (`--output`).
 
 ---
 
