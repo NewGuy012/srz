@@ -1,10 +1,9 @@
-use crate::engine::ServerCapabilities;
 use crate::fs_util;
 use crate::scraper::ScrapedPage;
-use crate::sources::search::SearchResult;
 use crate::ui::render::slugify;
 use anyhow::Result;
 use redb::{Database as RedbDb, ReadableDatabase, ReadableTable, TableDefinition};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -205,25 +204,20 @@ pub struct ChatMessage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CachedPageRecord {
-    pub url: String,
-    pub title: Option<String>,
-    pub content: String,
-    pub word_count: usize,
-    pub cached_at: u64,
+struct CachedEntry<T> {
+    value: T,
+    cached_at: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CachedSearchRecord {
-    pub query: String,
-    pub results_json: String,
-    pub cached_at: u64,
+#[derive(Serialize)]
+struct SerializedCacheEntry<'a, T: ?Sized> {
+    value: &'a T,
+    cached_at: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CachedCapsRecord {
-    pub caps: ServerCapabilities,
-    pub cached_at: u64,
+#[derive(Deserialize)]
+struct CachedAtOnly {
+    cached_at: u64,
 }
 
 #[derive(Clone)]
@@ -239,14 +233,27 @@ fn now_unix_secs() -> u64 {
         .unwrap_or(0)
 }
 
+fn format_iso_from_timestamp(unix_secs: u64) -> String {
+    let date = format_date_from_timestamp(unix_secs);
+    let time_of_day = unix_secs % 86400;
+    format!(
+        "{}T{:02}:{:02}:{:02}Z",
+        date,
+        time_of_day / 3600,
+        (time_of_day % 3600) / 60,
+        time_of_day % 60
+    )
+}
+
 fn chrono_now_iso() -> String {
-    let now_secs = now_unix_secs();
-    let date = format_date_from_timestamp(now_secs);
-    let time_of_day = now_secs % 86400;
-    let hours = time_of_day / 3600;
-    let mins = (time_of_day % 3600) / 60;
-    let secs = time_of_day % 60;
-    format!("{}T{:02}:{:02}:{:02}Z", date, hours, mins, secs)
+    format_iso_from_timestamp(now_unix_secs())
+}
+
+fn next_meta_id(write_txn: &redb::WriteTransaction, key: &str) -> Result<u64> {
+    let mut meta_table = write_txn.open_table(TABLE_META)?;
+    let id = meta_table.get(key)?.map(|v| v.value()).unwrap_or(1);
+    meta_table.insert(key, id + 1)?;
+    Ok(id)
 }
 
 fn extract_domain(url: &str) -> Option<String> {
@@ -413,14 +420,7 @@ impl Database {
         cache_key: Option<&str>,
     ) -> Result<()> {
         let write_txn = self.db.begin_write()?;
-        let mut id = 1u64;
-        {
-            let mut meta_table = write_txn.open_table(TABLE_META)?;
-            if let Some(val) = meta_table.get("next_history_id")? {
-                id = val.value();
-            }
-            meta_table.insert("next_history_id", id + 1)?;
-        }
+        let id = next_meta_id(&write_txn, "next_history_id")?;
 
         let item = LibraryItem {
             id: id as i64,
@@ -553,14 +553,7 @@ impl Database {
         model: &str,
     ) -> Result<i64> {
         let write_txn = self.db.begin_write()?;
-        let mut id = 1u64;
-        {
-            let mut meta_table = write_txn.open_table(TABLE_META)?;
-            if let Some(val) = meta_table.get("next_session_id")? {
-                id = val.value();
-            }
-            meta_table.insert("next_session_id", id + 1)?;
-        }
+        let id = next_meta_id(&write_txn, "next_session_id")?;
 
         let now = chrono_now_iso();
         let session = ChatSession {
@@ -1030,103 +1023,51 @@ impl Database {
     }
 
     // Unified cache table helpers
-    pub fn get_cached_page(&self, hash: &str, ttl: Duration) -> Option<ScrapedPage> {
-        let read_txn = self.db.begin_read().ok()?;
-        let table = read_txn.open_table(TABLE_CACHE_PAGES).ok()?;
-        let val = table.get(hash).ok()??;
-        let record: CachedPageRecord = serde_json::from_slice(val.value()).ok()?;
-        let now = now_unix_secs();
-        if now.saturating_sub(record.cached_at) > ttl.as_secs() {
-            return None;
-        }
-        Some(ScrapedPage {
-            url: record.url,
-            title: record.title,
-            content: record.content,
-            word_count: record.word_count,
-        })
-    }
-
-    pub fn set_cached_page(&self, hash: &str, page: &ScrapedPage) -> Result<()> {
-        let write_txn = self.db.begin_write()?;
-        {
-            let mut table = write_txn.open_table(TABLE_CACHE_PAGES)?;
-            let record = CachedPageRecord {
-                url: page.url.clone(),
-                title: page.title.clone(),
-                content: page.content.clone(),
-                word_count: page.word_count,
-                cached_at: now_unix_secs(),
-            };
-            table.insert(hash, serde_json::to_vec(&record)?.as_slice())?;
-        }
-        write_txn.commit()?;
-        Ok(())
-    }
-
-    pub fn get_cached_search(&self, key: &str, ttl: Duration) -> Option<Vec<SearchResult>> {
-        let read_txn = self.db.begin_read().ok()?;
-        let table = read_txn.open_table(TABLE_CACHE_SEARCH).ok()?;
-        let val = table.get(key).ok()??;
-        let record: CachedSearchRecord = serde_json::from_slice(val.value()).ok()?;
-        let now = now_unix_secs();
-        if now.saturating_sub(record.cached_at) > ttl.as_secs() {
-            return None;
-        }
-        serde_json::from_str(&record.results_json).ok()
-    }
-
-    pub fn set_cached_search(&self, key: &str, results: &[SearchResult]) -> Result<()> {
-        let write_txn = self.db.begin_write()?;
-        {
-            let mut table = write_txn.open_table(TABLE_CACHE_SEARCH)?;
-            let record = CachedSearchRecord {
-                query: key.to_string(),
-                results_json: serde_json::to_string(results)?,
-                cached_at: now_unix_secs(),
-            };
-            table.insert(key, serde_json::to_vec(&record)?.as_slice())?;
-        }
-        write_txn.commit()?;
-        Ok(())
-    }
-
-    pub fn get_cached_caps(
+    pub fn get_cached_json<T: DeserializeOwned>(
         &self,
-        endpoint: &str,
-        model: &str,
+        table_def: TableDefinition<&str, &[u8]>,
+        key: &str,
         ttl: Duration,
-    ) -> Option<ServerCapabilities> {
+    ) -> Option<T> {
         let read_txn = self.db.begin_read().ok()?;
-        let table = read_txn.open_table(TABLE_CACHE_CAPS).ok()?;
-        let val = table.get(endpoint).ok()??;
-        let record: CachedCapsRecord = serde_json::from_slice(val.value()).ok()?;
-        let now = now_unix_secs();
-        if now.saturating_sub(record.cached_at) > ttl.as_secs() || record.caps.model_id != model {
-            drop(read_txn);
-            if let Ok(write_txn) = self.db.begin_write() {
-                if let Ok(mut mut_table) = write_txn.open_table(TABLE_CACHE_CAPS) {
-                    let _ = mut_table.remove(endpoint);
-                }
-                let _ = write_txn.commit();
-            }
+        let table = read_txn.open_table(table_def).ok()?;
+        let val = table.get(key).ok()??;
+        let entry: CachedEntry<T> = serde_json::from_slice(val.value()).ok()?;
+        if now_unix_secs().saturating_sub(entry.cached_at) > ttl.as_secs() {
             return None;
         }
-        Some(record.caps)
+        Some(entry.value)
     }
 
-    pub fn set_cached_caps(&self, caps: &ServerCapabilities) -> Result<()> {
+    pub fn set_cached_json<T: Serialize + ?Sized>(
+        &self,
+        table_def: TableDefinition<&str, &[u8]>,
+        key: &str,
+        value: &T,
+    ) -> Result<()> {
+        let entry = SerializedCacheEntry {
+            value,
+            cached_at: now_unix_secs(),
+        };
+        let bytes = serde_json::to_vec(&entry)?;
         let write_txn = self.db.begin_write()?;
         {
-            let mut table = write_txn.open_table(TABLE_CACHE_CAPS)?;
-            let record = CachedCapsRecord {
-                caps: caps.clone(),
-                cached_at: now_unix_secs(),
-            };
-            table.insert(
-                caps.endpoint.as_str(),
-                serde_json::to_vec(&record)?.as_slice(),
-            )?;
+            let mut table = write_txn.open_table(table_def)?;
+            table.insert(key, bytes.as_slice())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    pub fn remove_cached_entry(
+        &self,
+        table_def: TableDefinition<&str, &[u8]>,
+        key: &str,
+    ) -> Result<()> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(table_def)?;
+            let _ = table.remove(key)?;
         }
         write_txn.commit()?;
         Ok(())
@@ -1188,17 +1129,16 @@ impl Database {
         let max_age_secs = max_age.as_secs();
         let mut pruned = 0;
 
-        fn prune_table<T: for<'de> serde::Deserialize<'de>>(
+        fn prune_table(
             table: &mut redb::Table<&str, &[u8]>,
             now: u64,
             max_age: u64,
-            get_cached_at: fn(&T) -> u64,
         ) -> Result<usize> {
             let mut to_delete = Vec::new();
             for item_res in table.iter()? {
                 let (k, v) = item_res?;
-                if let Ok(rec) = serde_json::from_slice::<T>(v.value())
-                    && now.saturating_sub(get_cached_at(&rec)) > max_age
+                if let Ok(rec) = serde_json::from_slice::<CachedAtOnly>(v.value())
+                    && now.saturating_sub(rec.cached_at) > max_age
                 {
                     to_delete.push(k.value().to_string());
                 }
@@ -1211,20 +1151,9 @@ impl Database {
         }
 
         let write_txn = self.db.begin_write()?;
-        {
-            let mut table = write_txn.open_table(TABLE_CACHE_PAGES)?;
-            pruned +=
-                prune_table::<CachedPageRecord>(&mut table, now, max_age_secs, |r| r.cached_at)?;
-        }
-        {
-            let mut table = write_txn.open_table(TABLE_CACHE_SEARCH)?;
-            pruned +=
-                prune_table::<CachedSearchRecord>(&mut table, now, max_age_secs, |r| r.cached_at)?;
-        }
-        {
-            let mut table = write_txn.open_table(TABLE_CACHE_CAPS)?;
-            pruned +=
-                prune_table::<CachedCapsRecord>(&mut table, now, max_age_secs, |r| r.cached_at)?;
+        for table_def in [TABLE_CACHE_PAGES, TABLE_CACHE_SEARCH, TABLE_CACHE_CAPS] {
+            let mut table = write_txn.open_table(table_def)?;
+            pruned += prune_table(&mut table, now, max_age_secs)?;
         }
         write_txn.commit()?;
         Ok(pruned)
@@ -1242,7 +1171,7 @@ impl Database {
             if let Ok(table) = read_txn.open_table(TABLE_CACHE_PAGES) {
                 for item_res in table.iter()? {
                     let (k, v) = item_res?;
-                    if let Ok(rec) = serde_json::from_slice::<CachedPageRecord>(v.value()) {
+                    if let Ok(rec) = serde_json::from_slice::<CachedAtOnly>(v.value()) {
                         all_pages.push((k.value().to_string(), rec.cached_at, v.value().len()));
                     }
                 }
@@ -1278,29 +1207,23 @@ impl Database {
         let Ok(read_txn) = self.db.begin_read() else {
             return (0, 0, 0, 0, 0, 0);
         };
-        let mut pages_cnt = 0;
-        let mut pages_bytes = 0u64;
-        let mut search_cnt = 0;
-        let mut search_bytes = 0u64;
+        let table_size = |def: TableDefinition<&str, &[u8]>| -> (usize, u64) {
+            let mut cnt = 0usize;
+            let mut bytes = 0u64;
+            if let Ok(table) = read_txn.open_table(def)
+                && let Ok(iter) = table.iter()
+            {
+                for r in iter.flatten() {
+                    cnt += 1;
+                    bytes += (r.0.value().len() + r.1.value().len()) as u64;
+                }
+            }
+            (cnt, bytes)
+        };
+        let (pages_cnt, pages_bytes) = table_size(TABLE_CACHE_PAGES);
+        let (search_cnt, search_bytes) = table_size(TABLE_CACHE_SEARCH);
         let mut sum_cnt = 0;
         let mut sum_bytes = 0u64;
-
-        if let Ok(table) = read_txn.open_table(TABLE_CACHE_PAGES)
-            && let Ok(iter) = table.iter()
-        {
-            for r in iter.flatten() {
-                pages_cnt += 1;
-                pages_bytes += (r.0.value().len() + r.1.value().len()) as u64;
-            }
-        }
-        if let Ok(table) = read_txn.open_table(TABLE_CACHE_SEARCH)
-            && let Ok(iter) = table.iter()
-        {
-            for r in iter.flatten() {
-                search_cnt += 1;
-                search_bytes += (r.0.value().len() + r.1.value().len()) as u64;
-            }
-        }
         if let Ok(ck_table) = read_txn.open_table(TABLE_CACHE_KEY_TO_ID)
             && let Ok(hist_table) = read_txn.open_table(TABLE_HISTORY)
             && let Ok(iter) = ck_table.iter()
@@ -1333,8 +1256,9 @@ impl Database {
                 let mut updates = Vec::new();
                 if let Ok(iter) = table.iter() {
                     for (k, v) in iter.flatten() {
-                        if let Ok(mut rec) = serde_json::from_slice::<CachedPageRecord>(v.value())
-                            && (rec.url == url || k.value() == url)
+                        if let Ok(mut rec) =
+                            serde_json::from_slice::<CachedEntry<ScrapedPage>>(v.value())
+                            && (rec.value.url == url || k.value() == url)
                         {
                             rec.cached_at = rec.cached_at.saturating_sub(delta_secs);
                             if let Ok(bytes) = serde_json::to_vec(&rec) {
@@ -1362,16 +1286,8 @@ impl Database {
                             && (item.title == title || item.url.as_deref() == Some(title))
                             && let Some(secs) = parse_iso_to_unix_secs(&item.created_at)
                         {
-                            let new_secs = secs.saturating_sub(delta_secs);
-                            let date = format_date_from_timestamp(new_secs);
-                            let time_of_day = new_secs % 86400;
-                            item.created_at = format!(
-                                "{}T{:02}:{:02}:{:02}Z",
-                                date,
-                                time_of_day / 3600,
-                                (time_of_day % 3600) / 60,
-                                time_of_day % 60
-                            );
+                            item.created_at =
+                                format_iso_from_timestamp(secs.saturating_sub(delta_secs));
                             if let Ok(bytes) = serde_json::to_vec(&item) {
                                 updates.push((k.value(), bytes));
                             }

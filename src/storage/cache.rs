@@ -3,7 +3,7 @@ use crate::engine::ServerCapabilities;
 use crate::fs_util;
 use crate::scraper::ScrapedPage;
 use crate::sources::search::{BookMetadata, SearchResult};
-use crate::storage::db::Database;
+use crate::storage::db::{Database, TABLE_CACHE_CAPS, TABLE_CACHE_PAGES, TABLE_CACHE_SEARCH};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -405,7 +405,7 @@ impl Cache {
         }
         let db = self.get_or_init_db()?;
         let hash = sha256_hex(url);
-        db.get_cached_page(&hash, ttl)
+        db.get_cached_json(TABLE_CACHE_PAGES, &hash, ttl)
     }
 
     pub fn set_page(&self, url: &str, page: &ScrapedPage) {
@@ -414,7 +414,7 @@ impl Cache {
         }
         if let Some(db) = self.get_or_init_db() {
             let hash = sha256_hex(url);
-            let _ = db.set_cached_page(&hash, page);
+            let _ = db.set_cached_json(TABLE_CACHE_PAGES, &hash, page);
         }
     }
 
@@ -441,9 +441,7 @@ impl Cache {
         }
         let db = self.get_or_init_db()?;
         let key = Self::metadata_key(title, author);
-        let results = db.get_cached_search(&key, self.policy.search_ttl)?;
-        let json_str = results.first()?.snippet.as_deref()?;
-        serde_json::from_str(json_str).ok()
+        db.get_cached_json(TABLE_CACHE_SEARCH, &key, self.policy.search_ttl)
     }
 
     pub fn set_book_metadata(
@@ -457,10 +455,7 @@ impl Cache {
         }
         if let Some(db) = self.get_or_init_db() {
             let key = Self::metadata_key(title, author);
-            if let Ok(json_str) = serde_json::to_string(metadata) {
-                let dummy_res = vec![SearchResult::new("", "", Some(json_str))];
-                let _ = db.set_cached_search(&key, &dummy_res);
-            }
+            let _ = db.set_cached_json(TABLE_CACHE_SEARCH, &key, metadata);
         }
     }
 
@@ -474,7 +469,7 @@ impl Cache {
         }
         let db = self.get_or_init_db()?;
         let key = Self::search_key(title, author);
-        db.get_cached_search(&key, self.policy.search_ttl)
+        db.get_cached_json(TABLE_CACHE_SEARCH, &key, self.policy.search_ttl)
     }
 
     pub fn set_search_results(&self, title: &str, author: Option<&str>, results: &[SearchResult]) {
@@ -483,7 +478,7 @@ impl Cache {
         }
         if let Some(db) = self.get_or_init_db() {
             let key = Self::search_key(title, author);
-            let _ = db.set_cached_search(&key, results);
+            let _ = db.set_cached_json(TABLE_CACHE_SEARCH, &key, results);
         }
     }
 
@@ -589,7 +584,14 @@ impl Cache {
             return None;
         }
         let db = self.get_or_init_db()?;
-        db.get_cached_caps(endpoint, model, self.policy.caps_ttl)
+        let caps: ServerCapabilities =
+            db.get_cached_json(TABLE_CACHE_CAPS, endpoint, self.policy.caps_ttl)?;
+        if caps.model_id == model {
+            Some(caps)
+        } else {
+            let _ = db.remove_cached_entry(TABLE_CACHE_CAPS, endpoint);
+            None
+        }
     }
 
     pub fn set_server_capabilities(&self, caps: &ServerCapabilities) {
@@ -597,7 +599,7 @@ impl Cache {
             return;
         }
         if let Some(db) = self.get_or_init_db() {
-            let _ = db.set_cached_caps(caps);
+            let _ = db.set_cached_json(TABLE_CACHE_CAPS, &caps.endpoint, caps);
         }
     }
 
