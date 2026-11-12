@@ -34,7 +34,6 @@ ratatui = "0.30.2"
 crossterm = "0.29.0"
 pdf-extract = "0.12.1"
 dom_smoothie = "0.19"
-quick-xml = "0.42"
 pulldown-cmark = "0.13"
 
 [dev-dependencies]

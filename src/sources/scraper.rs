@@ -117,92 +117,83 @@ pub fn truncate_wikipedia_html_before_references(html: &str) -> Cow<'_, str> {
     Cow::Borrowed(html)
 }
 
+fn lower_ascii_tag<'a>(name: &str, buf: &'a mut [u8; 16]) -> &'a str {
+    let local = crate::system::text_util::xml_local_name(name);
+    let len = local.len();
+    if len > buf.len() || !local.is_ascii() {
+        return "";
+    }
+    for (dst, &src) in buf[..len].iter_mut().zip(local.as_bytes()) {
+        *dst = src.to_ascii_lowercase();
+    }
+    std::str::from_utf8(&buf[..len]).unwrap_or("")
+}
+
 /// Converts HTML to clean semantic Markdown preserving headings, lists, code blocks, and formatting.
 pub fn html_to_markdown(html: &str) -> String {
-    use quick_xml::events::Event;
-    use quick_xml::reader::Reader;
+    use crate::system::text_util::{XmlEvent, XmlScanner, decode_html_entities};
 
-    let mut reader = Reader::from_str(html);
-    reader.config_mut().check_end_names = false;
-
+    let mut scanner = XmlScanner::new(html);
     let mut out = String::with_capacity(html.len());
     let mut list_depth: usize = 0;
+    let mut buf = [0u8; 16];
 
-    while let Ok(event) = reader.read_event() {
+    while let Some(event) = scanner.next_event() {
         match event {
-            Event::Start(ref e) | Event::Empty(ref e) => {
-                let name = e.local_name();
-                match name.as_ref() {
-                    "h1" => out.push_str("\n\n# "),
-                    "h2" => out.push_str("\n\n## "),
-                    "h3" => out.push_str("\n\n### "),
-                    "h4" => out.push_str("\n\n#### "),
-                    "h5" => out.push_str("\n\n##### "),
-                    "h6" => out.push_str("\n\n###### "),
-                    "p" | "div" | "article" | "section" => {
-                        if !out.ends_with("\n\n") && !out.is_empty() {
-                            out.push_str("\n\n");
-                        }
+            XmlEvent::Start { name, .. } => match lower_ascii_tag(name, &mut buf) {
+                "h1" => out.push_str("\n\n# "),
+                "h2" => out.push_str("\n\n## "),
+                "h3" => out.push_str("\n\n### "),
+                "h4" => out.push_str("\n\n#### "),
+                "h5" => out.push_str("\n\n##### "),
+                "h6" => out.push_str("\n\n###### "),
+                "p" | "div" | "article" | "section" => {
+                    if !out.ends_with("\n\n") && !out.is_empty() {
+                        out.push_str("\n\n");
                     }
-                    "br" => out.push('\n'),
-                    "hr" => out.push_str("\n\n---\n\n"),
-                    "ul" | "ol" => {
-                        list_depth = list_depth.saturating_add(1);
-                        if !out.ends_with('\n') {
-                            out.push('\n');
-                        }
-                    }
-                    "li" => {
-                        let indent = "  ".repeat(list_depth.saturating_sub(1));
-                        out.push_str(&format!("\n{}* ", indent));
-                    }
-                    "pre" => {
-                        out.push_str("\n```\n");
-                    }
-                    "code" => {
-                        out.push('`');
-                    }
-                    "strong" | "b" => out.push_str("**"),
-                    "em" | "i" => out.push('*'),
-                    "blockquote" => out.push_str("\n> "),
-                    _ => {}
                 }
-            }
-            Event::End(ref e) => {
-                let name = e.local_name();
-                match name.as_ref() {
-                    "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" => {
-                        if !out.ends_with("\n\n") {
-                            out.push_str("\n\n");
-                        }
+                "br" => out.push('\n'),
+                "hr" => out.push_str("\n\n---\n\n"),
+                "ul" | "ol" => {
+                    list_depth = list_depth.saturating_add(1);
+                    if !out.ends_with('\n') {
+                        out.push('\n');
                     }
-                    "ul" | "ol" => {
-                        list_depth = list_depth.saturating_sub(1);
-                        if !out.ends_with('\n') {
-                            out.push('\n');
-                        }
-                    }
-                    "pre" => {
-                        out.push_str("\n```\n\n");
-                    }
-                    "code" => {
-                        out.push('`');
-                    }
-                    "strong" | "b" => out.push_str("**"),
-                    "em" | "i" => out.push('*'),
-                    _ => {}
                 }
-            }
-            Event::Text(ref e) => {
-                let text = e.as_ref();
-                if let Ok(unescaped) = quick_xml::escape::unescape(text) {
-                    out.push_str(&unescaped);
-                } else {
-                    out.push_str(text);
+                "li" => {
+                    out.push('\n');
+                    for _ in 0..list_depth.saturating_sub(1) {
+                        out.push_str("  ");
+                    }
+                    out.push_str("* ");
                 }
-            }
-            Event::Eof => break,
-            _ => {}
+                "pre" => out.push_str("\n```\n"),
+                "code" => out.push('`'),
+                "strong" | "b" => out.push_str("**"),
+                "em" | "i" => out.push('*'),
+                "blockquote" => out.push_str("\n> "),
+                _ => {}
+            },
+            XmlEvent::End { name } => match lower_ascii_tag(name, &mut buf) {
+                "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" => {
+                    if !out.ends_with("\n\n") {
+                        out.push_str("\n\n");
+                    }
+                }
+                "ul" | "ol" => {
+                    list_depth = list_depth.saturating_sub(1);
+                    if !out.ends_with('\n') {
+                        out.push('\n');
+                    }
+                }
+                "pre" => out.push_str("\n```\n\n"),
+                "code" => out.push('`'),
+                "strong" | "b" => out.push_str("**"),
+                "em" | "i" => out.push('*'),
+                _ => {}
+            },
+            XmlEvent::Text(text) => out.push_str(&decode_html_entities(text)),
+            XmlEvent::CData(cdata) => out.push_str(cdata),
         }
     }
 

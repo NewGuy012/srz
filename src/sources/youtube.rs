@@ -1,6 +1,7 @@
+use crate::system::text_util::{
+    XmlEvent, XmlScanner, decode_html_entities, xml_attr, xml_local_name,
+};
 use anyhow::{Context, Result};
-use quick_xml::events::Event;
-use quick_xml::reader::Reader;
 use reqwest::{Client, Url};
 use serde::Deserialize;
 use std::time::Duration;
@@ -200,8 +201,6 @@ pub fn format_timestamp(seconds: u64) -> String {
         format!("[{:02}:{:02}]", mins, secs)
     }
 }
-
-use crate::system::text_util::decode_html_entities;
 
 /// Extracts timestamped chapter markers from a video description.
 pub fn parse_chapters_from_description(desc: &str) -> Vec<VideoChapter> {
@@ -440,29 +439,26 @@ pub fn parse_xml_timedtext(xml_str: &str, chapters: Option<&[VideoChapter]>) -> 
         return None;
     }
 
-    let mut reader = Reader::from_str(xml_str);
+    let mut scanner = XmlScanner::new(xml_str);
     let mut builder = TimedTranscriptBuilder::with_chapters(xml_str.len() / 2, chapters);
-    let mut current_start = 0.0;
 
-    loop {
-        match reader.read_event() {
-            Ok(Event::Start(e)) if e.name().as_ref() == "text" => {
-                for attr in e.attributes().flatten() {
-                    if attr.key.as_ref() == "start" {
-                        current_start = attr.value.parse::<f64>().unwrap_or(0.0);
-                    }
-                }
-                if let Ok(text) = reader.read_text(e.name()) {
-                    let decoded = decode_html_entities(text.as_ref());
-                    let trimmed = decoded.trim();
-                    if !trimmed.is_empty() {
-                        builder.add_cue(current_start as u64, trimmed);
-                    }
-                }
+    while let Some(ev) = scanner.next_event() {
+        if let XmlEvent::Start {
+            name,
+            attrs,
+            is_empty,
+        } = ev
+            && xml_local_name(name).eq_ignore_ascii_case("text")
+            && !is_empty
+        {
+            let current_start = xml_attr(attrs, "start")
+                .and_then(|v| v.trim().parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let text = scanner.read_text(name);
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                builder.add_cue(current_start as u64, trimmed);
             }
-            Ok(Event::Eof) => break,
-            Err(_) => return None,
-            _ => {}
         }
     }
 
@@ -478,37 +474,39 @@ pub fn parse_xml_format3_timedtext(
         return None;
     }
 
-    let mut reader = Reader::from_str(xml_str);
+    let mut scanner = XmlScanner::new(xml_str);
     let mut builder = TimedTranscriptBuilder::with_chapters(xml_str.len() / 2, chapters);
     let mut current_sec = 0;
     let mut in_p = false;
     let mut p_text = String::new();
 
-    loop {
-        match reader.read_event() {
-            Ok(Event::Start(e)) if e.name().as_ref() == "p" => {
+    while let Some(ev) = scanner.next_event() {
+        match ev {
+            XmlEvent::Start {
+                name,
+                attrs,
+                is_empty,
+            } if xml_local_name(name).eq_ignore_ascii_case("p") && !is_empty => {
                 in_p = true;
                 p_text.clear();
-                for attr in e.attributes().flatten() {
-                    if attr.key.as_ref() == "t" {
-                        let ms = attr.value.parse::<u64>().unwrap_or(0);
-                        current_sec = ms / 1000;
-                    }
-                }
+                current_sec = xml_attr(attrs, "t")
+                    .and_then(|v| v.trim().parse::<u64>().ok())
+                    .map(|ms| ms / 1000)
+                    .unwrap_or(0);
             }
-            Ok(Event::Text(e)) if in_p => {
-                let decoded = decode_html_entities(e.as_ref());
-                p_text.push_str(&decoded);
+            XmlEvent::Text(text) if in_p => {
+                p_text.push_str(&decode_html_entities(text));
             }
-            Ok(Event::End(e)) if e.name().as_ref() == "p" => {
+            XmlEvent::CData(cdata) if in_p => {
+                p_text.push_str(cdata);
+            }
+            XmlEvent::End { name } if in_p && xml_local_name(name).eq_ignore_ascii_case("p") => {
                 in_p = false;
                 let trimmed = p_text.trim();
                 if !trimmed.is_empty() {
                     builder.add_cue(current_sec, trimmed);
                 }
             }
-            Ok(Event::Eof) => break,
-            Err(_) => return None,
             _ => {}
         }
     }

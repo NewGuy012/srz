@@ -1,8 +1,7 @@
 use crate::cli::NewsTimeframe;
 use crate::scraper::{ScrapedPage, WebScraper};
+use crate::system::text_util::{XmlEvent, XmlScanner, xml_attr, xml_local_name};
 use anyhow::{Context, Result};
-use quick_xml::events::Event;
-use quick_xml::reader::Reader;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -518,9 +517,7 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
         return Vec::new();
     }
 
-    let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
-
+    let mut scanner = XmlScanner::new(xml);
     let mut items = Vec::new();
     let mut feed_source: Option<String> = None;
 
@@ -533,12 +530,15 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
     let mut cur_author = None;
     let mut cur_snippet: Option<String> = None;
 
-    loop {
-        match reader.read_event() {
-            Ok(Event::Start(ref e)) => {
-                let name = e.local_name().into_inner().to_ascii_lowercase();
-
-                if name == "item" || name == "entry" {
+    while let Some(ev) = scanner.next_event() {
+        match ev {
+            XmlEvent::Start {
+                name,
+                attrs,
+                is_empty,
+            } => {
+                let local = xml_local_name(name).to_ascii_lowercase();
+                if (local == "item" || local == "entry") && !is_empty {
                     in_entry = true;
                     cur_title.clear();
                     cur_link.clear();
@@ -548,29 +548,24 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
                     cur_author = None;
                     cur_snippet = None;
                 } else if in_entry {
-                    match name.as_str() {
-                        "title" => {
-                            if let Ok(text) = reader.read_text(e.name())
-                                && cur_title.is_empty()
-                            {
-                                cur_title = clean_xml_text(text.as_ref());
+                    match local.as_str() {
+                        "title" if !is_empty => {
+                            let raw = scanner.read_raw_until_end(name);
+                            if cur_title.is_empty() {
+                                cur_title = clean_xml_text(raw);
                             }
                         }
                         "link" => {
-                            for attr in e.attributes().flatten() {
-                                if attr
-                                    .key
-                                    .local_name()
-                                    .into_inner()
-                                    .eq_ignore_ascii_case("href")
-                                {
-                                    let trimmed = attr.value.trim();
-                                    if crate::system::text_util::is_http_url(trimmed) {
-                                        cur_link = trimmed.to_string();
-                                    }
+                            if cur_link.is_empty()
+                                && let Some(href) = xml_attr(attrs, "href")
+                            {
+                                let trimmed = href.trim();
+                                if crate::system::text_util::is_http_url(trimmed) {
+                                    cur_link = trimmed.to_string();
                                 }
                             }
-                            if let Ok(text) = reader.read_text(e.name()) {
+                            if !is_empty {
+                                let text = scanner.read_raw_until_end(name);
                                 let trimmed = text.trim();
                                 if cur_link.is_empty()
                                     && crate::system::text_util::is_http_url(trimmed)
@@ -579,42 +574,36 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
                                 }
                             }
                         }
-                        "guid" | "id" => {
-                            if let Ok(text) = reader.read_text(e.name())
-                                && cur_id.is_empty()
-                            {
-                                cur_id = clean_xml_text(text.as_ref());
+                        "guid" | "id" if !is_empty => {
+                            let raw = scanner.read_raw_until_end(name);
+                            if cur_id.is_empty() {
+                                cur_id = clean_xml_text(raw);
                             }
                         }
-                        "pubdate" | "published" | "updated" => {
-                            if let Ok(text) = reader.read_text(e.name())
-                                && cur_pub_date.is_none()
-                            {
-                                cur_pub_date = normalize_feed_date(text.as_ref());
+                        "pubdate" | "published" | "updated" if !is_empty => {
+                            let raw = scanner.read_raw_until_end(name);
+                            if cur_pub_date.is_none() {
+                                cur_pub_date = normalize_feed_date(raw);
                             }
                         }
-                        "source" => {
-                            if let Ok(text) = reader.read_text(e.name())
-                                && cur_source.is_none()
-                            {
-                                let cleaned = clean_xml_text(text.as_ref());
+                        "source" if !is_empty => {
+                            let raw = scanner.read_raw_until_end(name);
+                            if cur_source.is_none() {
+                                let cleaned = clean_xml_text(raw);
                                 if !cleaned.is_empty() {
                                     cur_source = Some(cleaned);
                                 }
                             }
                         }
-                        "author" | "name" => {
-                            if let Ok(text) = reader.read_text(e.name())
-                                && cur_author.is_none()
-                            {
-                                let inner = if let Some(start) = text.find("<name>") {
-                                    if let Some(end) = text[start + 6..].find("</name>") {
-                                        &text[start + 6..start + 6 + end]
-                                    } else {
-                                        text.as_ref()
-                                    }
+                        "author" | "name" if !is_empty => {
+                            let raw = scanner.read_raw_until_end(name);
+                            if cur_author.is_none() {
+                                let inner = if let Some(start) = raw.find("<name>")
+                                    && let Some(end) = raw[start + 6..].find("</name>")
+                                {
+                                    &raw[start + 6..start + 6 + end]
                                 } else {
-                                    text.as_ref()
+                                    raw
                                 };
                                 let cleaned = clean_xml_text(inner);
                                 if !cleaned.is_empty() {
@@ -622,50 +611,27 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
                                 }
                             }
                         }
-                        "description" | "summary" | "content" | "encoded" => {
-                            if let Ok(text) = reader.read_text(e.name()) {
-                                let cleaned = clean_xml_text(text.as_ref());
-                                if !cleaned.is_empty() {
-                                    if let Some(existing) = &cur_snippet {
-                                        if cleaned.len() > existing.len() {
-                                            cur_snippet = Some(cleaned);
-                                        }
-                                    } else {
-                                        cur_snippet = Some(cleaned);
-                                    }
-                                }
+                        "description" | "summary" | "content" | "encoded" if !is_empty => {
+                            let raw = scanner.read_raw_until_end(name);
+                            let cleaned = clean_xml_text(raw);
+                            if !cleaned.is_empty()
+                                && cur_snippet
+                                    .as_ref()
+                                    .is_none_or(|existing| cleaned.len() > existing.len())
+                            {
+                                cur_snippet = Some(cleaned);
                             }
                         }
                         _ => {}
                     }
-                } else if name == "title"
-                    && feed_source.is_none()
-                    && let Ok(text) = reader.read_text(e.name())
-                {
-                    feed_source = Some(clean_xml_text(text.as_ref()));
+                } else if local == "title" && feed_source.is_none() && !is_empty {
+                    let raw = scanner.read_raw_until_end(name);
+                    feed_source = Some(clean_xml_text(raw));
                 }
             }
-            Ok(Event::Empty(ref e)) => {
-                let name = e.local_name().into_inner().to_ascii_lowercase();
-                if in_entry && name == "link" && cur_link.is_empty() {
-                    for attr in e.attributes().flatten() {
-                        if attr
-                            .key
-                            .local_name()
-                            .into_inner()
-                            .eq_ignore_ascii_case("href")
-                        {
-                            let trimmed = attr.value.trim();
-                            if crate::system::text_util::is_http_url(trimmed) {
-                                cur_link = trimmed.to_string();
-                            }
-                        }
-                    }
-                }
-            }
-            Ok(Event::End(ref e)) => {
-                let name = e.local_name().into_inner().to_ascii_lowercase();
-                if name == "item" || name == "entry" {
+            XmlEvent::End { name } => {
+                let local = xml_local_name(name).to_ascii_lowercase();
+                if local == "item" || local == "entry" {
                     in_entry = false;
                     let link = if !cur_link.is_empty() {
                         cur_link.clone()
@@ -699,8 +665,6 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
                     }
                 }
             }
-            Ok(Event::Eof) => break,
-            Err(_) => break,
             _ => {}
         }
     }

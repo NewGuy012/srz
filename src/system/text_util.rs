@@ -484,6 +484,289 @@ pub fn tokenize_search_terms(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Returns the local name of a potentially namespaced XML/HTML identifier (`ns:tag` -> `tag`).
+pub fn xml_local_name(name: &str) -> &str {
+    name.rsplit(':').next().unwrap_or(name)
+}
+
+/// Looks up `target_local` (case-insensitive on local name) in a raw tag attribute string.
+pub fn xml_attr<'a>(attrs: &'a str, target_local: &str) -> Option<Cow<'a, str>> {
+    let bytes = attrs.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    while i < len {
+        while i < len && (bytes[i].is_ascii_whitespace() || bytes[i] == b'/') {
+            i += 1;
+        }
+        if i >= len {
+            break;
+        }
+
+        let name_start = i;
+        while i < len && !bytes[i].is_ascii_whitespace() && bytes[i] != b'=' && bytes[i] != b'/' {
+            i += 1;
+        }
+        let attr_name = &attrs[name_start..i];
+        if attr_name.is_empty() {
+            i += 1;
+            continue;
+        }
+
+        while i < len && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= len || bytes[i] != b'=' {
+            continue;
+        }
+        i += 1;
+        while i < len && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= len {
+            break;
+        }
+
+        let val_slice = if bytes[i] == b'"' || bytes[i] == b'\'' {
+            let quote = bytes[i];
+            i += 1;
+            let val_start = i;
+            while i < len && bytes[i] != quote {
+                i += 1;
+            }
+            let slice = &attrs[val_start..i];
+            if i < len && bytes[i] == quote {
+                i += 1;
+            }
+            slice
+        } else {
+            let val_start = i;
+            while i < len && !bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            &attrs[val_start..i]
+        };
+
+        if xml_local_name(attr_name).eq_ignore_ascii_case(target_local) {
+            return Some(decode_html_entities(val_slice));
+        }
+    }
+
+    None
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum XmlEvent<'a> {
+    Start {
+        name: &'a str,
+        attrs: &'a str,
+        is_empty: bool,
+    },
+    End {
+        name: &'a str,
+    },
+    Text(&'a str),
+    CData(&'a str),
+}
+
+/// Lightweight streaming XML/HTML token scanner.
+pub struct XmlScanner<'a> {
+    src: &'a str,
+    pos: usize,
+}
+
+impl<'a> XmlScanner<'a> {
+    pub fn new(src: &'a str) -> Self {
+        Self { src, pos: 0 }
+    }
+
+    pub fn next_event(&mut self) -> Option<XmlEvent<'a>> {
+        while self.pos < self.src.len() {
+            let rest = &self.src[self.pos..];
+            if !rest.starts_with('<') {
+                let end = rest.find('<').unwrap_or(rest.len());
+                self.pos += end;
+                return Some(XmlEvent::Text(&rest[..end]));
+            }
+
+            if let Some(after) = rest.strip_prefix("<!--") {
+                self.pos += after.find("-->").map(|p| 4 + p + 3).unwrap_or(rest.len());
+                continue;
+            }
+
+            if let Some(after) = rest.strip_prefix("<![CDATA[") {
+                if let Some(end) = after.find("]]>") {
+                    self.pos += 9 + end + 3;
+                    return Some(XmlEvent::CData(&after[..end]));
+                }
+                self.pos = self.src.len();
+                return Some(XmlEvent::CData(after));
+            }
+
+            if let Some(after) = rest.strip_prefix("<?") {
+                self.pos += after.find("?>").map(|p| 2 + p + 2).unwrap_or(rest.len());
+                continue;
+            }
+
+            if rest.starts_with("<!") {
+                let bytes = rest.as_bytes();
+                let mut i = 2;
+                let mut quote = 0u8;
+                let mut bracket_depth = 0usize;
+                while i < bytes.len() {
+                    let b = bytes[i];
+                    if quote != 0 {
+                        if b == quote {
+                            quote = 0;
+                        }
+                    } else if b == b'"' || b == b'\'' {
+                        quote = b;
+                    } else if b == b'[' {
+                        bracket_depth += 1;
+                    } else if b == b']' && bracket_depth > 0 {
+                        bracket_depth -= 1;
+                    } else if b == b'>' && bracket_depth == 0 {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+                self.pos += i;
+                continue;
+            }
+
+            if let Some(after) = rest.strip_prefix("</") {
+                if let Some(end) = after.find('>') {
+                    let name = after[..end].trim();
+                    self.pos += 2 + end + 1;
+                    return Some(XmlEvent::End { name });
+                }
+                self.pos += 1;
+                return Some(XmlEvent::Text("<"));
+            }
+
+            let valid_tag_start = rest
+                .as_bytes()
+                .get(1)
+                .is_some_and(|&b| b.is_ascii_alphabetic() || b == b'_' || b == b':');
+            if !valid_tag_start {
+                self.pos += 1;
+                return Some(XmlEvent::Text("<"));
+            }
+
+            let bytes = rest.as_bytes();
+            let mut i = 1;
+            let mut quote = 0u8;
+            let mut tag_end = None;
+            let mut last_non_ws_idx = None;
+            let mut last_was_quoted = false;
+
+            while i < bytes.len() {
+                let b = bytes[i];
+                if quote != 0 {
+                    if b == quote {
+                        quote = 0;
+                        last_non_ws_idx = Some(i);
+                        last_was_quoted = true;
+                    }
+                } else if b == b'"' || b == b'\'' {
+                    quote = b;
+                } else if b == b'>' {
+                    tag_end = Some(i);
+                    break;
+                } else if !b.is_ascii_whitespace() {
+                    last_non_ws_idx = Some(i);
+                    last_was_quoted = false;
+                }
+                i += 1;
+            }
+
+            let Some(end_idx) = tag_end else {
+                self.pos += 1;
+                return Some(XmlEvent::Text("<"));
+            };
+
+            let is_empty =
+                !last_was_quoted && last_non_ws_idx.is_some_and(|idx| bytes[idx] == b'/');
+            let content_end = if is_empty {
+                last_non_ws_idx.unwrap_or(end_idx)
+            } else {
+                end_idx
+            };
+
+            let inner = rest[1..content_end].trim();
+            self.pos += end_idx + 1;
+            if inner.is_empty() {
+                continue;
+            }
+
+            let (name, attrs) = match inner.find(|c: char| c.is_ascii_whitespace()) {
+                Some(ws) => (&inner[..ws], inner[ws..].trim_start()),
+                None => (inner, ""),
+            };
+            return Some(XmlEvent::Start {
+                name,
+                attrs,
+                is_empty,
+            });
+        }
+        None
+    }
+
+    /// Reads the raw slice inside `tag_name` until its matching closing tag (accounting for nesting).
+    pub fn read_raw_until_end(&mut self, tag_name: &str) -> &'a str {
+        let start = self.pos;
+        let mut depth = 1usize;
+        loop {
+            let before = self.pos;
+            match self.next_event() {
+                Some(XmlEvent::Start {
+                    name,
+                    is_empty: false,
+                    ..
+                }) if name.eq_ignore_ascii_case(tag_name) => {
+                    depth += 1;
+                }
+                Some(XmlEvent::End { name }) if name.eq_ignore_ascii_case(tag_name) => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &self.src[start..before];
+                    }
+                }
+                None => return &self.src[start..],
+                _ => {}
+            }
+        }
+    }
+
+    /// Reads and entity-decodes text (preserving CDATA sections verbatim) inside `tag_name` until `</tag_name>`.
+    pub fn read_text(&mut self, tag_name: &str) -> String {
+        let mut out = String::new();
+        let mut depth = 1usize;
+        while let Some(ev) = self.next_event() {
+            match ev {
+                XmlEvent::Start {
+                    name,
+                    is_empty: false,
+                    ..
+                } if name.eq_ignore_ascii_case(tag_name) => {
+                    depth += 1;
+                }
+                XmlEvent::End { name } if name.eq_ignore_ascii_case(tag_name) => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                XmlEvent::Text(t) => out.push_str(&decode_html_entities(t)),
+                XmlEvent::CData(c) => out.push_str(c),
+                _ => {}
+            }
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -575,5 +858,42 @@ mod tests {
             url_decode("https://en.wikipedia.org/wiki/Dune_%28novel%29").unwrap(),
             "https://en.wikipedia.org/wiki/Dune_(novel)"
         );
+    }
+
+    #[test]
+    fn test_xml_scanner_and_attrs() {
+        let xml = r#"<?xml version="1.0"?><!-- comment --><root xmlns:dc="http://purl.org"><dc:title>A &amp; B</dc:title><item id='i1' label="x > y"/><p>a < b</p></root>"#;
+        let mut scanner = XmlScanner::new(xml);
+
+        assert_eq!(
+            scanner.next_event(),
+            Some(XmlEvent::Start {
+                name: "root",
+                attrs: r#"xmlns:dc="http://purl.org""#,
+                is_empty: false,
+            })
+        );
+        assert_eq!(
+            scanner.next_event(),
+            Some(XmlEvent::Start {
+                name: "dc:title",
+                attrs: "",
+                is_empty: false,
+            })
+        );
+        assert_eq!(scanner.read_text("dc:title"), "A & B");
+
+        let Some(XmlEvent::Start {
+            name,
+            attrs,
+            is_empty,
+        }) = scanner.next_event()
+        else {
+            panic!("expected <item/>");
+        };
+        assert_eq!(name, "item");
+        assert!(is_empty);
+        assert_eq!(xml_attr(attrs, "id").as_deref(), Some("i1"));
+        assert_eq!(xml_attr(attrs, "label").as_deref(), Some("x > y"));
     }
 }

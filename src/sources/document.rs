@@ -1,7 +1,6 @@
+use crate::system::text_util::{XmlEvent, XmlScanner, xml_attr, xml_local_name};
 use crate::system::zip::ZipReader;
 use anyhow::{Context, Result};
-use quick_xml::events::Event;
-use quick_xml::reader::Reader;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
@@ -9,7 +8,7 @@ use std::path::Path;
 
 use crate::render;
 use crate::scraper::{ScrapedPage, WebScraper, clean_text, html_to_markdown};
-use crate::system::text_util::{decode_html_entities, url_decode};
+use crate::system::text_util::url_decode;
 
 pub const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024; // 20 MB limit for local files
 
@@ -421,30 +420,16 @@ fn find_opf_path(archive: &ZipReader) -> Result<String> {
 
 /// Parses META-INF/container.xml to find the rootfile full-path.
 fn parse_container_xml(xml: &str) -> Option<String> {
-    let mut reader = Reader::from_str(xml);
-    loop {
-        match reader.read_event() {
-            Ok(Event::Start(e) | Event::Empty(e)) => {
-                let local = e.local_name();
-                if local.as_ref().eq_ignore_ascii_case("rootfile") {
-                    for attr in e.attributes().flatten() {
-                        if attr
-                            .key
-                            .local_name()
-                            .as_ref()
-                            .eq_ignore_ascii_case("full-path")
-                        {
-                            let val = attr.value.trim().to_string();
-                            if !val.is_empty() {
-                                return Some(val);
-                            }
-                        }
-                    }
-                }
+    let mut scanner = XmlScanner::new(xml);
+    while let Some(ev) = scanner.next_event() {
+        if let XmlEvent::Start { name, attrs, .. } = ev
+            && xml_local_name(name).eq_ignore_ascii_case("rootfile")
+            && let Some(val) = xml_attr(attrs, "full-path")
+        {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
             }
-            Ok(Event::Eof) => break,
-            Err(_) => break,
-            _ => {}
         }
     }
     None
@@ -462,42 +447,30 @@ fn parse_opf(archive: &ZipReader, opf_path: &str) -> Result<(Option<String>, Vec
         None => "",
     };
 
-    let mut reader = Reader::from_str(opf_xml);
+    let mut scanner = XmlScanner::new(opf_xml);
     let mut title: Option<String> = None;
     let mut manifest: HashMap<String, (String, String)> = HashMap::new(); // id -> (href, media_type)
     let mut spine: Vec<String> = Vec::new(); // list of idref
 
-    loop {
-        match reader.read_event() {
-            Ok(Event::Start(ref e)) => {
-                let local = e.local_name();
-                if local.as_ref().eq_ignore_ascii_case("title") && title.is_none() {
-                    if let Ok(t) = reader.read_text(e.name()) {
-                        let decoded = decode_html_entities(t.as_ref());
-                        let trimmed = decoded.trim();
-                        if !trimmed.is_empty() {
-                            title = Some(trimmed.to_string());
-                        }
-                    }
-                } else if local.as_ref().eq_ignore_ascii_case("item") {
-                    parse_item_attr(e, &mut manifest);
-                } else if local.as_ref().eq_ignore_ascii_case("itemref") {
-                    parse_itemref_attr(e, &mut spine);
+    while let Some(ev) = scanner.next_event() {
+        if let XmlEvent::Start {
+            name,
+            attrs,
+            is_empty,
+        } = ev
+        {
+            let local = xml_local_name(name);
+            if local.eq_ignore_ascii_case("title") && title.is_none() && !is_empty {
+                let text = scanner.read_text(name);
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    title = Some(trimmed.to_string());
                 }
+            } else if local.eq_ignore_ascii_case("item") {
+                parse_item_attr(attrs, &mut manifest);
+            } else if local.eq_ignore_ascii_case("itemref") {
+                parse_itemref_attr(attrs, &mut spine);
             }
-            Ok(Event::Empty(ref e)) => {
-                let local = e.local_name();
-                if local.as_ref().eq_ignore_ascii_case("item") {
-                    parse_item_attr(e, &mut manifest);
-                } else if local.as_ref().eq_ignore_ascii_case("itemref") {
-                    parse_itemref_attr(e, &mut spine);
-                }
-            }
-            Ok(Event::Eof) => break,
-            Err(e) => {
-                return Err(anyhow::anyhow!("XML parse error in OPF: {}", e));
-            }
-            _ => {}
         }
     }
 
@@ -536,40 +509,30 @@ fn parse_opf(archive: &ZipReader, opf_path: &str) -> Result<(Option<String>, Vec
     Ok((title, chapter_paths))
 }
 
-fn parse_item_attr(
-    e: &quick_xml::events::BytesStart<'_>,
-    manifest: &mut HashMap<String, (String, String)>,
-) {
-    let mut id = String::new();
-    let mut href = String::new();
-    let mut media_type = String::new();
-
-    for attr in e.attributes().flatten() {
-        let key_local = attr.key.local_name();
-        if key_local.as_ref().eq_ignore_ascii_case("id") {
-            id = attr.value.trim().to_string();
-        } else if key_local.as_ref().eq_ignore_ascii_case("href") {
-            href = attr.value.trim().to_string();
-        } else if key_local.as_ref().eq_ignore_ascii_case("media-type") {
-            media_type = attr.value.trim().to_string();
-        }
-    }
+fn parse_item_attr(attrs: &str, manifest: &mut HashMap<String, (String, String)>) {
+    let id = xml_attr(attrs, "id")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let href = xml_attr(attrs, "href")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let media_type = xml_attr(attrs, "media-type")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
 
     if !id.is_empty() && !href.is_empty() {
         manifest.insert(id, (href, media_type));
     }
 }
 
-fn parse_itemref_attr(e: &quick_xml::events::BytesStart<'_>, spine: &mut Vec<String>) {
+fn parse_itemref_attr(attrs: &str, spine: &mut Vec<String>) {
     if spine.len() >= MAX_EPUB_CHAPTER_COUNT {
         return;
     }
-    for attr in e.attributes().flatten() {
-        if attr.key.local_name().as_ref().eq_ignore_ascii_case("idref") {
-            let idref = attr.value.trim().to_string();
-            if !idref.is_empty() {
-                spine.push(idref);
-            }
+    if let Some(val) = xml_attr(attrs, "idref") {
+        let idref = val.trim();
+        if !idref.is_empty() {
+            spine.push(idref.to_string());
         }
     }
 }
