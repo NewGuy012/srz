@@ -263,11 +263,6 @@ pub fn parse_sha256_checksum(content: &str) -> Option<&str> {
         .and_then(|line| line.split_whitespace().next())
 }
 
-/// Computes the lowercase hex-encoded SHA-256 checksum of `bytes` in a single allocation.
-pub fn compute_sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest_hex(bytes)
-}
-
 /// Formats primary versioned asset name and fallback alias.
 pub fn format_asset_names(tag: &str, target: &str, format: ArchiveFormat) -> (String, String) {
     let ext = format.extension();
@@ -491,7 +486,7 @@ async fn download_and_verify_archive(
                 .await
                 .unwrap_or_default();
             if let Some(expected_hash) = parse_sha256_checksum(&sha_text) {
-                let computed_hash = compute_sha256_hex(&archive_bytes);
+                let computed_hash = Sha256::digest_hex(&archive_bytes);
 
                 if !expected_hash.eq_ignore_ascii_case(&computed_hash) {
                     sha_pb.finish_and_clear();

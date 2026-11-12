@@ -183,15 +183,12 @@ fn test_terminal_paging_and_plain_flags() {
     let default_cli = Cli::parse_from(["srz", "Dune"]);
     assert_eq!(default_cli.paging, PagingMode::Auto);
     assert!(!default_cli.plain);
-    assert_eq!(default_cli.effective_paging(), PagingMode::Auto);
 
     let always_cli = Cli::parse_from(["srz", "Dune", "--paging", "always"]);
     assert_eq!(always_cli.paging, PagingMode::Always);
-    assert_eq!(always_cli.effective_paging(), PagingMode::Always);
 
     let never_cli = Cli::parse_from(["srz", "Dune", "--paging", "never"]);
     assert_eq!(never_cli.paging, PagingMode::Never);
-    assert_eq!(never_cli.effective_paging(), PagingMode::Never);
 
     let plain_cli = Cli::parse_from(["srz", "Dune", "--plain"]);
     assert!(plain_cli.plain);

@@ -130,10 +130,6 @@ impl ProgressBar {
         }
     }
 
-    pub fn enable_steady_tick(&self, _d: Duration) {}
-
-    pub fn tick(&self) {}
-
     pub fn println(&self, msg: impl AsRef<str>) {
         if !self.inner.hidden {
             eprint!("\r\x1b[2K{}\n", msg.as_ref());
@@ -442,12 +438,10 @@ pub fn format_duration_short(d: Duration) -> String {
 pub use super::markdown::render_markdown;
 
 /// Incremental line-buffered markdown stream renderer for real-time terminal output.
-/// Buffers streaming token chunks until line boundaries are reached, then applies Termimad ANSI styling.
 pub struct StreamMarkdownRenderer {
     line_buf: String,
     in_code_block: bool,
     use_color: bool,
-    width: usize,
 }
 
 impl Default for StreamMarkdownRenderer {
@@ -458,19 +452,14 @@ impl Default for StreamMarkdownRenderer {
 
 impl StreamMarkdownRenderer {
     pub fn new() -> Self {
-        let use_color = Ui::use_color();
-        let width = crossterm::terminal::size()
-            .map(|(w, _)| w as usize)
-            .unwrap_or(80);
-        Self::with_options(use_color, width)
+        Self::with_options(Ui::use_color())
     }
 
-    pub fn with_options(use_color: bool, width: usize) -> Self {
+    pub fn with_options(use_color: bool) -> Self {
         Self {
             line_buf: String::with_capacity(256),
             in_code_block: false,
             use_color,
-            width,
         }
     }
 
@@ -491,7 +480,7 @@ impl StreamMarkdownRenderer {
             } else if line_trimmed.is_empty() {
                 println!();
             } else {
-                let rendered = render_markdown(line_trimmed, Some(self.width));
+                let rendered = render_markdown(line_trimmed);
                 print!("{}", rendered);
                 if !rendered.ends_with('\n') {
                     println!();
@@ -506,7 +495,7 @@ impl StreamMarkdownRenderer {
             if !self.use_color {
                 print!("{}", self.line_buf);
             } else {
-                let rendered = render_markdown(&self.line_buf, Some(self.width));
+                let rendered = render_markdown(&self.line_buf);
                 print!("{}", rendered);
             }
             self.line_buf.clear();
@@ -543,7 +532,7 @@ pub fn display_summary_full(
         "\n\x1b[1;36m=== Summary: {} ===\x1b[0m\n\n",
         sanitized_title
     );
-    let formatted_body = render_markdown(&sanitized_content, None);
+    let formatted_body = render_markdown(&sanitized_content);
     let mut full_output = format!("{}{}\n", header, formatted_body);
 
     // Append view file links if available
@@ -703,7 +692,7 @@ mod tests {
     fn test_render_markdown_basic() {
         let md =
             "# Title\n\nThis is **bold** and *italic* text with `code`.\n\n* Bullet 1\n* Bullet 2";
-        let rendered = render_markdown(md, Some(80));
+        let rendered = render_markdown(md);
         assert!(rendered.contains("Title"));
         assert!(rendered.contains("bold"));
         assert!(rendered.contains("Bullet"));
@@ -743,7 +732,7 @@ mod tests {
     #[test]
     fn test_stream_markdown_renderer_options() {
         for use_color in [true, false] {
-            let mut renderer = StreamMarkdownRenderer::with_options(use_color, 80);
+            let mut renderer = StreamMarkdownRenderer::with_options(use_color);
             renderer.feed("Line 1\nLine 2\nPartial line");
             assert_eq!(renderer.line_buf, "Partial line");
             renderer.flush();

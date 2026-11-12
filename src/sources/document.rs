@@ -294,18 +294,6 @@ impl PdfExtractor {
 
         cleaned.trim().to_string()
     }
-
-    /// Generates a valid in-memory PDF containing the given raw content stream (exposed for testing).
-    #[doc(hidden)]
-    pub fn build_pdf_with_stream_content(content: &[u8]) -> Vec<u8> {
-        crate::testing::build_pdf_with_stream_content(content)
-    }
-
-    /// Generates a valid in-memory PDF containing structured sample text for tests and usage examples.
-    #[doc(hidden)]
-    pub fn build_sample_pdf_bytes() -> Vec<u8> {
-        crate::testing::build_sample_pdf_bytes()
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -584,7 +572,7 @@ mod tests {
     #[test]
     fn test_extract_pdf_from_mem() {
         let content = b"BT /F1 12 Tf 100 700 Td (Hello from Rust PDF extractor with enough words to pass the minimum text threshold for testing purposes) Tj ET";
-        let buffer = PdfExtractor::build_pdf_with_stream_content(content);
+        let buffer = crate::testing::build_pdf_with_stream_content(content);
         let page = PdfExtractor::extract_from_bytes(&buffer, None).unwrap();
         assert!(page.content.contains("Hello from Rust PDF extractor"));
         assert_eq!(page.title.as_deref(), Some("PDF Document"));

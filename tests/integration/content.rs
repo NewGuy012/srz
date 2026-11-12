@@ -239,7 +239,7 @@ fn test_pdf_extractor_bounds_and_type_checks() {
 fn test_sample_pdf_generation_and_extraction() {
     use srz::sources::document::PdfExtractor;
 
-    let bytes = PdfExtractor::build_sample_pdf_bytes();
+    let bytes = srz::testing::build_sample_pdf_bytes();
     let page = PdfExtractor::extract_from_bytes(&bytes, None).unwrap();
     assert!(
         page.content

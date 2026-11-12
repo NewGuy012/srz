@@ -59,11 +59,6 @@ impl TokenizerKind {
 pub struct TextChunker;
 
 impl TextChunker {
-    /// Counts tokens in `text` using a specified model-aware tokenizer profile.
-    pub fn count_tokens_with_kind(text: &str, kind: TokenizerKind) -> usize {
-        kind.count_tokens(text)
-    }
-
     /// Truncates `text` to `max_tokens` (estimated) while preserving paragraph boundaries and
     /// returning `Cow::Borrowed` when under budget.
     pub fn truncate_by_tokens(text: &str, max_tokens: usize) -> Cow<'_, str> {
@@ -358,7 +353,7 @@ mod tests {
     #[test]
     fn test_count_tokens_with_kind() {
         let text = "Hello, world! This is a test.";
-        let tokens = TextChunker::count_tokens_with_kind(text, TokenizerKind::Cl100k);
+        let tokens = TokenizerKind::Cl100k.count_tokens(text);
         assert!((6..=10).contains(&tokens));
     }
 
@@ -388,10 +383,7 @@ mod tests {
         assert!(matches!(chunks[1].0, Cow::Borrowed(_)));
 
         for (chunk, count) in &chunks {
-            assert_eq!(
-                *count,
-                TextChunker::count_tokens_with_kind(chunk, TokenizerKind::Cl100k)
-            );
+            assert_eq!(*count, TokenizerKind::Cl100k.count_tokens(chunk));
         }
     }
 
@@ -405,7 +397,7 @@ mod tests {
         let long = "token ".repeat(200);
         let truncated = TextChunker::truncate_by_tokens(&long, 30);
         assert!(truncated.ends_with("[Context trimmed for token budget]"));
-        assert!(TextChunker::count_tokens_with_kind(&truncated, TokenizerKind::Cl100k) <= 45);
+        assert!(TokenizerKind::Cl100k.count_tokens(&truncated) <= 45);
     }
 
     #[test]
@@ -442,7 +434,7 @@ mod tests {
         let sentence =
             "This is a detailed analysis of the system architecture without any double newlines. ";
         let monolithic = sentence.repeat(40); // ~560 tokens
-        let total_tokens = TextChunker::count_tokens_with_kind(&monolithic, TokenizerKind::Cl100k);
+        let total_tokens = TokenizerKind::Cl100k.count_tokens(&monolithic);
         assert!(total_tokens > 400);
 
         let chunks = TextChunker::chunk_by_tokens_with_counts_and_kind(
@@ -463,7 +455,7 @@ mod tests {
                 i,
                 count
             );
-            let measured = TextChunker::count_tokens_with_kind(c, TokenizerKind::Cl100k);
+            let measured = TokenizerKind::Cl100k.count_tokens(c);
             assert!(measured <= 125);
         }
     }
@@ -475,7 +467,7 @@ mod tests {
             .map(|i| format!("Line #{}: system event telemetry metric logging item.", i))
             .collect();
         let text = lines.join("\n"); // strictly single \n, no \n\n
-        let total_tokens = TextChunker::count_tokens_with_kind(&text, TokenizerKind::Cl100k);
+        let total_tokens = TokenizerKind::Cl100k.count_tokens(&text);
         assert!(total_tokens > 300);
 
         let chunks =
@@ -491,7 +483,7 @@ mod tests {
                 "Chunk tokens {} exceeded expected budget",
                 count
             );
-            let measured = TextChunker::count_tokens_with_kind(c, TokenizerKind::Cl100k);
+            let measured = TokenizerKind::Cl100k.count_tokens(c);
             assert!(measured <= 100);
         }
     }
@@ -518,7 +510,7 @@ mod tests {
         );
         for (c, count) in &chunks {
             assert!(*count <= 130, "Chunk tokens {} exceeded budget", count);
-            let measured = TextChunker::count_tokens_with_kind(c, TokenizerKind::Cl100k);
+            let measured = TokenizerKind::Cl100k.count_tokens(c);
             assert!(measured <= 130);
         }
     }

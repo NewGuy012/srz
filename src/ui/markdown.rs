@@ -39,7 +39,7 @@ pub fn markdown_to_html(md: &str) -> String {
 }
 
 /// Renders Markdown into ANSI-formatted terminal text.
-pub fn render_markdown(markdown: &str, _width: Option<usize>) -> String {
+pub fn render_markdown(markdown: &str) -> String {
     let mut out = String::with_capacity(markdown.len() * 2);
     render_blocks(markdown, &mut out, false);
     out.trim_end().to_string()

@@ -386,10 +386,7 @@ pub async fn handle_ask(
     let is_interactive = interactive || question.is_none() || resume.is_some();
     let mut history_turn_tokens: Vec<usize> = history
         .iter()
-        .map(|(q, a)| {
-            crate::chunker::TextChunker::count_tokens_with_kind(q, tokenizer)
-                + crate::chunker::TextChunker::count_tokens_with_kind(a, tokenizer)
-        })
+        .map(|(q, a)| tokenizer.count_tokens(q) + tokenizer.count_tokens(a))
         .collect();
 
     // Create session if not already resuming and DB is available
@@ -431,7 +428,7 @@ pub async fn handle_ask(
             display_summary_full(
                 &answer_header,
                 &output.content,
-                args.effective_paging(),
+                args.paging,
                 args.plain,
                 None,
                 None,
@@ -634,14 +631,14 @@ async fn ask_turn(
         if plain || !Ui::use_color() {
             println!("{}", output.content);
         } else {
-            let rendered = render_markdown(&output.content, None);
+            let rendered = render_markdown(&output.content);
             println!("{}", rendered);
         }
     }
 
     let tokenizer = llm.tokenizer_kind();
-    let this_turn_tokens = crate::chunker::TextChunker::count_tokens_with_kind(question, tokenizer)
-        + crate::chunker::TextChunker::count_tokens_with_kind(&output.content, tokenizer);
+    let this_turn_tokens =
+        tokenizer.count_tokens(question) + tokenizer.count_tokens(&output.content);
 
     Ok((output.content, this_turn_tokens))
 }

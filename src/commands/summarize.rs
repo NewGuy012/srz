@@ -1024,7 +1024,7 @@ pub fn present_summary_outcome(outcome: SummaryOutcome, args: &Cli, cache: &Cach
             crate::ui::display_summary_full(
                 &outcome.title,
                 &outcome.summary,
-                args.effective_paging(),
+                args.paging,
                 args.plain,
                 if is_tty { view_pair } else { None },
                 if is_tty { hint_ref } else { None },

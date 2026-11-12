@@ -1,7 +1,8 @@
+use srz::system::sha256::Sha256;
 use srz::upgrade::{
-    ArchiveFormat, InstallOrigin, Version, compute_sha256_hex, detect_install_origin,
-    detect_target_from, extract_binary_from_tar_gz, extract_binary_from_zip, format_asset_names,
-    parse_clean_version, parse_sha256_checksum,
+    ArchiveFormat, InstallOrigin, Version, detect_install_origin, detect_target_from,
+    extract_binary_from_tar_gz, extract_binary_from_zip, format_asset_names, parse_clean_version,
+    parse_sha256_checksum,
 };
 use std::io::Write;
 use std::path::Path;
@@ -191,7 +192,7 @@ fn test_extract_binary_from_zip() {
 #[test]
 fn test_sha256_verification_computation() {
     let test_data = b"Arbitrary release archive test data for SHA256 hashing.";
-    let computed_hash = compute_sha256_hex(test_data);
+    let computed_hash = Sha256::digest_hex(test_data);
 
     let sha256_file = format!("{}  srz.tar.gz", computed_hash);
     let parsed_hash = parse_sha256_checksum(&sha256_file).expect("Parsed hash");

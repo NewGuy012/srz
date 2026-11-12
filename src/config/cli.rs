@@ -242,13 +242,6 @@ pub struct Cli {
     pub plain: bool,
 }
 
-impl Cli {
-    /// Returns the effective paging mode.
-    pub fn effective_paging(&self) -> PagingMode {
-        self.paging
-    }
-}
-
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Manage the local disk cache (dir, size, clean)

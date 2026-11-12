@@ -302,192 +302,7 @@ pub async fn dispatch_cli(
             return with_db(|db| handle_export(db, format, &output));
         }
         crate::cli::ResolvedAction::Completions { shell } => {
-            let script = match shell {
-                crate::cli::Shell::Bash => {
-                    r#"_srz() {
-    local i cur prev opts cmds
-    COMPREPLY=()
-    cur="${COMP_WORDS[COMP_CWORD]}"
-    prev="${COMP_WORDS[COMP_CWORD-1]}"
-    cmds="web book ask history news models doctor index export completions upgrade help"
-    opts="-h --help -V --version -j --json -p --plain -s --stream --no-stream --base-url -m --model -t --timeout --style -o --output -q --quiet -v --verbose --page"
-
-    if [[ ${COMP_CWORD} -eq 1 ]] ; then
-        COMPREPLY=( $(compgen -W "${cmds} ${opts}" -- ${cur}) )
-        return 0
-    fi
-
-    case "${prev}" in
-        --style)
-            COMPREPLY=( $(compgen -W "concise detailed bullet action technical" -- ${cur}) )
-            return 0
-            ;;
-        --page)
-            COMPREPLY=( $(compgen -W "auto always never" -- ${cur}) )
-            return 0
-            ;;
-        completions)
-            COMPREPLY=( $(compgen -W "bash elvish fish powershell zsh" -- ${cur}) )
-            return 0
-            ;;
-        export)
-            COMPREPLY=( $(compgen -W "markdown json csv" -- ${cur}) )
-            return 0
-            ;;
-        *)
-            ;;
-    esac
-
-    COMPREPLY=( $(compgen -W "${opts}" -- ${cur}) )
-    return 0
-}
-complete -F _srz -o bashdefault -o default srz
-"#
-                }
-                crate::cli::Shell::Zsh => {
-                    r#"#compdef srz
-
-_srz() {
-    local -a commands
-    commands=(
-        'web:Summarize a webpage directly from URL'
-        'book:Summarize a book or topic'
-        'ask:Start an interactive multi-turn chat'
-        'history:List or view past summaries'
-        'news:Discover and summarize top news on a topic'
-        'models:List available models'
-        'doctor:Run system diagnostics'
-        'index:Rebuild library search index'
-        'export:Export library summaries'
-        'completions:Generate shell auto-completion script'
-        'upgrade:Check for and install the latest srz release'
-        'help:Print help message'
-    )
-
-    _arguments -C \
-        '(-h --help)'{-h,--help}'[Print help information]' \
-        '(-V --version)'{-V,--version}'[Print version information]' \
-        '(-j --json)'{-j,--json}'[Output raw JSON]' \
-        '(-p --plain)'{-p,--plain}'[Disable ANSI styling]' \
-        '(-s --stream)'{-s,--stream}'[Stream LLM tokens]' \
-        '--no-stream[Disable token streaming]' \
-        '--base-url=[OpenAI base URL]:URL:_urls' \
-        '(-m --model)'{-m,--model}'[Model name]:MODEL:' \
-        '(-t --timeout)'{-t,--timeout}'[Request timeout]:SECONDS:' \
-        '--style=[Summary style]:STYLE:(concise detailed bullet action technical)' \
-        '(-o --output)'{-o,--output}'[Save output to file]:FILE:_files' \
-        '(-q --quiet)'{-q,--quiet}'[Suppress non-essential output]' \
-        '(-v --verbose)'{-v,--verbose}'[Verbose debug logs]' \
-        '--page=[Terminal paging mode]:MODE:(auto always never)' \
-        '1: :->command' \
-        '*:: :->args'
-
-    case $state in
-        command)
-            _describe -t commands 'srz commands' commands
-            ;;
-        args)
-            case $line[1] in
-                completions)
-                    _values 'shell' bash elvish fish powershell zsh
-                    ;;
-                export)
-                    _values 'format' markdown json csv
-                    ;;
-                *)
-                    _files
-                    ;;
-            esac
-            ;;
-    esac
-}
-
-_srz "$@"
-"#
-                }
-                crate::cli::Shell::Fish => {
-                    r#"complete -c srz -f
-complete -c srz -n "__fish_use_subcommand" -a "web" -d "Summarize a webpage directly from URL"
-complete -c srz -n "__fish_use_subcommand" -a "book" -d "Summarize a book or topic"
-complete -c srz -n "__fish_use_subcommand" -a "ask" -d "Start an interactive multi-turn chat"
-complete -c srz -n "__fish_use_subcommand" -a "history" -d "List or view past summaries"
-complete -c srz -n "__fish_use_subcommand" -a "news" -d "Discover and summarize top news on a topic"
-complete -c srz -n "__fish_use_subcommand" -a "models" -d "List available models"
-complete -c srz -n "__fish_use_subcommand" -a "doctor" -d "Run system diagnostics"
-complete -c srz -n "__fish_use_subcommand" -a "index" -d "Rebuild library search index"
-complete -c srz -n "__fish_use_subcommand" -a "export" -d "Export library summaries"
-complete -c srz -n "__fish_use_subcommand" -a "completions" -d "Generate shell auto-completion script"
-complete -c srz -n "__fish_use_subcommand" -a "upgrade" -d "Check for and install latest srz release"
-complete -c srz -n "__fish_seen_subcommand_from completions" -a "bash elvish fish powershell zsh"
-complete -c srz -n "__fish_seen_subcommand_from export" -a "markdown json csv"
-complete -c srz -s h -l help -d "Print help information"
-complete -c srz -s V -l version -d "Print version information"
-complete -c srz -s j -l json -d "Output raw JSON"
-complete -c srz -s p -l plain -d "Disable ANSI styling"
-complete -c srz -s s -l stream -d "Stream LLM tokens"
-complete -c srz -l no-stream -d "Disable token streaming"
-complete -c srz -l base-url -d "OpenAI base URL"
-complete -c srz -s m -l model -d "Model name"
-complete -c srz -s t -l timeout -d "Request timeout"
-complete -c srz -l style -a "concise detailed bullet action technical" -d "Summary style"
-complete -c srz -s o -l output -F -d "Save output to file"
-complete -c srz -l page -a "auto always never" -d "Terminal paging mode"
-"#
-                }
-                crate::cli::Shell::PowerShell => {
-                    r#"Register-ArgumentCompleter -Native -CommandName 'srz' -ScriptBlock {
-    param($wordToComplete, $commandAst, $cursorPosition)
-    $commands = @('web', 'book', 'ask', 'history', 'news', 'models', 'doctor', 'index', 'export', 'completions', 'upgrade', 'help')
-    $flags = @('--help', '-h', '--version', '-V', '--json', '-j', '--plain', '-p', '--stream', '-s', '--no-stream', '--base-url', '--model', '-m', '--timeout', '-t', '--style', '--output', '-o', '--quiet', '-q', '--verbose', '-v', '--page')
-    $elements = $commandAst.CommandElements
-    if ($elements.Count -le 2) {
-        $commands + $flags | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
-            [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
-        }
-    } else {
-        $prev = $elements[-2].Extent.Text
-        if ($prev -eq 'completions') {
-            @('bash', 'elvish', 'fish', 'powershell', 'zsh') | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
-                [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
-            }
-        } elseif ($prev -eq '--style') {
-            @('concise', 'detailed', 'bullet', 'action', 'technical') | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
-                [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
-            }
-        } elseif ($prev -eq '--page') {
-            @('auto', 'always', 'never') | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
-                [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
-            }
-        } else {
-            $flags | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
-                [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
-            }
-        }
-    }
-}
-"#
-                }
-                crate::cli::Shell::Elvish => {
-                    r#"set edit:completion:arg-completer[srz] = {|@words|
-    var num-words = (count $words)
-    if (== $num-words 2) {
-        put web book ask history news models doctor index export completions upgrade help
-        put --help -h --version -V --json -j --plain -p --stream -s --no-stream --base-url --model -m --timeout -t --style --output -o --quiet -q --verbose -v --page
-    } elif (== $num-words 3) {
-        var prev = $words[1]
-        if (== $prev completions) {
-            put bash elvish fish powershell zsh
-        } elif (== $prev --style) {
-            put concise detailed bullet action technical
-        } elif (== $prev --page) {
-            put auto always never
-        }
-    }
-}
-"#
-                }
-            };
-            print!("{script}");
+            print!("{}", generate_completions_script(shell));
             return Ok(());
         }
         crate::cli::ResolvedAction::Upgrade {
@@ -746,5 +561,358 @@ pub fn print_execution_error(action_label: &str, err: &anyhow::Error) {
         Ui::info("  • Try a model with smaller quantization (e.g. Q4_K_M instead of Q8_0).");
         Ui::info("  • Or lower the context length in your runner.");
         Ui::info("  • Run `srz recommend` for hardware-optimized recommendations.\n");
+    }
+}
+
+const COMPLETION_COMMANDS: &[(&str, &str)] = &[
+    (
+        "cache",
+        "Manage the local disk cache (dir, size, clean, prune)",
+    ),
+    ("config", "Manage srz configuration (path, show, init)"),
+    ("history", "View recent summarization history and metrics"),
+    (
+        "stats",
+        "Display aggregate library and LLM performance statistics",
+    ),
+    (
+        "find",
+        "Search your offline summarized library for keywords or phrases",
+    ),
+    ("models", "List available models from the local LLM backend"),
+    (
+        "doctor",
+        "Diagnose system health, LLM connectivity, database, and cache",
+    ),
+    (
+        "recommend",
+        "Recommend optimal model, context window, and launch commands",
+    ),
+    (
+        "index",
+        "Generate and view the standalone HTML library dashboard",
+    ),
+    (
+        "browse",
+        "Launch the interactive terminal UI library explorer",
+    ),
+    (
+        "export",
+        "Export summarized library to Markdown, JSON, or CSV",
+    ),
+    (
+        "ask",
+        "Ask questions grounded on a document, URL, file, or recent read",
+    ),
+    ("news", "Search and summarize latest news on a topic"),
+    ("completions", "Generate shell auto-completion script"),
+    ("upgrade", "Check for and install the latest srz release"),
+    ("help", "Print help message"),
+];
+
+const COMPLETION_FLAGS: &str = "-h --help -V --version --base-url --model --api-key --style --max-tokens --context-window --no-cache --config --profile -o --output -q --quiet -v --verbose --json -b --open --stream --show-thinking --thinking --paging --plain";
+const COMPLETION_STYLES: &str = "concise detailed bullets";
+const COMPLETION_PAGING: &str = "auto always never";
+const COMPLETION_SHELLS: &str = "bash elvish fish powershell zsh";
+const COMPLETION_FORMATS: &str = "markdown json csv";
+const COMPLETION_TIMEFRAMES: &str = "day week month all";
+const COMPLETION_CACHE_CMDS: &str = "dir size clean prune";
+const COMPLETION_CONFIG_CMDS: &str = "path show init";
+
+fn ps_array(words: &str) -> String {
+    words
+        .split_whitespace()
+        .map(|w| format!("'{w}'"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Generates a shell completion script matching the active `srz` CLI definition.
+pub fn generate_completions_script(shell: crate::cli::Shell) -> String {
+    let cmds_space = COMPLETION_COMMANDS
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    match shell {
+        crate::cli::Shell::Bash => format!(
+            r#"_srz() {{
+    local cur prev opts cmds
+    COMPREPLY=()
+    cur="${{COMP_WORDS[COMP_CWORD]}}"
+    prev="${{COMP_WORDS[COMP_CWORD-1]}}"
+    cmds="{cmds_space}"
+    opts="{COMPLETION_FLAGS}"
+
+    if [[ ${{COMP_CWORD}} -eq 1 ]] ; then
+        COMPREPLY=( $(compgen -W "${{cmds}} ${{opts}}" -- ${{cur}}) )
+        return 0
+    fi
+
+    case "${{prev}}" in
+        --style)
+            COMPREPLY=( $(compgen -W "{COMPLETION_STYLES}" -- ${{cur}}) )
+            return 0
+            ;;
+        --paging)
+            COMPREPLY=( $(compgen -W "{COMPLETION_PAGING}" -- ${{cur}}) )
+            return 0
+            ;;
+        -t|--timeframe)
+            COMPREPLY=( $(compgen -W "{COMPLETION_TIMEFRAMES}" -- ${{cur}}) )
+            return 0
+            ;;
+        -f|--format|export)
+            COMPREPLY=( $(compgen -W "{COMPLETION_FORMATS}" -- ${{cur}}) )
+            return 0
+            ;;
+        completions)
+            COMPREPLY=( $(compgen -W "{COMPLETION_SHELLS}" -- ${{cur}}) )
+            return 0
+            ;;
+        cache)
+            COMPREPLY=( $(compgen -W "{COMPLETION_CACHE_CMDS}" -- ${{cur}}) )
+            return 0
+            ;;
+        config)
+            COMPREPLY=( $(compgen -W "{COMPLETION_CONFIG_CMDS}" -- ${{cur}}) )
+            return 0
+            ;;
+        *)
+            ;;
+    esac
+
+    COMPREPLY=( $(compgen -W "${{opts}}" -- ${{cur}}) )
+    return 0
+}}
+complete -F _srz -o bashdefault -o default srz
+"#
+        ),
+        crate::cli::Shell::Zsh => {
+            let cmd_entries = COMPLETION_COMMANDS
+                .iter()
+                .map(|(name, desc)| format!("        '{name}:{desc}'"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!(
+                r#"#compdef srz
+
+_srz() {{
+    local -a commands
+    commands=(
+{cmd_entries}
+    )
+
+    _arguments -C \
+        '(-h --help)'{{-h,--help}}'[Print help information]' \
+        '(-V --version)'{{-V,--version}}'[Print version information]' \
+        '--base-url=[Local OpenAI-compatible base URL]:URL:_urls' \
+        '--model=[Model name]:MODEL:' \
+        '--api-key=[OpenAI API key]:KEY:' \
+        '--style=[Summary style]:STYLE:({COMPLETION_STYLES})' \
+        '--max-tokens=[Maximum tokens to generate]:TOKENS:' \
+        '--context-window=[Override context window size in tokens]:TOKENS:' \
+        '--no-cache[Bypass local cache]' \
+        '--config=[Path to config file]:FILE:_files' \
+        '--profile=[Configuration profile name]:PROFILE:' \
+        '(-o --output)'{{-o,--output}}'[Save summary to output file]:FILE:_files' \
+        '(-q --quiet)'{{-q,--quiet}}'[Suppress status messages]' \
+        '(-v --verbose)'{{-v,--verbose}}'[Display verbose diagnostic logs]' \
+        '--json[Format output as machine-readable JSON]' \
+        '(-b --open)'{{-b,--open}}'[Open styled HTML summary in browser]' \
+        '--stream[Stream LLM output tokens live]' \
+        '(--show-thinking --thinking)'{{--show-thinking,--thinking}}'[Stream full model reasoning trace]' \
+        '--paging=[Terminal paging mode]:MODE:({COMPLETION_PAGING})' \
+        '--plain[Output raw unstyled Markdown]' \
+        '1: :->command' \
+        '*:: :->args'
+
+    case $state in
+        command)
+            _describe -t commands 'srz commands' commands
+            ;;
+        args)
+            case $line[1] in
+                cache)
+                    _values 'cache command' {COMPLETION_CACHE_CMDS}
+                    ;;
+                config)
+                    _values 'config command' {COMPLETION_CONFIG_CMDS}
+                    ;;
+                completions)
+                    _values 'shell' {COMPLETION_SHELLS}
+                    ;;
+                export)
+                    _values 'format' {COMPLETION_FORMATS}
+                    ;;
+                news)
+                    _arguments '(-t --timeframe)'{{-t,--timeframe}}'[Timeframe]:TIMEFRAME:({COMPLETION_TIMEFRAMES})'
+                    ;;
+                *)
+                    _files
+                    ;;
+            esac
+            ;;
+    esac
+}}
+
+_srz "$@"
+"#
+            )
+        }
+        crate::cli::Shell::Fish => {
+            let mut out = String::from("complete -c srz -f\n");
+            for (name, desc) in COMPLETION_COMMANDS {
+                if *name != "help" {
+                    out.push_str(&format!(
+                        "complete -c srz -n \"__fish_use_subcommand\" -a \"{name}\" -d \"{desc}\"\n"
+                    ));
+                }
+            }
+            out.push_str(&format!(
+                "complete -c srz -n \"__fish_seen_subcommand_from cache\" -a \"{COMPLETION_CACHE_CMDS}\"\n\
+                 complete -c srz -n \"__fish_seen_subcommand_from config\" -a \"{COMPLETION_CONFIG_CMDS}\"\n\
+                 complete -c srz -n \"__fish_seen_subcommand_from completions\" -a \"{COMPLETION_SHELLS}\"\n\
+                 complete -c srz -n \"__fish_seen_subcommand_from export\" -a \"{COMPLETION_FORMATS}\"\n\
+                 complete -c srz -n \"__fish_seen_subcommand_from news\" -s t -l timeframe -a \"{COMPLETION_TIMEFRAMES}\" -d \"Timeframe for news recency\"\n\
+                 complete -c srz -s h -l help -d \"Print help information\"\n\
+                 complete -c srz -s V -l version -d \"Print version information\"\n\
+                 complete -c srz -l base-url -d \"Local OpenAI-compatible base URL\"\n\
+                 complete -c srz -l model -d \"Model name\"\n\
+                 complete -c srz -l api-key -d \"OpenAI API key\"\n\
+                 complete -c srz -l style -a \"{COMPLETION_STYLES}\" -d \"Output summary style\"\n\
+                 complete -c srz -l max-tokens -d \"Maximum tokens to generate\"\n\
+                 complete -c srz -l context-window -d \"Override context window size\"\n\
+                 complete -c srz -l no-cache -d \"Bypass local cache\"\n\
+                 complete -c srz -l config -F -d \"Path to config file\"\n\
+                 complete -c srz -l profile -d \"Configuration profile name\"\n\
+                 complete -c srz -s o -l output -F -d \"Save output to file\"\n\
+                 complete -c srz -s q -l quiet -d \"Suppress status messages\"\n\
+                 complete -c srz -s v -l verbose -d \"Display verbose logs\"\n\
+                 complete -c srz -l json -d \"Format output as JSON\"\n\
+                 complete -c srz -s b -l open -d \"Open styled HTML summary in browser\"\n\
+                 complete -c srz -l stream -d \"Stream LLM tokens live\"\n\
+                 complete -c srz -l show-thinking -d \"Stream full model reasoning trace\"\n\
+                 complete -c srz -l thinking -d \"Alias for --show-thinking\"\n\
+                 complete -c srz -l paging -a \"{COMPLETION_PAGING}\" -d \"Terminal paging mode\"\n\
+                 complete -c srz -l plain -d \"Output raw unstyled Markdown\"\n"
+            ));
+            out
+        }
+        crate::cli::Shell::PowerShell => format!(
+            r#"Register-ArgumentCompleter -Native -CommandName 'srz' -ScriptBlock {{
+    param($wordToComplete, $commandAst, $cursorPosition)
+    $commands = @({cmds})
+    $flags = @({flags})
+    $elements = $commandAst.CommandElements
+    if ($elements.Count -le 2) {{
+        $commands + $flags | Where-Object {{ $_ -like "$wordToComplete*" }} | ForEach-Object {{
+            [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+        }}
+    }} else {{
+        $prev = $elements[-2].Extent.Text
+        $vals = switch ($prev) {{
+            'cache'       {{ @({cache_cmds}) }}
+            'config'      {{ @({config_cmds}) }}
+            'completions' {{ @({shells}) }}
+            'export'      {{ @({formats}) }}
+            '--style'     {{ @({styles}) }}
+            '--paging'    {{ @({paging}) }}
+            '-t'          {{ @({timeframes}) }}
+            '--timeframe' {{ @({timeframes}) }}
+            default       {{ $flags }}
+        }}
+        $vals | Where-Object {{ $_ -like "$wordToComplete*" }} | ForEach-Object {{
+            [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+        }}
+    }}
+}}
+"#,
+            cmds = ps_array(&cmds_space),
+            flags = ps_array(COMPLETION_FLAGS),
+            cache_cmds = ps_array(COMPLETION_CACHE_CMDS),
+            config_cmds = ps_array(COMPLETION_CONFIG_CMDS),
+            shells = ps_array(COMPLETION_SHELLS),
+            formats = ps_array(COMPLETION_FORMATS),
+            styles = ps_array(COMPLETION_STYLES),
+            paging = ps_array(COMPLETION_PAGING),
+            timeframes = ps_array(COMPLETION_TIMEFRAMES),
+        ),
+        crate::cli::Shell::Elvish => format!(
+            r#"set edit:completion:arg-completer[srz] = {{|@words|
+    var num-words = (count $words)
+    if (== $num-words 2) {{
+        put {cmds_space}
+        put {COMPLETION_FLAGS}
+    }} elif (== $num-words 3) {{
+        var prev = $words[1]
+        if (== $prev cache) {{
+            put {COMPLETION_CACHE_CMDS}
+        }} elif (== $prev config) {{
+            put {COMPLETION_CONFIG_CMDS}
+        }} elif (== $prev completions) {{
+            put {COMPLETION_SHELLS}
+        }} elif (== $prev export) {{
+            put {COMPLETION_FORMATS}
+        }} elif (== $prev --style) {{
+            put {COMPLETION_STYLES}
+        }} elif (== $prev --paging) {{
+            put {COMPLETION_PAGING}
+        }} elif (or (== $prev -t) (== $prev --timeframe)) {{
+            put {COMPLETION_TIMEFRAMES}
+        }}
+    }}
+}}
+"#
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_shell_completions_match_cli_surface() {
+        for shell in [
+            crate::cli::Shell::Bash,
+            crate::cli::Shell::Zsh,
+            crate::cli::Shell::Fish,
+            crate::cli::Shell::PowerShell,
+            crate::cli::Shell::Elvish,
+        ] {
+            let script = generate_completions_script(shell);
+            for required in ["cache", "browse", "recommend", "bullets"] {
+                assert!(
+                    script.contains(required),
+                    "shell {:?} missing '{required}'",
+                    shell
+                );
+            }
+            for flag in ["paging", "plain"] {
+                let expected = match shell {
+                    crate::cli::Shell::Fish => format!("-l {flag}"),
+                    _ => format!("--{flag}"),
+                };
+                assert!(
+                    script.contains(&expected),
+                    "shell {:?} missing '{expected}'",
+                    shell
+                );
+            }
+            for legacy in [
+                "--no-stream",
+                "--page",
+                "bullet action technical",
+                "web book",
+            ] {
+                assert!(
+                    !script.contains(legacy),
+                    "shell {:?} still has stale '{legacy}'",
+                    shell
+                );
+            }
+        }
     }
 }

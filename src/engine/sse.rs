@@ -331,7 +331,6 @@ impl SseStreamState {
         if matches!(mode, StreamMode::Buffered) && !spinner_label.trim().is_empty() {
             if pb.is_finished() {
                 pb.reset();
-                pb.enable_steady_tick(Duration::from_millis(80));
             }
             update_generating_spinner(pb, spinner_label);
         }
