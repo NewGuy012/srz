@@ -2,7 +2,6 @@ use srz::cache::Cache;
 use srz::cli::SummaryStyle;
 use srz::scraper::ScrapedPage;
 use srz::search::{BookMetadata, SearchResult};
-use std::fs;
 
 fn temp_test_dir(label: &str) -> srz::fs_util::TempDir {
     srz::fs_util::TempDir::new_in(std::env::temp_dir(), &format!("srz_test_{}_", label))
@@ -544,11 +543,11 @@ fn test_cache_redb_consolidation_and_permissions() {
     {
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(
-            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
             0o700
         );
         assert_eq!(
-            fs::metadata(&db_path).unwrap().permissions().mode() & 0o777,
+            std::fs::metadata(&db_path).unwrap().permissions().mode() & 0o777,
             0o600
         );
     }
