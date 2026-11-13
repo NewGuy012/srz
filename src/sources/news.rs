@@ -146,45 +146,12 @@ impl GoogleNewsClient {
         let ts: i64 = ts_str.parse().ok()?;
 
         // 2. Submit batchexecute RPC request to resolve destination URL safely via structured JSON
-        let payload_json = serde_json::json!([
-            "garturlreq",
-            [
-                [
-                    "X",
-                    "X",
-                    ["X", "X"],
-                    null,
-                    null,
-                    1,
-                    1,
-                    "US:en",
-                    null,
-                    1,
-                    null,
-                    null,
-                    null,
-                    null,
-                    null,
-                    0,
-                    1
-                ],
-                "X",
-                "X",
-                1,
-                [1, 1, 1],
-                1,
-                1,
-                null,
-                0,
-                0,
-                null,
-                0
-            ],
-            base64_id,
+        let payload_str = format!(
+            r#"["garturlreq",[[["X","X",["X","X"],null,null,1,1,"US:en",null,1,null,null,null,null,null,0,1],"X","X",1,[1,1,1],1,1,null,0,0,null,0],{},{},{}]"#,
+            serde_json::json!(base64_id),
             ts,
-            sig
-        ]);
-        let payload_str = payload_json.to_string();
+            serde_json::json!(sig)
+        );
         let envelope = serde_json::json!([[["Fbv4je", payload_str, null, "generic"]]]);
         let form_body = format!(
             "f.req={}",
@@ -301,17 +268,7 @@ impl GoogleNewsClient {
                     };
 
                     // If feed already provides a rich multi-paragraph body, skip network scrape
-                    if let Some(snip) = &item.snippet
-                        && snip.split_whitespace().count() >= 150
-                    {
-                        let wc = snip.split_whitespace().count();
-                        let src = make_digest_source(
-                            &item,
-                            item.google_link.clone(),
-                            snip.clone(),
-                            wc,
-                            None,
-                        );
+                    if let Some(src) = snippet_digest_source(&item, 150) {
                         return (idx, item.google_link, Some(src));
                     }
 
@@ -322,62 +279,38 @@ impl GoogleNewsClient {
                         Some(u) => u,
                         None if !is_gnews => item.google_link.clone(),
                         None => {
-                            if let Some(snip) = &item.snippet
-                                && snip.split_whitespace().count() >= 20
-                            {
-                                let wc = snip.split_whitespace().count();
-                                let src = make_digest_source(
-                                    &item,
-                                    item.google_link.clone(),
-                                    snip.clone(),
-                                    wc,
-                                    None,
-                                );
-                                return (idx, item.google_link, Some(src));
-                            }
-                            return (idx, item.google_link, None);
+                            let src = snippet_digest_source(&item, 20);
+                            return (idx, item.google_link, src);
                         }
                     };
 
-                    if is_google_news_link(&direct_url) {
+                    if is_google_news_link(&direct_url) || !is_safe_article_url(&direct_url) {
                         return (idx, item.google_link, None);
                     }
 
-                    let scraped: Result<ScrapedPage> = match tokio::time::timeout(
+                    let scraped = tokio::time::timeout(
                         Duration::from_secs(4),
                         scraper_cloned.scrape(&direct_url),
                     )
-                    .await
-                    {
-                        Ok(res) => res,
-                        Err(_) => Err(anyhow::anyhow!("Scrape timed out after 4s")),
-                    };
+                    .await;
 
-                    if !is_safe_article_url(&direct_url) {
-                        return (idx, item.google_link, None);
-                    }
-
-                    let (content, word_count, resolved_title) = if let Ok(page) = scraped
+                    let src = if let Ok(Ok(page)) = scraped
                         && page.word_count > 60
                     {
-                        (page.content, page.word_count, page.title)
-                    } else if let Some(snip) = &item.snippet
-                        && snip.split_whitespace().count() >= 20
-                    {
-                        let wc = snip.split_whitespace().count();
-                        (snip.clone(), wc, None)
+                        Some(make_digest_source(
+                            &item,
+                            direct_url,
+                            page.content,
+                            page.word_count,
+                            page.title.as_deref(),
+                        ))
                     } else {
-                        return (idx, item.google_link, None);
+                        snippet_digest_source(&item, 20).map(|mut s| {
+                            s.url = direct_url;
+                            s
+                        })
                     };
-
-                    let src = make_digest_source(
-                        &item,
-                        direct_url,
-                        content,
-                        word_count,
-                        resolved_title.as_deref(),
-                    );
-                    (idx, item.google_link, Some(src))
+                    (idx, item.google_link, src)
                 });
             }
 
@@ -448,6 +381,13 @@ fn make_digest_source(
     }
 }
 
+fn snippet_digest_source(item: &NewsArticleItem, min_words: usize) -> Option<NewsDigestSource> {
+    let snip = item.snippet.as_ref()?;
+    let wc = snip.split_whitespace().count();
+    (wc >= min_words)
+        .then(|| make_digest_source(item, item.google_link.clone(), snip.clone(), wc, None))
+}
+
 /// Cleans CDATA wrappers and decodes HTML entities from an XML element's inner text.
 fn clean_xml_text(raw: &str) -> String {
     let trimmed = raw.trim();
@@ -461,19 +401,12 @@ fn clean_xml_text(raw: &str) -> String {
 }
 
 fn day_of_week(y: i32, m: i32, d: i32) -> &'static str {
-    static T: [i32; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
-    let adj_y = if m < 3 { y - 1 } else { y };
-    let day = (adj_y + adj_y / 4 - adj_y / 100 + adj_y / 400 + T[(m - 1) as usize] + d) % 7;
-    match day {
-        0 => "Sun",
-        1 => "Mon",
-        2 => "Tue",
-        3 => "Wed",
-        4 => "Thu",
-        5 => "Fri",
-        6 => "Sat",
-        _ => "Sun",
-    }
+    const T: [i32; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+    const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    let adj_y = y - i32::from(m < 3);
+    let idx = (adj_y + adj_y / 4 - adj_y / 100 + adj_y / 400 + T[(m - 1) as usize] + d)
+        .rem_euclid(7) as usize;
+    DAYS[idx]
 }
 
 fn format_iso8601_to_rfc2822(s: &str) -> Option<String> {
@@ -487,16 +420,17 @@ fn format_iso8601_to_rfc2822(s: &str) -> Option<String> {
     if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return None;
     }
-    let time_part = &s[11..19];
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
-    let month_name = MONTHS[month - 1];
     let dow = day_of_week(year, month as i32, day);
-
     Some(format!(
         "{}, {:02} {} {} {} +0000",
-        dow, day, month_name, year, time_part
+        dow,
+        day,
+        MONTHS[month - 1],
+        year,
+        &s[11..19]
     ))
 }
 
@@ -508,11 +442,11 @@ fn normalize_feed_date(raw: &str) -> Option<String> {
     if let Some(formatted) = format_iso8601_to_rfc2822(trimmed) {
         return Some(formatted);
     }
-    if let Some(stripped) = trimmed.strip_suffix(" GMT") {
-        return Some(format!("{} +0000", stripped));
-    }
-    if let Some(stripped) = trimmed.strip_suffix(" UTC") {
-        return Some(format!("{} +0000", stripped));
+    if let Some(stripped) = trimmed
+        .strip_suffix(" GMT")
+        .or_else(|| trimmed.strip_suffix(" UTC"))
+    {
+        return Some(format!("{stripped} +0000"));
     }
     Some(trimmed.to_string())
 }
@@ -779,67 +713,43 @@ pub fn is_google_news_link(url: &str) -> bool {
 
 pub fn extract_article_id(url: &str) -> Option<&str> {
     let clean = url.trim();
-    if !clean.starts_with("https://news.google.com/")
-        && !clean.starts_with("http://news.google.com/")
-    {
+    if !is_google_news_link(clean) {
         return None;
     }
-    if let Some(pos) = clean.find("/articles/") {
-        let after = &clean[pos + 10..];
-        let id = after.split(['?', '#', '/']).next().unwrap_or(after);
-        if !id.is_empty()
-            && id.len() <= 2048
-            && id
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'=')
-        {
-            return Some(id);
-        }
-    }
-    None
+    let pos = clean.find("/articles/")?;
+    let id = clean[pos + 10..].split(['?', '#', '/']).next()?;
+    (!id.is_empty()
+        && id.len() <= 2048
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'=')))
+    .then_some(id)
 }
 
 pub fn parse_batchexecute_destination_url(text: &str) -> Option<String> {
     let clean = text.trim();
     let json_text = clean.strip_prefix(")]}'").unwrap_or(clean).trim();
-
-    // The response may be chunk-delimited by double newlines
     let candidate = json_text
         .split("\n\n")
         .find(|chunk| chunk.trim().starts_with('['))
         .unwrap_or(json_text);
-
     let parsed: serde_json::Value = serde_json::from_str(candidate.trim()).ok()?;
 
-    // Search for the "Fbv4je" envelope
-    if let Some(arr) = parsed.as_array() {
-        for entry in arr {
-            if let Some(entry_arr) = entry.as_array()
-                && entry_arr.get(1).and_then(|v| v.as_str()) == Some("Fbv4je")
-                && let Some(payload_str) = entry_arr.get(2).and_then(|v| v.as_str())
-                && let Ok(inner) = serde_json::from_str::<serde_json::Value>(payload_str)
-                && let Some(dest) = inner.pointer("/1").and_then(|v| v.as_str())
-            {
-                let trimmed = dest.trim();
-                if is_safe_article_url(trimmed) {
-                    return Some(trimmed.to_string());
-                }
-            }
-        }
-    }
+    let payload_str = parsed
+        .as_array()
+        .and_then(|arr| {
+            arr.iter().find_map(|entry| {
+                let entry_arr = entry.as_array()?;
+                (entry_arr.get(1)?.as_str() == Some("Fbv4je"))
+                    .then(|| entry_arr.get(2)?.as_str())
+                    .flatten()
+            })
+        })
+        .or_else(|| parsed.pointer("/0/2")?.as_str())?;
 
-    // Fallback to legacy fixed pointer /0/2 -> /1
-    if let Some(json_str) = parsed.pointer("/0/2").and_then(|v| v.as_str())
-        && let Ok(inner) = serde_json::from_str::<serde_json::Value>(json_str)
-        && let Some(dest) = inner.pointer("/1").and_then(|v| v.as_str())
-    {
-        let trimmed = dest.trim();
-        if is_safe_article_url(trimmed) {
-            return Some(trimmed.to_string());
-        }
-    }
-
-    None
+    let inner: serde_json::Value = serde_json::from_str(payload_str).ok()?;
+    let trimmed = inner.pointer("/1")?.as_str()?.trim();
+    is_safe_article_url(trimmed).then(|| trimmed.to_string())
 }
 
 #[cfg(test)]

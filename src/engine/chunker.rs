@@ -238,14 +238,13 @@ impl TextChunker {
     }
 
     fn decompose_line<'a, F>(
-        line: &'a str,
+        mut remaining: &'a str,
         max_limit: usize,
         count_fn: &mut F,
         out: &mut Vec<(&'a str, usize)>,
     ) where
         F: FnMut(&str) -> usize,
     {
-        let mut remaining = line;
         while !remaining.is_empty() {
             let r_count = count_fn(remaining);
             if r_count <= max_limit {
@@ -253,67 +252,41 @@ impl TextChunker {
                 break;
             }
 
-            // Collect sentence boundary end-offsets and binary search the largest valid prefix
-            let candidates: Vec<usize> = remaining
+            let sentences: Vec<usize> = remaining
                 .char_indices()
                 .filter_map(|(i, c)| {
-                    if (c == '.' || c == '?' || c == '!' || c == ';')
-                        && remaining[i + c.len_utf8()..].starts_with(|ch: char| ch.is_whitespace())
-                    {
-                        Some(i + c.len_utf8())
-                    } else {
-                        None
-                    }
+                    (matches!(c, '.' | '?' | '!' | ';')
+                        && remaining[i + c.len_utf8()..].starts_with(char::is_whitespace))
+                    .then_some(i + c.len_utf8())
                 })
                 .collect();
-
-            if !Self::split_at_best_boundary(&mut remaining, &candidates, max_limit, count_fn, out)
-            {
-                Self::decompose_words(remaining, max_limit, count_fn, out);
-                break;
-            }
-        }
-    }
-
-    fn decompose_words<'a, F>(
-        text: &'a str,
-        max_limit: usize,
-        count_fn: &mut F,
-        out: &mut Vec<(&'a str, usize)>,
-    ) where
-        F: FnMut(&str) -> usize,
-    {
-        let mut remaining = text;
-        while !remaining.is_empty() {
-            let r_count = count_fn(remaining);
-            if r_count <= max_limit {
-                out.push((remaining, r_count));
-                break;
+            if Self::split_at_best_boundary(&mut remaining, &sentences, max_limit, count_fn, out) {
+                continue;
             }
 
-            // Collect whitespace boundary offsets and binary search the largest valid prefix
-            let candidates: Vec<usize> = remaining
+            let spaces: Vec<usize> = remaining
                 .char_indices()
-                .filter_map(|(i, c)| if c.is_whitespace() { Some(i) } else { None })
+                .filter_map(|(i, c)| c.is_whitespace().then_some(i))
                 .collect();
+            if Self::split_at_best_boundary(&mut remaining, &spaces, max_limit, count_fn, out) {
+                continue;
+            }
 
-            if !Self::split_at_best_boundary(&mut remaining, &candidates, max_limit, count_fn, out)
-            {
-                let char_indices: Vec<usize> = remaining.char_indices().map(|(i, _)| i).collect();
-                let idx =
-                    char_indices.partition_point(|&pos| count_fn(&remaining[..pos]) <= max_limit);
-                let mut cut = if idx > 0 { char_indices[idx - 1] } else { 0 };
-                if cut == 0 {
-                    cut = remaining
+            let chars: Vec<usize> = remaining.char_indices().map(|(i, _)| i).collect();
+            let idx = chars.partition_point(|&pos| count_fn(&remaining[..pos]) <= max_limit);
+            let cut = chars
+                .get(idx.saturating_sub(1))
+                .copied()
+                .filter(|&c| c > 0)
+                .unwrap_or_else(|| {
+                    remaining
                         .chars()
                         .next()
-                        .map(|c| c.len_utf8())
-                        .unwrap_or(remaining.len());
-                }
-                let (head, tail) = remaining.split_at(cut);
-                out.push((head, count_fn(head)));
-                remaining = tail;
-            }
+                        .map_or(remaining.len(), char::len_utf8)
+                });
+            let (head, tail) = remaining.split_at(cut);
+            out.push((head, count_fn(head)));
+            remaining = tail;
         }
     }
 

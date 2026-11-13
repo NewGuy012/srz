@@ -6,27 +6,18 @@ use std::borrow::Cow;
 /// Rejects dangerous schemes (`javascript:`, `vbscript:`, `data:`, `file:`) and control characters.
 pub fn is_safe_markdown_url(url: &str) -> bool {
     let trimmed = url.trim();
-    if trimmed.is_empty() || trimmed.chars().any(|c| c.is_control()) {
+    if trimmed.is_empty() || trimmed.chars().any(char::is_control) {
         return false;
     }
-    if trimmed.starts_with('#') || trimmed.starts_with('/') {
+    if trimmed.starts_with(['#', '/']) {
         return true;
     }
-    if let Some(colon_pos) = trimmed.find(':') {
-        let slash_pos = trimmed.find('/');
-        let query_pos = trimmed.find('?');
-        let hash_pos = trimmed.find('#');
-        let first_delimiter = [slash_pos, query_pos, hash_pos]
-            .into_iter()
-            .flatten()
-            .min()
-            .unwrap_or(usize::MAX);
-        if colon_pos < first_delimiter {
-            let scheme = &trimmed[..colon_pos];
-            return scheme.eq_ignore_ascii_case("http")
-                || scheme.eq_ignore_ascii_case("https")
-                || scheme.eq_ignore_ascii_case("mailto");
-        }
+    if let Some((scheme, _)) = trimmed.split_once(':')
+        && !scheme.contains(['/', '?', '#'])
+    {
+        return scheme.eq_ignore_ascii_case("http")
+            || scheme.eq_ignore_ascii_case("https")
+            || scheme.eq_ignore_ascii_case("mailto");
     }
     true
 }
@@ -223,33 +214,20 @@ fn render_blocks(md: &str, out: &mut String, html: bool) {
         }
         for (idx, p_line) in lines[para_start..i].iter().enumerate() {
             let trimmed_start = p_line.trim_start();
-            let (content, hard_break) = if let Some(stripped) = trimmed_start.strip_suffix("  ") {
-                (stripped, true)
-            } else if let Some(stripped) = trimmed_start.strip_suffix('\\') {
-                (stripped, true)
-            } else {
-                (trimmed_start, false)
-            };
+            let (content, hard_break) = trimmed_start
+                .strip_suffix("  ")
+                .or_else(|| trimmed_start.strip_suffix('\\'))
+                .map_or((trimmed_start, false), |s| (s, true));
             render_inlines(content, out, html);
             if idx + 1 < i - para_start {
-                if hard_break {
-                    if html {
-                        out.push_str("<br />\n");
-                    } else {
-                        out.push('\n');
-                    }
-                } else if html {
-                    out.push('\n');
-                } else {
-                    out.push(' ');
-                }
+                out.push_str(match (hard_break, html) {
+                    (true, true) => "<br />\n",
+                    (true, false) | (false, true) => "\n",
+                    (false, false) => " ",
+                });
             }
         }
-        if html {
-            out.push_str("</p>\n");
-        } else {
-            out.push_str("\n\n");
-        }
+        out.push_str(if html { "</p>\n" } else { "\n\n" });
     }
 }
 
@@ -275,26 +253,15 @@ fn is_fence_close(trimmed: &str, fence_char: u8, min_len: usize) -> bool {
 }
 
 fn is_thematic_break(trimmed: &str) -> bool {
-    let mut marker: Option<char> = None;
-    let mut count = 0usize;
-    for ch in trimmed.chars() {
-        if ch == ' ' || ch == '\t' {
-            continue;
-        }
-        if ch == '-' || ch == '*' || ch == '_' {
-            if let Some(m) = marker {
-                if m != ch {
-                    return false;
-                }
-            } else {
-                marker = Some(ch);
-            }
-            count += 1;
-        } else {
-            return false;
-        }
-    }
-    count >= 3
+    let Some(marker) = trimmed.bytes().find(|&b| b != b' ' && b != b'\t') else {
+        return false;
+    };
+    matches!(marker, b'-' | b'*' | b'_')
+        && trimmed
+            .bytes()
+            .filter(|&b| b != b' ' && b != b'\t')
+            .all(|b| b == marker)
+        && trimmed.bytes().filter(|&b| b == marker).count() >= 3
 }
 
 fn parse_heading(trimmed: &str) -> Option<(usize, &str)> {
@@ -318,26 +285,14 @@ fn parse_heading(trimmed: &str) -> Option<(usize, &str)> {
     Some((level, final_text))
 }
 
-#[derive(Clone, Copy)]
-enum ColAlign {
-    None,
-    Left,
-    Center,
-    Right,
-}
-
 fn split_table_row(line: &str) -> Vec<&str> {
-    let mut trimmed = line.trim();
-    if let Some(rest) = trimmed.strip_prefix('|') {
-        trimmed = rest;
-    }
-    if let Some(rest) = trimmed.strip_suffix('|') {
-        trimmed = rest;
-    }
+    let trimmed = line.trim();
+    let trimmed = trimmed.strip_prefix('|').unwrap_or(trimmed);
+    let trimmed = trimmed.strip_suffix('|').unwrap_or(trimmed);
     trimmed.split('|').map(str::trim).collect()
 }
 
-fn parse_table_separator(line: &str) -> Option<Vec<ColAlign>> {
+fn parse_table_separator(line: &str) -> Option<Vec<&'static str>> {
     let trimmed = line.trim();
     if !trimmed.contains('|') {
         return None;
@@ -348,40 +303,26 @@ fn parse_table_separator(line: &str) -> Option<Vec<ColAlign>> {
     }
     let mut aligns = Vec::with_capacity(cells.len());
     for cell in cells {
-        if cell.is_empty() {
-            return None;
-        }
-        let left = cell.starts_with(':');
-        let right = cell.ends_with(':');
         let dashes = cell.trim_matches(':');
-        if dashes.is_empty() || !dashes.bytes().all(|b| b == b'-') {
+        if cell.is_empty() || dashes.is_empty() || !dashes.bytes().all(|b| b == b'-') {
             return None;
         }
-        aligns.push(match (left, right) {
-            (true, true) => ColAlign::Center,
-            (true, false) => ColAlign::Left,
-            (false, true) => ColAlign::Right,
-            (false, false) => ColAlign::None,
+        aligns.push(match (cell.starts_with(':'), cell.ends_with(':')) {
+            (true, true) => " style=\"text-align: center\"",
+            (true, false) => " style=\"text-align: left\"",
+            (false, true) => " style=\"text-align: right\"",
+            (false, false) => "",
         });
     }
     Some(aligns)
 }
 
-fn align_style(align: ColAlign) -> &'static str {
-    match align {
-        ColAlign::Left => " style=\"text-align: left\"",
-        ColAlign::Center => " style=\"text-align: center\"",
-        ColAlign::Right => " style=\"text-align: right\"",
-        ColAlign::None => "",
-    }
-}
-
-fn render_table_row_html(tag: &str, cells: &[&str], alignments: &[ColAlign], out: &mut String) {
+fn render_table_row_html(tag: &str, cells: &[&str], alignments: &[&str], out: &mut String) {
     out.push_str("<tr>");
-    for (c, &align) in alignments.iter().enumerate() {
+    for (c, &style) in alignments.iter().enumerate() {
         out.push('<');
         out.push_str(tag);
-        out.push_str(align_style(align));
+        out.push_str(style);
         out.push('>');
         if let Some(cell) = cells.get(c) {
             render_inlines(cell, out, true);
@@ -393,9 +334,20 @@ fn render_table_row_html(tag: &str, cells: &[&str], alignments: &[ColAlign], out
     out.push_str("</tr>");
 }
 
+fn render_table_row_ansi(cells: &[&str], cols: usize, out: &mut String) {
+    for c in 0..cols {
+        if c > 0 {
+            out.push_str(" | ");
+        }
+        if let Some(cell) = cells.get(c) {
+            render_inlines(cell, out, false);
+        }
+    }
+}
+
 fn render_table(
     headers: &[&str],
-    alignments: &[ColAlign],
+    alignments: &[&str],
     rows: &[Vec<&str>],
     out: &mut String,
     html: bool,
@@ -412,24 +364,10 @@ fn render_table(
         out.push_str("</tbody></table>\n");
     } else {
         out.push_str("\x1b[1m");
-        for c in 0..cols {
-            if c > 0 {
-                out.push_str(" | ");
-            }
-            if let Some(cell) = headers.get(c) {
-                render_inlines(cell, out, false);
-            }
-        }
+        render_table_row_ansi(headers, cols, out);
         out.push_str("\x1b[0m\n");
         for row in rows {
-            for c in 0..cols {
-                if c > 0 {
-                    out.push_str(" | ");
-                }
-                if let Some(cell) = row.get(c) {
-                    render_inlines(cell, out, false);
-                }
-            }
+            render_table_row_ansi(row, cols, out);
             out.push('\n');
         }
         out.push('\n');
@@ -708,61 +646,40 @@ fn find_closing_backticks(rest: &str, count: usize) -> Option<usize> {
     None
 }
 
-fn parse_link_or_image(text: &str, start: usize) -> Option<(bool, &str, &str, usize)> {
-    let bytes = text.as_bytes();
-    let is_img = bytes[start] == b'!';
-    let bracket_start = if is_img { start + 1 } else { start };
-    if bytes.get(bracket_start) != Some(&b'[') {
-        return None;
-    }
-
-    let mut i = bracket_start + 1;
+fn find_balanced_close(bytes: &[u8], mut i: usize, open: u8, close: u8) -> Option<usize> {
     let mut depth = 1usize;
-    let mut label_end = None;
     while i < bytes.len() {
         if bytes[i] == b'\\' && i + 1 < bytes.len() {
             i += 2;
             continue;
         }
-        if bytes[i] == b'[' {
+        if bytes[i] == open {
             depth += 1;
-        } else if bytes[i] == b']' {
+        } else if bytes[i] == close {
             depth -= 1;
             if depth == 0 {
-                label_end = Some(i);
-                break;
+                return Some(i);
             }
         }
         i += 1;
     }
-    let label_end = label_end?;
+    None
+}
+
+fn parse_link_or_image(text: &str, start: usize) -> Option<(bool, &str, &str, usize)> {
+    let bytes = text.as_bytes();
+    let is_img = bytes[start] == b'!';
+    let bracket_start = start + usize::from(is_img);
+    if bytes.get(bracket_start) != Some(&b'[') {
+        return None;
+    }
+    let label_end = find_balanced_close(bytes, bracket_start + 1, b'[', b']')?;
     if bytes.get(label_end + 1) != Some(&b'(') {
         return None;
     }
-
-    let mut j = label_end + 2;
-    let mut paren_depth = 1usize;
-    let mut dest_end = None;
-    while j < bytes.len() {
-        if bytes[j] == b'\\' && j + 1 < bytes.len() {
-            j += 2;
-            continue;
-        }
-        if bytes[j] == b'(' {
-            paren_depth += 1;
-        } else if bytes[j] == b')' {
-            paren_depth -= 1;
-            if paren_depth == 0 {
-                dest_end = Some(j);
-                break;
-            }
-        }
-        j += 1;
-    }
-    let dest_end = dest_end?;
+    let dest_end = find_balanced_close(bytes, label_end + 2, b'(', b')')?;
     let label = &text[bracket_start + 1..label_end];
-    let raw_dest = text[label_end + 2..dest_end].trim();
-    let dest = strip_optional_link_title(raw_dest);
+    let dest = strip_optional_link_title(text[label_end + 2..dest_end].trim());
     Some((is_img, label, dest, dest_end + 1))
 }
 
@@ -817,31 +734,15 @@ fn try_parse_emphasis(
         return None;
     }
 
-    let check_len = if run >= 3 {
-        3
-    } else if run == 2 {
-        2
-    } else {
-        1
-    };
-
-    for delim_len in (1..=check_len).rev() {
+    for delim_len in (1..=run.min(3)).rev() {
         let open_end = start + delim_len;
-        let Some(&next_b) = bytes.get(open_end) else {
-            continue;
-        };
-        if next_b.is_ascii_whitespace() {
+        if bytes.get(open_end).is_none_or(u8::is_ascii_whitespace) {
             continue;
         }
-
-        let delim_str = match (ch, delim_len) {
-            (b'*', 3) => "***",
-            (b'*', 2) => "**",
-            (b'*', 1) => "*",
-            (b'_', 3) => "___",
-            (b'_', 2) => "__",
-            (b'_', 1) => "_",
-            _ => continue,
+        let delim_str = if ch == b'*' {
+            &"***"[..delim_len]
+        } else {
+            &"___"[..delim_len]
         };
 
         let mut search_offset = open_end;

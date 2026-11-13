@@ -473,59 +473,39 @@ pub fn print_execution_error(action_label: &str, err: &anyhow::Error) {
         Ui::error(&format!("{}: {}", action_label, err_msg));
     }
 
-    let is_connection_error = err_msg.contains("Failed to communicate with LLM endpoint")
-        || err_msg.contains("Failed to reach LLM endpoint")
-        || err_msg.contains("connection closed")
-        || err_msg.contains("Connection refused")
-        || err_msg.contains("connection error")
-        || err_msg.contains("error trying to connect")
-        || err_msg.contains("is listening on port 9931");
-
-    let is_model_not_found = err_msg.contains("Local model not detected")
-        || crate::system::text_util::contains_ascii_case_insensitive(
-            &err_msg,
-            "model not detected",
-        )
-        || (crate::system::text_util::contains_ascii_case_insensitive(&err_msg, "model")
-            && (crate::system::text_util::contains_ascii_case_insensitive(&err_msg, "not found")
-                || crate::system::text_util::contains_ascii_case_insensitive(
-                    &err_msg,
-                    "not loaded",
-                )
-                || crate::system::text_util::contains_ascii_case_insensitive(
-                    &err_msg,
-                    "does not exist",
-                )
-                || crate::system::text_util::contains_ascii_case_insensitive(
-                    &err_msg,
-                    "no model is loaded",
-                )));
-
-    let is_context_error =
-        crate::system::text_util::contains_ascii_case_insensitive(&err_msg, "context length")
-            || crate::system::text_util::contains_ascii_case_insensitive(
-                &err_msg,
-                "context window",
-            )
-            || crate::system::text_util::contains_ascii_case_insensitive(
-                &err_msg,
-                "maximum context",
-            )
-            || crate::system::text_util::contains_ascii_case_insensitive(
-                &err_msg,
-                "prompt is too long",
-            );
-
-    let is_oom_error =
-        crate::system::text_util::contains_ascii_case_insensitive(&err_msg, "out of memory")
-            || crate::system::text_util::contains_ascii_case_insensitive(
-                &err_msg,
-                "cuda out of memory",
-            )
-            || crate::system::text_util::contains_ascii_case_insensitive(
-                &err_msg,
-                "ggml_metal_graph_compute",
-            );
+    let has_any = |needles: &[&str]| {
+        needles
+            .iter()
+            .any(|n| crate::system::text_util::contains_ascii_case_insensitive(&err_msg, n))
+    };
+    let is_connection_error = has_any(&[
+        "failed to communicate with llm endpoint",
+        "failed to reach llm endpoint",
+        "connection closed",
+        "connection refused",
+        "connection error",
+        "error trying to connect",
+        "is listening on port 9931",
+    ]);
+    let is_model_not_found = has_any(&["local model not detected", "model not detected"])
+        || (has_any(&["model"])
+            && has_any(&[
+                "not found",
+                "not loaded",
+                "does not exist",
+                "no model is loaded",
+            ]));
+    let is_context_error = has_any(&[
+        "context length",
+        "context window",
+        "maximum context",
+        "prompt is too long",
+    ]);
+    let is_oom_error = has_any(&[
+        "out of memory",
+        "cuda out of memory",
+        "ggml_metal_graph_compute",
+    ]);
 
     if is_connection_error {
         println!();
@@ -565,48 +545,21 @@ pub fn print_execution_error(action_label: &str, err: &anyhow::Error) {
 }
 
 const COMPLETION_COMMANDS: &[(&str, &str)] = &[
-    (
-        "cache",
-        "Manage the local disk cache (dir, size, clean, prune)",
-    ),
-    ("config", "Manage srz configuration (path, show, init)"),
-    ("history", "View recent summarization history and metrics"),
-    (
-        "stats",
-        "Display aggregate library and LLM performance statistics",
-    ),
-    (
-        "find",
-        "Search your offline summarized library for keywords or phrases",
-    ),
-    ("models", "List available models from the local LLM backend"),
-    (
-        "doctor",
-        "Diagnose system health, LLM connectivity, database, and cache",
-    ),
-    (
-        "recommend",
-        "Recommend optimal model, context window, and launch commands",
-    ),
-    (
-        "index",
-        "Generate and view the standalone HTML library dashboard",
-    ),
-    (
-        "browse",
-        "Launch the interactive terminal UI library explorer",
-    ),
-    (
-        "export",
-        "Export summarized library to Markdown, JSON, or CSV",
-    ),
-    (
-        "ask",
-        "Ask questions grounded on a document, URL, file, or recent read",
-    ),
-    ("news", "Search and summarize latest news on a topic"),
+    ("cache", "Manage the local disk cache"),
+    ("config", "Manage srz configuration"),
+    ("history", "View recent summarization history"),
+    ("stats", "Display library and LLM statistics"),
+    ("find", "Search your offline summarized library"),
+    ("models", "List available models from backend"),
+    ("doctor", "Diagnose system and LLM health"),
+    ("recommend", "Recommend optimal model and context"),
+    ("index", "Generate HTML library dashboard"),
+    ("browse", "Launch interactive TUI library explorer"),
+    ("export", "Export summarized library"),
+    ("ask", "Ask questions grounded on a document"),
+    ("news", "Search and summarize latest news"),
     ("completions", "Generate shell auto-completion script"),
-    ("upgrade", "Check for and install the latest srz release"),
+    ("upgrade", "Check for and install latest release"),
     ("help", "Print help message"),
 ];
 
@@ -651,36 +604,13 @@ pub fn generate_completions_script(shell: crate::cli::Shell) -> String {
     fi
 
     case "${{prev}}" in
-        --style)
-            COMPREPLY=( $(compgen -W "{COMPLETION_STYLES}" -- ${{cur}}) )
-            return 0
-            ;;
-        --paging)
-            COMPREPLY=( $(compgen -W "{COMPLETION_PAGING}" -- ${{cur}}) )
-            return 0
-            ;;
-        -t|--timeframe)
-            COMPREPLY=( $(compgen -W "{COMPLETION_TIMEFRAMES}" -- ${{cur}}) )
-            return 0
-            ;;
-        -f|--format|export)
-            COMPREPLY=( $(compgen -W "{COMPLETION_FORMATS}" -- ${{cur}}) )
-            return 0
-            ;;
-        completions)
-            COMPREPLY=( $(compgen -W "{COMPLETION_SHELLS}" -- ${{cur}}) )
-            return 0
-            ;;
-        cache)
-            COMPREPLY=( $(compgen -W "{COMPLETION_CACHE_CMDS}" -- ${{cur}}) )
-            return 0
-            ;;
-        config)
-            COMPREPLY=( $(compgen -W "{COMPLETION_CONFIG_CMDS}" -- ${{cur}}) )
-            return 0
-            ;;
-        *)
-            ;;
+        --style) COMPREPLY=( $(compgen -W "{COMPLETION_STYLES}" -- ${{cur}}) ); return 0 ;;
+        --paging) COMPREPLY=( $(compgen -W "{COMPLETION_PAGING}" -- ${{cur}}) ); return 0 ;;
+        -t|--timeframe) COMPREPLY=( $(compgen -W "{COMPLETION_TIMEFRAMES}" -- ${{cur}}) ); return 0 ;;
+        -f|--format|export) COMPREPLY=( $(compgen -W "{COMPLETION_FORMATS}" -- ${{cur}}) ); return 0 ;;
+        completions) COMPREPLY=( $(compgen -W "{COMPLETION_SHELLS}" -- ${{cur}}) ); return 0 ;;
+        cache) COMPREPLY=( $(compgen -W "{COMPLETION_CACHE_CMDS}" -- ${{cur}}) ); return 0 ;;
+        config) COMPREPLY=( $(compgen -W "{COMPLETION_CONFIG_CMDS}" -- ${{cur}}) ); return 0 ;;
     esac
 
     COMPREPLY=( $(compgen -W "${{opts}}" -- ${{cur}}) )
@@ -729,29 +659,15 @@ _srz() {{
         '*:: :->args'
 
     case $state in
-        command)
-            _describe -t commands 'srz commands' commands
-            ;;
+        command) _describe -t commands 'srz commands' commands ;;
         args)
             case $line[1] in
-                cache)
-                    _values 'cache command' {COMPLETION_CACHE_CMDS}
-                    ;;
-                config)
-                    _values 'config command' {COMPLETION_CONFIG_CMDS}
-                    ;;
-                completions)
-                    _values 'shell' {COMPLETION_SHELLS}
-                    ;;
-                export)
-                    _values 'format' {COMPLETION_FORMATS}
-                    ;;
-                news)
-                    _arguments '(-t --timeframe)'{{-t,--timeframe}}'[Timeframe]:TIMEFRAME:({COMPLETION_TIMEFRAMES})'
-                    ;;
-                *)
-                    _files
-                    ;;
+                cache) _values 'cache command' {COMPLETION_CACHE_CMDS} ;;
+                config) _values 'config command' {COMPLETION_CONFIG_CMDS} ;;
+                completions) _values 'shell' {COMPLETION_SHELLS} ;;
+                export) _values 'format' {COMPLETION_FORMATS} ;;
+                news) _arguments '(-t --timeframe)'{{-t,--timeframe}}'[Timeframe]:TIMEFRAME:({COMPLETION_TIMEFRAMES})' ;;
+                *) _files ;;
             esac
             ;;
     esac
@@ -806,13 +722,10 @@ _srz "$@"
     $commands = @({cmds})
     $flags = @({flags})
     $elements = $commandAst.CommandElements
-    if ($elements.Count -le 2) {{
-        $commands + $flags | Where-Object {{ $_ -like "$wordToComplete*" }} | ForEach-Object {{
-            [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
-        }}
+    $vals = if ($elements.Count -le 2) {{
+        $commands + $flags
     }} else {{
-        $prev = $elements[-2].Extent.Text
-        $vals = switch ($prev) {{
+        switch ($elements[-2].Extent.Text) {{
             'cache'       {{ @({cache_cmds}) }}
             'config'      {{ @({config_cmds}) }}
             'completions' {{ @({shells}) }}
@@ -823,9 +736,9 @@ _srz "$@"
             '--timeframe' {{ @({timeframes}) }}
             default       {{ $flags }}
         }}
-        $vals | Where-Object {{ $_ -like "$wordToComplete*" }} | ForEach-Object {{
-            [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
-        }}
+    }}
+    $vals | Where-Object {{ $_ -like "$wordToComplete*" }} | ForEach-Object {{
+        [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
     }}
 }}
 "#,
@@ -843,25 +756,16 @@ _srz "$@"
             r#"set edit:completion:arg-completer[srz] = {{|@words|
     var num-words = (count $words)
     if (== $num-words 2) {{
-        put {cmds_space}
-        put {COMPLETION_FLAGS}
+        put {cmds_space} {COMPLETION_FLAGS}
     }} elif (== $num-words 3) {{
         var prev = $words[1]
-        if (== $prev cache) {{
-            put {COMPLETION_CACHE_CMDS}
-        }} elif (== $prev config) {{
-            put {COMPLETION_CONFIG_CMDS}
-        }} elif (== $prev completions) {{
-            put {COMPLETION_SHELLS}
-        }} elif (== $prev export) {{
-            put {COMPLETION_FORMATS}
-        }} elif (== $prev --style) {{
-            put {COMPLETION_STYLES}
-        }} elif (== $prev --paging) {{
-            put {COMPLETION_PAGING}
-        }} elif (or (== $prev -t) (== $prev --timeframe)) {{
-            put {COMPLETION_TIMEFRAMES}
-        }}
+        if (== $prev cache) {{ put {COMPLETION_CACHE_CMDS}
+        }} elif (== $prev config) {{ put {COMPLETION_CONFIG_CMDS}
+        }} elif (== $prev completions) {{ put {COMPLETION_SHELLS}
+        }} elif (== $prev export) {{ put {COMPLETION_FORMATS}
+        }} elif (== $prev --style) {{ put {COMPLETION_STYLES}
+        }} elif (== $prev --paging) {{ put {COMPLETION_PAGING}
+        }} elif (or (== $prev -t) (== $prev --timeframe)) {{ put {COMPLETION_TIMEFRAMES} }}
     }}
 }}
 "#

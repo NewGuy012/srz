@@ -155,24 +155,12 @@ fn is_valid_youtube_id(id: &str) -> bool {
 /// Extracts caption tracks from the YouTube watch page HTML.
 pub fn extract_caption_tracks(html: &str) -> Option<Vec<CaptionTrack>> {
     let key = "\"captionTracks\":";
-    let start_idx = html.find(key)? + key.len();
-    let slice = &html[start_idx..];
+    let slice = &html[html.find(key)? + key.len()..];
     let array_start = slice.find('[')?;
-    let mut depth = 0;
-    let mut array_end = None;
-    for (i, b) in slice[array_start..].bytes().enumerate() {
-        if b == b'[' {
-            depth += 1;
-        } else if b == b']' {
-            depth -= 1;
-            if depth == 0 {
-                array_end = Some(array_start + i + 1);
-                break;
-            }
-        }
-    }
-    let array_str = &slice[array_start..array_end?];
-    serde_json::from_str::<Vec<CaptionTrack>>(array_str).ok()
+    serde_json::Deserializer::from_str(&slice[array_start..])
+        .into_iter::<Vec<CaptionTrack>>()
+        .next()?
+        .ok()
 }
 
 /// Extracts the video title from YouTube watch page HTML.
@@ -305,6 +293,14 @@ impl TimedTranscriptBuilder {
         }
     }
 
+    fn flush_line(&mut self) {
+        if !self.current_line.is_empty() {
+            self.result.push_str(&self.current_line);
+            self.result.push_str("\n\n");
+            self.current_line.clear();
+        }
+    }
+
     fn add_cue(&mut self, seconds: u64, text: &str) {
         let clean: std::borrow::Cow<'_, str> = if text.contains('\n') {
             std::borrow::Cow::Owned(text.replace('\n', " "))
@@ -312,23 +308,15 @@ impl TimedTranscriptBuilder {
             std::borrow::Cow::Borrowed(text)
         };
         let trimmed = clean.trim();
-        if trimmed.is_empty() {
-            return;
-        }
-
-        // Filter out automatic audio filler tags (e.g. [Music], [Applause]) that bloat prompt tokens
-        if trimmed.starts_with('[')
-            && trimmed.ends_with(']')
-            && (trimmed.eq_ignore_ascii_case("[music]")
-                || trimmed.eq_ignore_ascii_case("[applause]")
-                || trimmed.eq_ignore_ascii_case("[laughter]")
-                || trimmed.eq_ignore_ascii_case("[cheering]"))
+        if trimmed.is_empty()
+            || ["[music]", "[applause]", "[laughter]", "[cheering]"]
+                .iter()
+                .any(|tag| trimmed.eq_ignore_ascii_case(tag))
         {
             return;
         }
 
         if !self.chapters.is_empty() {
-            // Find active chapter index for current timestamp (monotonic forward scan)
             let mut active_idx = if self.current_chapter_idx != usize::MAX {
                 self.current_chapter_idx
             } else {
@@ -341,11 +329,7 @@ impl TimedTranscriptBuilder {
             }
 
             if active_idx != self.current_chapter_idx {
-                if !self.current_line.is_empty() {
-                    self.result.push_str(&self.current_line);
-                    self.result.push_str("\n\n");
-                    self.current_line.clear();
-                }
+                self.flush_line();
                 self.current_chapter_idx = active_idx;
                 let ch = &self.chapters[active_idx];
                 self.result.push_str(&format!(
@@ -353,27 +337,19 @@ impl TimedTranscriptBuilder {
                     format_timestamp(ch.seconds),
                     ch.title
                 ));
-            } else if !self.current_line.is_empty() && !self.current_line.ends_with(' ') {
-                self.current_line.push(' ');
             }
-            self.current_line.push_str(trimmed);
         } else {
-            let interval = seconds / 60; // Group by ~1 minute cues
+            let interval = seconds / 60;
             if interval != self.current_interval {
-                if !self.current_line.is_empty() {
-                    self.result.push_str(&self.current_line);
-                    self.result.push_str("\n\n");
-                    self.current_line.clear();
-                }
+                self.flush_line();
                 self.current_interval = interval;
                 self.current_line.push_str(&format_timestamp(seconds));
-                self.current_line.push(' ');
-            } else if !self.current_line.is_empty() && !self.current_line.ends_with(' ') {
-                self.current_line.push(' ');
             }
-
-            self.current_line.push_str(trimmed);
         }
+        if !self.current_line.is_empty() && !self.current_line.ends_with(' ') {
+            self.current_line.push(' ');
+        }
+        self.current_line.push_str(trimmed);
     }
 
     fn finish(mut self) -> Option<String> {
@@ -417,36 +393,39 @@ pub fn parse_json3_timedtext(json_str: &str, chapters: Option<&[VideoChapter]>) 
     builder.finish()
 }
 
-/// Parses XML timed text format 1 (`<text start="1.23" dur="4.56">...</text>`) into formatted paragraphs with optional chapter markers.
-pub fn parse_xml_timedtext(xml_str: &str, chapters: Option<&[VideoChapter]>) -> Option<String> {
-    if !xml_str.contains("<text") {
-        return None;
-    }
-
+fn parse_xml_cues(
+    xml_str: &str,
+    target_tag: &str,
+    attr_name: &str,
+    in_millis: bool,
+    chapters: Option<&[VideoChapter]>,
+) -> Option<String> {
     let mut scanner = XmlScanner::new(xml_str);
     let mut builder = TimedTranscriptBuilder::with_chapters(xml_str.len() / 2, chapters);
-
     while let Some(ev) = scanner.next_event() {
         if let XmlEvent::Start {
             name,
             attrs,
-            is_empty,
+            is_empty: false,
         } = ev
-            && xml_local_name(name).eq_ignore_ascii_case("text")
-            && !is_empty
+            && xml_local_name(name).eq_ignore_ascii_case(target_tag)
         {
-            let current_start = xml_attr(attrs, "start")
+            let secs = xml_attr(attrs, attr_name)
                 .and_then(|v| v.trim().parse::<f64>().ok())
-                .unwrap_or(0.0);
-            let text = scanner.read_text(name);
-            let trimmed = text.trim();
-            if !trimmed.is_empty() {
-                builder.add_cue(current_start as u64, trimmed);
-            }
+                .map(|v| (if in_millis { v / 1000.0 } else { v }) as u64)
+                .unwrap_or(0);
+            builder.add_cue(secs, scanner.read_text(name).trim());
         }
     }
-
     builder.finish()
+}
+
+/// Parses XML timed text format 1 (`<text start="1.23" dur="4.56">...</text>`) into formatted paragraphs with optional chapter markers.
+pub fn parse_xml_timedtext(xml_str: &str, chapters: Option<&[VideoChapter]>) -> Option<String> {
+    xml_str
+        .contains("<text")
+        .then(|| parse_xml_cues(xml_str, "text", "start", false, chapters))
+        .flatten()
 }
 
 /// Parses XML timed text format 3 (`<p t="160" d="4000"><s>word</s>...</p>`) into formatted paragraphs with optional chapter markers.
@@ -454,48 +433,10 @@ pub fn parse_xml_format3_timedtext(
     xml_str: &str,
     chapters: Option<&[VideoChapter]>,
 ) -> Option<String> {
-    if !xml_str.contains("<p") {
-        return None;
-    }
-
-    let mut scanner = XmlScanner::new(xml_str);
-    let mut builder = TimedTranscriptBuilder::with_chapters(xml_str.len() / 2, chapters);
-    let mut current_sec = 0;
-    let mut in_p = false;
-    let mut p_text = String::new();
-
-    while let Some(ev) = scanner.next_event() {
-        match ev {
-            XmlEvent::Start {
-                name,
-                attrs,
-                is_empty,
-            } if xml_local_name(name).eq_ignore_ascii_case("p") && !is_empty => {
-                in_p = true;
-                p_text.clear();
-                current_sec = xml_attr(attrs, "t")
-                    .and_then(|v| v.trim().parse::<u64>().ok())
-                    .map(|ms| ms / 1000)
-                    .unwrap_or(0);
-            }
-            XmlEvent::Text(text) if in_p => {
-                p_text.push_str(&decode_html_entities(text));
-            }
-            XmlEvent::CData(cdata) if in_p => {
-                p_text.push_str(cdata);
-            }
-            XmlEvent::End { name } if in_p && xml_local_name(name).eq_ignore_ascii_case("p") => {
-                in_p = false;
-                let trimmed = p_text.trim();
-                if !trimmed.is_empty() {
-                    builder.add_cue(current_sec, trimmed);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    builder.finish()
+    xml_str
+        .contains("<p")
+        .then(|| parse_xml_cues(xml_str, "p", "t", true, chapters))
+        .flatten()
 }
 
 /// Dispatches timed text payloads to the appropriate parser with optional chapter markers.
@@ -585,32 +526,15 @@ pub async fn fetch_innertube_player(
 
 /// Extracts the video description from YouTube watch page HTML.
 pub fn extract_video_description(html: &str) -> Option<String> {
-    if let Some(start) = html.find("\"shortDescription\":") {
-        let after = html[start + "\"shortDescription\":".len()..].trim_start();
-        if !after.starts_with('"') {
-            return None;
-        }
-        // Scan JSON string literal respecting escape sequences
-        let mut in_escape = false;
-        let mut end_idx = None;
-        for (i, c) in after.char_indices().skip(1) {
-            if in_escape {
-                in_escape = false;
-            } else if c == '\\' {
-                in_escape = true;
-            } else if c == '"' {
-                end_idx = Some(i + 1);
-                break;
-            }
-        }
-        if let Some(end) = end_idx {
-            let json_str_slice = &after[..end];
-            if let Ok(parsed) = serde_json::from_str::<String>(json_str_slice) {
-                return Some(parsed);
-            }
-        }
+    let key = "\"shortDescription\":";
+    let after = html[html.find(key)? + key.len()..].trim_start();
+    if !after.starts_with('"') {
+        return None;
     }
-    None
+    serde_json::Deserializer::from_str(after)
+        .into_iter::<String>()
+        .next()?
+        .ok()
 }
 
 /// Validates that a caption track URL belongs to the official YouTube timedtext API to prevent SSRF.

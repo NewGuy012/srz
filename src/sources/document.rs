@@ -16,68 +16,42 @@ pub const MAX_PDF_TEXT_BYTES: usize = 50 * 1024 * 1024; // 50 MB limit for extra
 /// Opens and reads up to `max_bytes` from a local regular file, rejecting oversized
 /// or non-regular targets even if swapped or appended after pre-flight metadata checks.
 pub(super) fn read_file_bytes_limited(path: &Path, max_bytes: u64, label: &str) -> Result<Vec<u8>> {
-    let file = fs::File::open(path)
-        .with_context(|| format!("Failed to open {} file: {:?}", label, path))?;
+    let file =
+        fs::File::open(path).with_context(|| format!("Failed to open {label} file: {path:?}"))?;
     let meta = file
         .metadata()
-        .with_context(|| format!("Failed to stat {} file: {:?}", label, path))?;
-    if !meta.is_file() {
-        anyhow::bail!("{} path is not a regular file: {:?}", label, path);
-    }
-    if meta.len() > max_bytes {
-        anyhow::bail!(
-            "{} file is too large ({} bytes, maximum {} bytes): {:?}",
-            label,
-            meta.len(),
-            max_bytes,
-            path
-        );
-    }
+        .with_context(|| format!("Failed to stat {label} file: {path:?}"))?;
+    anyhow::ensure!(
+        meta.is_file(),
+        "{label} path is not a regular file: {path:?}"
+    );
     let mut bytes = Vec::new();
     file.take(max_bytes.saturating_add(1))
         .read_to_end(&mut bytes)
-        .with_context(|| format!("Failed to read {} file at {:?}", label, path))?;
-    if bytes.len() as u64 > max_bytes {
-        anyhow::bail!(
-            "{} file exceeds maximum allowed size of {} bytes: {:?}",
-            label,
-            max_bytes,
-            path
-        );
-    }
+        .with_context(|| format!("Failed to read {label} file at {path:?}"))?;
+    anyhow::ensure!(
+        meta.len() <= max_bytes && bytes.len() as u64 <= max_bytes,
+        "{label} file is too large (exceeds {max_bytes} bytes): {path:?}"
+    );
     Ok(bytes)
 }
 
+#[derive(Default)]
 struct BoundedIoWriter {
     buf: Vec<u8>,
     max_bytes: usize,
     exceeded: bool,
 }
 
-impl BoundedIoWriter {
-    fn new(max_bytes: usize) -> Self {
-        Self {
-            buf: Vec::new(),
-            max_bytes,
-            exceeded: false,
-        }
-    }
-}
-
 impl std::io::Write for BoundedIoWriter {
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        let remaining = self.max_bytes.saturating_sub(self.buf.len());
-        if data.len() > remaining {
+        if self.buf.len().saturating_add(data.len()) > self.max_bytes {
             self.exceeded = true;
-            return Err(std::io::Error::other(format!(
-                "Extracted PDF text exceeds maximum limit of {} bytes",
-                self.max_bytes
-            )));
+            return Err(std::io::Error::other("PDF text limit exceeded"));
         }
         self.buf.extend_from_slice(data);
         Ok(data.len())
     }
-
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
@@ -209,7 +183,10 @@ impl PdfExtractor {
         doc: &pdf_extract::Document,
         max_text_bytes: usize,
     ) -> Result<String> {
-        let mut writer = BoundedIoWriter::new(max_text_bytes);
+        let mut writer = BoundedIoWriter {
+            max_bytes: max_text_bytes,
+            ..Default::default()
+        };
         let extract_res = {
             let writer_ref: &mut dyn std::io::Write = &mut writer;
             let mut output = pdf_extract::PlainTextOutput::new(writer_ref);
@@ -312,22 +289,8 @@ impl PdfExtractor {
         let mut lines = raw.lines().peekable();
 
         while let Some(line) = lines.next() {
-            let mut trimmed = line.trim();
-            if trimmed.is_empty() {
-                if !cleaned.ends_with("\n\n") && !cleaned.is_empty() {
-                    cleaned.push_str("\n\n");
-                }
-                continue;
-            }
-
-            let has_form_feed = trimmed.contains('\x0c');
-            let is_page_break = if has_form_feed {
-                trimmed = trimmed.trim_matches('\x0c').trim();
-                true
-            } else {
-                false
-            };
-
+            let is_page_break = line.contains('\x0c');
+            let trimmed = line.trim_matches(|c: char| c.is_whitespace() || c == '\x0c');
             if trimmed.is_empty() {
                 if !cleaned.ends_with("\n\n") && !cleaned.is_empty() {
                     cleaned.push_str("\n\n");
@@ -340,39 +303,24 @@ impl PdfExtractor {
                 cleaned.push_str(&trimmed[..trimmed.len() - 1]);
             } else {
                 cleaned.push_str(trimmed);
+                let next_is_heading_or_start = lines.peek().is_some_and(|n| {
+                    let nt = n.trim();
+                    nt.starts_with(['#', '•'])
+                        || nt.starts_with("- ")
+                        || nt.starts_with("* ")
+                        || (nt.len() < 80
+                            && nt.bytes().next().is_some_and(|b| b.is_ascii_digit())
+                            && nt.contains(". "))
+                });
+
                 if is_page_break {
                     if !cleaned.ends_with("\n\n") {
                         cleaned.push_str("\n\n");
                     }
+                } else if trimmed.ends_with(['.', ':', '?', '!']) && next_is_heading_or_start {
+                    cleaned.push_str("\n\n");
                 } else {
-                    let next_is_heading_or_start = lines
-                        .peek()
-                        .map(|n| {
-                            let nt = n.trim();
-                            nt.starts_with('#')
-                                || nt.starts_with("• ")
-                                || nt.starts_with("- ")
-                                || nt.starts_with("* ")
-                                || (nt.len() < 80
-                                    && nt
-                                        .chars()
-                                        .next()
-                                        .map(|c| c.is_ascii_digit())
-                                        .unwrap_or(false)
-                                    && nt.contains(". "))
-                        })
-                        .unwrap_or(false);
-
-                    let ends_sentence = trimmed.ends_with('.')
-                        || trimmed.ends_with(':')
-                        || trimmed.ends_with('?')
-                        || trimmed.ends_with('!');
-
-                    if ends_sentence && next_is_heading_or_start {
-                        cleaned.push_str("\n\n");
-                    } else {
-                        cleaned.push(' ');
-                    }
+                    cleaned.push(' ');
                 }
             }
         }
@@ -416,26 +364,17 @@ impl EpubExtractor {
             {
                 let md = html_to_markdown(html);
                 let trimmed = md.trim();
-                if !trimmed.is_empty() {
-                    if total_bytes.saturating_add(trimmed.len()) > MAX_EPUB_TOTAL_BYTES {
-                        let remaining = MAX_EPUB_TOTAL_BYTES.saturating_sub(total_bytes);
-                        if remaining > 0 {
-                            let bound = trimmed.floor_char_boundary(remaining);
-                            let slice = &trimmed[..bound];
-                            if !slice.is_empty() {
-                                if !book_markdown.is_empty() {
-                                    book_markdown.push_str("\n\n");
-                                }
-                                book_markdown.push_str(slice);
-                            }
-                        }
-                        break;
-                    }
+                let remaining = MAX_EPUB_TOTAL_BYTES.saturating_sub(total_bytes);
+                let slice = &trimmed[..trimmed.floor_char_boundary(remaining.min(trimmed.len()))];
+                if !slice.is_empty() {
                     if !book_markdown.is_empty() {
                         book_markdown.push_str("\n\n");
                     }
-                    book_markdown.push_str(trimmed);
-                    total_bytes = total_bytes.saturating_add(trimmed.len());
+                    book_markdown.push_str(slice);
+                    total_bytes = total_bytes.saturating_add(slice.len());
+                }
+                if total_bytes >= MAX_EPUB_TOTAL_BYTES {
+                    break;
                 }
             }
         }
@@ -539,9 +478,22 @@ fn parse_opf(archive: &ZipReader, opf_path: &str) -> Result<(Option<String>, Vec
                     title = Some(trimmed.to_string());
                 }
             } else if local.eq_ignore_ascii_case("item") {
-                parse_item_attr(attrs, &mut manifest);
-            } else if local.eq_ignore_ascii_case("itemref") {
-                parse_itemref_attr(attrs, &mut spine);
+                if let (Some(id), Some(href)) = (xml_attr(attrs, "id"), xml_attr(attrs, "href")) {
+                    let (id, href) = (id.trim(), href.trim());
+                    if !id.is_empty() && !href.is_empty() {
+                        let mt = xml_attr(attrs, "media-type")
+                            .map(|s| s.trim().to_string())
+                            .unwrap_or_default();
+                        manifest.insert(id.to_string(), (href.to_string(), mt));
+                    }
+                }
+            } else if local.eq_ignore_ascii_case("itemref")
+                && spine.len() < MAX_EPUB_CHAPTER_COUNT
+                && let Some(idref) = xml_attr(attrs, "idref")
+                    .map(|v| v.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            {
+                spine.push(idref);
             }
         }
     }
@@ -551,8 +503,7 @@ fn parse_opf(archive: &ZipReader, opf_path: &str) -> Result<(Option<String>, Vec
     // 1. Follow spine reading order if present
     for idref in &spine {
         if let Some((href, _)) = manifest.get(idref) {
-            let resolved = resolve_epub_path(opf_dir, href);
-            chapter_paths.push(resolved);
+            chapter_paths.push(resolve_epub_path(opf_dir, href));
             if chapter_paths.len() >= MAX_EPUB_CHAPTER_COUNT {
                 break;
             }
@@ -562,14 +513,13 @@ fn parse_opf(archive: &ZipReader, opf_path: &str) -> Result<(Option<String>, Vec
     // 2. Fallback to manifest items if spine is empty
     if chapter_paths.is_empty() {
         for (href, media_type) in manifest.values() {
-            let is_html_media =
-                crate::system::text_util::contains_ascii_case_insensitive(media_type, "html")
-                    || crate::system::text_util::contains_ascii_case_insensitive(media_type, "xml");
-            let is_html_ext =
-                crate::system::text_util::ends_with_ascii_case_insensitive(href, ".xhtml")
-                    || crate::system::text_util::ends_with_ascii_case_insensitive(href, ".html")
-                    || crate::system::text_util::ends_with_ascii_case_insensitive(href, ".htm");
-            if is_html_media || is_html_ext {
+            let is_html = ["html", "xml"]
+                .iter()
+                .any(|m| crate::system::text_util::contains_ascii_case_insensitive(media_type, m))
+                || [".xhtml", ".html", ".htm"]
+                    .iter()
+                    .any(|e| crate::system::text_util::ends_with_ascii_case_insensitive(href, e));
+            if is_html {
                 chapter_paths.push(resolve_epub_path(opf_dir, href));
                 if chapter_paths.len() >= MAX_EPUB_CHAPTER_COUNT {
                     break;
@@ -579,34 +529,6 @@ fn parse_opf(archive: &ZipReader, opf_path: &str) -> Result<(Option<String>, Vec
     }
 
     Ok((title, chapter_paths))
-}
-
-fn parse_item_attr(attrs: &str, manifest: &mut HashMap<String, (String, String)>) {
-    let id = xml_attr(attrs, "id")
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
-    let href = xml_attr(attrs, "href")
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
-    let media_type = xml_attr(attrs, "media-type")
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
-
-    if !id.is_empty() && !href.is_empty() {
-        manifest.insert(id, (href, media_type));
-    }
-}
-
-fn parse_itemref_attr(attrs: &str, spine: &mut Vec<String>) {
-    if spine.len() >= MAX_EPUB_CHAPTER_COUNT {
-        return;
-    }
-    if let Some(val) = xml_attr(attrs, "idref") {
-        let idref = val.trim();
-        if !idref.is_empty() {
-            spine.push(idref.to_string());
-        }
-    }
 }
 
 /// Resolves relative EPUB href path against base OPF directory and cleans ./ and ../ segments.

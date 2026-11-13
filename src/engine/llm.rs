@@ -802,14 +802,11 @@ impl LlmClient {
         let streamed_to_stdout = matches!(mode, StreamMode::Stdout { .. }) && state.started_visible;
         if streamed_to_stdout {
             println!("\n");
-            if !done_label.trim().is_empty() && !matches!(mode, StreamMode::Silent) {
-                Ui::success_with_elapsed(done_label, start_time.elapsed());
-            }
         } else {
             pb.finish_and_clear();
-            if !done_label.trim().is_empty() && !matches!(mode, StreamMode::Silent) {
-                Ui::success_with_elapsed(done_label, start_time.elapsed());
-            }
+        }
+        if !done_label.trim().is_empty() && !matches!(mode, StreamMode::Silent) {
+            Ui::success_with_elapsed(done_label, start_time.elapsed());
         }
 
         let elapsed = start_time.elapsed();

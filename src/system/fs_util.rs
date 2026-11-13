@@ -17,66 +17,65 @@ pub fn home_dir() -> Option<PathBuf> {
     non_empty_env_path("HOME").or_else(|| non_empty_env_path("USERPROFILE"))
 }
 
-/// Returns the default persistent data directory for srz (`$SRZ_DATA_DIR`, `$XDG_DATA_HOME/srz`, `~/.local/share/srz`, or `%LOCALAPPDATA%/srz/data`).
-pub fn default_data_dir() -> PathBuf {
-    if let Some(srz_data) = non_empty_env_path("SRZ_DATA_DIR") {
-        return srz_data;
+fn resolve_app_path(
+    overrides: &[&str],
+    xdg_env: &str,
+    xdg_sub: &[&str],
+    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))] win: (&str, &[&str]),
+    home_sub: &[&str],
+    temp_sub: &[&str],
+) -> PathBuf {
+    let join = |base: PathBuf, segs: &[&str]| segs.iter().fold(base, |p, s| p.join(s));
+    if let Some(p) = overrides.iter().find_map(|k| non_empty_env_path(k)) {
+        return p;
     }
-    if let Some(xdg_data) = non_empty_env_path("XDG_DATA_HOME") {
-        return xdg_data.join("srz");
+    if let Some(xdg) = non_empty_env_path(xdg_env) {
+        return join(xdg, xdg_sub);
     }
     #[cfg(target_os = "windows")]
-    {
-        if let Some(local_app_data) = non_empty_env_path("LOCALAPPDATA") {
-            return local_app_data.join("srz").join("data");
-        }
+    if let Some(w) = non_empty_env_path(win.0) {
+        return join(w, win.1);
     }
-    if let Some(home) = home_dir() {
-        return home.join(".local").join("share").join("srz");
-    }
-    std::env::temp_dir().join("srz-data")
+    home_dir().map_or_else(
+        || join(std::env::temp_dir(), temp_sub),
+        |h| join(h, home_sub),
+    )
+}
+
+/// Returns the default persistent data directory for srz (`$SRZ_DATA_DIR`, `$XDG_DATA_HOME/srz`, `~/.local/share/srz`, or `%LOCALAPPDATA%/srz/data`).
+pub fn default_data_dir() -> PathBuf {
+    resolve_app_path(
+        &["SRZ_DATA_DIR"],
+        "XDG_DATA_HOME",
+        &["srz"],
+        ("LOCALAPPDATA", &["srz", "data"]),
+        &[".local", "share", "srz"],
+        &["srz-data"],
+    )
 }
 
 /// Returns the default cache directory (`$SRZ_CACHE_DIR`, `$XDG_CACHE_HOME/srz`, `~/.cache/srz`, `%LOCALAPPDATA%/srz/cache`).
 pub fn default_cache_dir() -> PathBuf {
-    if let Some(srz_cache) = non_empty_env_path("SRZ_CACHE_DIR") {
-        return srz_cache;
-    }
-    if let Some(xdg_cache) = non_empty_env_path("XDG_CACHE_HOME") {
-        return xdg_cache.join("srz");
-    }
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(local_app_data) = non_empty_env_path("LOCALAPPDATA") {
-            return local_app_data.join("srz").join("cache");
-        }
-    }
-    if let Some(home) = home_dir() {
-        return home.join(".cache").join("srz");
-    }
-    std::env::temp_dir().join("srz-cache")
+    resolve_app_path(
+        &["SRZ_CACHE_DIR"],
+        "XDG_CACHE_HOME",
+        &["srz"],
+        ("LOCALAPPDATA", &["srz", "cache"]),
+        &[".cache", "srz"],
+        &["srz-cache"],
+    )
 }
 
 /// Returns the default config path (`$SRZ_CONFIG`, `$SRZ_CONFIG_PATH`, `$XDG_CONFIG_HOME/srz/config.toml`, `~/.config/srz/config.toml`).
 pub fn default_config_path() -> PathBuf {
-    if let Some(p) =
-        non_empty_env_path("SRZ_CONFIG").or_else(|| non_empty_env_path("SRZ_CONFIG_PATH"))
-    {
-        return p;
-    }
-    if let Some(xdg) = non_empty_env_path("XDG_CONFIG_HOME") {
-        return xdg.join("srz").join("config.toml");
-    }
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(app_data) = non_empty_env_path("APPDATA") {
-            return app_data.join("srz").join("config.toml");
-        }
-    }
-    if let Some(home) = home_dir() {
-        return home.join(".config").join("srz").join("config.toml");
-    }
-    std::env::temp_dir().join("srz").join("config.toml")
+    resolve_app_path(
+        &["SRZ_CONFIG", "SRZ_CONFIG_PATH"],
+        "XDG_CONFIG_HOME",
+        &["srz", "config.toml"],
+        ("APPDATA", &["srz", "config.toml"]),
+        &[".config", "srz", "config.toml"],
+        &["srz", "config.toml"],
+    )
 }
 
 /// Generates a unique temporary file path within `dir` using PID, nanos timestamp, and atomic counter.
@@ -120,20 +119,20 @@ pub fn set_private_file_perms(path: &Path) {
     let _ = path;
 }
 
+pub(crate) fn reject_symlink(path: &Path, action: &str) -> std::io::Result<()> {
+    if fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("Refusing to {action}: {}", path.display()),
+        ));
+    }
+    Ok(())
+}
+
 /// Creates a directory (and parents) and restricts permissions to `0700` on Unix.
 /// Rejects symlink paths to prevent symlink traversal/privilege elevation (CWE-59).
 pub fn create_private_dir_all(path: &Path) -> std::io::Result<()> {
-    if let Ok(meta) = fs::symlink_metadata(path)
-        && meta.file_type().is_symlink()
-    {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!(
-                "Refusing to create directory at symlink path: {}",
-                path.display()
-            ),
-        ));
-    }
+    reject_symlink(path, "create directory at symlink path")?;
     fs::create_dir_all(path)?;
     set_private_dir_perms(path);
     Ok(())
@@ -142,14 +141,7 @@ pub fn create_private_dir_all(path: &Path) -> std::io::Result<()> {
 /// Atomically opens or creates a file with owner-only permissions (`0600` on Unix).
 /// Rejects symlink targets to prevent arbitrary file truncation/privilege escalation (CWE-59).
 pub fn open_private_file_for_write(path: &Path) -> std::io::Result<File> {
-    if let Ok(meta) = fs::symlink_metadata(path)
-        && meta.file_type().is_symlink()
-    {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("Refusing to open symlink for writing: {}", path.display()),
-        ));
-    }
+    reject_symlink(path, "open symlink for writing")?;
     let mut opts = OpenOptions::new();
     opts.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -169,14 +161,7 @@ pub fn open_private_file_for_write(path: &Path) -> std::io::Result<File> {
 /// Writes `contents` to `path` with crash-safe atomic rename and owner-only permissions (`0600` on Unix).
 /// Rejects symlink targets to prevent arbitrary file truncation/privilege escalation (CWE-59).
 pub fn write_private_file(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
-    if let Ok(meta) = fs::symlink_metadata(path)
-        && meta.file_type().is_symlink()
-    {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("Refusing to write to symlink: {}", path.display()),
-        ));
-    }
+    reject_symlink(path, "write to symlink")?;
 
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     if !parent.as_os_str().is_empty() && !parent.exists() {

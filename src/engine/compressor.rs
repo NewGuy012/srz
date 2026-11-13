@@ -5,18 +5,12 @@ use crate::system::text_util::{find_ascii_case_insensitive, is_stop_word, tokeni
 
 #[inline]
 fn is_word_boundary(text: &str, start: usize, len: usize) -> bool {
-    let bytes = text.as_bytes();
-    let before_ok = if start == 0 {
-        true
-    } else {
-        !bytes[start - 1].is_ascii_alphanumeric() && bytes[start - 1] != b'_'
+    let b = text.as_bytes();
+    let is_word = |i: usize| {
+        b.get(i)
+            .is_some_and(|&c| c.is_ascii_alphanumeric() || c == b'_')
     };
-    let after_ok = if start + len >= bytes.len() {
-        true
-    } else {
-        !bytes[start + len].is_ascii_alphanumeric() && bytes[start + len] != b'_'
-    };
-    before_ok && after_ok
+    start.checked_sub(1).is_none_or(|i| !is_word(i)) && !is_word(start + len)
 }
 
 /// Counts occurrences of a term within `text` on word boundaries, case-insensitively.
@@ -184,12 +178,11 @@ pub fn select_relevant_context_bm25<'a>(
     selected_indices.sort_unstable();
 
     let mut out = String::new();
-    for (pos, idx) in selected_indices.into_iter().enumerate() {
-        if pos > 0 {
-            out.push_str("\n\n...\n\n");
-        }
-        out.push_str(&chunks_with_counts[idx].0);
-    }
+    let selected_text: Vec<&str> = selected_indices
+        .into_iter()
+        .map(|idx| chunks_with_counts[idx].0.as_ref())
+        .collect();
+    out.push_str(&selected_text.join("\n\n...\n\n"));
     Cow::Owned(out)
 }
 
@@ -233,46 +226,39 @@ pub fn compress_document_stratified<'a>(
     let lead_budget = (max_tokens * 65) / 100;
     let tail_budget = max_tokens.saturating_sub(lead_budget);
 
-    let mut lead_paras = Vec::new();
-    let mut lead_tokens = 0;
-    for &p in &paragraphs {
-        let p_tokens = tok_kind.count_tokens(p);
-        if lead_tokens + p_tokens > lead_budget && !lead_paras.is_empty() {
-            break;
+    let take_paras = |iter: &mut dyn Iterator<Item = &'a str>, budget: usize| {
+        let mut chosen = Vec::new();
+        let mut used = 0;
+        for p in iter {
+            let t = tok_kind.count_tokens(p);
+            if used + t > budget && !chosen.is_empty() {
+                break;
+            }
+            chosen.push(p);
+            used += t;
         }
-        lead_paras.push(p);
-        lead_tokens += p_tokens;
-    }
+        chosen
+    };
 
-    let lead_count = lead_paras.len();
-    let mut tail_paras = Vec::new();
-    let mut tail_tokens = 0;
-    for &p in paragraphs.iter().skip(lead_count).rev() {
-        let p_tokens = tok_kind.count_tokens(p);
-        if tail_tokens + p_tokens > tail_budget && !tail_paras.is_empty() {
-            break;
-        }
-        tail_paras.push(p);
-        tail_tokens += p_tokens;
-    }
+    let lead_paras = take_paras(&mut paragraphs.iter().copied(), lead_budget);
+    let mut tail_paras = take_paras(
+        &mut paragraphs[lead_paras.len()..].iter().copied().rev(),
+        tail_budget,
+    );
     tail_paras.reverse();
 
-    if tail_paras.is_empty() {
-        let joined = lead_paras.join("\n\n");
-        if tok_kind.count_tokens(&joined) > max_tokens {
-            return Cow::Owned(TextChunker::truncate_by_tokens(&joined, max_tokens).into_owned());
-        }
-        return Cow::Owned(joined);
-    }
-
-    let mut out = lead_paras.join("\n\n");
-    out.push_str("\n\n...\n\n");
-    out.push_str(&tail_paras.join("\n\n"));
-
+    let out = if tail_paras.is_empty() {
+        lead_paras.join("\n\n")
+    } else {
+        format!(
+            "{}\n\n...\n\n{}",
+            lead_paras.join("\n\n"),
+            tail_paras.join("\n\n")
+        )
+    };
     if tok_kind.count_tokens(&out) > max_tokens {
         return Cow::Owned(TextChunker::truncate_by_tokens(&out, max_tokens).into_owned());
     }
-
     Cow::Owned(out)
 }
 

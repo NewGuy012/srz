@@ -81,26 +81,19 @@ impl LibraryItem {
         if q.is_empty() {
             return true;
         }
-
-        let q_lower = if q.is_ascii() {
-            None
-        } else {
-            Some(q.to_lowercase())
-        };
-
-        let matches_field = |field: &str| -> bool {
-            if let Some(ref q_low) = q_lower {
-                field.to_lowercase().contains(q_low)
-            } else {
+        let q_low = q.to_lowercase();
+        let has = |field: &str| -> bool {
+            if q.is_ascii() {
                 crate::system::text_util::contains_ascii_case_insensitive(field, q)
+            } else {
+                field.to_lowercase().contains(&q_low)
             }
         };
-
-        matches_field(&self.title)
-            || matches_field(&self.target_type)
-            || self.author.as_deref().is_some_and(matches_field)
-            || self.url.as_deref().is_some_and(matches_field)
-            || matches_field(&self.summary)
+        has(&self.title)
+            || has(&self.target_type)
+            || self.author.as_deref().is_some_and(has)
+            || self.url.as_deref().is_some_and(has)
+            || has(&self.summary)
     }
 
     pub fn into_history_entry(self) -> HistoryEntry {
@@ -899,19 +892,11 @@ impl Database {
         let items = self.get_all_library_items()?;
         let mut results = Vec::new();
 
-        let find_in_text = |haystack: &str, needle: &str| -> Option<usize> {
-            if needle.is_empty() {
-                return None;
-            }
+        let contains_term = |haystack: &str, needle: &str| -> bool {
             if needle.is_ascii() {
-                crate::system::text_util::find_ascii_case_insensitive(haystack, needle)
+                crate::system::text_util::contains_ascii_case_insensitive(haystack, needle)
             } else {
-                let hay_low = haystack.to_lowercase();
-                let need_low = needle.to_lowercase();
-                hay_low.find(&need_low).and_then(|byte_idx| {
-                    let char_count = hay_low[..byte_idx].chars().count();
-                    haystack.char_indices().nth(char_count).map(|(idx, _)| idx)
-                })
+                haystack.to_lowercase().contains(&needle.to_lowercase())
             }
         };
 
@@ -920,10 +905,10 @@ impl Database {
             let mut summary_matches = 0usize;
 
             for term in &query_terms {
-                if find_in_text(&item.title, term).is_some() {
+                if contains_term(&item.title, term) {
                     title_matches += 1;
                 }
-                if find_in_text(&item.summary, term).is_some() {
+                if contains_term(&item.summary, term) {
                     summary_matches += 1;
                 }
             }
@@ -1276,55 +1261,58 @@ impl Database {
 
     #[doc(hidden)]
     pub fn backdate_page_cache_for_test(&self, url: &str, delta_secs: u64) {
-        if let Ok(write_txn) = self.db.begin_write() {
-            if let Ok(mut table) = write_txn.open_table(TABLE_CACHE_PAGES) {
-                let mut updates = Vec::new();
-                if let Ok(iter) = table.iter() {
-                    for (k, v) in iter.flatten() {
-                        if let Ok(mut rec) =
-                            serde_json::from_slice::<CachedEntry<ScrapedPage>>(v.value())
-                            && (rec.value.url == url || k.value() == url)
-                        {
-                            rec.cached_at = rec.cached_at.saturating_sub(delta_secs);
-                            if let Ok(bytes) = serde_json::to_vec(&rec) {
-                                updates.push((k.value().to_string(), bytes));
-                            }
-                        }
+        let Ok(write_txn) = self.db.begin_write() else {
+            return;
+        };
+        if let Ok(mut table) = write_txn.open_table(TABLE_CACHE_PAGES) {
+            let updates: Vec<_> = table
+                .iter()
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|(k, v)| {
+                    let mut rec =
+                        serde_json::from_slice::<CachedEntry<ScrapedPage>>(v.value()).ok()?;
+                    if rec.value.url != url && k.value() != url {
+                        return None;
                     }
-                }
-                for (k, bytes) in updates {
-                    let _ = table.insert(k.as_str(), bytes.as_slice());
-                }
-            }
-            let _ = write_txn.commit();
+                    rec.cached_at = rec.cached_at.saturating_sub(delta_secs);
+                    Some((k.value().to_string(), serde_json::to_vec(&rec).ok()?))
+                })
+                .collect();
+            updates.into_iter().for_each(|(k, b)| {
+                let _ = table.insert(k.as_str(), b.as_slice());
+            });
         }
+        let _ = write_txn.commit();
     }
 
     #[doc(hidden)]
     pub fn backdate_history_for_test(&self, title: &str, delta_secs: u64) {
-        if let Ok(write_txn) = self.db.begin_write() {
-            if let Ok(mut table) = write_txn.open_table(TABLE_HISTORY) {
-                let mut updates = Vec::new();
-                if let Ok(iter) = table.iter() {
-                    for (k, v) in iter.flatten() {
-                        if let Ok(mut item) = serde_json::from_slice::<LibraryItem>(v.value())
-                            && (item.title == title || item.url.as_deref() == Some(title))
-                            && let Some(secs) = parse_iso_to_unix_secs(&item.created_at)
-                        {
-                            item.created_at =
-                                format_iso_from_timestamp(secs.saturating_sub(delta_secs));
-                            if let Ok(bytes) = serde_json::to_vec(&item) {
-                                updates.push((k.value(), bytes));
-                            }
-                        }
+        let Ok(write_txn) = self.db.begin_write() else {
+            return;
+        };
+        if let Ok(mut table) = write_txn.open_table(TABLE_HISTORY) {
+            let updates: Vec<_> = table
+                .iter()
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|(k, v)| {
+                    let mut item = serde_json::from_slice::<LibraryItem>(v.value()).ok()?;
+                    if item.title != title && item.url.as_deref() != Some(title) {
+                        return None;
                     }
-                }
-                for (k, bytes) in updates {
-                    let _ = table.insert(k, bytes.as_slice());
-                }
-            }
-            let _ = write_txn.commit();
+                    let secs = parse_iso_to_unix_secs(&item.created_at)?;
+                    item.created_at = format_iso_from_timestamp(secs.saturating_sub(delta_secs));
+                    Some((k.value(), serde_json::to_vec(&item).ok()?))
+                })
+                .collect();
+            updates.into_iter().for_each(|(k, b)| {
+                let _ = table.insert(k, b.as_slice());
+            });
         }
+        let _ = write_txn.commit();
     }
 }
 
@@ -1352,46 +1340,26 @@ fn parse_iso_to_unix_secs(s: &str) -> Option<u64> {
     Some(secs)
 }
 
-#[allow(clippy::incompatible_msrv)]
 fn extract_snippet(text: &str, query: &str, terms: &[String]) -> String {
     let match_pos =
         crate::system::text_util::find_ascii_case_insensitive(text, query).or_else(|| {
-            for term in terms {
-                if let Some(pos) = crate::system::text_util::find_ascii_case_insensitive(text, term)
-                {
-                    return Some(pos);
-                }
-            }
-            None
+            terms
+                .iter()
+                .find_map(|term| crate::system::text_util::find_ascii_case_insensitive(text, term))
         });
-
-    let (start, end) = if let Some(pos) = match_pos {
-        let raw_start = pos.saturating_sub(60);
-        let raw_end = (pos + query.len().min(40) + 100).min(text.len());
-        (
-            text.floor_char_boundary(raw_start),
-            text.ceil_char_boundary(raw_end),
-        )
-    } else {
-        let raw_end = text.len().min(160);
-        (0, text.ceil_char_boundary(raw_end))
+    let (start, end) = match match_pos {
+        Some(pos) => (
+            text.floor_char_boundary(pos.saturating_sub(60)),
+            text.ceil_char_boundary((pos + query.len().min(40) + 100).min(text.len())),
+        ),
+        None => (0, text.ceil_char_boundary(text.len().min(160))),
     };
-
     let prefix = if start > 0 { "..." } else { "" };
     let suffix = if end < text.len() { "..." } else { "" };
-    let slice = text[start..end].trim();
-
-    let mut out = String::with_capacity(prefix.len() + slice.len() + suffix.len());
-    out.push_str(prefix);
-    for ch in slice.chars() {
-        if ch == '\n' || ch == '\r' {
-            out.push(' ');
-        } else {
-            out.push(ch);
-        }
-    }
-    out.push_str(suffix);
-    out
+    format!(
+        "{prefix}{}{suffix}",
+        text[start..end].trim().replace(['\n', '\r'], " ")
+    )
 }
 
 fn format_date_from_timestamp(secs: u64) -> String {

@@ -177,27 +177,21 @@ impl Version {
         };
 
         let parts: Vec<&str> = core.split('.').collect();
-        if parts.len() != 3 {
+        let [maj, min, pat] = parts.as_slice() else {
             return Err(VersionError(format!(
                 "Expected major.minor.patch, got: {}",
                 core
             )));
-        }
-
-        let major = parts[0]
-            .parse::<u64>()
-            .map_err(|_| VersionError(format!("Invalid major version: {}", parts[0])))?;
-        let minor = parts[1]
-            .parse::<u64>()
-            .map_err(|_| VersionError(format!("Invalid minor version: {}", parts[1])))?;
-        let patch = parts[2]
-            .parse::<u64>()
-            .map_err(|_| VersionError(format!("Invalid patch version: {}", parts[2])))?;
+        };
+        let parse_part = |s: &str, name: &str| {
+            s.parse::<u64>()
+                .map_err(|_| VersionError(format!("Invalid {} version: {}", name, s)))
+        };
 
         Ok(Self {
-            major,
-            minor,
-            patch,
+            major: parse_part(maj, "major")?,
+            minor: parse_part(min, "minor")?,
+            patch: parse_part(pat, "patch")?,
             pre,
         })
     }
@@ -229,24 +223,14 @@ impl PartialOrd for Version {
 
 impl Ord for Version {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        match self.major.cmp(&other.major) {
-            std::cmp::Ordering::Equal => {}
-            ord => return ord,
-        }
-        match self.minor.cmp(&other.minor) {
-            std::cmp::Ordering::Equal => {}
-            ord => return ord,
-        }
-        match self.patch.cmp(&other.patch) {
-            std::cmp::Ordering::Equal => {}
-            ord => return ord,
-        }
-        match (&self.pre, &other.pre) {
-            (None, None) => std::cmp::Ordering::Equal,
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (Some(a), Some(b)) => a.cmp(b),
-        }
+        (self.major, self.minor, self.patch)
+            .cmp(&(other.major, other.minor, other.patch))
+            .then_with(|| match (&self.pre, &other.pre) {
+                (None, None) => std::cmp::Ordering::Equal,
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (Some(a), Some(b)) => a.cmp(b),
+            })
     }
 }
 
@@ -378,11 +362,7 @@ pub fn extract_binary_from_tar_gz(bytes: &[u8], binary_name: &str) -> Result<Vec
 pub fn extract_binary_from_zip(bytes: &[u8], binary_name: &str) -> Result<Vec<u8>> {
     let reader = crate::system::zip::ZipReader::new(bytes).context("Failed to read zip archive")?;
     for entry in reader.entries() {
-        let name = entry.name;
-        if name == binary_name
-            || name.ends_with(&format!("/{}", binary_name))
-            || name.ends_with(&format!("\\{}", binary_name))
-        {
+        if entry.name.rsplit(['/', '\\']).next() == Some(binary_name) {
             let data = reader.decompress_entry(entry, MAX_BINARY_BYTES as usize)?;
             if data.is_empty() {
                 bail!(
@@ -598,17 +578,7 @@ async fn download_and_verify_archive(
 /// Main entry point for executing `srz upgrade`.
 /// Safely replaces an executable binary with a staged new binary file.
 pub fn replace_binary(new_binary: &Path, target_exe: &Path) -> std::io::Result<()> {
-    if let Ok(meta) = std::fs::symlink_metadata(target_exe)
-        && meta.file_type().is_symlink()
-    {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!(
-                "Refusing to replace binary at symlink: {}",
-                target_exe.display()
-            ),
-        ));
-    }
+    crate::system::fs_util::reject_symlink(target_exe, "replace binary at symlink")?;
 
     if std::fs::rename(new_binary, target_exe).is_ok() {
         return Ok(());

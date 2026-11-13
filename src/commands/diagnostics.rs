@@ -217,15 +217,12 @@ pub async fn handle_doctor(
         }
     } else {
         println!("  ✗ Unreachable: {}", safe_base_url);
-        if let Some(err) = &endpoint_err {
-            let safe_err = crate::ui::sanitize_terminal_text(err);
-            if safe_err.contains("Server returned HTTP") {
-                println!("    Error: {}", safe_err);
-            } else {
-                println!(
-                    "    Ensure your local LLM runner (llama.cpp, Ollama, LM Studio) is running."
-                );
-            }
+        let http_err = endpoint_err
+            .as_deref()
+            .map(crate::ui::sanitize_terminal_text)
+            .filter(|s| s.contains("Server returned HTTP"));
+        if let Some(err) = http_err {
+            println!("    Error: {}", err);
         } else {
             println!("    Ensure your local LLM runner (llama.cpp, Ollama, LM Studio) is running.");
         }

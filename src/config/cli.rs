@@ -839,38 +839,27 @@ pub fn suggest_command(input: &str) -> Option<&'static str> {
     let input_lower = trimmed.to_ascii_lowercase();
 
     // Exact case-insensitive match (e.g. user typed "Doctor" or "DOCTOR").
-    for &cmd in TOP_LEVEL_COMMANDS {
-        if input_lower == cmd {
-            return Some(cmd);
-        }
+    if let Some(&exact) = TOP_LEVEL_COMMANDS.iter().find(|&&cmd| input_lower == cmd) {
+        return Some(exact);
     }
 
     let input_len = input_lower.chars().count();
-    let mut best_match: Option<(&'static str, usize)> = None;
-
-    for &cmd in TOP_LEVEL_COMMANDS {
-        let cmd_len = cmd.chars().count();
-        let dist = crate::system::text_util::damerau_levenshtein(&input_lower, cmd);
-
-        let is_candidate = match input_len {
-            0..=2 => false,
-            3 => cmd_len == 3 && dist == 1,
-            4 => cmd_len <= 5 && dist == 1,
-            _ => (cmd_len as isize - input_len as isize).abs() <= 2 && dist <= 2,
-        };
-
-        if is_candidate {
-            match best_match {
-                None => best_match = Some((cmd, dist)),
-                Some((_, best_dist)) if dist < best_dist => {
-                    best_match = Some((cmd, dist));
-                }
-                _ => {}
-            }
-        }
-    }
-
-    best_match.map(|(cmd, _)| cmd)
+    TOP_LEVEL_COMMANDS
+        .iter()
+        .copied()
+        .filter_map(|cmd| {
+            let cmd_len = cmd.chars().count();
+            let dist = crate::system::text_util::damerau_levenshtein(&input_lower, cmd);
+            let is_candidate = match input_len {
+                0..=2 => false,
+                3 => cmd_len == 3 && dist == 1,
+                4 => cmd_len <= 5 && dist == 1,
+                _ => (cmd_len as isize - input_len as isize).abs() <= 2 && dist <= 2,
+            };
+            is_candidate.then_some((cmd, dist))
+        })
+        .min_by_key(|&(_, dist)| dist)
+        .map(|(cmd, _)| cmd)
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -967,20 +956,27 @@ impl Config {
 
         let sym_meta = fs::symlink_metadata(path)
             .with_context(|| format!("Failed to read config file metadata at {:?}", path))?;
-        if sym_meta.file_type().is_symlink() {
-            anyhow::bail!("Refusing to load config from symlink path: {:?}", path);
-        }
-        if !sym_meta.is_file() {
-            anyhow::bail!("Config path {:?} is not a regular file", path);
-        }
-        if sym_meta.len() > MAX_CONFIG_BYTES {
-            anyhow::bail!(
+        anyhow::ensure!(
+            !sym_meta.file_type().is_symlink(),
+            "Refusing to load config from symlink path: {:?}",
+            path
+        );
+        anyhow::ensure!(
+            sym_meta.is_file(),
+            "Config path {:?} is not a regular file",
+            path
+        );
+        let ensure_size = |size: u64| {
+            anyhow::ensure!(
+                size <= MAX_CONFIG_BYTES,
                 "Config file {:?} exceeds maximum allowed size ({} bytes > {} bytes)",
                 path,
-                sym_meta.len(),
+                size,
                 MAX_CONFIG_BYTES
             );
-        }
+            Ok(())
+        };
+        ensure_size(sym_meta.len())?;
         let file = fs::File::open(path)
             .with_context(|| format!("Failed to open config file at {:?}", path))?;
         let mut content = String::new();
@@ -988,28 +984,17 @@ impl Config {
             .take(MAX_CONFIG_BYTES + 1)
             .read_to_string(&mut content)
             .with_context(|| format!("Failed to read config file at {:?}", path))?;
-        if bytes_read as u64 > MAX_CONFIG_BYTES {
-            anyhow::bail!(
-                "Config file {:?} exceeds maximum allowed size ({} bytes)",
-                path,
-                MAX_CONFIG_BYTES
-            );
-        }
-        let config: Config = toml::from_str(&content)
-            .with_context(|| format!("Failed to parse TOML configuration from {:?}", path))?;
-        Ok(config)
+        ensure_size(bytes_read as u64)?;
+        toml::from_str(&content)
+            .with_context(|| format!("Failed to parse TOML configuration from {:?}", path))
     }
 
     /// Loads default configuration if the default config file exists.
     pub fn load_default() -> (Self, Option<PathBuf>) {
         let path = Self::default_config_path();
-        if path.exists() {
-            match Self::load_from_path(&path) {
-                Ok(cfg) => (cfg, Some(path)),
-                Err(_) => (Self::default(), None),
-            }
-        } else {
-            (Self::default(), None)
+        match Self::load_from_path(&path) {
+            Ok(cfg) => (cfg, Some(path)),
+            Err(_) => (Self::default(), None),
         }
     }
 

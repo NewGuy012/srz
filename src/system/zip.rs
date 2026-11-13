@@ -18,6 +18,14 @@ pub struct ZipReader<'a> {
     entries: Vec<ZipEntry<'a>>,
 }
 
+fn le16(b: &[u8]) -> usize {
+    u16::from_le_bytes([b[0], b[1]]) as usize
+}
+
+fn le32(b: &[u8]) -> usize {
+    u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize
+}
+
 impl<'a> ZipReader<'a> {
     /// Opens and parses the central directory of a ZIP archive from in-memory bytes.
     pub fn new(data: &'a [u8]) -> Result<Self> {
@@ -27,22 +35,13 @@ impl<'a> ZipReader<'a> {
 
         // Search for End of Central Directory (EOCD) signature 0x06054b50 from the end
         let min_offset = data.len().saturating_sub(22 + 65535);
-        let eocd_sig = [0x50, 0x4b, 0x05, 0x06];
-        let mut eocd_pos = None;
-        for i in (min_offset..=data.len() - 22).rev() {
-            if data[i..i + 4] == eocd_sig {
-                eocd_pos = Some(i);
-                break;
-            }
-        }
-
-        let eocd_offset = eocd_pos.context("End of Central Directory (EOCD) not found")?;
-        let total_entries =
-            u16::from_le_bytes(data[eocd_offset + 10..eocd_offset + 12].try_into()?) as usize;
-        let cd_size =
-            u32::from_le_bytes(data[eocd_offset + 12..eocd_offset + 16].try_into()?) as usize;
-        let cd_offset =
-            u32::from_le_bytes(data[eocd_offset + 16..eocd_offset + 20].try_into()?) as usize;
+        let eocd_offset = (min_offset..=data.len() - 22)
+            .rev()
+            .find(|&i| data[i..i + 4] == [0x50, 0x4b, 0x05, 0x06])
+            .context("End of Central Directory (EOCD) not found")?;
+        let total_entries = le16(&data[eocd_offset + 10..]);
+        let cd_size = le32(&data[eocd_offset + 12..]);
+        let cd_offset = le32(&data[eocd_offset + 16..]);
 
         let cd_end = cd_offset
             .checked_add(cd_size)
@@ -54,19 +53,16 @@ impl<'a> ZipReader<'a> {
         let mut pos = cd_offset;
         let mut entries = Vec::with_capacity(total_entries.min(1024));
 
-        while pos.checked_add(46).is_some_and(|end| end <= cd_end) {
-            if data[pos..pos + 4] != [0x50, 0x4b, 0x01, 0x02] {
-                break;
-            }
-            let compression_method = u16::from_le_bytes(data[pos + 10..pos + 12].try_into()?);
-            let compressed_size = u32::from_le_bytes(data[pos + 20..pos + 24].try_into()?) as usize;
-            let uncompressed_size =
-                u32::from_le_bytes(data[pos + 24..pos + 28].try_into()?) as usize;
-            let name_len = u16::from_le_bytes(data[pos + 28..pos + 30].try_into()?) as usize;
-            let extra_len = u16::from_le_bytes(data[pos + 30..pos + 32].try_into()?) as usize;
-            let comment_len = u16::from_le_bytes(data[pos + 32..pos + 34].try_into()?) as usize;
-            let local_header_offset =
-                u32::from_le_bytes(data[pos + 42..pos + 46].try_into()?) as usize;
+        while pos.checked_add(46).is_some_and(|end| end <= cd_end)
+            && data[pos..pos + 4] == [0x50, 0x4b, 0x01, 0x02]
+        {
+            let compression_method = le16(&data[pos + 10..]) as u16;
+            let compressed_size = le32(&data[pos + 20..]);
+            let uncompressed_size = le32(&data[pos + 24..]);
+            let name_len = le16(&data[pos + 28..]);
+            let extra_len = le16(&data[pos + 30..]);
+            let comment_len = le16(&data[pos + 32..]);
+            let local_header_offset = le32(&data[pos + 42..]);
 
             let name_start = pos + 46;
             let name_end = name_start
@@ -131,10 +127,8 @@ impl<'a> ZipReader<'a> {
         if self.data[lh_offset..lh_offset + 4] != [0x50, 0x4b, 0x03, 0x04] {
             bail!("Corrupt ZIP: invalid local file header signature");
         }
-        let fn_len =
-            u16::from_le_bytes(self.data[lh_offset + 26..lh_offset + 28].try_into()?) as usize;
-        let extra_len =
-            u16::from_le_bytes(self.data[lh_offset + 28..lh_offset + 30].try_into()?) as usize;
+        let fn_len = le16(&self.data[lh_offset + 26..]);
+        let extra_len = le16(&self.data[lh_offset + 28..]);
         let data_start = lh_fixed_end
             .checked_add(fn_len)
             .and_then(|v| v.checked_add(extra_len))

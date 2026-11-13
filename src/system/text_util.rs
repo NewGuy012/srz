@@ -127,24 +127,16 @@ pub fn url_decode(s: &str) -> Result<Cow<'_, str>, std::string::FromUtf8Error> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let h1 = match bytes[i + 1] {
-                b'0'..=b'9' => Some(bytes[i + 1] - b'0'),
-                b'a'..=b'f' => Some(bytes[i + 1] - b'a' + 10),
-                b'A'..=b'F' => Some(bytes[i + 1] - b'A' + 10),
-                _ => None,
-            };
-            let h2 = match bytes[i + 2] {
-                b'0'..=b'9' => Some(bytes[i + 2] - b'0'),
-                b'a'..=b'f' => Some(bytes[i + 2] - b'a' + 10),
-                b'A'..=b'F' => Some(bytes[i + 2] - b'A' + 10),
-                _ => None,
-            };
-            if let (Some(h1), Some(h2)) = (h1, h2) {
-                out.push((h1 << 4) | h2);
-                i += 3;
-                continue;
-            }
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(h1), Some(h2)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            )
+        {
+            out.push(((h1 << 4) | h2) as u8);
+            i += 3;
+            continue;
         }
         out.push(bytes[i]);
         i += 1;
@@ -267,6 +259,27 @@ pub fn format_hex(bytes: &[u8]) -> String {
     hex
 }
 
+#[rustfmt::skip]
+const STOP_WORDS: &[&str] = &[
+    "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are",
+    "aren't", "as", "at", "be", "because", "been", "before", "being", "below", "between", "both",
+    "but", "by", "can", "can't", "cannot", "could", "couldn't", "did", "didn't", "do", "does",
+    "doesn't", "doing", "don't", "down", "during", "each", "few", "for", "from", "further", "had",
+    "hadn't", "has", "hasn't", "have", "haven't", "having", "he", "he'd", "he'll", "he's", "her",
+    "here", "here's", "hers", "herself", "him", "himself", "his", "how", "how's", "i", "i'd",
+    "i'll", "i'm", "i've", "if", "in", "into", "is", "isn't", "it", "it's", "its", "itself",
+    "let's", "me", "more", "most", "mustn't", "my", "myself", "no", "nor", "not", "of", "off",
+    "on", "once", "only", "or", "other", "ought", "our", "ours", "ourselves", "out", "over", "own",
+    "same", "shan't", "she", "she'd", "she'll", "she's", "should", "shouldn't", "so", "some",
+    "such", "than", "that", "that's", "the", "their", "theirs", "them", "themselves", "then",
+    "there", "there's", "these", "they", "they'd", "they'll", "they're", "they've", "this",
+    "those", "through", "to", "too", "under", "until", "up", "very", "was", "wasn't", "we", "we'd",
+    "we'll", "we're", "we've", "were", "weren't", "what", "what's", "when", "when's", "where",
+    "where's", "which", "while", "who", "who's", "whom", "why", "why's", "with", "won't", "would",
+    "wouldn't", "you", "you'd", "you'll", "you're", "you've", "your", "yours", "yourself",
+    "yourselves",
+];
+
 /// Returns true if `word` is a common English stop word.
 pub fn is_stop_word(word: &str) -> bool {
     if word.bytes().any(|b| b.is_ascii_uppercase()) {
@@ -277,202 +290,15 @@ pub fn is_stop_word(word: &str) -> bool {
 }
 
 pub fn is_stop_word_lower(word: &str) -> bool {
-    matches!(
-        word,
-        "a" | "about"
-            | "above"
-            | "after"
-            | "again"
-            | "against"
-            | "all"
-            | "am"
-            | "an"
-            | "and"
-            | "any"
-            | "are"
-            | "aren't"
-            | "as"
-            | "at"
-            | "be"
-            | "because"
-            | "been"
-            | "before"
-            | "being"
-            | "below"
-            | "between"
-            | "both"
-            | "but"
-            | "by"
-            | "can"
-            | "can't"
-            | "cannot"
-            | "could"
-            | "couldn't"
-            | "did"
-            | "didn't"
-            | "do"
-            | "does"
-            | "doesn't"
-            | "doing"
-            | "don't"
-            | "down"
-            | "during"
-            | "each"
-            | "few"
-            | "for"
-            | "from"
-            | "further"
-            | "had"
-            | "hadn't"
-            | "has"
-            | "hasn't"
-            | "have"
-            | "haven't"
-            | "having"
-            | "he"
-            | "he'd"
-            | "he'll"
-            | "he's"
-            | "her"
-            | "here"
-            | "here's"
-            | "hers"
-            | "herself"
-            | "him"
-            | "himself"
-            | "his"
-            | "how"
-            | "how's"
-            | "i"
-            | "i'd"
-            | "i'll"
-            | "i'm"
-            | "i've"
-            | "if"
-            | "in"
-            | "into"
-            | "is"
-            | "isn't"
-            | "it"
-            | "it's"
-            | "its"
-            | "itself"
-            | "let's"
-            | "me"
-            | "more"
-            | "most"
-            | "mustn't"
-            | "my"
-            | "myself"
-            | "no"
-            | "nor"
-            | "not"
-            | "of"
-            | "off"
-            | "on"
-            | "once"
-            | "only"
-            | "or"
-            | "other"
-            | "ought"
-            | "our"
-            | "ours"
-            | "ourselves"
-            | "out"
-            | "over"
-            | "own"
-            | "same"
-            | "shan't"
-            | "she"
-            | "she'd"
-            | "she'll"
-            | "she's"
-            | "should"
-            | "shouldn't"
-            | "so"
-            | "some"
-            | "such"
-            | "than"
-            | "that"
-            | "that's"
-            | "the"
-            | "their"
-            | "theirs"
-            | "them"
-            | "themselves"
-            | "then"
-            | "there"
-            | "there's"
-            | "these"
-            | "they"
-            | "they'd"
-            | "they'll"
-            | "they're"
-            | "they've"
-            | "this"
-            | "those"
-            | "through"
-            | "to"
-            | "too"
-            | "under"
-            | "until"
-            | "up"
-            | "very"
-            | "was"
-            | "wasn't"
-            | "we"
-            | "we'd"
-            | "we'll"
-            | "we're"
-            | "we've"
-            | "were"
-            | "weren't"
-            | "what"
-            | "what's"
-            | "when"
-            | "when's"
-            | "where"
-            | "where's"
-            | "which"
-            | "while"
-            | "who"
-            | "who's"
-            | "whom"
-            | "why"
-            | "why's"
-            | "with"
-            | "won't"
-            | "would"
-            | "wouldn't"
-            | "you"
-            | "you'd"
-            | "you'll"
-            | "you're"
-            | "you've"
-            | "your"
-            | "yours"
-            | "yourself"
-            | "yourselves"
-    )
+    STOP_WORDS.binary_search(&word).is_ok()
 }
 
 /// Tokenizes text into normalized lowercased terms for BM25 indexing and querying.
-/// Fast-paths lowercase ASCII tokens to avoid redundant heap allocations and case-mapping.
 pub fn tokenize_terms(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
         .map(|s| s.trim_matches(|c: char| !c.is_alphanumeric()))
         .filter(|s| !s.is_empty())
-        .map(|s| {
-            if s.is_ascii() {
-                if s.bytes().any(|b| b.is_ascii_uppercase()) {
-                    s.to_ascii_lowercase()
-                } else {
-                    s.to_string()
-                }
-            } else {
-                s.to_lowercase()
-            }
-        })
+        .map(str::to_lowercase)
         .collect()
 }
 
@@ -657,45 +483,32 @@ impl<'a> XmlScanner<'a> {
             let bytes = rest.as_bytes();
             let mut i = 1;
             let mut quote = 0u8;
-            let mut tag_end = None;
-            let mut last_non_ws_idx = None;
-            let mut last_was_quoted = false;
-
             while i < bytes.len() {
                 let b = bytes[i];
                 if quote != 0 {
                     if b == quote {
                         quote = 0;
-                        last_non_ws_idx = Some(i);
-                        last_was_quoted = true;
                     }
                 } else if b == b'"' || b == b'\'' {
                     quote = b;
                 } else if b == b'>' {
-                    tag_end = Some(i);
                     break;
-                } else if !b.is_ascii_whitespace() {
-                    last_non_ws_idx = Some(i);
-                    last_was_quoted = false;
                 }
                 i += 1;
             }
 
-            let Some(end_idx) = tag_end else {
+            if i >= bytes.len() {
                 self.pos += 1;
                 return Some(XmlEvent::Text("<"));
-            };
+            }
 
-            let is_empty =
-                !last_was_quoted && last_non_ws_idx.is_some_and(|idx| bytes[idx] == b'/');
-            let content_end = if is_empty {
-                last_non_ws_idx.unwrap_or(end_idx)
-            } else {
-                end_idx
-            };
-
-            let inner = rest[1..content_end].trim();
-            self.pos += end_idx + 1;
+            self.pos += i + 1;
+            let raw_inner = rest[1..i].trim();
+            let inner = raw_inner
+                .strip_suffix('/')
+                .map(str::trim_end)
+                .unwrap_or(raw_inner);
+            let is_empty = inner.len() != raw_inner.len();
             if inner.is_empty() {
                 continue;
             }

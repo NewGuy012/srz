@@ -74,66 +74,31 @@ impl HardwareProfile {
         let total_memory_gb = total_memory_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
         let tier = HardwareTier::from_bytes(total_memory_bytes);
 
-        let (
-            recommended_model,
-            concise_model,
-            recommended_size,
-            recommended_quant,
-            disk_size,
-            recommended_context,
-            recommended_context_display,
-            model_file,
-            ollama_model,
-            ram_footprint,
-        ) = match tier {
-            HardwareTier::Tier8GB => (
-                "ggml-org/gemma-4-E4B-it-GGUF:Q8_0",
-                "gemma-4",
-                "E4B",
-                "Q8_0",
-                "~8.6 GB",
-                8_192,
-                "8k ctx",
-                "gemma-4-E4B-it-Q8_0.gguf",
-                "gemma2:9b",
-                "~8.9 GB",
-            ),
-            HardwareTier::Tier16GB => (
-                "ggml-org/gemma-4-E4B-it-GGUF:Q8_0",
-                "gemma-4",
-                "E4B",
-                "Q8_0",
-                "~8.6 GB",
-                32_768,
-                "32k ctx",
-                "gemma-4-E4B-it-Q8_0.gguf",
-                "gemma2:9b",
-                "~9.4 GB",
-            ),
-            HardwareTier::Tier32GB => (
-                "ggml-org/gemma-4-E4B-it-GGUF:Q8_0",
-                "gemma-4",
-                "E4B",
-                "Q8_0",
-                "~8.6 GB",
-                65_536,
-                "64k ctx",
-                "gemma-4-E4B-it-Q8_0.gguf",
-                "gemma2:9b",
-                "~10 GB",
-            ),
-            HardwareTier::Tier64GBPlus => (
-                "ggml-org/gemma-4-26B-A4B-it-GGUF:Q8_0",
-                "gemma-4",
-                "26B-A4B",
-                "Q8_0",
-                "~28.0 GB",
-                131_072,
-                "128k ctx",
-                "gemma-4-26B-A4B-it-Q8_0.gguf",
-                "gemma2:27b",
-                "~30–32 GB",
-            ),
+        let (recommended_model, recommended_size, disk_size, model_file, ollama_model) =
+            if matches!(tier, HardwareTier::Tier64GBPlus) {
+                (
+                    "ggml-org/gemma-4-26B-A4B-it-GGUF:Q8_0",
+                    "26B-A4B",
+                    "~28.0 GB",
+                    "gemma-4-26B-A4B-it-Q8_0.gguf",
+                    "gemma2:27b",
+                )
+            } else {
+                (
+                    "ggml-org/gemma-4-E4B-it-GGUF:Q8_0",
+                    "E4B",
+                    "~8.6 GB",
+                    "gemma-4-E4B-it-Q8_0.gguf",
+                    "gemma2:9b",
+                )
+            };
+        let concise_model = "gemma-4";
+        let recommended_quant = "Q8_0";
+        let (recommended_context, recommended_context_display, ram_footprint) = match tier {
+            HardwareTier::Tier8GB => (8_192, "8k ctx", "~8.9 GB"),
+            HardwareTier::Tier16GB => (32_768, "32k ctx", "~9.4 GB"),
+            HardwareTier::Tier32GB => (65_536, "64k ctx", "~10 GB"),
+            HardwareTier::Tier64GBPlus => (131_072, "128k ctx", "~30–32 GB"),
         };
 
         let recommended_launch_command = format!(

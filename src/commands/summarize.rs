@@ -39,10 +39,12 @@ impl SummaryOutcome {
         url: Option<String>,
         word_count: usize,
         output: LlmOutput,
+        cache_key: Option<String>,
     ) -> Self {
         if let Some(warn) = &output.warning {
             Ui::warn(warn);
         }
+        let cache_key = (!output.truncated).then_some(cache_key).flatten();
         Self {
             title,
             author,
@@ -58,13 +60,8 @@ impl SummaryOutcome {
             tokens_per_second: output.tokens_per_second,
             cached: false,
             hint: output.hint,
-            cache_key: None,
+            cache_key,
         }
-    }
-
-    pub fn with_cache_key(mut self, key: impl Into<String>) -> Self {
-        self.cache_key = Some(key.into());
-        self
     }
 
     pub fn from_cached(
@@ -299,22 +296,15 @@ pub async fn handle_file(
         )
         .await?;
 
-    let is_truncated = output.truncated;
-    let outcome = SummaryOutcome::from_llm(
+    Ok(SummaryOutcome::from_llm(
         "file",
         doc.title,
         None,
         Some(path_str),
         doc.word_count,
         output,
-    );
-    let outcome = if !is_truncated && let Some(k) = file_key {
-        outcome.with_cache_key(k)
-    } else {
-        outcome
-    };
-
-    Ok(outcome)
+        file_key,
+    ))
 }
 
 pub async fn handle_stdin(
@@ -360,7 +350,7 @@ pub async fn handle_stdin(
         .await?;
 
     Ok(SummaryOutcome::from_llm(
-        "stdin", title, None, None, word_count, output,
+        "stdin", title, None, None, word_count, output, None,
     ))
 }
 
@@ -403,22 +393,15 @@ pub async fn summarize_fetched_web_page(
         )
         .await?;
 
-    let is_truncated = output.truncated;
-    let outcome = SummaryOutcome::from_llm(
+    Ok(SummaryOutcome::from_llm(
         target_type,
         title_display,
         None,
         Some(url.to_string()),
         page.word_count,
         output,
-    );
-    let outcome = if !is_truncated {
-        outcome.with_cache_key(url)
-    } else {
-        outcome
-    };
-
-    Ok(outcome)
+        Some(url.to_string()),
+    ))
 }
 
 pub async fn handle_news(
@@ -512,23 +495,15 @@ pub async fn handle_news(
         .summarize_news_digest(topic, timeframe.display_label(), &digest, args.style, mode)
         .await?;
 
-    let is_truncated = output.truncated;
-    let outcome = SummaryOutcome::from_llm(
+    Ok(SummaryOutcome::from_llm(
         "news",
         title_display,
         Some(author_str),
         Some(search_url),
         total_words,
         output,
-    );
-    let outcome = if !is_truncated {
-        let key = Cache::news_cache_title(topic, timeframe);
-        outcome.with_cache_key(key)
-    } else {
-        outcome
-    };
-
-    Ok(outcome)
+        Some(Cache::news_cache_title(topic, timeframe)),
+    ))
 }
 
 #[derive(Debug, Clone)]
@@ -582,23 +557,16 @@ pub async fn summarize_prepared_book(
     let (output, word_count, source_url) =
         generate_prepared_book_summary(&mut prep, scraper, llm, cache, args, mode).await?;
 
-    let is_truncated = output.truncated;
     let title_key = Cache::book_cache_title(&prep.title, prep.author.as_deref());
-    let outcome = SummaryOutcome::from_llm(
+    Ok(SummaryOutcome::from_llm(
         "book",
         book_display,
         prep.author,
         source_url,
         word_count,
         output,
-    );
-    let outcome = if !is_truncated {
-        outcome.with_cache_key(&title_key)
-    } else {
-        outcome
-    };
-
-    Ok(outcome)
+        Some(title_key),
+    ))
 }
 
 async fn resolve_book_and_candidates_concurrently(
@@ -608,45 +576,40 @@ async fn resolve_book_and_candidates_concurrently(
     searcher: &BookSearcher,
 ) -> Result<(String, Option<String>, Option<String>, Vec<SearchResult>)> {
     if let Some(auth) = query_author {
-        let effective_title = query_title.to_string();
-        let effective_author = Some(auth.to_string());
         let work_key = cache
             .get_book_metadata(query_title, Some(auth))
-            .and_then(|m| m.and_then(|meta| meta.work_key));
-        let candidates = fetch_or_cache_candidates(
-            &effective_title,
-            effective_author.as_deref(),
-            cache,
-            searcher,
-        )
-        .await?;
-        return Ok((effective_title, effective_author, work_key, candidates));
+            .flatten()
+            .and_then(|meta| meta.work_key);
+        let candidates =
+            fetch_or_cache_candidates(query_title, Some(auth), cache, searcher).await?;
+        return Ok((
+            query_title.to_string(),
+            Some(auth.to_string()),
+            work_key,
+            candidates,
+        ));
     }
 
     // Check if metadata is already cached
-    let cached_meta = cache.get_book_metadata(query_title, None);
-    if let Some(Some(meta)) = cached_meta {
-        let effective_title = meta.canonical_title;
-        let effective_author = meta.author;
-        let work_key = meta.work_key;
-        let year_str = meta
-            .first_publish_year
-            .map(|y| format!(" ({})", y))
-            .unwrap_or_default();
-        if let Some(ref a) = effective_author {
+    if let Some(Some(meta)) = cache.get_book_metadata(query_title, None) {
+        if let Some(ref a) = meta.author {
+            let year_str = meta
+                .first_publish_year
+                .map(|y| format!(" ({y})"))
+                .unwrap_or_default();
             Ui::info(&format!(
-                "Identified book: \"{}\" by {}{}",
-                effective_title, a, year_str
+                "Identified book: \"{}\" by {a}{year_str}",
+                meta.canonical_title
             ));
         }
         let candidates = fetch_or_cache_candidates(
-            &effective_title,
-            effective_author.as_deref(),
+            &meta.canonical_title,
+            meta.author.as_deref(),
             cache,
             searcher,
         )
         .await?;
-        return Ok((effective_title, effective_author, work_key, candidates));
+        return Ok((meta.canonical_title, meta.author, meta.work_key, candidates));
     }
 
     // Check if candidates are already cached under the query title
@@ -827,26 +790,23 @@ async fn resolve_book_reference_context(
             match page_result {
                 Ok(page) => {
                     let (content_to_use, words_to_use) = if res.url.contains("wikipedia.org/wiki/")
-                    {
-                        if let Some(synopsis) =
+                        && let Some(synopsis) =
                             crate::search::extract_wikipedia_synopsis(&page.content)
-                        {
-                            let wc = synopsis.split_whitespace().count();
-                            Ui::info(&format!(
-                                "Extracted targeted plot synopsis: {} words (streamlined from {} full-page words)",
-                                wc, page.word_count
-                            ));
-                            (synopsis, wc)
-                        } else {
-                            let (cleaned, wc) = crate::scraper::clean_text(&page.content, true, 1);
+                    {
+                        let wc = synopsis.split_whitespace().count();
+                        Ui::info(&format!(
+                            "Extracted targeted plot synopsis: {} words (streamlined from {} full-page words)",
+                            wc, page.word_count
+                        ));
+                        (synopsis, wc)
+                    } else {
+                        let (cleaned, wc) = crate::scraper::clean_text(&page.content, true, 1);
+                        if res.url.contains("wikipedia.org/wiki/") {
                             Ui::info(&format!(
                                 "Trimmed reference content: {} words (streamlined from {} full-page words)",
                                 wc, page.word_count
                             ));
-                            (cleaned, wc)
                         }
-                    } else {
-                        let (cleaned, wc) = crate::scraper::clean_text(&page.content, true, 1);
                         (cleaned, wc)
                     };
 

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
+use reqwest::header::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::time::Duration;
@@ -11,69 +11,48 @@ pub const MAX_SCRAPE_BYTES: usize = 10 * 1024 * 1024; // 10 MB limit for web res
 /// Helper to check if a byte slice starts with a given tag name case-insensitively,
 /// ensuring a tag delimiter (whitespace, '>', or '/') follows immediately.
 fn starts_with_tag(slice: &[u8], prefix: &[u8]) -> bool {
-    if slice.len() < prefix.len() {
-        return false;
-    }
-    for (a, b) in slice[..prefix.len()].iter().zip(prefix.iter()) {
-        if !a.eq_ignore_ascii_case(b) {
-            return false;
-        }
-    }
-    if slice.len() > prefix.len() {
-        let next = slice[prefix.len()];
-        next.is_ascii_whitespace() || next == b'>' || next == b'/'
-    } else {
-        true
-    }
+    slice.len() >= prefix.len()
+        && slice[..prefix.len()].eq_ignore_ascii_case(prefix)
+        && slice
+            .get(prefix.len())
+            .is_none_or(|&b| b.is_ascii_whitespace() || b == b'>' || b == b'/')
 }
 
 /// Quickly strips `<script>...</script>`, `<style>...</style>`, `<svg>...</svg>`,
 /// and `<noscript>...</noscript>` tags from raw HTML to prevent massive DOM bloat in Readability.
 pub fn strip_boilerplate_html_tags(html: &str) -> Cow<'_, str> {
-    let has_script = crate::system::text_util::contains_ascii_case_insensitive(html, "<script");
-    let has_style = crate::system::text_util::contains_ascii_case_insensitive(html, "<style");
-    let has_svg = crate::system::text_util::contains_ascii_case_insensitive(html, "<svg");
-    let has_noscript = crate::system::text_util::contains_ascii_case_insensitive(html, "<noscript");
-
-    if !has_script && !has_style && !has_svg && !has_noscript {
+    const TAGS: &[(&str, &[u8], &[u8])] = &[
+        ("<script", b"<script", b"</script>"),
+        ("<style", b"<style", b"</style>"),
+        ("<svg", b"<svg", b"</svg>"),
+        ("<noscript", b"<noscript", b"</noscript>"),
+    ];
+    if !TAGS
+        .iter()
+        .any(|(open, _, _)| crate::system::text_util::contains_ascii_case_insensitive(html, open))
+    {
         return Cow::Borrowed(html);
     }
 
     let mut out = String::with_capacity(html.len());
     let bytes = html.as_bytes();
     let mut cursor = 0;
-    let len = bytes.len();
 
-    while cursor < len {
-        if bytes[cursor] == b'<' {
-            let rest = &bytes[cursor..];
-            let closing_tag: Option<&'static [u8]> = if starts_with_tag(rest, b"<script") {
-                Some(b"</script>")
-            } else if starts_with_tag(rest, b"<style") {
-                Some(b"</style>")
-            } else if starts_with_tag(rest, b"<svg") {
-                Some(b"</svg>")
-            } else if starts_with_tag(rest, b"<noscript") {
-                Some(b"</noscript>")
-            } else {
-                None
-            };
-
-            if let Some(closing) = closing_tag
-                && let Some(close_offset) =
-                    crate::system::text_util::find_subslice_ignore_case(&bytes[cursor..], closing)
-            {
-                cursor += close_offset + closing.len();
-                continue;
-            }
+    while cursor < bytes.len() {
+        if bytes[cursor] == b'<'
+            && let Some((_, _, closing)) = TAGS
+                .iter()
+                .find(|(_, open_b, _)| starts_with_tag(&bytes[cursor..], open_b))
+            && let Some(close_offset) =
+                crate::system::text_util::find_subslice_ignore_case(&bytes[cursor..], closing)
+        {
+            cursor += close_offset + closing.len();
+            continue;
         }
-
         let next_tag = bytes[cursor + 1..]
             .iter()
             .position(|&b| b == b'<')
-            .map(|pos| cursor + 1 + pos)
-            .unwrap_or(len);
-
+            .map_or(bytes.len(), |pos| cursor + 1 + pos);
         out.push_str(&html[cursor..next_tag]);
         cursor = next_tag;
     }
@@ -117,64 +96,53 @@ pub fn truncate_wikipedia_html_before_references(html: &str) -> Cow<'_, str> {
     Cow::Borrowed(html)
 }
 
-fn lower_ascii_tag<'a>(name: &str, buf: &'a mut [u8; 16]) -> &'a str {
-    let local = crate::system::text_util::xml_local_name(name);
-    let len = local.len();
-    if len > buf.len() || !local.is_ascii() {
-        return "";
-    }
-    for (dst, &src) in buf[..len].iter_mut().zip(local.as_bytes()) {
-        *dst = src.to_ascii_lowercase();
-    }
-    std::str::from_utf8(&buf[..len]).unwrap_or("")
-}
-
 /// Converts HTML to clean semantic Markdown preserving headings, lists, code blocks, and formatting.
 pub fn html_to_markdown(html: &str) -> String {
-    use crate::system::text_util::{XmlEvent, XmlScanner, decode_html_entities};
+    use crate::system::text_util::{XmlEvent, XmlScanner, decode_html_entities, xml_local_name};
 
     let mut scanner = XmlScanner::new(html);
     let mut out = String::with_capacity(html.len());
     let mut list_depth: usize = 0;
-    let mut buf = [0u8; 16];
 
     while let Some(event) = scanner.next_event() {
         match event {
-            XmlEvent::Start { name, .. } => match lower_ascii_tag(name, &mut buf) {
-                "h1" => out.push_str("\n\n# "),
-                "h2" => out.push_str("\n\n## "),
-                "h3" => out.push_str("\n\n### "),
-                "h4" => out.push_str("\n\n#### "),
-                "h5" => out.push_str("\n\n##### "),
-                "h6" => out.push_str("\n\n###### "),
-                "p" | "div" | "article" | "section" => {
-                    if !out.ends_with("\n\n") && !out.is_empty() {
-                        out.push_str("\n\n");
+            XmlEvent::Start { name, .. } => {
+                match xml_local_name(name).to_ascii_lowercase().as_str() {
+                    "h1" => out.push_str("\n\n# "),
+                    "h2" => out.push_str("\n\n## "),
+                    "h3" => out.push_str("\n\n### "),
+                    "h4" => out.push_str("\n\n#### "),
+                    "h5" => out.push_str("\n\n##### "),
+                    "h6" => out.push_str("\n\n###### "),
+                    "p" | "div" | "article" | "section" => {
+                        if !out.ends_with("\n\n") && !out.is_empty() {
+                            out.push_str("\n\n");
+                        }
                     }
-                }
-                "br" => out.push('\n'),
-                "hr" => out.push_str("\n\n---\n\n"),
-                "ul" | "ol" => {
-                    list_depth = list_depth.saturating_add(1);
-                    if !out.ends_with('\n') {
+                    "br" => out.push('\n'),
+                    "hr" => out.push_str("\n\n---\n\n"),
+                    "ul" | "ol" => {
+                        list_depth = list_depth.saturating_add(1);
+                        if !out.ends_with('\n') {
+                            out.push('\n');
+                        }
+                    }
+                    "li" => {
                         out.push('\n');
+                        for _ in 0..list_depth.saturating_sub(1) {
+                            out.push_str("  ");
+                        }
+                        out.push_str("* ");
                     }
+                    "pre" => out.push_str("\n```\n"),
+                    "code" => out.push('`'),
+                    "strong" | "b" => out.push_str("**"),
+                    "em" | "i" => out.push('*'),
+                    "blockquote" => out.push_str("\n> "),
+                    _ => {}
                 }
-                "li" => {
-                    out.push('\n');
-                    for _ in 0..list_depth.saturating_sub(1) {
-                        out.push_str("  ");
-                    }
-                    out.push_str("* ");
-                }
-                "pre" => out.push_str("\n```\n"),
-                "code" => out.push('`'),
-                "strong" | "b" => out.push_str("**"),
-                "em" | "i" => out.push('*'),
-                "blockquote" => out.push_str("\n> "),
-                _ => {}
-            },
-            XmlEvent::End { name } => match lower_ascii_tag(name, &mut buf) {
+            }
+            XmlEvent::End { name } => match xml_local_name(name).to_ascii_lowercase().as_str() {
                 "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" => {
                     if !out.ends_with("\n\n") {
                         out.push_str("\n\n");
@@ -395,51 +363,30 @@ pub struct WebScraper {
 impl WebScraper {
     pub fn new() -> Result<Self> {
         let mut headers = HeaderMap::new();
-        headers.insert(USER_AGENT, HeaderValue::from_static(DEFAULT_USER_AGENT));
-        headers.insert(
-            reqwest::header::ACCEPT,
-            HeaderValue::from_static(
+        for (k, v) in [
+            ("user-agent", DEFAULT_USER_AGENT),
+            (
+                "accept",
                 "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             ),
-        );
-        headers.insert(
-            reqwest::header::ACCEPT_LANGUAGE,
-            HeaderValue::from_static("en-US,en;q=0.9"),
-        );
-        headers.insert(
-            reqwest::header::HeaderName::from_static("sec-ch-ua"),
-            HeaderValue::from_static(
+            ("accept-language", "en-US,en;q=0.9"),
+            (
+                "sec-ch-ua",
                 "\"Chromium\";v=\"124\", \"Google Chrome\";v=\"124\", \"Not-A.Brand\";v=\"99\"",
             ),
-        );
-        headers.insert(
-            reqwest::header::HeaderName::from_static("sec-ch-ua-mobile"),
-            HeaderValue::from_static("?0"),
-        );
-        headers.insert(
-            reqwest::header::HeaderName::from_static("sec-ch-ua-platform"),
-            HeaderValue::from_static("\"macOS\""),
-        );
-        headers.insert(
-            reqwest::header::HeaderName::from_static("sec-fetch-dest"),
-            HeaderValue::from_static("document"),
-        );
-        headers.insert(
-            reqwest::header::HeaderName::from_static("sec-fetch-mode"),
-            HeaderValue::from_static("navigate"),
-        );
-        headers.insert(
-            reqwest::header::HeaderName::from_static("sec-fetch-site"),
-            HeaderValue::from_static("none"),
-        );
-        headers.insert(
-            reqwest::header::HeaderName::from_static("sec-fetch-user"),
-            HeaderValue::from_static("?1"),
-        );
-        headers.insert(
-            reqwest::header::HeaderName::from_static("upgrade-insecure-requests"),
-            HeaderValue::from_static("1"),
-        );
+            ("sec-ch-ua-mobile", "?0"),
+            ("sec-ch-ua-platform", "\"macOS\""),
+            ("sec-fetch-dest", "document"),
+            ("sec-fetch-mode", "navigate"),
+            ("sec-fetch-site", "none"),
+            ("sec-fetch-user", "?1"),
+            ("upgrade-insecure-requests", "1"),
+        ] {
+            headers.insert(
+                reqwest::header::HeaderName::from_static(k),
+                HeaderValue::from_static(v),
+            );
+        }
 
         let client = reqwest::Client::builder()
             .default_headers(headers)
@@ -557,34 +504,21 @@ pub fn extract_title_from_html(html: &str) -> Option<String> {
         }
     }
 
-    // 2. Try <title>...</title>
-    if let Some(pos) = crate::system::text_util::find_ascii_case_insensitive(html, "<title") {
-        let rest = &html[pos + 6..];
-        if let Some(tag_end) = rest.find('>') {
-            let content = &rest[tag_end + 1..];
-            if let Some(end) =
-                crate::system::text_util::find_ascii_case_insensitive(content, "</title>")
+    // 2. Try <title>...</title> or <h1>...</h1>
+    for (open, close, strip_tags) in [("<title", "</title>", false), ("<h1", "</h1>", true)] {
+        if let Some(pos) = crate::system::text_util::find_ascii_case_insensitive(html, open)
+            && let Some(tag_end) = html[pos + open.len()..].find('>')
+        {
+            let content = &html[pos + open.len() + tag_end + 1..];
+            if let Some(end) = crate::system::text_util::find_ascii_case_insensitive(content, close)
             {
-                let trimmed = content[..end].trim();
-                if !trimmed.is_empty() {
-                    return Some(
-                        crate::system::text_util::decode_html_entities(trimmed).into_owned(),
-                    );
-                }
-            }
-        }
-    }
-
-    // 3. Try <h1>...</h1>
-    if let Some(pos) = crate::system::text_util::find_ascii_case_insensitive(html, "<h1") {
-        let rest = &html[pos + 3..];
-        if let Some(tag_end) = rest.find('>') {
-            let content = &rest[tag_end + 1..];
-            if let Some(end) =
-                crate::system::text_util::find_ascii_case_insensitive(content, "</h1>")
-            {
-                let stripped = crate::system::text_util::strip_html_tags(&content[..end]);
-                let trimmed = stripped.trim();
+                let raw = &content[..end];
+                let cow = if strip_tags {
+                    Cow::Owned(crate::system::text_util::strip_html_tags(raw))
+                } else {
+                    Cow::Borrowed(raw)
+                };
+                let trimmed = cow.trim();
                 if !trimmed.is_empty() {
                     return Some(
                         crate::system::text_util::decode_html_entities(trimmed).into_owned(),
@@ -678,25 +612,15 @@ pub fn is_citation_or_footnote(anchor: &str) -> bool {
 }
 
 fn skip_citation_whitespace(out: &mut String, bytes: &[u8], next_idx: usize, i: &mut usize) {
-    let len = bytes.len();
-    let next_is_space = next_idx < len && bytes[next_idx] == b' ';
-    let next_is_punct = next_idx < len
-        && matches!(
-            bytes[next_idx],
-            b'.' | b',' | b';' | b':' | b')' | b'!' | b'?'
-        );
-
-    if out.ends_with(' ') {
-        if next_is_space {
+    *i = next_idx;
+    if out.ends_with(' ')
+        && let Some(&next_b) = bytes.get(next_idx)
+    {
+        if next_b == b' ' {
             *i = next_idx + 1;
-        } else if next_is_punct {
+        } else if matches!(next_b, b'.' | b',' | b';' | b':' | b')' | b'!' | b'?') {
             out.pop();
-            *i = next_idx;
-        } else {
-            *i = next_idx;
         }
-    } else {
-        *i = next_idx;
     }
 }
 
