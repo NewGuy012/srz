@@ -66,7 +66,7 @@ pub fn default_cache_dir() -> PathBuf {
     )
 }
 
-/// Returns the default config path (`$SRZ_CONFIG`, `$SRZ_CONFIG_PATH`, `$XDG_CONFIG_HOME/srz/config.toml`, `~/.config/srz/config.toml`).
+/// Returns the default config path (`$SRZ_CONFIG`, `$SRZ_CONFIG_PATH`, `$XDG_CONFIG_HOME/srz/config.toml`, `~/.config/srz/config.toml`, or `%APPDATA%/srz/config.toml`).
 pub fn default_config_path() -> PathBuf {
     resolve_app_path(
         &["SRZ_CONFIG", "SRZ_CONFIG_PATH"],

@@ -97,7 +97,7 @@ pub async fn handle_doctor(
     // 2. Hardware profile detection
     let hw = crate::system::hardware::HardwareProfile::detect();
 
-    // 2. redb database check
+    // 3. redb database check
     let db_path = Database::default_path();
     let (db_ok, db_entries_count, db_err) = match Database::open_default() {
         Ok(db) => match db.get_stats() {
@@ -107,7 +107,7 @@ pub async fn handle_doctor(
         Err(e) => (false, 0, Some(format!("{:#}", e))),
     };
 
-    // 3. Cache directory check
+    // 4. Cache directory check
     let cache_dir = cache.dir().to_path_buf();
     let cache_ok = cache_dir.exists() || crate::fs_util::create_private_dir_all(&cache_dir).is_ok();
     let cache_stats = cache.stats();

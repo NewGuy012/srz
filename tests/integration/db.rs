@@ -555,11 +555,11 @@ fn test_database_search_special_characters_and_sql_injection() {
     };
     db.record_summary(&record).unwrap();
 
-    // SQL injection attempt string must not cause SQL syntax error
+    // Special SQL-like characters must be treated safely as literal search terms in redb
     let res = db.search("'; DROP TABLE library; --").unwrap();
     assert!(res.is_empty());
 
-    // Table still exists and can be searched normally
+    // Store remains intact and can still be searched normally
     let normal_hits = db.search("vulnerabilities").unwrap();
     assert_eq!(normal_hits.len(), 1);
     assert_eq!(normal_hits[0].title, "Security Handbook");

@@ -707,7 +707,6 @@ impl LlmClient {
         })
     }
 
-    /// Streams completion tokens via SSE (`stream: true`) with live spinner feedback on stderr.
     /// Sends a multi-message chat completion request via SSE streaming.
     pub async fn complete_chat(
         &self,

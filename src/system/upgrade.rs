@@ -575,7 +575,6 @@ async fn download_and_verify_archive(
     Ok(archive_bytes)
 }
 
-/// Main entry point for executing `srz upgrade`.
 /// Safely replaces an executable binary with a staged new binary file.
 pub fn replace_binary(new_binary: &Path, target_exe: &Path) -> std::io::Result<()> {
     crate::system::fs_util::reject_symlink(target_exe, "replace binary at symlink")?;
@@ -600,6 +599,7 @@ pub fn replace_binary(new_binary: &Path, target_exe: &Path) -> std::io::Result<(
     Ok(())
 }
 
+/// Main entry point for executing `srz upgrade`.
 pub async fn run_upgrade(
     check: bool,
     force: bool,

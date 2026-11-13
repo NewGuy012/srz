@@ -147,7 +147,7 @@ impl GoogleNewsClient {
         let ts_str = extract_attr_value(&html, "data-n-a-ts=")?;
         let ts: i64 = ts_str.parse().ok()?;
 
-        // 2. Submit batchexecute RPC request to resolve destination URL safely via structured JSON
+        // 3. Submit batchexecute RPC request to resolve destination URL safely via structured JSON
         let payload_str = format!(
             r#"["garturlreq",[[["X","X",["X","X"],null,null,1,1,"US:en",null,1,null,null,null,null,null,0,1],"X","X",1,[1,1,1],1,1,null,0,0,null,0],{},{},{}]"#,
             serde_json::json!(base64_id),
@@ -610,13 +610,13 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
     items
 }
 
-/// Decodes a `CBMi...` Google News URL offline from its URL-safe base64 protobuf ID.
+/// Extracts and decodes the target URL from a `CBMi...` Google News link offline.
 pub fn decode_google_news_url(url: &str) -> Option<String> {
     let id = extract_article_id(url)?;
     decode_cbmi_id(id)
 }
 
-/// Decodes an obfuscated Google News article ID starting with `CBMi` into its target URL.
+/// Decodes a raw `CBMi...` base64 protobuf article ID into its target URL.
 pub fn decode_cbmi_id(id: &str) -> Option<String> {
     if !id.starts_with("CBMi") {
         return None;
