@@ -290,8 +290,13 @@ pub fn escape_yaml_string(s: &str) -> String {
 }
 
 pub fn format_csv_cell(cell: &str) -> String {
-    let is_formula = cell.starts_with(['=', '+', '-', '@'])
-        && cell.trim_start_matches(['+', '-']).parse::<f64>().is_err();
+    let trimmed = cell.trim_start();
+    let is_numeric = !trimmed.is_empty()
+        && cell == trimmed
+        && trimmed.parse::<f64>().is_ok_and(|v| v.is_finite());
+    let is_formula = !is_numeric
+        && (cell.starts_with(['\t', '\r', '=', '+', '-', '@'])
+            || trimmed.starts_with(['=', '+', '-', '@']));
 
     let safe_cell = if is_formula {
         format!("'{}", cell)
@@ -578,16 +583,38 @@ impl Database {
         Ok(id as i64)
     }
 
+    /// Validates that `session_id` fits in `1..u32::MAX` so upper-32-bit key shifts cannot wrap or alias.
+    fn chat_session_key_range(session_id: i64) -> Result<(u64, u64, u64)> {
+        if session_id <= 0 || session_id >= u32::MAX as i64 {
+            anyhow::bail!(
+                "Chat session ID out of valid range (1..{}): {}",
+                u32::MAX,
+                session_id
+            );
+        }
+        let id = session_id as u64;
+        let start_key = id << 32;
+        let end_key = (id + 1) << 32;
+        Ok((id, start_key, end_key))
+    }
+
     pub fn add_chat_turn(&self, session_id: i64, question: &str, answer: &str) -> Result<()> {
+        let (sess_u64, start_key, _) = Self::chat_session_key_range(session_id)?;
         let write_txn = self.db.begin_write()?;
         let now = chrono_now_iso();
 
         let mut next_msg_idx = 1u64;
         {
             let mut sess_table = write_txn.open_table(TABLE_CHAT_SESSIONS)?;
-            let updated = if let Some(val) = sess_table.get(session_id as u64)? {
+            let updated = if let Some(val) = sess_table.get(sess_u64)? {
                 let mut session: ChatSession = serde_json::from_slice(val.value())?;
-                next_msg_idx = (session.message_count as u64) + 1;
+                next_msg_idx = u64::try_from(session.message_count)
+                    .ok()
+                    .and_then(|c| c.checked_add(1))
+                    .ok_or_else(|| anyhow::anyhow!("Invalid chat session message count"))?;
+                if next_msg_idx >= u32::MAX as u64 {
+                    anyhow::bail!("Chat session message limit reached");
+                }
                 session.message_count += 2;
                 session.last_question = Some(question.to_string());
                 session.updated_at = now.clone();
@@ -596,13 +623,13 @@ impl Database {
                 None
             };
             if let Some(bytes) = updated {
-                sess_table.insert(session_id as u64, bytes.as_slice())?;
+                sess_table.insert(sess_u64, bytes.as_slice())?;
             }
         }
 
         {
             let mut msg_table = write_txn.open_table(TABLE_CHAT_MESSAGES)?;
-            let key_q = ((session_id as u64) << 32) | next_msg_idx;
+            let key_q = start_key | next_msg_idx;
             let msg_q = ChatMessage {
                 id: next_msg_idx as i64,
                 session_id,
@@ -612,7 +639,7 @@ impl Database {
             };
             msg_table.insert(key_q, serde_json::to_vec(&msg_q)?.as_slice())?;
 
-            let key_a = ((session_id as u64) << 32) | (next_msg_idx + 1);
+            let key_a = start_key | (next_msg_idx + 1);
             let msg_a = ChatMessage {
                 id: (next_msg_idx + 1) as i64,
                 session_id,
@@ -649,21 +676,20 @@ impl Database {
         &self,
         session_id: i64,
     ) -> Result<Option<(ChatSession, Vec<ChatMessage>)>> {
+        let (sess_u64, start_key, end_key) = Self::chat_session_key_range(session_id)?;
         let read_txn = self.db.begin_read()?;
         let sess_table = match read_txn.open_table(TABLE_CHAT_SESSIONS) {
             Ok(t) => t,
             Err(_) => return Ok(None),
         };
 
-        let Some(val) = sess_table.get(session_id as u64)? else {
+        let Some(val) = sess_table.get(sess_u64)? else {
             return Ok(None);
         };
         let session: ChatSession = serde_json::from_slice(val.value())?;
 
         let mut messages = Vec::new();
         if let Ok(msg_table) = read_txn.open_table(TABLE_CHAT_MESSAGES) {
-            let start_key = (session_id as u64) << 32;
-            let end_key = ((session_id as u64) + 1) << 32;
             for item_res in msg_table.range(start_key..end_key)? {
                 let (_, m_val) = item_res?;
                 let msg: ChatMessage = serde_json::from_slice(m_val.value())?;
@@ -675,16 +701,15 @@ impl Database {
     }
 
     pub fn delete_chat_session(&self, session_id: i64) -> Result<bool> {
+        let (sess_u64, start_key, end_key) = Self::chat_session_key_range(session_id)?;
         let write_txn = self.db.begin_write()?;
         let removed = {
             let mut sess_table = write_txn.open_table(TABLE_CHAT_SESSIONS)?;
-            sess_table.remove(session_id as u64)?.is_some()
+            sess_table.remove(sess_u64)?.is_some()
         };
 
         if removed {
             let mut msg_table = write_txn.open_table(TABLE_CHAT_MESSAGES)?;
-            let start_key = (session_id as u64) << 32;
-            let end_key = ((session_id as u64) + 1) << 32;
             let keys_to_delete: Vec<u64> = msg_table
                 .range(start_key..end_key)?
                 .filter_map(|r| r.ok().map(|(k, _)| k.value()))
