@@ -628,10 +628,11 @@ async fn ask_turn(
         .await?;
 
     if !output.streamed_to_stdout {
+        let safe_content = crate::ui::sanitize_terminal_text_cow(&output.content);
         if plain || !Ui::use_color() {
-            println!("{}", output.content);
+            println!("{}", safe_content);
         } else {
-            let rendered = render_markdown(&output.content);
+            let rendered = render_markdown(safe_content.as_ref());
             println!("{}", rendered);
         }
     }

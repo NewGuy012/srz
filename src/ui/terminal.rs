@@ -92,7 +92,8 @@ impl ProgressBar {
     }
 
     pub fn set_message(&self, msg: impl Into<Cow<'static, str>>) {
-        let s = msg.into().into_owned();
+        let msg = msg.into();
+        let s = sanitize_title(msg.as_ref());
         *self.inner.message.lock().unwrap() = s;
     }
 
@@ -132,7 +133,8 @@ impl ProgressBar {
 
     pub fn println(&self, msg: impl AsRef<str>) {
         if !self.inner.hidden {
-            eprint!("\r\x1b[2K{}\n", msg.as_ref());
+            let safe = sanitize_terminal_text_cow(msg.as_ref());
+            eprint!("\r\x1b[2K{}\n", safe);
             let _ = std::io::stderr().flush();
         }
     }
@@ -458,44 +460,87 @@ impl StreamMarkdownRenderer {
         }
     }
 
+    /// Maximum un-terminated line length buffered before flushing mid-line to bound memory.
+    const MAX_STREAM_LINE_BYTES: usize = 16 * 1024;
+
     /// Feeds a chunk of text into the streaming renderer, rendering completed lines.
     pub fn feed(&mut self, chunk: &str) {
-        self.line_buf.push_str(chunk);
+        let mut rest = chunk;
+        while !rest.is_empty() {
+            let space = Self::MAX_STREAM_LINE_BYTES.saturating_sub(self.line_buf.len());
+            if space == 0 {
+                self.flush_partial_line();
+                continue;
+            }
+            let take = rest.floor_char_boundary(space);
+            if take == 0 {
+                if self.line_buf.is_empty() {
+                    break;
+                }
+                self.flush_partial_line();
+                continue;
+            }
+            let (head, tail) = rest.split_at(take);
+            self.line_buf.push_str(head);
+            rest = tail;
+            self.drain_complete_lines();
+        }
+    }
+
+    fn drain_complete_lines(&mut self) {
         while let Some(pos) = self.line_buf.find('\n') {
             let line: String = self.line_buf.drain(..=pos).collect();
             let line_trimmed = line.trim_end_matches(['\r', '\n']);
+            let rendered = self.render_complete_line(line_trimmed);
+            print!("{}", rendered);
+        }
+    }
 
-            if !self.use_color {
-                println!("{}", line_trimmed);
-            } else if line_trimmed.trim_start().starts_with("```") {
-                self.in_code_block = !self.in_code_block;
-                println!("\x1b[32m{}\x1b[0m", line_trimmed);
-            } else if self.in_code_block {
-                println!("\x1b[32m  {}\x1b[0m", line_trimmed);
-            } else if line_trimmed.is_empty() {
-                println!();
+    fn render_complete_line(&mut self, line_trimmed: &str) -> String {
+        let sanitized = sanitize_terminal_text_cow(line_trimmed);
+        let safe = sanitized.as_ref();
+        if !self.use_color {
+            format!("{}\n", safe)
+        } else if safe.trim_start().starts_with("```") {
+            self.in_code_block = !self.in_code_block;
+            format!("\x1b[32m{}\x1b[0m\n", safe)
+        } else if self.in_code_block {
+            format!("\x1b[32m  {}\x1b[0m\n", safe)
+        } else if safe.is_empty() {
+            "\n".to_string()
+        } else {
+            let rendered = render_markdown(safe);
+            if rendered.ends_with('\n') {
+                rendered
             } else {
-                let rendered = render_markdown(line_trimmed);
-                print!("{}", rendered);
-                if !rendered.ends_with('\n') {
-                    println!();
-                }
+                format!("{}\n", rendered)
             }
+        }
+    }
+
+    fn render_partial_line(&self, raw: &str) -> String {
+        let sanitized = sanitize_terminal_text_cow(raw);
+        let safe = sanitized.as_ref();
+        if !self.use_color {
+            safe.to_string()
+        } else {
+            render_markdown(safe)
+        }
+    }
+
+    fn flush_partial_line(&mut self) {
+        if !self.line_buf.is_empty() {
+            let rendered = self.render_partial_line(&self.line_buf);
+            print!("{}", rendered);
+            self.line_buf.clear();
+            let _ = io::stdout().flush();
         }
     }
 
     /// Flushes any remaining partial line at stream completion.
     pub fn flush(&mut self) {
-        if !self.line_buf.is_empty() {
-            if !self.use_color {
-                print!("{}", self.line_buf);
-            } else {
-                let rendered = render_markdown(&self.line_buf);
-                print!("{}", rendered);
-            }
-            self.line_buf.clear();
-            let _ = io::stdout().flush();
-        }
+        self.drain_complete_lines();
+        self.flush_partial_line();
     }
 }
 
@@ -778,5 +823,57 @@ mod tests {
         Ui::finish_spinner(&pb, "");
         Ui::finish_spinner(&pb, "   ");
         assert!(pb.is_hidden());
+    }
+
+    #[test]
+    fn test_stream_markdown_renderer_strips_terminal_escapes() {
+        let mut plain = StreamMarkdownRenderer::with_options(false);
+        let complete = plain.render_complete_line("\x1b]2;pwned\x07hello\x1b[31m!\r");
+        assert_eq!(complete, "hello!\n");
+        let partial = plain.render_partial_line("\x1b[2Jpartial\x07\r");
+        assert_eq!(partial, "partial");
+
+        let mut colored = StreamMarkdownRenderer::with_options(true);
+        let fence = colored.render_complete_line("```\x1b]0;title\x07");
+        assert!(!fence.contains("\x1b]0;"));
+        assert!(!fence.contains('\x07'));
+        let code_line = colored.render_complete_line("let x = \x1b[31m1\x1b[0m;\r");
+        assert!(!code_line.contains("\x1b[31m"));
+        assert!(!code_line.contains('\r'));
+        assert!(code_line.contains("let x = 1;"));
+        let colored_partial = colored.render_partial_line("tail\x1b[2J\x07");
+        assert!(!colored_partial.contains("\x1b[2J"));
+        assert!(!colored_partial.contains('\x07'));
+
+        let rendered_md = render_markdown("\x1b]2;pwned\x07**bold**\x1b[31m");
+        assert!(!rendered_md.contains("\x1b]2;"));
+        assert!(!rendered_md.contains("\x1b[31m"));
+        assert!(!rendered_md.contains('\x07'));
+        assert!(rendered_md.contains("bold"));
+    }
+
+    #[test]
+    fn test_stream_markdown_renderer_bounds_unterminated_line() {
+        let mut renderer = StreamMarkdownRenderer::with_options(false);
+        renderer.feed(&"A".repeat(40_000));
+        assert!(renderer.line_buf.len() <= StreamMarkdownRenderer::MAX_STREAM_LINE_BYTES);
+
+        // Multi-byte UTF-8 input across buffer limit boundaries must not panic
+        renderer.feed(&"🦀".repeat(10_000));
+        assert!(renderer.line_buf.len() <= StreamMarkdownRenderer::MAX_STREAM_LINE_BYTES);
+        renderer.flush();
+        assert!(renderer.line_buf.is_empty());
+    }
+
+    #[test]
+    fn test_progress_bar_set_message_sanitizes_control_sequences() {
+        let pb = ProgressBar::hidden();
+        pb.set_message("Load \x1b]2;evil\x07\x1b[31mfile\r\nname");
+        let stored = pb.inner.message.lock().unwrap().clone();
+        assert!(!stored.contains('\x1b'));
+        assert!(!stored.contains('\x07'));
+        assert!(!stored.contains('\r'));
+        assert!(!stored.contains('\n'));
+        assert_eq!(stored, "Load file name");
     }
 }

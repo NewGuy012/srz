@@ -190,8 +190,9 @@ impl SseStreamState {
         if let Some(reasoning) = &choice.delta.reasoning_content
             && !reasoning.is_empty()
             && !self.started_visible
+            && self.append_reasoning_delta(reasoning, pb, mode)
         {
-            self.append_reasoning_delta(reasoning, pb, mode);
+            return true;
         }
 
         if let Some(delta_text) = &choice.delta.content
@@ -207,25 +208,42 @@ impl SseStreamState {
                     .or_else(|| self.in_think_tag.then_some(delta_text))
             {
                 if let Some(think_end) = reasoning_slice.find("</think>") {
-                    self.append_reasoning_delta(&reasoning_slice[..think_end], pb, mode);
+                    if self.append_reasoning_delta(&reasoning_slice[..think_end], pb, mode) {
+                        return true;
+                    }
                     self.in_think_tag = false;
                     let visible_part = &reasoning_slice[think_end + 8..];
-                    if !visible_part.is_empty() {
-                        self.append_content_delta(visible_part, pb, spinner_label, mode);
+                    if !visible_part.is_empty()
+                        && self.try_append_content_delta(visible_part, pb, spinner_label, mode)
+                    {
+                        return true;
                     }
-                } else {
-                    self.append_reasoning_delta(reasoning_slice, pb, mode);
+                } else if self.append_reasoning_delta(reasoning_slice, pb, mode) {
+                    return true;
                 }
                 return false;
             }
 
-            if self.content_buf.len().saturating_add(delta_text.len()) > MAX_CONTENT_BUFFER_BYTES {
-                self.truncated = true;
+            if self.try_append_content_delta(delta_text, pb, spinner_label, mode) {
                 return true;
             }
-            self.append_content_delta(delta_text, pb, spinner_label, mode);
         }
 
+        false
+    }
+
+    fn try_append_content_delta(
+        &mut self,
+        text: &str,
+        pb: &crate::ui::ProgressBar,
+        spinner_label: &str,
+        mode: StreamMode<'_>,
+    ) -> bool {
+        if self.content_buf.len().saturating_add(text.len()) > MAX_CONTENT_BUFFER_BYTES {
+            self.truncated = true;
+            return true;
+        }
+        self.append_content_delta(text, pb, spinner_label, mode);
         false
     }
 
@@ -234,7 +252,11 @@ impl SseStreamState {
         text: &str,
         pb: &crate::ui::ProgressBar,
         mode: StreamMode<'_>,
-    ) {
+    ) -> bool {
+        if self.reasoning_buf.len().saturating_add(text.len()) > MAX_CONTENT_BUFFER_BYTES {
+            self.truncated = true;
+            return true;
+        }
         self.thinking_tokens += 1;
         self.is_thinking = true;
         let now = std::time::Instant::now();
@@ -245,7 +267,7 @@ impl SseStreamState {
         self.reasoning_buf.push_str(text);
 
         if matches!(mode, StreamMode::Silent) {
-            return;
+            return false;
         }
 
         if !Ui::is_quiet() {
@@ -282,6 +304,8 @@ impl SseStreamState {
                 ));
             }
         }
+
+        false
     }
 
     pub(crate) fn finish_thinking_ui(
@@ -602,5 +626,46 @@ mod tests {
         assert!(!state.is_thinking);
         assert!(state.finished_thinking_ui);
         assert_eq!(state.content_buf, "Silent completion output");
+    }
+
+    #[test]
+    fn test_sse_stream_state_bounds_reasoning_and_post_think_content() {
+        let pb = crate::ui::ProgressBar::hidden();
+
+        // 1. reasoning_content exceeding MAX_CONTENT_BUFFER_BYTES must truncate and cap buffer
+        let mut state = SseStreamState::new(std::time::Instant::now(), false);
+        let huge = "R".repeat(MAX_CONTENT_BUFFER_BYTES + 1024);
+        let payload = format!(
+            "data: {{\"choices\":[{{\"delta\":{{\"reasoning_content\":\"{}\"}}}}]}}",
+            huge
+        );
+        assert!(state.process_line(payload.as_bytes(), &pb, "", StreamMode::Silent));
+        assert!(state.truncated);
+        assert!(state.reasoning_buf.len() <= MAX_CONTENT_BUFFER_BYTES);
+
+        // 2. Unclosed <think> tag exceeding MAX_CONTENT_BUFFER_BYTES must truncate
+        let mut think_state = SseStreamState::new(std::time::Instant::now(), false);
+        let think_payload = format!(
+            "data: {{\"choices\":[{{\"delta\":{{\"content\":\"<think>{}\"}}}}]}}",
+            huge
+        );
+        assert!(think_state.process_line(think_payload.as_bytes(), &pb, "", StreamMode::Silent));
+        assert!(think_state.truncated);
+        assert!(think_state.reasoning_buf.len() <= MAX_CONTENT_BUFFER_BYTES);
+
+        // 3. Visible content immediately after </think> exceeding MAX_CONTENT_BUFFER_BYTES must truncate
+        let mut post_think_state = SseStreamState::new(std::time::Instant::now(), false);
+        let post_payload = format!(
+            "data: {{\"choices\":[{{\"delta\":{{\"content\":\"<think>short</think>{}\"}}}}]}}",
+            huge
+        );
+        assert!(post_think_state.process_line(
+            post_payload.as_bytes(),
+            &pb,
+            "",
+            StreamMode::Silent
+        ));
+        assert!(post_think_state.truncated);
+        assert!(post_think_state.content_buf.len() <= MAX_CONTENT_BUFFER_BYTES);
     }
 }
