@@ -11,6 +11,77 @@ use crate::scraper::{ScrapedPage, WebScraper, clean_text, html_to_markdown};
 use crate::system::text_util::url_decode;
 
 pub const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024; // 20 MB limit for local files
+pub const MAX_PDF_TEXT_BYTES: usize = 50 * 1024 * 1024; // 50 MB limit for extracted PDF text
+
+/// Opens and reads up to `max_bytes` from a local regular file, rejecting oversized
+/// or non-regular targets even if swapped or appended after pre-flight metadata checks.
+pub(super) fn read_file_bytes_limited(path: &Path, max_bytes: u64, label: &str) -> Result<Vec<u8>> {
+    let file = fs::File::open(path)
+        .with_context(|| format!("Failed to open {} file: {:?}", label, path))?;
+    let meta = file
+        .metadata()
+        .with_context(|| format!("Failed to stat {} file: {:?}", label, path))?;
+    if !meta.is_file() {
+        anyhow::bail!("{} path is not a regular file: {:?}", label, path);
+    }
+    if meta.len() > max_bytes {
+        anyhow::bail!(
+            "{} file is too large ({} bytes, maximum {} bytes): {:?}",
+            label,
+            meta.len(),
+            max_bytes,
+            path
+        );
+    }
+    let mut bytes = Vec::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("Failed to read {} file at {:?}", label, path))?;
+    if bytes.len() as u64 > max_bytes {
+        anyhow::bail!(
+            "{} file exceeds maximum allowed size of {} bytes: {:?}",
+            label,
+            max_bytes,
+            path
+        );
+    }
+    Ok(bytes)
+}
+
+struct BoundedIoWriter {
+    buf: Vec<u8>,
+    max_bytes: usize,
+    exceeded: bool,
+}
+
+impl BoundedIoWriter {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            buf: Vec::new(),
+            max_bytes,
+            exceeded: false,
+        }
+    }
+}
+
+impl std::io::Write for BoundedIoWriter {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        let remaining = self.max_bytes.saturating_sub(self.buf.len());
+        if data.len() > remaining {
+            self.exceeded = true;
+            return Err(std::io::Error::other(format!(
+                "Extracted PDF text exceeds maximum limit of {} bytes",
+                self.max_bytes
+            )));
+        }
+        self.buf.extend_from_slice(data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 
 /// Maximum bytes decompressed for XML metadata files (`container.xml`, `.opf`).
 pub const MAX_EPUB_XML_BYTES: u64 = 5 * 1024 * 1024; // 5 MB
@@ -80,11 +151,8 @@ impl DocumentLoader {
             let t = page.title.unwrap_or_else(fallback_title);
             (page.content, page.word_count, t)
         } else {
-            let file =
-                fs::File::open(path).with_context(|| format!("Failed to open file: {:?}", path))?;
-            let mut raw = String::new();
-            file.take(MAX_FILE_BYTES + 1)
-                .read_to_string(&mut raw)
+            let bytes = read_file_bytes_limited(path, MAX_FILE_BYTES, "Document")?;
+            let raw = String::from_utf8(bytes)
                 .with_context(|| format!("Failed to read file: {:?}", path))?;
 
             Self::normalize_or_plain_text(scraper, &path.display().to_string(), raw, fallback_title)
@@ -133,9 +201,28 @@ impl PdfExtractor {
     /// Extracts text from a PDF file path.
     pub fn extract_file(path: &Path) -> Result<ScrapedPage> {
         DocumentLoader::validate_file(path)?;
-        let bytes = std::fs::read(path)
-            .with_context(|| format!("Failed to read PDF file at {:?}", path))?;
+        let bytes = read_file_bytes_limited(path, MAX_FILE_BYTES, "PDF")?;
         Self::extract_from_bytes(&bytes, Some(path))
+    }
+
+    pub(super) fn extract_pdf_text_bounded(
+        doc: &pdf_extract::Document,
+        max_text_bytes: usize,
+    ) -> Result<String> {
+        let mut writer = BoundedIoWriter::new(max_text_bytes);
+        let extract_res = {
+            let writer_ref: &mut dyn std::io::Write = &mut writer;
+            let mut output = pdf_extract::PlainTextOutput::new(writer_ref);
+            pdf_extract::output_doc(doc, &mut output)
+        };
+        if writer.exceeded {
+            anyhow::bail!(
+                "Extracted PDF text exceeds maximum allowed size of {} bytes",
+                max_text_bytes
+            );
+        }
+        extract_res.context("Failed to extract text layer from PDF document")?;
+        String::from_utf8(writer.buf).context("Extracted PDF text was not valid UTF-8")
     }
 
     /// Extracts text from in-memory PDF bytes, parsing the PDF document structure only once.
@@ -155,9 +242,7 @@ impl PdfExtractor {
         if doc.is_encrypted() {
             let _ = doc.decrypt("");
         }
-        let mut raw_text = String::new();
-        pdf_extract::output_doc(&doc, &mut pdf_extract::PlainTextOutput::new(&mut raw_text))
-            .context("Failed to extract text layer from PDF document")?;
+        let raw_text = Self::extract_pdf_text_bounded(&doc, MAX_PDF_TEXT_BYTES)?;
 
         let (title, _author) = Self::extract_metadata_from_doc(&doc, path);
         let processed = Self::post_process_text(&raw_text);
@@ -306,8 +391,7 @@ impl EpubExtractor {
     /// Extracts text and metadata from an EPUB file path.
     pub fn extract_file(path: &Path) -> Result<ScrapedPage> {
         DocumentLoader::validate_file(path)?;
-        let bytes =
-            fs::read(path).with_context(|| format!("Failed to open EPUB file at {:?}", path))?;
+        let bytes = read_file_bytes_limited(path, MAX_FILE_BYTES, "EPUB")?;
         Self::extract_from_bytes(&bytes, Some(path))
     }
 
