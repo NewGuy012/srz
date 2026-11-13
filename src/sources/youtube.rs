@@ -18,14 +18,6 @@ pub struct CaptionTrack {
     pub language_code: String,
     #[serde(default)]
     pub kind: Option<String>,
-    #[serde(default)]
-    pub name: Option<CaptionTrackName>,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-pub struct CaptionTrackName {
-    #[serde(rename = "simpleText", default)]
-    pub simple_text: String,
 }
 
 #[derive(Deserialize, Debug)]

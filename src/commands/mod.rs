@@ -18,7 +18,7 @@ pub use library::{
 };
 pub use summarize::{
     PreparedBookQuery, SummaryOutcome, fetch_or_cache_page, fetch_or_cache_page_with,
-    fetch_url_content, handle_file, handle_news, handle_stdin, handle_web, prepare_book_query,
+    fetch_url_content, handle_file, handle_news, handle_stdin, prepare_book_query,
     present_summary_outcome, summarize_fetched_web_page, summarize_prepared_book,
     target_type_for_url,
 };

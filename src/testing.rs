@@ -1,6 +1,5 @@
 //! Test utilities, fixtures, and helpers for `srz` integration and unit testing.
 
-use std::fs::File;
 use std::io::Result;
 use std::path::{Path, PathBuf};
 
@@ -56,11 +55,6 @@ impl Drop for TempDir {
 /// Convenience function to create an RAII temporary directory for testing.
 pub fn tempdir() -> Result<TempDir> {
     TempDir::new()
-}
-
-/// Opens a file with private permissions (0o600 on Unix) for writing test fixtures.
-pub fn open_private_file_for_write(path: &Path) -> Result<File> {
-    crate::system::fs_util::open_private_file_for_write(path)
 }
 
 // ---------------------------------------------------------------------------
@@ -119,14 +113,3 @@ pub fn build_sample_pdf_bytes() -> Vec<u8> {
     let content = b"BT /F1 12 Tf 50 720 Td (srz - High-Performance Modular Rust CLI for Summarization) Tj /F1 10 Tf 0 -30 Td (srz extracts and synthesizes structured summaries using local OpenAI-compliant LLMs.) Tj 0 -20 Td (Key Features: Universal Ingestion for Web, YouTube captions, local PDFs, and live news.) Tj 0 -20 Td (Private and Secure: 100 percent offline local inference with strict POSIX permissions.) Tj 0 -20 Td (Offline Library: Embedded redb database stores every summary for instant full-text search.) Tj 0 -20 Td (Terminal Paging: Syntax-highlighted output with automatic terminal paging via less.) Tj 0 -20 Td (Interactive Grounded Q and A: Ask questions grounded on full source documents or past reads.) Tj ET";
     build_pdf_with_stream_content(content)
 }
-
-// ---------------------------------------------------------------------------
-// Re-exports of Test-Oriented Helpers
-// ---------------------------------------------------------------------------
-
-pub use crate::commands::ask::format_grounded_context;
-pub use crate::config::cli::Config;
-pub use crate::engine::chunker::TextChunker;
-pub use crate::sources::scraper::clean_raw_text;
-pub use crate::ui::render::{ensure_view_files_unique, render_html_document_with_reasoning};
-pub use crate::ui::terminal::Ui;

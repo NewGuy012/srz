@@ -172,17 +172,6 @@ pub fn html_to_markdown(html: &str) -> String {
     }
 }
 
-/// Converts HTML bytes to plain text without markup.
-pub fn html_to_plain_text(html_bytes: &[u8]) -> Result<String> {
-    let html_str = std::str::from_utf8(html_bytes)
-        .map(std::borrow::Cow::Borrowed)
-        .unwrap_or_else(|_| String::from_utf8_lossy(html_bytes));
-
-    let md = html_to_markdown(&html_str);
-    let (cleaned, _) = clean_text(&md, false, 1);
-    Ok(cleaned)
-}
-
 /// Reads response body bytes up to `max_bytes`, erroring if the content length or streamed bytes exceed `max_bytes`.
 pub async fn read_response_bytes_limited(
     mut response: reqwest::Response,
@@ -741,12 +730,6 @@ pub fn is_reference_heading(line: &str) -> bool {
             | "citations"
             | "see also"
     )
-}
-
-/// Cleans lines and counts words in a single pass without stripping reference sections (exposed for integration testing).
-#[doc(hidden)]
-pub fn clean_raw_text(text: &str) -> (String, usize) {
-    clean_text(text, false, 1)
 }
 
 /// Cleans lines, strips markdown link URLs and inline citations,

@@ -16,8 +16,6 @@ pub struct ProgressBar {
     inner: Arc<SpinnerInner>,
 }
 
-pub type Spinner = ProgressBar;
-
 struct SpinnerInner {
     hidden: bool,
     start_time: Mutex<Instant>,

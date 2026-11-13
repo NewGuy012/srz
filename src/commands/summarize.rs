@@ -354,18 +354,6 @@ pub async fn handle_stdin(
     ))
 }
 
-pub async fn handle_web(
-    url: &str,
-    scraper: &WebScraper,
-    llm: &LlmClient,
-    cache: &Cache,
-    args: &Cli,
-) -> Result<SummaryOutcome> {
-    // Fetch or load cached page / transcript / PDF
-    let page = fetch_url_content(url, scraper, cache, true).await?;
-    summarize_fetched_web_page(url, page, llm, args).await
-}
-
 /// Summarizes an already-fetched web page, transcript, or remote document.
 pub async fn summarize_fetched_web_page(
     url: &str,

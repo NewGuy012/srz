@@ -64,7 +64,6 @@ pub(crate) struct ChatCompletionResponse {
 pub(crate) struct TokenUsage {
     pub(crate) prompt_tokens: Option<u32>,
     pub(crate) completion_tokens: Option<u32>,
-    #[allow(dead_code)]
     pub(crate) total_tokens: Option<u32>,
 }
 

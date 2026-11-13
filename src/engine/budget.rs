@@ -79,8 +79,6 @@ pub fn clamp_context_window(n: usize) -> usize {
 pub struct ModelInfoMeta {
     #[serde(default)]
     pub n_ctx: Option<usize>,
-    #[serde(default)]
-    pub n_ctx_train: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
