@@ -3,7 +3,7 @@
 **Project:** `srz` (Summarize CLI)  
 **Repository:** [github.com/NewGuy012/srz](https://github.com/NewGuy012/srz)  
 **Language & Platform:** Rust (Edition 2024) · macOS / Linux / Windows  
-**Cumulative Posture:** 🛡️ **100% Safe Rust** (`#![forbid(unsafe_code)]` enforced) · ✅ **46 / 46 Audit Vulnerabilities + Post-v0.7.9 Hardening Resolved** · ✅ **225 / 225 Tests Passing**
+**Cumulative Posture:** 🛡️ **100% Safe Rust** (`#![forbid(unsafe_code)]` enforced) · ✅ **54 / 54 Audit Vulnerabilities + Post-v0.7.9 Hardening Resolved** · ✅ **242 / 242 Tests Passing**
 
 This document serves as the chronological security audit ledger for `srz`. Each audit section is recorded with its execution timestamp, assessed scope, identified vulnerabilities, implemented remediations, and verification results.
 
@@ -22,6 +22,7 @@ This document serves as the chronological security audit ledger for `srz`. Each 
 | **[Audit #7](#audit-7)** | **2026-11-07 12:20:00 PST** | EPUB Decompression Bomb Bounds & Spine Deduplication, DuckDB Export Symlink/Permission Hardening, Binary Upgrade Staging Cleanup, Storage Double-Insert Deduplication & Binary Search Tokenization | 3 / 3 | ✅ Complete |
 | **[Audit #8](#audit-8)** | **2026-11-07 20:45:00 PST** | Windows Browser Launch Hardening (`rundll32`), Diagnostics Terminal Error Sanitization, Cache Recency & Multi-Author Discriminators, Model Tokenizer Context Alignment, Word-Boundary BM25 & Engine Submodule Decomposition | 4 / 4 | ✅ Complete |
 | **[Audit #9](#audit-9)** | **2026-11-09 11:30:00 PST** | Open Library SSRF/Path Traversal Validation, Bounded Document Extraction, CSV Formula Injection Neutralization, Terminal History/Chat Sanitization, Atomic Upgrade Rollback Guard, RAII TUI Terminal Session Cleanup, and Architectural Consolidation | 6 / 6 | ✅ Complete |
+| **[Audit #10](#audit-10)** | **2026-11-12 16:56:00 PST** | `ZipReader` & `tar.gz` Archive Bomb Hardening, Stream Markdown/SSE/Progress Terminal & Buffer Bounds, Document TOCTOU & PDF Text Layer Caps, Google News SSRF Validation, LLM Error UTF-8 Safety, and Chat Session Range / CSV Formula Hardening | 8 / 8 | ✅ Complete |
 
 * **[Cumulative Verification & Test Suite](#verification)**
 * **[Production Hardening & Residual Risk Recommendations](#recommendations)**
@@ -1282,6 +1283,82 @@ Since Audit #9 (`dc2df0c`), `srz` migrated persistent storage from DuckDB (`srz.
 * **Configuration & Database Symlink Guards (`src/config/cli.rs`, `src/storage/db.rs`):** Enforced `fs::symlink_metadata` regular-file checks and `.take(MAX_CONFIG_BYTES + 1)` bounded reads (1 MB) in `Config::load_from_path`, alongside symlink rejection on `Database::open_at`.
 
 <a id="verification"></a>
+---
+
+<a id="audit-10"></a>
+## 📅 Audit #10 — November 12, 2026 · 04:56 PM PST (Phase 10: Archive Parser Hardening, Stream Bounds, Document TOCTOU, Google News SSRF & DB Range Safety)
+
+### Overview & Scope
+- **Trigger:** Comprehensive repository-wide security re-audit following the `redb` storage migration and pure-Rust dependency consolidation.
+- **Scope:** Custom binary parsers (`src/system/zip.rs`, `src/system/upgrade.rs`), streaming terminal/SSE pipelines (`src/ui/terminal.rs`, `src/ui/markdown.rs`, `src/commands/ask.rs`, `src/engine/sse.rs`), local document extraction (`src/sources/document.rs`), news URL resolution (`src/sources/news.rs`), LLM error body handling (`src/engine/llm.rs`), and persistent storage (`src/storage/db.rs`).
+- **Outcome:** All **8 newly identified vulnerabilities** (#47–#54) remediated, verified with **17 new unit & integration tests** (**242 / 242** total tests passing), zero clippy warnings, and committed incrementally (`b997d57`..`288cc92`).
+
+### Audit #10 Scorecard
+
+| Metric | Count / Status |
+| :--- | :--- |
+| **Total Findings Identified** | 8 (2 High, 5 Medium, 1 Low) |
+| **Remediated & Verified** | **8 / 8 (100%)** |
+| **Unsafe Code Blocks** | 0 (`#![forbid(unsafe_code)]`) |
+| **Regression Tests Added** | +17 (+14 unit, +3 integration) |
+
+### Audit #10 Findings Matrix
+
+| ID | Severity | Component | Summary | Fix Commit | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **#47** | High | [`src/system/zip.rs`](file:///Users/myoo/Documents/Repo/srz/src/system/zip.rs) | Stored-entry size spoofing, unchecked header offsets, and Deflate OOM allocation in custom `ZipReader` | `b997d57` | ✅ Fixed |
+| **#48** | High | [`src/system/upgrade.rs`](file:///Users/myoo/Documents/Repo/srz/src/system/upgrade.rs) | Unbounded `tar.gz` decompression bomb, ignored USTAR `typeflag`, empty binary acceptance, and octal skip overflow | `2dae09e` | ✅ Fixed |
+| **#49** | Medium | [`src/ui/terminal.rs`](file:///Users/myoo/Documents/Repo/srz/src/ui/terminal.rs), [`src/ui/markdown.rs`](file:///Users/myoo/Documents/Repo/srz/src/ui/markdown.rs), [`src/commands/ask.rs`](file:///Users/myoo/Documents/Repo/srz/src/commands/ask.rs) | Terminal ANSI/OSC/control escape injection and unbounded partial line buffering in streaming/plain outputs and progress spinners | `d88e6a0` | ✅ Fixed |
+| **#50** | Medium | [`src/engine/sse.rs`](file:///Users/myoo/Documents/Repo/srz/src/engine/sse.rs) | Unbounded SSE `reasoning_buf` allocation (`reasoning_content` / `<think>`) and unchecked post-`</think>` visible slice | `d88e6a0` | ✅ Fixed |
+| **#51** | Medium | [`src/sources/document.rs`](file:///Users/myoo/Documents/Repo/srz/src/sources/document.rs) | Post-stat TOCTOU file size/type races in document loaders and unbounded PDF text layer extraction (`OutputDev`) | `1d82a39` | ✅ Fixed |
+| **#52** | Medium | [`src/sources/news.rs`](file:///Users/myoo/Documents/Repo/srz/src/sources/news.rs) | Missing SSRF validation on decoded `CBMi` protobuf URLs, `batchexecute` RPC destinations, and cached snippet fallbacks | `75b499c` | ✅ Fixed |
+| **#53** | Low | [`src/engine/llm.rs`](file:///Users/myoo/Documents/Repo/srz/src/engine/llm.rs) | Multi-byte UTF-8 boundary slicing panic at byte 300 and unsanitized terminal control escapes in `LlmClient::parse_error_body` | `40dade4` | ✅ Fixed |
+| **#54** | Medium | [`src/storage/db.rs`](file:///Users/myoo/Documents/Repo/srz/src/storage/db.rs) | `i64` chat session key-range aliasing/wrap-around and CSV formula bypasses via leading whitespace/control chars & non-finite floats | `288cc92` | ✅ Fixed |
+
+### Detailed Findings & Remediations (Audit #10)
+
+#### Finding #47 — Custom `ZipReader` Header Offset Overflows, Stored-Entry Spoofing & Deflate Allocation Bomb (High)
+* **Risk:** `ZipReader::parse_entries` performed unchecked additions on central directory and local header offsets, while `decompress_entry` accepted Stored (`method == 0`) entries whose header `uncompressed_size` did not match the compressed slice length (`compressed.len() <= max_bytes` also lacked explicit upfront checks) and pre-allocated Deflate buffers up to untrusted `uncompressed_size` (`u32::MAX`) before reading.
+* **Fix (`b997d57`):** Replaced unchecked offset additions with `checked_add`; enforced `compressed.len() <= max_bytes`, `entry.uncompressed_size <= max_bytes`, and `compressed.len() == entry.uncompressed_size` for Stored entries; capped Deflate upfront `Vec::with_capacity` to `(entry.uncompressed_size).min(max_bytes).min(64 * 1024)` with `.saturating_add(1)` take limits.
+* **Verification:** Added `test_zip_stored_spoofed_uncompressed_size_rejected`, `test_zip_deflate_bomb_bounded`, and `test_zip_corrupt_offsets_no_panic` in `src/system/zip.rs`.
+
+#### Finding #48 — `tar.gz` Archive Bomb, USTAR `typeflag` Bypass, Empty Binary & Octal Padding Overflows (High)
+* **Risk:** `extract_binary_from_tar_gz` read an unbounded `GzDecoder` stream susceptible to gzip compression bombs, skipped checking USTAR `typeflag` (allowing symlink or directory entries named after the binary to shadow or abort extraction), accepted 0-byte empty binaries in both `tar.gz` and `.zip` extractors, and used unchecked arithmetic on octal entry padding/skips.
+* **Fix (`2dae09e`):** Introduced `MAX_TAR_STREAM_BYTES` (120 MiB) stream limit via `.take(MAX_TAR_STREAM_BYTES + 1)`, enforced regular-file `typeflag` (`0 | b'0' | b'7'`), rejected 0-byte extracted payloads in both `extract_binary_from_tar_gz` and `extract_binary_from_zip`, capped buffer pre-allocation, used `checked_add` for 512-byte padding, and checked short skip/stream exhaustion errors.
+* **Verification:** Added `test_extract_binary_from_tar_gz_rejects_bomb_and_oversized_entries`, `test_extract_binary_from_tar_gz_skips_symlinks_and_directories_and_rejects_empty`, and `test_extract_binary_from_zip_rejects_empty_binary` in `tests/integration/upgrade.rs`.
+
+#### Finding #49 — Terminal Escape Injection & Unbounded Partial Line Buffering in Markdown / Progress Sinks (Medium)
+* **Risk:** `StreamMarkdownRenderer::feed`/`flush`, plain/colored `render_markdown` and `ask_turn` responses, and `ProgressBar::set_message`/`println` could forward raw OSC/CSI/C0/C1 control sequences from untrusted model or remote outputs directly to stdout/stderr, and an un-terminated chunk stream could grow `StreamMarkdownRenderer::line_buf` without bound.
+* **Fix (`d88e6a0`):** Applied `sanitize_terminal_text_cow` across `render_markdown`, `ask_turn`, `StreamMarkdownRenderer::render_complete_line`/`render_partial_line`, and `ProgressBar::println`, applied `sanitize_title` in `ProgressBar::set_message`, and bounded `StreamMarkdownRenderer::line_buf` to `MAX_STREAM_LINE_BYTES` (16 KiB) flushing cleanly on `floor_char_boundary`.
+* **Verification:** Added `test_stream_markdown_renderer_strips_terminal_escapes`, `test_stream_markdown_renderer_bounds_unterminated_line`, and `test_progress_bar_set_message_sanitizes_control_sequences` in `src/ui/terminal.rs`.
+
+#### Finding #50 — Unbounded SSE Reasoning Buffer & Unchecked Post-`</think>` Slice (Medium)
+* **Risk:** While `SseStreamState` enforced `MAX_CONTENT_BUFFER_BYTES` (10 MiB) on normal `content` deltas, `append_reasoning_delta` (`reasoning_content` and `<think>` blocks) buffered without limit, and the immediate visible slice after `</think>` bypassed `MAX_CONTENT_BUFFER_BYTES`.
+* **Fix (`d88e6a0`):** Enforced `MAX_CONTENT_BUFFER_BYTES` inside `append_reasoning_delta` and shared `try_append_content_delta`, marking `truncated = true` and aborting stream processing when exceeded.
+* **Verification:** Added `test_sse_stream_state_bounds_reasoning_and_post_think_content` in `src/engine/sse.rs`.
+
+#### Finding #51 — Document Loader TOCTOU Size/Type Races & Unbounded PDF Text Expansion (Medium)
+* **Risk:** `PdfExtractor::extract_file`, `EpubExtractor::extract_file`, and `DocumentLoader::load_file` checked `validate_file` separately from reading (`std::fs::read` / unchecked `.take(MAX_FILE_BYTES + 1)`), leaving TOCTOU windows for file replacement or growth; additionally `PdfExtractor::extract_from_bytes` had no limit on the decompressed/extracted text layer size produced by `pdf_extract::output_doc`.
+* **Fix (`1d82a39`):** Added shared `read_file_bytes_limited` (verifying `file.metadata()` `is_file()` and `len()` on the opened FD plus `.take(max_bytes + 1)` post-read length checks) across all three document loaders, and introduced `MAX_PDF_TEXT_BYTES` (50 MiB) via `BoundedIoWriter` in `PdfExtractor::extract_pdf_text_bounded` to abort immediately if extracted PDF text exceeds the cap.
+* **Verification:** Added `test_read_file_bytes_limited_enforces_size_and_type` and `test_pdf_extract_text_bounded_enforces_limit` in `src/sources/mod.rs`.
+
+#### Finding #52 — Google News Protobuf/RPC SSRF Gaps & Unchecked Fallback Caching (Medium)
+* **Risk:** Offline protobuf decoding (`decode_google_news_url` / `extract_url_from_protobuf`), online RPC destination extraction (`parse_batchexecute_destination_url`), and snippet fallbacks / page cache writes in `collect_news_articles_with_cache` checked only `is_http_url`, permitting decoded private IP, loopback, or cloud metadata URLs (`169.254.169.254`, `127.0.0.1`, `[::1]`) to propagate or be cached.
+* **Fix (`75b499c`):** Added shared `is_safe_article_url` enforcing non-control printable HTTP/HTTPS URLs and `crate::scraper::validate_public_http_url` across `extract_url_from_protobuf`, `parse_batchexecute_destination_url`, snippet fallback decisions, and `set_page` cache inserts.
+* **Verification:** Added `test_decode_google_news_url_blocks_private_and_metadata_urls` and `test_parse_batchexecute_destination_url_blocks_ssrf_targets` in `src/sources/news.rs`.
+
+#### Finding #53 — LLM Error Body Multi-Byte UTF-8 Slicing Panic & Terminal Escapes (Low)
+* **Risk:** `LlmClient::parse_error_body` sliced `&trimmed[..300]` directly without checking UTF-8 character boundaries (panicking if a multi-byte character crossed byte 300) and passed raw control/ANSI characters in upstream HTTP error text.
+* **Fix (`40dade4`):** Sanitized raw text via `sanitize_terminal_text_cow` and aligned truncation with `floor_char_boundary(300)`.
+* **Verification:** Added `test_parse_error_body_multibyte_utf8_and_ansi_safety` in `src/engine/mod.rs`.
+
+#### Finding #54 — Chat Session Key-Range Aliasing & CSV Formula Injection Bypasses (Medium)
+* **Risk:** `Database::add_chat_turn`, `get_chat_session`, and `delete_chat_session` cast arbitrary `i64` session IDs directly (`(session_id as u64) << 32`), allowing negative IDs (`-5`) or `>= u32::MAX` IDs (reachable from CLI `--show`/`--delete`/`--resume`) to wrap `end_key` or alias valid session buckets (`1..u32::MAX`); additionally `format_csv_cell` failed to prefix formula payloads preceded by tabs/CR/spaces (`"\t=..."`, `"\r=..."`, `"  =..."`) or non-finite floats (`"+inf"`, `"-NaN"`, `"--42"`).
+* **Fix (`288cc92`):** Centralized validation in `Database::chat_session_key_range` enforcing `1 <= session_id < u32::MAX` and `message_count` bounds; hardened `format_csv_cell` against leading whitespace/control formula triggers (`\t`, `\r`, spaces before `=`, `+`, `-`, `@`) while restricting unprefixed signed numbers to finite `f64` literals (`parse::<f64>().is_ok_and(|v| v.is_finite())`).
+* **Verification:** Added `test_format_csv_cell_blocks_formula_bypasses` and `test_chat_session_id_bounds_validation` in `src/storage/mod.rs`.
+
+---
+
 ## 🧪 Cumulative Verification & Test Suite
 
 All remediations across all audit phases and post-v0.7.9 hardening updates are continuously validated via automated tests and static analysis:
@@ -1294,19 +1371,19 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 ```
 
-### Complete Test Suite Breakdown (225 Total Tests)
+### Complete Test Suite Breakdown (242 Total Tests)
 
 | Test Suite Module | Tests | Verified Security & Operational Controls | Result |
 |:---|:---:|:---|:---:|
-| **`src/lib.rs` & `src/main.rs`** | 125 | EPUB decompression bounds & deduplication, PDF safe parsing, YouTube captions & SSRF checks (including remote PDF & feed URL blocks, IPv6/userinfo guards), TUI filtering & sanitization, C1/BiDi terminal sanitization, `DynamicBudget` overflow safety & clamping, safe Markdown URL scheme neutralization, Google News URL/RPC validation, config symlink & size bounds, binary search chunker decomposition, `AskArgs` struct invariants, shell completion surface checks | ✅ Pass |
+| **`src/lib.rs` & `src/main.rs`** | 139 | Custom `ZipReader` stored/deflate bounds, bounded `StreamMarkdownRenderer` & `ProgressBar` escape sanitization, SSE reasoning/content limits, `DocumentLoader` TOCTOU & PDF text layer caps, Google News `CBMi`/`batchexecute` SSRF validation, LLM error UTF-8 boundary & ANSI sanitization, chat session key-range & CSV formula hardening, EPUB decompression bounds & deduplication, YouTube captions & SSRF checks, TUI filtering & sanitization, `DynamicBudget` overflow safety, safe Markdown URL neutralization, config symlink & size bounds, shell completion surface checks | ✅ Pass |
 | **`tests/integration/cache.rs`** | 15 | POSIX `0700`/`0600` modes, SHA-256 keys, auto-prune, capability cache invalidation, unified `redb` cache & permissions, news timeframe discrimination, LRU eviction | ✅ Pass |
 | **`tests/integration/cli.rs`** | 34 | Flag parsing precedence, target auto-detection, subcommands, output formats, upgrade flags, `--show-thinking`, Llama GUI naming, `doctor` | ✅ Pass |
 | **`tests/integration/config.rs`** | 7 | Safe config deserialization, profile & env override rules, saturating arithmetic, context window merge | ✅ Pass |
 | **`tests/integration/content.rs`** | 11 | CSP injection, single quote escaping, case-insensitive closing tag escaping, ask prompt guardrails, HTML & ANSI Markdown rendering, PDF/EPUB extraction | ✅ Pass |
 | **`tests/integration/db.rs`** | 15 | ACID `redb` transactions, safe multibyte UTF-8 snippet extraction, symlink refusal on `Database::open_at` & exports, CSV formula escaping & Markdown vault escaping, title-weighted library search, chat lifecycle | ✅ Pass |
 | **`tests/integration/search.rs`** | 8 | Wikipedia & DuckDuckGo disambiguation, URL deduplication, work description parsing, candidate ranking, client pooling | ✅ Pass |
-| **`tests/integration/upgrade.rs`** | 10 | Atomic temp file creation, staged cleanup on error, symlink overwrite rejection, SHA-256 verification, version tag canonicalization, tar.gz/zip extraction | ✅ Pass |
-| **Total** | **225 / 225** | **Zero Failures · Zero Ignored · Zero Clippy Warnings · `#![forbid(unsafe_code)]`** | ✅ **100% Pass** |
+| **`tests/integration/upgrade.rs`** | 13 | Atomic temp file creation, staged cleanup on error, symlink overwrite rejection, SHA-256 verification, version tag canonicalization, `tar.gz` stream bomb/typeflag/octal/empty rejection & `.zip` empty binary checks | ✅ Pass |
+| **Total** | **242 / 242** | **Zero Failures · Zero Ignored · Zero Clippy Warnings · `#![forbid(unsafe_code)]`** | ✅ **100% Pass** |
 
 ---
 
