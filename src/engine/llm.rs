@@ -416,10 +416,12 @@ impl LlmClient {
             return None;
         }
 
-        if trimmed.len() > 300 {
-            Some(format!("{}...", &trimmed[..300]))
+        let clean = crate::ui::sanitize_terminal_text_cow(trimmed);
+        if clean.len() > 300 {
+            let cut = clean.floor_char_boundary(300);
+            Some(format!("{}...", &clean[..cut]))
         } else {
-            Some(trimmed.to_string())
+            Some(clean.into_owned())
         }
     }
 
