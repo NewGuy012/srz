@@ -44,15 +44,17 @@ impl<'a> ZipReader<'a> {
         let cd_offset =
             u32::from_le_bytes(data[eocd_offset + 16..eocd_offset + 20].try_into()?) as usize;
 
-        if cd_offset.saturating_add(cd_size) > data.len() {
+        let cd_end = cd_offset
+            .checked_add(cd_size)
+            .context("Corrupt ZIP: central directory offset overflow")?;
+        if cd_end > data.len() {
             bail!("Corrupt ZIP: central directory out of bounds");
         }
 
         let mut pos = cd_offset;
-        let cd_end = cd_offset + cd_size;
         let mut entries = Vec::with_capacity(total_entries.min(1024));
 
-        while pos + 46 <= cd_end {
+        while pos.checked_add(46).is_some_and(|end| end <= cd_end) {
             if data[pos..pos + 4] != [0x50, 0x4b, 0x01, 0x02] {
                 break;
             }
@@ -67,10 +69,21 @@ impl<'a> ZipReader<'a> {
                 u32::from_le_bytes(data[pos + 42..pos + 46].try_into()?) as usize;
 
             let name_start = pos + 46;
-            if name_start + name_len > cd_end {
+            let name_end = name_start
+                .checked_add(name_len)
+                .context("Corrupt ZIP: filename offset overflow")?;
+            if name_end > cd_end {
                 bail!("Corrupt ZIP: filename out of bounds");
             }
-            let name = std::str::from_utf8(&data[name_start..name_start + name_len]).unwrap_or("");
+            let name = std::str::from_utf8(&data[name_start..name_end]).unwrap_or("");
+
+            let next_pos = name_end
+                .checked_add(extra_len)
+                .and_then(|v| v.checked_add(comment_len))
+                .context("Corrupt ZIP: central directory entry offset overflow")?;
+            if next_pos > cd_end {
+                bail!("Corrupt ZIP: central directory entry out of bounds");
+            }
 
             entries.push(ZipEntry {
                 name,
@@ -80,7 +93,7 @@ impl<'a> ZipReader<'a> {
                 local_header_offset,
             });
 
-            pos = name_start + name_len + extra_len + comment_len;
+            pos = next_pos;
         }
 
         Ok(Self { data, entries })
@@ -109,7 +122,10 @@ impl<'a> ZipReader<'a> {
     /// Decompresses an entry with strict bounding to prevent zip bombs.
     pub fn decompress_entry(&self, entry: &ZipEntry<'a>, max_bytes: usize) -> Result<Vec<u8>> {
         let lh_offset = entry.local_header_offset;
-        if lh_offset + 30 > self.data.len() {
+        let lh_fixed_end = lh_offset
+            .checked_add(30)
+            .context("Corrupt ZIP: local file header offset overflow")?;
+        if lh_fixed_end > self.data.len() {
             bail!("Corrupt ZIP: local file header out of bounds");
         }
         if self.data[lh_offset..lh_offset + 4] != [0x50, 0x4b, 0x03, 0x04] {
@@ -119,26 +135,39 @@ impl<'a> ZipReader<'a> {
             u16::from_le_bytes(self.data[lh_offset + 26..lh_offset + 28].try_into()?) as usize;
         let extra_len =
             u16::from_le_bytes(self.data[lh_offset + 28..lh_offset + 30].try_into()?) as usize;
-        let data_start = lh_offset + 30 + fn_len + extra_len;
-        let data_end = data_start + entry.compressed_size;
+        let data_start = lh_fixed_end
+            .checked_add(fn_len)
+            .and_then(|v| v.checked_add(extra_len))
+            .context("Corrupt ZIP: local file data offset overflow")?;
+        let data_end = data_start
+            .checked_add(entry.compressed_size)
+            .context("Corrupt ZIP: file payload offset overflow")?;
         if data_end > self.data.len() {
             bail!("Corrupt ZIP: file payload out of bounds");
         }
         let compressed = &self.data[data_start..data_end];
 
-        let limit = (max_bytes as u64) + 1;
+        let limit = (max_bytes as u64).saturating_add(1);
         match entry.compression_method {
             0 => {
                 // Stored (uncompressed)
-                if entry.uncompressed_size > max_bytes {
+                if compressed.len() > max_bytes || entry.uncompressed_size > max_bytes {
                     bail!("Decompressed entry exceeds limit of {} bytes", max_bytes);
+                }
+                if compressed.len() != entry.uncompressed_size {
+                    bail!(
+                        "Corrupt ZIP: stored entry size mismatch (compressed={}, uncompressed={})",
+                        compressed.len(),
+                        entry.uncompressed_size
+                    );
                 }
                 Ok(compressed.to_vec())
             }
             8 => {
-                // Deflated
+                // Deflated: cap initial pre-allocation to avoid header-spoofed heap spikes
                 let mut decoder = DeflateDecoder::new(compressed).take(limit);
-                let mut out = Vec::with_capacity(entry.uncompressed_size.min(max_bytes));
+                let initial_cap = entry.uncompressed_size.min(max_bytes).min(64 * 1024);
+                let mut out = Vec::with_capacity(initial_cap);
                 decoder.read_to_end(&mut out)?;
                 if out.len() > max_bytes {
                     bail!("Decompressed entry exceeds limit of {} bytes", max_bytes);
@@ -211,4 +240,109 @@ pub fn create_test_zip(files: &[(&str, &[u8])]) -> Vec<u8> {
     out.extend_from_slice(&[0, 0]); // comment length
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flate2::Compression;
+    use flate2::write::DeflateEncoder;
+    use std::io::Write;
+
+    #[test]
+    fn test_zip_stored_spoofed_uncompressed_size_rejected() {
+        // Construct a valid stored ZIP with a 256-byte payload, then overwrite
+        // Central Directory uncompressed_size (offset cd_offset + 24..28) to 0.
+        let payload = vec![b'A'; 256];
+        let mut zip_bytes = create_test_zip(&[("payload.txt", &payload)]);
+
+        // Locate central directory offset from EOCD
+        let eocd_pos = zip_bytes
+            .windows(4)
+            .rposition(|w| w == [0x50, 0x4b, 0x05, 0x06])
+            .unwrap();
+        let cd_offset =
+            u32::from_le_bytes(zip_bytes[eocd_pos + 16..eocd_pos + 20].try_into().unwrap())
+                as usize;
+        // Spoof uncompressed_size = 0 in CD while compressed_size remains 256
+        zip_bytes[cd_offset + 24..cd_offset + 28].copy_from_slice(&0u32.to_le_bytes());
+
+        let reader = ZipReader::new(&zip_bytes).unwrap();
+        // With max_bytes = 128, spoofed stored entry MUST be rejected
+        let err = reader.read_file("payload.txt", 128).unwrap_err();
+        assert!(err.to_string().contains("exceeds limit"));
+
+        // Even with larger max_bytes = 1024, stored mismatch (256 vs 0) MUST be rejected
+        let err2 = reader.read_file("payload.txt", 1024).unwrap_err();
+        assert!(err2.to_string().contains("mismatch"));
+    }
+
+    #[test]
+    fn test_zip_deflate_bomb_bounded() {
+        let big_payload = vec![b'Z'; 4096];
+        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::best());
+        encoder.write_all(&big_payload).unwrap();
+        let compressed = encoder.finish().unwrap();
+        assert!(compressed.len() < 128);
+
+        // Build ZIP entry with method=8 (Deflated) and spoofed small uncompressed_size
+        let mut out = Vec::new();
+        let name = b"bomb.txt";
+        out.extend_from_slice(&[0x50, 0x4b, 0x03, 0x04]);
+        out.extend_from_slice(&[20, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        out.extend_from_slice(&(compressed.len() as u32).to_le_bytes());
+        out.extend_from_slice(&10u32.to_le_bytes()); // spoofed small uncompressed size
+        out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        out.extend_from_slice(&[0, 0]);
+        out.extend_from_slice(name);
+        out.extend_from_slice(&compressed);
+
+        let cd_offset = out.len() as u32;
+        let mut cd = Vec::new();
+        cd.extend_from_slice(&[0x50, 0x4b, 0x01, 0x02]);
+        cd.extend_from_slice(&[20, 0, 20, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        cd.extend_from_slice(&(compressed.len() as u32).to_le_bytes());
+        cd.extend_from_slice(&(100_000_000u32).to_le_bytes()); // also ensure spoofed huge pre-alloc is safe
+        cd.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        cd.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        cd.extend_from_slice(name);
+        let cd_size = cd.len() as u32;
+        out.extend_from_slice(&cd);
+
+        out.extend_from_slice(&[0x50, 0x4b, 0x05, 0x06, 0, 0, 0, 0, 1, 0, 1, 0]);
+        out.extend_from_slice(&cd_size.to_le_bytes());
+        out.extend_from_slice(&cd_offset.to_le_bytes());
+        out.extend_from_slice(&[0, 0]);
+
+        let reader = ZipReader::new(&out).unwrap();
+        let err = reader.read_file("bomb.txt", 1024).unwrap_err();
+        assert!(err.to_string().contains("exceeds limit"));
+
+        // Within limit succeeds without allocating 100 MB
+        let ok = reader.read_file("bomb.txt", 8192).unwrap();
+        assert_eq!(ok.len(), 4096);
+    }
+
+    #[test]
+    fn test_zip_corrupt_offsets_no_panic() {
+        let mut zip_bytes = create_test_zip(&[("a.txt", b"hello")]);
+        let eocd_pos = zip_bytes
+            .windows(4)
+            .rposition(|w| w == [0x50, 0x4b, 0x05, 0x06])
+            .unwrap();
+        let cd_offset =
+            u32::from_le_bytes(zip_bytes[eocd_pos + 16..eocd_pos + 20].try_into().unwrap())
+                as usize;
+        // Corrupt local_header_offset to u32::MAX - 5 (would panic without checked_add on 32-bit, or OOB on 64-bit)
+        zip_bytes[cd_offset + 42..cd_offset + 46].copy_from_slice(&(u32::MAX - 5).to_le_bytes());
+
+        let reader = ZipReader::new(&zip_bytes).unwrap();
+        assert!(reader.read_file("a.txt", 1024).is_err());
+
+        // Corrupt compressed_size to u32::MAX
+        let mut zip_bytes2 = create_test_zip(&[("a.txt", b"hello")]);
+        zip_bytes2[cd_offset + 20..cd_offset + 24].copy_from_slice(&u32::MAX.to_le_bytes());
+        let reader2 = ZipReader::new(&zip_bytes2).unwrap();
+        assert!(reader2.read_file("a.txt", 1024).is_err());
+    }
 }
