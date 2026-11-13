@@ -12,6 +12,7 @@ use crate::ui::Ui;
 pub const DEFAULT_REPO: &str = "NewGuy012/srz";
 pub const MAX_ARCHIVE_BYTES: usize = 50 * 1024 * 1024; // 50 MB limit for release archives
 pub const MAX_BINARY_BYTES: u64 = 100 * 1024 * 1024; // 100 MB limit for decompressed binary
+pub const MAX_TAR_STREAM_BYTES: u64 = MAX_BINARY_BYTES + 20 * 1024 * 1024; // 120 MB limit for total decompressed tar stream
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArchiveFormat {
@@ -273,10 +274,22 @@ pub fn format_asset_names(tag: &str, target: &str, format: ArchiveFormat) -> (St
 
 /// Extracts the named binary from a gzipped tarball with bounded decompression.
 pub fn extract_binary_from_tar_gz(bytes: &[u8], binary_name: &str) -> Result<Vec<u8>> {
-    let mut gz = GzDecoder::new(Cursor::new(bytes));
+    let mut gz = GzDecoder::new(Cursor::new(bytes)).take(MAX_TAR_STREAM_BYTES + 1);
     let mut header = [0u8; 512];
 
-    while gz.read_exact(&mut header).is_ok() {
+    loop {
+        match gz.read_exact(&mut header) {
+            Ok(()) => {}
+            Err(_) if gz.limit() == 0 => {
+                bail!(
+                    "Decompressed tar archive exceeds security limit of {} MB",
+                    MAX_TAR_STREAM_BYTES / (1024 * 1024)
+                );
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(err) => return Err(err).context("Failed to read tar header from release archive"),
+        }
+
         if header.iter().all(|&b| b == 0) {
             break;
         }
@@ -291,27 +304,71 @@ pub fn extract_binary_from_tar_gz(bytes: &[u8], binary_name: &str) -> Result<Vec
         let size_str = std::str::from_utf8(size_bytes)
             .unwrap_or("")
             .trim_matches(['\0', ' ']);
-        let size = u64::from_str_radix(size_str, 8).unwrap_or(0);
+        let size = if size_str.is_empty() {
+            0
+        } else {
+            u64::from_str_radix(size_str, 8)
+                .context("Corrupt tar archive: invalid octal entry size")?
+        };
 
+        // Only extract regular files (V7 NUL, USTAR '0', or contiguous '7').
+        let typeflag = header[156];
+        let is_regular_file = matches!(typeflag, 0 | b'0' | b'7');
         let filename = name.rsplit('/').next().unwrap_or(name);
-        if filename == binary_name {
+
+        if is_regular_file && filename == binary_name {
+            if size == 0 {
+                bail!(
+                    "Corrupt tar archive: release binary '{}' is empty",
+                    binary_name
+                );
+            }
             if size > MAX_BINARY_BYTES {
                 bail!(
                     "Decompressed binary exceeds security limit of {} MB",
                     MAX_BINARY_BYTES / (1024 * 1024)
                 );
             }
-            let mut binary_buf = vec![0u8; size as usize];
-            gz.read_exact(&mut binary_buf)
+            // Cap initial buffer capacity to avoid pre-allocating untrusted header sizes.
+            let initial_cap = (size as usize).min(64 * 1024);
+            let mut binary_buf = Vec::with_capacity(initial_cap);
+            let bytes_read = gz
+                .by_ref()
+                .take(size)
+                .read_to_end(&mut binary_buf)
                 .context("Failed to read binary data from tar")?;
+            if bytes_read as u64 != size {
+                bail!("Corrupt tar archive: unexpected EOF while reading binary payload");
+            }
             return Ok(binary_buf);
         }
 
-        // Skip to next 512-byte block boundary
-        let padded_size = (size + 511) & !511;
-        let mut discard = gz.by_ref().take(padded_size);
-        std::io::copy(&mut discard, &mut std::io::sink())
-            .context("Failed to skip entry in tar archive")?;
+        // Skip to next 512-byte block boundary with checked arithmetic and stream caps.
+        let rem = size % 512;
+        let pad = if rem == 0 { 0 } else { 512 - rem };
+        let padded_size = size
+            .checked_add(pad)
+            .context("Corrupt tar archive: entry size overflow")?;
+        if padded_size > MAX_TAR_STREAM_BYTES {
+            bail!(
+                "Tar archive entry exceeds security limit of {} MB",
+                MAX_TAR_STREAM_BYTES / (1024 * 1024)
+            );
+        }
+        if padded_size > 0 {
+            let mut discard = gz.by_ref().take(padded_size);
+            let skipped = std::io::copy(&mut discard, &mut std::io::sink())
+                .context("Failed to skip entry in tar archive")?;
+            if gz.limit() == 0 {
+                bail!(
+                    "Decompressed tar archive exceeds security limit of {} MB",
+                    MAX_TAR_STREAM_BYTES / (1024 * 1024)
+                );
+            }
+            if skipped != padded_size {
+                bail!("Corrupt tar archive: unexpected EOF while skipping tar entry");
+            }
+        }
     }
 
     bail!("Binary '{}' not found in release archive", binary_name)
@@ -326,7 +383,14 @@ pub fn extract_binary_from_zip(bytes: &[u8], binary_name: &str) -> Result<Vec<u8
             || name.ends_with(&format!("/{}", binary_name))
             || name.ends_with(&format!("\\{}", binary_name))
         {
-            return reader.decompress_entry(entry, MAX_BINARY_BYTES as usize);
+            let data = reader.decompress_entry(entry, MAX_BINARY_BYTES as usize)?;
+            if data.is_empty() {
+                bail!(
+                    "Corrupt zip archive: release binary '{}' is empty",
+                    binary_name
+                );
+            }
+            return Ok(data);
         }
     }
     bail!("Binary '{}' not found in release zip archive", binary_name)
