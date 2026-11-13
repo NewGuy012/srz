@@ -1,5 +1,5 @@
 #!/bin/sh
-set -e
+set -eu
 
 main() {
   REPO="NewGuy012/srz"
@@ -68,8 +68,15 @@ main() {
   TARGET="${ARCH_TARGET}-${OS_TARGET}"
 
   # Determine release download URL
-  if [ -n "${VERSION}" ]; then
-    if ! echo "${VERSION}" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+  if [ -n "${VERSION:-}" ]; then
+    # Reject newlines, spaces, or non-semver characters before regex matching
+    case "${VERSION}" in
+      *[!0-9A-Za-z.-]*)
+        echo "Error: Invalid version format '${VERSION}'. Must match semver (e.g. '0.4.0' or 'v0.4.0')." >&2
+        exit 1
+        ;;
+    esac
+    if ! printf '%s\n' "${VERSION}" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
       echo "Error: Invalid version format '${VERSION}'. Must match semver (e.g. '0.4.0' or 'v0.4.0')." >&2
       exit 1
     fi
@@ -91,7 +98,13 @@ main() {
     echo "Error: Failed to create temporary directory." >&2
     exit 1
   fi
-  trap 'rm -rf "${TMP_DIR}"' EXIT INT TERM HUP
+  cleanup() {
+    rm -rf "${TMP_DIR:-}"
+  }
+  trap cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
 
   if ! download_file "${DOWNLOAD_URL}" "${TMP_DIR}/srz.tar.gz"; then
     echo "Error: Failed to download ${DOWNLOAD_URL}" >&2
@@ -102,7 +115,7 @@ main() {
   # Download and verify SHA256 checksum
   SHA_URL="${DOWNLOAD_URL}.sha256"
   if ! download_file "${SHA_URL}" "${TMP_DIR}/srz.tar.gz.sha256"; then
-    if [ -n "${FORCE}" ]; then
+    if [ -n "${FORCE:-}" ]; then
       echo "Warning: Could not download SHA256 checksum from ${SHA_URL}; bypassing due to FORCE=1."
     else
       echo "Error: Failed to download SHA256 checksum file from ${SHA_URL}." >&2
@@ -113,14 +126,14 @@ main() {
     echo "Verifying SHA256 checksum..."
     EXPECTED_SHA="$(awk '{print $1}' "${TMP_DIR}/srz.tar.gz.sha256" | tr -d '\r' | head -n 1 | tr '[:upper:]' '[:lower:]')"
     if [ -z "${EXPECTED_SHA}" ]; then
-      if [ -n "${FORCE}" ]; then
+      if [ -n "${FORCE:-}" ]; then
         echo "Warning: SHA256 checksum file was empty; bypassing due to FORCE=1."
       else
         echo "Error: SHA256 checksum file was empty. Aborting installation for security." >&2
         exit 1
       fi
-    elif ! echo "${EXPECTED_SHA}" | grep -Eq '^[0-9a-f]{64}$'; then
-      if [ -n "${FORCE}" ]; then
+    elif ! printf '%s\n' "${EXPECTED_SHA}" | grep -Eq '^[0-9a-f]{64}$'; then
+      if [ -n "${FORCE:-}" ]; then
         echo "Warning: Invalid SHA256 checksum format; bypassing due to FORCE=1."
       else
         echo "Error: Checksum file does not contain a valid 64-character SHA256 hash." >&2
@@ -134,7 +147,7 @@ main() {
         COMPUTED_SHA="$(shasum -a 256 "${TMP_DIR}/srz.tar.gz" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')"
       else
         echo "Warning: Neither sha256sum nor shasum found; cannot compute local hash."
-        if [ -z "${FORCE}" ]; then
+        if [ -z "${FORCE:-}" ]; then
           echo "Error: Aborting because SHA256 tools are missing. Run with 'FORCE=1' to bypass." >&2
           exit 1
         fi
@@ -151,19 +164,24 @@ main() {
     fi
   fi
 
-  tar -xzf "${TMP_DIR}/srz.tar.gz" -C "${TMP_DIR}"
+  mkdir -p "${TMP_DIR}/unpacked"
+  tar -xzf "${TMP_DIR}/srz.tar.gz" -C "${TMP_DIR}/unpacked"
 
-  if [ ! -f "${TMP_DIR}/srz" ]; then
+  if [ ! -f "${TMP_DIR}/unpacked/srz" ]; then
     echo "Error: Binary 'srz' not found in downloaded archive." >&2
     exit 1
   fi
-  chmod +x "${TMP_DIR}/srz"
 
   mkdir -p "${INSTALL_DIR}"
-  # Atomically install binary using an unguessable temp file on the target directory/filesystem
-  TMP_TARGET=$(mktemp "${INSTALL_DIR}/.srz.tmp.XXXXXX" 2>/dev/null || echo "${INSTALL_DIR}/.srz.tmp.$$.$RANDOM")
-  rm -f "${TMP_TARGET}"
-  cp "${TMP_DIR}/srz" "${TMP_TARGET}"
+  # Atomically install binary by writing into the mktemp-created file (preserving O_EXCL) before rename
+  TMP_TARGET="$(mktemp "${INSTALL_DIR}/.srz.tmp.XXXXXX")" || {
+    echo "Error: Failed to create temporary file in ${INSTALL_DIR}." >&2
+    exit 1
+  }
+  if ! cat "${TMP_DIR}/unpacked/srz" > "${TMP_TARGET}"; then
+    rm -f "${TMP_TARGET}"
+    exit 1
+  fi
   chmod 0755 "${TMP_TARGET}"
   mv -f "${TMP_TARGET}" "${INSTALL_DIR}/srz"
 
@@ -171,7 +189,7 @@ main() {
 
   # Check if INSTALL_DIR is in PATH
   CLEAN_INSTALL_DIR="${INSTALL_DIR%/}"
-  case ":${PATH}:" in
+  case ":${PATH:-}:" in
     *:"${CLEAN_INSTALL_DIR}":*|*:"${CLEAN_INSTALL_DIR}/":*) ;;
     *)
       echo ""

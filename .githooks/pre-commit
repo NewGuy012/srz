@@ -9,16 +9,38 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 if command -v cargo >/dev/null 2>&1; then
-    # Only run formatting if staged files include Rust source files
-    if git diff --cached --name-only --diff-filter=ACM | grep -q '\.rs$'; then
-        echo "==> Running cargo fmt --all on staged Rust files..."
-        cargo fmt --all
-        # Re-stage any formatted Rust files that are part of this commit
-        git diff --cached --name-only --diff-filter=ACM | grep '\.rs$' | while read -r file; do
-            if [ -f "$file" ]; then
-                git add "$file"
+    # Only check/format if staged files include Rust source files
+    STAGED_RS=$(git diff --cached --name-only --diff-filter=ACM | grep '\.rs$' || true)
+    if [ -n "${STAGED_RS}" ]; then
+        UNSTAGED_RS=$(git diff --name-only | grep '\.rs$' || true)
+        PARTIAL_CONFLICT=false
+        while IFS= read -r file; do
+            [ -n "$file" ] || continue
+            if printf '%s\n' "${UNSTAGED_RS}" | grep -Fxq "$file"; then
+                PARTIAL_CONFLICT=true
+                break
             fi
-        done
+        done <<EOF
+${STAGED_RS}
+EOF
+
+        if [ "${PARTIAL_CONFLICT}" = "true" ]; then
+            echo "==> Partially staged Rust files detected; running cargo fmt --all -- --check..."
+            if ! cargo fmt --all -- --check; then
+                echo "Error: Formatting mismatch while Rust files have unstaged changes. Format and re-stage before committing." >&2
+                exit 1
+            fi
+        else
+            echo "==> Running cargo fmt --all on staged Rust files..."
+            cargo fmt --all
+            while IFS= read -r file; do
+                if [ -n "$file" ] && [ -f "$file" ]; then
+                    git add -- "$file"
+                fi
+            done <<EOF
+${STAGED_RS}
+EOF
+        fi
     fi
 else
     echo "Warning: cargo not found in PATH. Skipping pre-commit formatting check."

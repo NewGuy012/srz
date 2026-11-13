@@ -67,16 +67,27 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# Read current version from Cargo.toml
-CURRENT_VER=$(grep -m1 '^version *= *' Cargo.toml | sed -E 's/version *= *"([^"]+)"/\1/')
+# Read current version from Cargo.toml ([package] section)
+CURRENT_VER=$(awk '
+  /^\[package\]/ { in_pkg=1; next }
+  /^\[/ { in_pkg=0 }
+  in_pkg && /^version *= *"/ {
+    sub(/^version *= *"/, "");
+    sub(/".*$/, "");
+    print;
+    exit;
+  }
+' Cargo.toml)
 if [ -z "${CURRENT_VER}" ]; then
   echo "Error: Could not determine current version from Cargo.toml" >&2
   exit 1
 fi
 
-MAJOR=$(echo "${CURRENT_VER}" | cut -d. -f1)
-MINOR=$(echo "${CURRENT_VER}" | cut -d. -f2)
-PATCH=$(echo "${CURRENT_VER}" | cut -d. -f3)
+CORE_VER="${CURRENT_VER%%-*}"
+CORE_VER="${CORE_VER%%+*}"
+MAJOR=$(echo "${CORE_VER}" | cut -d. -f1)
+MINOR=$(echo "${CORE_VER}" | cut -d. -f2)
+PATCH=$(echo "${CORE_VER}" | cut -d. -f3)
 
 # Calculate target version
 case "${REQUESTED_VER}" in
@@ -92,7 +103,7 @@ case "${REQUESTED_VER}" in
   *)
     # Explicit version passed
     CLEAN_VER="${REQUESTED_VER#v}"
-    if ! echo "${CLEAN_VER}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+    if ! printf '%s\n' "${CLEAN_VER}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
       echo "Error: Invalid version format '${REQUESTED_VER}'. Must be semver (e.g. '0.6.0')." >&2
       exit 1
     fi
@@ -102,11 +113,20 @@ esac
 
 TAG="v${NEW_VER}"
 
+# Ensure no uncommitted edits (other than docs/src/changelog.md) are left out of the release tag
+DIRTY_FILES=$(git status --porcelain --untracked-files=no | grep -v ' docs/src/changelog\.md$' || true)
+if [ -n "${DIRTY_FILES}" ]; then
+  echo "Error: Working tree has uncommitted changes outside docs/src/changelog.md:" >&2
+  echo "${DIRTY_FILES}" >&2
+  echo "Please commit or stash your changes before cutting a release." >&2
+  exit 1
+fi
+
 # Check current git branch
 CURRENT_BRANCH=$(git branch --show-current)
 if [ "${CURRENT_BRANCH}" != "master" ] && [ "${CURRENT_BRANCH}" != "main" ]; then
   echo "Warning: You are currently on branch '${CURRENT_BRANCH}', not 'master'."
-  if [ "${AUTO_YES}" != "true" ]; then
+  if [ "${AUTO_YES}" != "true" ] && [ "${DRY_RUN}" != "true" ]; then
     read -r -p "Continue release from '${CURRENT_BRANCH}'? [y/N]: " CONFIRM_BRANCH
     if [ "${CONFIRM_BRANCH}" != "y" ] && [ "${CONFIRM_BRANCH}" != "Y" ]; then
       echo "Release aborted."
@@ -115,16 +135,30 @@ if [ "${CURRENT_BRANCH}" != "master" ] && [ "${CURRENT_BRANCH}" != "main" ]; the
   fi
 fi
 
-# Check if tag already exists locally or remotely
-if git rev-parse "${TAG}" >/dev/null 2>&1; then
+# Check (read-only) whether tag already exists locally or remotely
+LOCAL_TAG_EXISTS=false
+if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
+  LOCAL_TAG_EXISTS=true
+fi
+
+REMOTE_TAG_EXISTS=false
+if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+  REMOTE_TAG_EXISTS=true
+fi
+
+DELETE_LOCAL_TAG=false
+DELETE_REMOTE_TAG=false
+
+if [ "${LOCAL_TAG_EXISTS}" = "true" ]; then
   if [ "${FORCE}" = "true" ]; then
-    echo "Notice: Deleting existing local tag '${TAG}' (--force)..."
-    git tag -d "${TAG}" >/dev/null
+    DELETE_LOCAL_TAG=true
+  elif [ "${DRY_RUN}" = "true" ]; then
+    echo "Notice: Local git tag '${TAG}' already exists (would require -f / confirmation to overwrite)."
   elif [ "${AUTO_YES}" != "true" ]; then
     echo "Warning: Local git tag '${TAG}' already exists."
     read -r -p "Delete and re-create local tag '${TAG}'? [y/N]: " CONFIRM_LOCAL_RETAG
     if [ "${CONFIRM_LOCAL_RETAG}" = "y" ] || [ "${CONFIRM_LOCAL_RETAG}" = "Y" ]; then
-      git tag -d "${TAG}" >/dev/null
+      DELETE_LOCAL_TAG=true
     else
       echo "Release aborted." >&2
       exit 1
@@ -135,16 +169,17 @@ if git rev-parse "${TAG}" >/dev/null 2>&1; then
   fi
 fi
 
-if git ls-remote --tags origin "${TAG}" 2>/dev/null | grep -q "${TAG}"; then
+if [ "${REMOTE_TAG_EXISTS}" = "true" ]; then
   if [ "${FORCE}" = "true" ]; then
-    echo "Notice: Deleting existing remote tag '${TAG}' on origin (--force)..."
-    git push --delete origin "${TAG}"
+    DELETE_REMOTE_TAG=true
+  elif [ "${DRY_RUN}" = "true" ]; then
+    echo "Notice: Remote git tag '${TAG}' already exists on origin (would require -f / confirmation to overwrite)."
   elif [ "${AUTO_YES}" != "true" ]; then
     echo "Warning: Remote tag '${TAG}' already exists on origin (likely from a previous failed release)."
     echo "Note: Crates.io packages are immutable. If '${TAG}' was already published, retagging will not update crates.io (bump patch/minor instead)."
     read -r -p "Delete and re-tag '${TAG}' on origin to retrigger release? [y/N]: " CONFIRM_REMOTE_RETAG
     if [ "${CONFIRM_REMOTE_RETAG}" = "y" ] || [ "${CONFIRM_REMOTE_RETAG}" = "Y" ]; then
-      git push --delete origin "${TAG}"
+      DELETE_REMOTE_TAG=true
     else
       echo "Release aborted." >&2
       exit 1
@@ -166,7 +201,7 @@ if [ "${DRY_RUN}" = "true" ]; then
 fi
 echo "=================================================="
 
-# Confirmation prompt
+# Confirmation prompt (before any destructive tag or file mutations)
 if [ "${AUTO_YES}" != "true" ] && [ "${DRY_RUN}" != "true" ]; then
   read -r -p "Ready to proceed with release ${TAG}? [y/N]: " CONFIRM
   if [ "${CONFIRM}" != "y" ] && [ "${CONFIRM}" != "Y" ]; then
@@ -178,11 +213,11 @@ fi
 # Step 1: Run verification tests
 if [ "${SKIP_TESTS}" != "true" ]; then
   echo ""
-  echo "==> Running test suite (cargo test --all-targets)..."
+  echo "==> Running test suite (cargo test --locked --all-targets)..."
   if [ "${DRY_RUN}" = "true" ]; then
     echo "    (Dry-run: skipping tests)"
   else
-    cargo test --all-targets
+    cargo test --locked --all-targets
   fi
 fi
 
@@ -193,17 +228,26 @@ if [ "${CURRENT_VER}" != "${NEW_VER}" ]; then
   if [ "${DRY_RUN}" = "true" ]; then
     echo "    (Dry-run: would update Cargo.toml to ${NEW_VER})"
   else
-    sed "s/^version = \"${CURRENT_VER}\"/version = \"${NEW_VER}\"/" Cargo.toml > Cargo.toml.tmp
+    awk -v new_ver="${NEW_VER}" '
+      /^\[package\]/ { in_pkg=1 }
+      in_pkg && /^\[/ && !/^\[package\]/ { in_pkg=0 }
+      in_pkg && !done && /^version *= *"/ {
+        print "version = \"" new_ver "\""
+        done=1
+        next
+      }
+      { print }
+    ' Cargo.toml > Cargo.toml.tmp
     mv Cargo.toml.tmp Cargo.toml
 
     echo "==> Updating Cargo.lock..."
-    cargo check --quiet
+    cargo update -p srz --offline >/dev/null 2>&1 || cargo check --quiet
   fi
 fi
 
-# Step 3: Check changelog.md for the new version section
+# Step 3: Check changelog.md for the new version section (exact heading match)
 if [ -f "docs/src/changelog.md" ]; then
-  if ! grep -q "^## ${TAG}" docs/src/changelog.md; then
+  if ! grep -Fxq "## ${TAG}" docs/src/changelog.md; then
     echo "Warning: No section '## ${TAG}' found in docs/src/changelog.md."
     echo "         GitHub Actions release notes will fall back to auto-generated commits."
   fi
@@ -214,6 +258,12 @@ if [ "${DRY_RUN}" = "true" ]; then
   echo ""
   echo "==> [Dry Run] Would commit changes:"
   git status --short
+  if [ "${DELETE_LOCAL_TAG}" = "true" ]; then
+    echo "==> [Dry Run] Would delete existing local tag: ${TAG}"
+  fi
+  if [ "${DELETE_REMOTE_TAG}" = "true" ]; then
+    echo "==> [Dry Run] Would delete existing remote tag on origin: ${TAG}"
+  fi
   echo "==> [Dry Run] Would create tag: ${TAG}"
   echo "==> [Dry Run] Would push commit to origin ${CURRENT_BRANCH}"
   echo "==> [Dry Run] Would push tag ${TAG} to origin"
@@ -234,7 +284,16 @@ else
   git commit -m "chore: bump version to ${TAG}"
 fi
 
-# Step 5: Create Git Tag
+# Step 5: Delete old tag (if confirmed) and create new annotated tag
+if [ "${DELETE_LOCAL_TAG}" = "true" ]; then
+  echo "Notice: Deleting existing local tag '${TAG}'..."
+  git tag -d "${TAG}" >/dev/null
+fi
+if [ "${DELETE_REMOTE_TAG}" = "true" ]; then
+  echo "Notice: Deleting existing remote tag '${TAG}' on origin..."
+  git push --delete origin "${TAG}"
+fi
+
 echo ""
 echo "==> Creating annotated tag ${TAG}..."
 git tag -a "${TAG}" -m "Release ${TAG}"
