@@ -1,7 +1,9 @@
 use crate::cli::NewsTimeframe;
 use crate::scraper::{ScrapedPage, WebScraper};
+#[cfg(test)]
+use crate::system::text_util::find_ascii_case_insensitive;
 use crate::system::text_util::{
-    XmlEvent, XmlScanner, extract_attr_value, xml_attr, xml_local_name,
+    XmlEvent, XmlScanner, decode_html_entities, extract_attr_value, xml_attr, xml_local_name,
 };
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -353,10 +355,6 @@ impl GoogleNewsClient {
         Ok(final_sources)
     }
 }
-
-use crate::system::text_util::decode_html_entities;
-#[cfg(test)]
-use crate::system::text_util::find_ascii_case_insensitive;
 
 /// Helper to construct a [`NewsDigestSource`] from a feed item and resolved/scraped content.
 fn make_digest_source(

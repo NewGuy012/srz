@@ -1,20 +1,17 @@
 use crate::chunker::TokenizerKind;
 use crate::cli::SummaryStyle;
 use crate::engine::budget::{DynamicBudget, ModelsListResponse, ServerCapabilities};
-pub use crate::engine::budget::{ModelInfo, ModelInfoMeta, clamp_context_window};
+use crate::engine::budget::{ModelInfo, clamp_context_window};
 use crate::engine::compressor::compress_document_stratified;
+use crate::engine::prompts::format_author_line;
 pub use crate::engine::prompts::{
-    escape_closing_tag, format_author_line, format_untrusted_section,
-    truncate_words_preserving_lines,
+    escape_closing_tag, format_untrusted_section, truncate_words_preserving_lines,
 };
 use crate::engine::sse::{
-    ChatCompletionRequest, ChatCompletionResponse, SseStreamState, StreamOptions, TokenUsage,
-    compute_tokens_per_second,
+    ChatCompletionRequest, ChatCompletionResponse, MAX_HTTP_RESPONSE_BYTES, MAX_SSE_LINE_BYTES,
+    SseStreamState, StreamOptions, TokenUsage, compute_tokens_per_second,
 };
-pub use crate::engine::sse::{
-    LlmOutput, MAX_CONTENT_BUFFER_BYTES, MAX_HTTP_RESPONSE_BYTES, MAX_SSE_LINE_BYTES,
-    RequestMessage, StreamMode, format_thinking_duration,
-};
+pub use crate::engine::sse::{LlmOutput, RequestMessage, StreamMode};
 use crate::ui::Ui;
 use anyhow::{Context, Result};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};

@@ -598,6 +598,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_is_stop_word() {
+        assert!(is_stop_word("the"));
+        assert!(is_stop_word("The"));
+        assert!(is_stop_word("what"));
+        assert!(is_stop_word("is"));
+        assert!(is_stop_word("about"));
+        assert!(!is_stop_word("quantum"));
+        assert!(!is_stop_word("cryptography"));
+        assert!(!is_stop_word("architecture"));
+    }
+
+    #[test]
     fn test_damerau_levenshtein() {
         assert_eq!(damerau_levenshtein("", ""), 0);
         assert_eq!(damerau_levenshtein("a", ""), 1);

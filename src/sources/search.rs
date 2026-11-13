@@ -1,4 +1,4 @@
-use crate::system::text_util::{url_decode, url_encode};
+use crate::system::text_util::{contains_ascii_case_insensitive, url_decode, url_encode};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -550,8 +550,6 @@ pub fn rank_candidates(
     }
     candidates.sort_by_key(|a| std::cmp::Reverse(a.score));
 }
-
-use crate::system::text_util::contains_ascii_case_insensitive;
 
 fn normalize_title_for_comparison(title: &str) -> String {
     let stripped = title

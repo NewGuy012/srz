@@ -9,7 +9,6 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use std::io::{self, IsTerminal, Write};
 
-pub use crate::sources::document::MAX_FILE_BYTES;
 pub const MAX_STDIN_BYTES: usize = 10 * 1024 * 1024; // 10 MB limit for standard input
 
 #[derive(Serialize)]
