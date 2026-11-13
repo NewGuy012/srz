@@ -10,7 +10,7 @@
 - 📚 **Books**
 - 📰 **Live news digests & universal RSS/Atom feeds**
 - 📺 **YouTube video transcripts**
-- 📄 **PDF documents & local files**
+- 📄 **PDF documents, EPUB ebooks, & local files**
 - ⌨️ **Unix stdin streams**
 
 ---
@@ -38,7 +38,7 @@ Browse through the chapters:
 - [**Quick Start**](quickstart.md): Connect your local LLM backend (Llama-macOS, Llama-Windows, llama.cpp, Ollama, LM Studio) and run your first summaries.
 - [**Command Reference**](commands.md): In-depth guide covering CLI auto-detection, subcommands, flags, interactive TUI keybindings, and session management.
 - [**Configuration**](configuration.md): `config.toml` structure, named profiles, storage limits, and cache retention policies.
-- [**Architecture & Design**](architecture.md): Systems architecture, lifecycle sequence flows, ingestion pipelines, embedded redb schema, BM25 ranking algorithm, performance optimizations, and security model.
+- [**Architecture & Design**](architecture.md): Systems architecture, lifecycle sequence flows, ingestion pipelines, embedded `redb` schema, offline library search & BM25 Q&A grounding, performance optimizations, and security model.
 
 ### Deep-Dive Guides & Audits
 

@@ -11,11 +11,11 @@
 | **Ingestion** | `srz <URL>` | Summarizes articles, blogs, documentation, RSS/Atom/JSON feeds, or online PDFs. |
 | | `srz <YOUTUBE_URL>` | Extracts timed-text transcripts and chapters from YouTube videos. |
 | | `srz "Book Title"` | Resolves synopses from Wikipedia and Open Library by title alone. |
-| | `srz <FILE>` | Ingests local `.pdf`, `.html`, `.md`, or `.txt` documents (20 MB ceiling). |
+| | `srz <FILE>` | Ingests local `.pdf`, `.epub`, `.html`, `.md`, `.txt`, or `.json` documents (20 MB ceiling). |
 | | `cat ... \| srz -` | Reads piped command outputs, logs, or `git diff` streams (10 MB ceiling). |
-| | `srz news "<topic\|feed_url>" [-t week]` | Aggregates and summarizes top stories from Google News RSS or any RSS/Atom/JSON feed URL. |
+| | `srz news "<topic\|feed_url>" [-t all]` | Aggregates and summarizes top stories from Google News RSS or any RSS/Atom/JSON feed URL. |
 | **Styling & Output** | `--style <PRESET>` | 3 summary formats: `concise` (default), `bullets`, `detailed`. |
-| | `--max-tokens <NUM>` | Sets the maximum completion tokens to generate (default: `8192`). |
+| | `--max-tokens <NUM>` | Sets max completion tokens (style defaults: `concise` `1536`, `bullets` `2048`, `detailed` `8192`). |
 | | `--context-window <NUM>` | Overrides auto-detected server context window in tokens (e.g. `32768`). |
 | | `--open` (`-b`) | Opens the summary in a distraction-free HTML reader with light/dark mode. |
 | | `--plain` | Outputs raw Markdown without terminal colors or automatic paging. |
@@ -23,12 +23,13 @@
 | | `-o <FILE.html\|md>` | Saves the rendered output directly to an HTML or Markdown file. |
 | | `--json` | Emits machine-readable JSON on `stdout` for script integration. |
 | | `--stream` | Streams LLM output tokens live to `stdout` as they are generated. |
-| **Interactive Tools** | `srz ask [TARGET] [Q]` | Grounded Q&A against a document, URL, file, or latest read. |
+| | `--show-thinking` (`--thinking`) | Streams full raw model reasoning trace to `stderr` instead of compact `💭` timing lines. |
+| **Interactive Tools** | `srz ask [TARGET] [Q]` | Grounded Q&A against a document, URL, file, or latest read (alias `chat`). |
 | | `srz ask -i` | Interactive multi-turn chat REPL grounded on source context. |
 | | `srz ask [--chats\|--resume <ID>]` | Lists saved chat sessions or resumes a previous multi-turn conversation. |
 | | `srz ask [--show-chat\|--delete-chat] <ID>` | Inspects or deletes a persisted multi-turn chat session transcript. |
-| | `srz browse` (alias `tui`) | Interactive TUI dashboard (`[j/k]` navigate, `[/]` filter, `[a]` ask/chat, `[y]` copy, `[d]` delete, `[Enter]` open). |
-| **Library & History** | `srz find "keyword"` | Offline BM25 relevance-ranked search across past summaries in local storage. |
+| | `srz browse` (aliases `tui`, `library`) | Interactive TUI dashboard (`[j/k]` navigate, `[/]` filter, `[a]` ask/chat, `[y]` copy, `[d]` delete, `[Enter]` open). |
+| **Library & History** | `srz find "keyword"` | Offline stop-word-filtered relevance search (10× title boost) across saved summaries in `srz.db`. |
 | | `srz history [--limit N]` | Displays recent reads, word counts, model usage, and generation speeds. |
 | | `srz stats` | Telemetry overview: reading streaks, days active, time saved, top domains, and model throughput percentiles (P50/P95). |
 | | `srz index [--open]` | Generates and opens an interactive HTML library dashboard. |
@@ -56,7 +57,7 @@ Instead of forcing you to memorize dedicated subcommands like `srz web`, `srz fi
 
 When `<TARGET>` begins with `http://` or `https://`, the router analyzes the URL domain and path. Links pointing to `youtube.com` or `youtu.be` route directly to the YouTube timed-text caption client. If the URL path or query parameters indicate a syndication feed (such as `.rss`, `.xml`, `.atom`, or `/feed`), the target is parsed via the universal syndication engine. All other standard web links pass to the web scraper, where Mozilla Readability scores DOM container density to strip navigation bars, advertisements, and cookie notices.
 
-Local targets receive similarly intelligent routing. If `<TARGET>` matches an existing file path or ends with a standard document extension (`.pdf`, `.html`, `.md`, or `.txt`), the document loader reads and validates the file under a 20 MB ceiling. Passing a single hyphen (`-`) tells `srz` to ingest data from standard input, enabling seamless pipeline integration with commands like `git diff | srz -`. Queries beginning with `news ` route to the Google News RSS aggregator, while any remaining freeform text strings are treated as book titles, triggering concurrent metadata and synopsis resolution across Open Library and Wikipedia.
+Local targets receive similarly intelligent routing. If `<TARGET>` matches an existing file path or ends with a standard document extension (`.pdf`, `.epub`, `.html`, `.htm`, `.md`, `.markdown`, `.txt`, `.text`, or `.json`), the document loader reads and validates the file under a 20 MB ceiling. Passing a single hyphen (`-`) tells `srz` to ingest data from standard input, enabling seamless pipeline integration with commands like `git diff | srz -`. Queries beginning with `news ` (or `headlines` / `"current|latest ... updates|stories"`) route to the Google News RSS aggregator, while any remaining freeform text strings are treated as book titles, triggering concurrent metadata and synopsis resolution across Open Library and Wikipedia.
 
 ### Global Flags
 
@@ -66,16 +67,16 @@ Local targets receive similarly intelligent routing. If `<TARGET>` matches an ex
 | `--model <MODEL>` | | Override the configured LLM model name. |
 | `--base-url <URL>` | | Local or remote OpenAI-compatible base URL (default: `http://localhost:9931/v1`). |
 | `--api-key <KEY>` | | OpenAI API key (optional for local LLMs). |
-| `--profile <NAME>` | | Load a named configuration profile from `~/.config/srz/config.toml`. |
-| `--config <PATH>` | | Custom configuration file path (defaults to `~/.config/srz/config.toml`). |
-| `--context-window <N>` | | Override server context window size in tokens (e.g. 8192-131072; auto-detected if omitted). |
-| `--max-tokens <N>` | | Maximum tokens to generate (thinking + summary tokens; default: 8192). |
+| `--profile <NAME>` | | Load a named configuration profile from `config.toml`. |
+| `--config <PATH>` | | Custom configuration file path (defaults to `$SRZ_CONFIG` / `$SRZ_CONFIG_PATH` / `~/.config/srz/config.toml`). |
+| `--context-window <N>` | | Override server context window size in tokens (clamped to `2,048`–`2,097,152`; auto-detected if omitted). |
+| `--max-tokens <N>` | | Maximum tokens to generate (thinking + summary; style defaults: `concise` `1536`, `bullets` `2048`, `detailed` `8192`; CLI fallback `8192`). |
 | `--open` | `-b` | Automatically open the rendered HTML summary in your default web browser. |
 | `--output <FILE>` | `-o` | Save the generated output directly to a file (`.html` or `.md`). |
 | `--plain` | | Output raw Markdown without terminal formatting, ANSI colors, or paging. |
 | `--paging <MODE>` | | Terminal paging control: `auto` (default), `always`, `never`. |
 | `--stream` | | Stream LLM output tokens live to `stdout` as they are generated. |
-| `--show-thinking` | `--thinking` | Stream full raw model reasoning trace to `stderr` (default: compact one-liner dropdown). |
+| `--show-thinking` | `--thinking` | Stream full raw model reasoning trace to `stderr` (default: compact timing summary like `💭 Thought for Xs (N tokens)`). |
 | `--json` | | Emit machine-readable JSON output for scripts and automation. |
 | `--no-cache` | | Bypass the local cache and force fresh scraping and synthesis. |
 | `--quiet` | `-q` | Suppress status spinners and non-essential progress messages. |
@@ -160,22 +161,22 @@ Aggregates and synthesizes top news stories from Google News RSS topics or direc
   # Or pass directly as root target:
   srz "https://blog.rust-lang.org/feed.xml"
   ```
-* `-t, --timeframe <TIMEFRAME>`: Recency filter: `week` (default, past 7 days), `day` (past 24h), `month` (past 30 days), `all`.
-* `-l, --limit <N>`: Maximum number of articles to aggregate (default: 5).
+* `-t, --timeframe <TIMEFRAME>`: Recency filter: `all` (default), `day` (past 24h), `week` (past 7 days), `month` (past 30 days).
+* `-l, --limit <N>`: Maximum number of articles to aggregate (default: 5, max: 50).
 
 ---
 
-## 5. Offline BM25 Search (`srz find`)
+## 5. Offline Library Search (`srz find`)
 
 ```bash
 srz find <QUERY>
 ```
 
-Executes a local Robertson-Sparck Jones BM25 search ranking across your entire local reading history without internet access.
+Executes an offline, stop-word-filtered relevance search across all saved summaries in `srz.db` without internet access.
 
-* **2.5× Title Weight Boost**: Terms matching document titles receive 2.5× the weight of terms matching summary bodies.
-* **Document Length Normalization**: Sized with tuned parameters ($k_1 = 1.2, b = 0.75$) to balance term repetition and document length.
-* Extracts relevance-focused preview snippets centered around query terms.
+* **10× Title Weight Boost**: Matched query terms in document titles score `10.0` each compared to `1.0` for matches in summary bodies, breaking score ties by most recent entry ID.
+* **ASCII Fast Path & Unicode Fallback**: Evaluates ASCII terms with zero-allocation case-insensitive scanning and falls back to UTF-8 safe lowercase matching for Unicode queries.
+* Extracts contextual preview snippets centered around matched query terms. (For grounded document Q&A, `srz ask` additionally ranks document chunks using Robertson-Sparck Jones BM25 with $k_1 = 1.2, b = 0.75$.)
 
 ---
 
@@ -230,8 +231,8 @@ srz cache <SUBCOMMAND>
   srz cache prune --older-than 14d
   srz cache prune --max-size 500MB
   ```
-* `srz cache clean`: Clear all cached web pages and view files.
-  * `--reset-db`: Also wipes the permanent `srz.db` analytics database.
+* `srz cache clean` (aliases: `clear`, `purge`, `wipe`): Clear cached pages, search metadata, server capabilities, and summary cache lookup mappings from `srz.db`, plus rendered files in `views/`. Library history and chat sessions are preserved unless `--reset-db` is passed.
+  * `--reset-db`: Deletes and recreates the `srz.db` database entirely.
 
 ---
 
@@ -265,7 +266,7 @@ srz models
 
 Running `srz recommend` or `srz doctor` profiles your physical machine without invasive C FFI bindings. By inspecting host system characteristics via native kernel and procfs hardware profiling, `srz` classifies your system into hardware tiers and suggests optimal model configurations:
 
-The advisor recommends high-fidelity Google Gemma 4 models tailored to your physical RAM, matching the exact selection cards shown in Llama GUI (such as `gemma-4` with size `E4B` or `26B-A4B` at `Q8_0` quantization) while configuring the full model ID (`ggml-org/gemma-4-E4B-it-GGUF:Q8_0`) for seamless backend API communication. It calculates your single-pass token synthesis ceiling—the approximate 70% threshold of your context window—beyond which CPU stratified salience compression activates.
+The advisor recommends high-fidelity Google Gemma 4 models tailored to your physical RAM, matching the exact selection cards shown in Llama GUI (such as `gemma-4` with size `E4B` or `26B-A4B` at `Q8_0` quantization) while configuring the full model ID (`ggml-org/gemma-4-E4B-it-GGUF:Q8_0`) for seamless backend API communication. It estimates an advisory single-pass token ceiling (`70%` of the recommended context window), while at runtime `DynamicBudget` calculates the exact threshold after reserving completion tokens, a 500-token system margin, and a 5% cushion—beyond which CPU lead/tail salience compression activates.
 
 When running `srz doctor`, the engine performs an active end-to-end audit: it pings the local LLM endpoint, probes operational context lengths (`n_ctx`), and verifies the integrity of local storage and cache directories. If the connected runner is constrained by sub-optimal context sizing (under 8k tokens), `srz doctor` provides concrete terminal guidance to unlock maximum throughput.
 

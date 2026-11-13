@@ -3,7 +3,7 @@
 **Project:** `srz` (Summarize CLI)  
 **Repository:** [github.com/NewGuy012/srz](https://github.com/NewGuy012/srz)  
 **Language & Platform:** Rust (Edition 2024) · macOS / Linux / Windows  
-**Cumulative Posture:** 🛡️ **100% Safe Rust** (`#![forbid(unsafe_code)]` enforced) · ✅ **46 / 46 Vulnerabilities Resolved** · ✅ **238 / 238 Tests Passing**
+**Cumulative Posture:** 🛡️ **100% Safe Rust** (`#![forbid(unsafe_code)]` enforced) · ✅ **46 / 46 Audit Vulnerabilities + Post-v0.7.9 Hardening Resolved** · ✅ **225 / 225 Tests Passing**
 
 This document serves as the chronological security audit ledger for `srz`. Each audit section is recorded with its execution timestamp, assessed scope, identified vulnerabilities, implemented remediations, and verification results.
 
@@ -1276,10 +1276,15 @@ When navigating the library explorer via `srz browse`, if an error occurred duri
 
 ---
 
+### Post-Audit #9 Security & Supply-Chain Hardening (v0.7.9 – Unreleased)
+Since Audit #9 (`dc2df0c`), `srz` migrated persistent storage from DuckDB (`srz.duckdb`) to pure-Rust embedded `redb` v4 (`srz.db`), closed remaining SSRF and symlink vectors (`0217dab`), and dropped external XML and Markdown parser crates (`quick-xml`, `pulldown-cmark`, `scraper`, `zip`, `tar`, `rustyline`, `termimad`, `indicatif`, `tiktoken-rs`, `htmd`, `clap_complete`):
+* **SSRF Hardening (`0217dab`, `src/sources/scraper.rs`, `src/sources/news.rs`, `src/commands/summarize.rs`):** Enforced `validate_public_http_url` on remote PDFs and direct RSS/Atom/JSON feed URLs, blocked embedded userinfo credentials, IPv6 zone IDs (`%`), multicast, and special-purpose IPv6 blocks (NAT64, Teredo, 6to4, Benchmarking, Discard-Only, Documentation).
+* **Configuration & Database Symlink Guards (`src/config/cli.rs`, `src/storage/db.rs`):** Enforced `fs::symlink_metadata` regular-file checks and `.take(MAX_CONFIG_BYTES + 1)` bounded reads (1 MB) in `Config::load_from_path`, alongside symlink rejection on `Database::open_at`.
+
 <a id="verification"></a>
 ## 🧪 Cumulative Verification & Test Suite
 
-All remediations across all audit phases are continuously validated via automated tests and static analysis:
+All remediations across all audit phases and post-v0.7.9 hardening updates are continuously validated via automated tests and static analysis:
 
 ```bash
 # 1. Run complete automated test suite
@@ -1289,19 +1294,19 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 ```
 
-### Complete Test Suite Breakdown (238 Total Tests)
+### Complete Test Suite Breakdown (225 Total Tests)
 
 | Test Suite Module | Tests | Verified Security & Operational Controls | Result |
 |:---|:---:|:---|:---:|
-| **`src/lib.rs` & `src/main.rs`** | 127 | EPUB decompression bounds & deduplication, PDF safe parsing, YouTube captions & SSRF checks, TUI filtering & sanitization, C1/BiDi terminal sanitization, DynamicBudget overflow safety & clamping, safe markdown URL scheme neutralization, Google News URL/RPC validation, config bounds, binary search chunker decomposition, AskArgs struct invariants, decomposed engine submodules, CSV formula injection neutralization, Open Library work_key validation | ✅ Pass |
-| **`tests/integration/cache.rs`** | 19 | POSIX `0700`/`0600` modes, symlink rejection, SHA-256 keys, safe float bounds, auto-prune, capability cache invalidation, unified DuckDB schema, news timeframe discrimination, book author caching, non-zero cached summary counts | ✅ Pass |
-| **`tests/integration/cli.rs`** | 25 | Flag parsing precedence, target auto-detection, subcommands, output formats, upgrade flags, Llama GUI naming | ✅ Pass |
-| **`tests/integration/config.rs`** | 7 | Safe config deserialization, profile override rules, saturating arithmetic, API key trimming, context window merge | ✅ Pass |
-| **`tests/integration/content.rs`** | 11 | CSP injection, single quote escaping, case-insensitive closing tag escaping, ask prompt guardrails, HTML rendering, EPUB loader | ✅ Pass |
-| **`tests/integration/db.rs`** | 16 | Parameterized queries, safe multibyte UTF-8 snippet extraction, DuckDB transactions, symlink refusal on CSV/Parquet export, BM25 ranking | ✅ Pass |
-| **`tests/integration/search.rs`** | 4 | Wikipedia & DuckDuckGo disambiguation, URL deduplication, bounded JSON reading, client pooling | ✅ Pass |
-| **`tests/integration/upgrade.rs`** | 11 | Atomic temp file creation, staged cleanup on error, symlink overwrite rejection, SHA-256 verification, timeout bounds, tag canonicalization | ✅ Pass |
-| **Total** | **238 / 238** | **Zero Failures · Zero Ignored · Zero Clippy Warnings · #![forbid(unsafe_code)]** | ✅ **100% Pass** |
+| **`src/lib.rs` & `src/main.rs`** | 125 | EPUB decompression bounds & deduplication, PDF safe parsing, YouTube captions & SSRF checks (including remote PDF & feed URL blocks, IPv6/userinfo guards), TUI filtering & sanitization, C1/BiDi terminal sanitization, `DynamicBudget` overflow safety & clamping, safe Markdown URL scheme neutralization, Google News URL/RPC validation, config symlink & size bounds, binary search chunker decomposition, `AskArgs` struct invariants, shell completion surface checks | ✅ Pass |
+| **`tests/integration/cache.rs`** | 15 | POSIX `0700`/`0600` modes, SHA-256 keys, auto-prune, capability cache invalidation, unified `redb` cache & permissions, news timeframe discrimination, LRU eviction | ✅ Pass |
+| **`tests/integration/cli.rs`** | 34 | Flag parsing precedence, target auto-detection, subcommands, output formats, upgrade flags, `--show-thinking`, Llama GUI naming, `doctor` | ✅ Pass |
+| **`tests/integration/config.rs`** | 7 | Safe config deserialization, profile & env override rules, saturating arithmetic, context window merge | ✅ Pass |
+| **`tests/integration/content.rs`** | 11 | CSP injection, single quote escaping, case-insensitive closing tag escaping, ask prompt guardrails, HTML & ANSI Markdown rendering, PDF/EPUB extraction | ✅ Pass |
+| **`tests/integration/db.rs`** | 15 | ACID `redb` transactions, safe multibyte UTF-8 snippet extraction, symlink refusal on `Database::open_at` & exports, CSV formula escaping & Markdown vault escaping, title-weighted library search, chat lifecycle | ✅ Pass |
+| **`tests/integration/search.rs`** | 8 | Wikipedia & DuckDuckGo disambiguation, URL deduplication, work description parsing, candidate ranking, client pooling | ✅ Pass |
+| **`tests/integration/upgrade.rs`** | 10 | Atomic temp file creation, staged cleanup on error, symlink overwrite rejection, SHA-256 verification, version tag canonicalization, tar.gz/zip extraction | ✅ Pass |
+| **Total** | **225 / 225** | **Zero Failures · Zero Ignored · Zero Clippy Warnings · `#![forbid(unsafe_code)]`** | ✅ **100% Pass** |
 
 ---
 

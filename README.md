@@ -10,7 +10,7 @@
 - 📚 **Books**
 - 📰 **Live news digests & universal RSS/Atom feeds**
 - 📺 **YouTube video transcripts**
-- 📄 **PDF documents & local files**
+- 📄 **PDF documents, EPUB ebooks, & local files**
 - ⌨️ **Unix stdin streams**
 
 ## Highlights
@@ -51,7 +51,7 @@ flowchart LR
 
 - 🔒 **100% Local & Private**: Runs on your device with zero fees and no API keys.
 - 🎯 **3 Summary Presets**: Choose concise, bulleted, or detailed summaries.
-- ⚡ **Zero-Worry Dynamic Sizing**: Automatically probes server context (`n_ctx`) to size inputs with CPU stratified compression and eliminate OOM crashes.
+- ⚡ **Zero-Worry Dynamic Sizing**: Automatically probes server context (`n_ctx`) to size inputs with CPU lead/tail compression and eliminate OOM crashes.
 - 💬 **Interactive Q&A**: Chat and ask questions about any document or read with token-budgeted memory.
 - 🖥️ **Terminal Dashboard**: Browse, search, filter, and read past summaries.
 

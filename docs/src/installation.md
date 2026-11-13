@@ -16,7 +16,7 @@ curl -LsSf https://raw.githubusercontent.com/NewGuy012/srz/master/scripts/instal
 curl -LsSf https://raw.githubusercontent.com/NewGuy012/srz/master/scripts/install.sh | INSTALL_DIR=/usr/local/bin sh
 
 # Install a specific pinned release version
-curl -LsSf https://raw.githubusercontent.com/NewGuy012/srz/master/scripts/install.sh | VERSION=0.6.2 sh
+curl -LsSf https://raw.githubusercontent.com/NewGuy012/srz/master/scripts/install.sh | VERSION=0.7.9 sh
 ```
 
 ### Windows (PowerShell)
@@ -28,7 +28,7 @@ Run the following in PowerShell:
 powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/NewGuy012/srz/master/scripts/install.ps1 | iex"
 
 # Install a specific pinned release version
-$env:VERSION="0.6.2"; irm https://raw.githubusercontent.com/NewGuy012/srz/master/scripts/install.ps1 | iex
+$env:VERSION="0.7.9"; irm https://raw.githubusercontent.com/NewGuy012/srz/master/scripts/install.ps1 | iex
 ```
 
 The script installs `srz.exe` to `$env:USERPROFILE\.local\bin` and automatically adds it to your user `PATH`.
@@ -85,7 +85,7 @@ Download precompiled binaries and checksums directly from the [GitHub Releases P
 Every release includes SLSA Build Level 3 cryptographic provenance. You can verify that binaries were compiled directly inside the official GitHub Actions runner using the GitHub CLI:
 
 ```bash
-gh attestation verify srz-v0.6.2-aarch64-apple-darwin.tar.gz --repo NewGuy012/srz
+gh attestation verify srz-v0.7.9-aarch64-apple-darwin.tar.gz --repo NewGuy012/srz
 ```
 
 *Tip: Downloaded release archives bundle pre-generated shell completions in the `completions/` directory (`srz.bash`, `_srz`, `srz.fish`, `_srz.ps1`).*
@@ -105,7 +105,7 @@ srz upgrade
 
 # Force reinstall or target a specific version
 srz upgrade --force
-srz upgrade --version 0.6.2
+srz upgrade --version 0.7.9
 ```
 
 ---

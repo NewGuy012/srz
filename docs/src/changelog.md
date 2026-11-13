@@ -22,15 +22,28 @@ All notable changes to `srz` are documented in this file.
 
 ---
 
+## Unreleased
+
+### Summary
+
+> Hardens SSRF validation across remote PDFs, direct feeds, and IPv6 transition ranges, rejects symlinked `config.toml` files, eliminates external `quick-xml` and `pulldown-cmark` crates with in-tree zero-dependency parsers, and fixes generated shell completions.
+
+### Changes
+- **SSRF & Config Hardening (`0217dab`)**: Enforced `validate_public_http_url` on remote PDF fetches and direct RSS/Atom/JSON feed URLs, blocked embedded URL userinfo, IPv6 zone IDs (`%`), NAT64 (`64:ff9b::/96`, `64:ff9b:1::/48`), Teredo (`2001::/32`), 6to4 (`2002::/16`), Documentation (`2001:db8::/32`), Benchmarking (`2001:2::/48`), Discard-Only (`100::/64`), and multicast IPv6 targets, and rejected symlinked or oversized (>1 MB) `config.toml` files (`CWE-59`).
+- **Zero-Dependency XML & Markdown Parsers (`ab0b7ee`, `2a18867`)**: Replaced `quick-xml` with the streaming pull parser `system::text_util::XmlScanner`, and replaced `pulldown-cmark` with the shared CommonMark + GFM parser `src/ui/markdown.rs` across both ANSI terminal and HTML5 reader rendering.
+- **Storage, Core Consolidations & Completions (`fd555e5`, `96964ed`, `46b5956`, `9194b64`, `dc2df0c`)**: Consolidated `redb` cache/ID/timestamp helpers and text utilities, removed dead code and unused flags, fixed generated completions (`bash`, `zsh`, `fish`, `powershell`, `elvish`) to match the active CLI surface (including `--show-thinking` / `--thinking`), streamlined the test suite (225 tests), and refreshed documentation.
+
+---
+
 ## v0.7.9
 
 ### Summary
 
-> Migrates storage to pure-Rust embedded `redb` v4, dramatically slashes binary dependencies (dropping DuckDB, indicatif, termimad, rustyline, zip, and tar), hardens web scraping against SSRF, optimizes news relevance ranking, and refines terminal spinner reliability.
+> Migrates storage to pure-Rust embedded `redb` v4, dramatically slashes binary dependencies (dropping DuckDB, indicatif, termimad, rustyline, zip, tar, tiktoken-rs, scraper, htmd, and clap_complete), hardens web scraping against SSRF, optimizes news relevance ranking, and refines terminal spinner reliability.
 
 ### Changes
 - **Pure-Rust Storage Migration (`redb` v4)**: Replaced DuckDB with embedded pure-Rust `redb` v4 for caching, library management, and search history, significantly reducing compile times, memory footprint, and C++ toolchain dependencies.
-- **Massive Dependency Pruning & Architecture Streamlining**: Dropped 9 heavy external dependencies (`duckdb`, `indicatif`, `termimad`, `rustyline`, `zip`, `tar`, `tiktoken-rs`, `scraper`, `htmd`) in favor of fast, lightweight in-tree implementations (native ANSI markdown renderer, terminal spinner, DEFLATE/ustar extractors, and in-process token estimation).
+- **Massive Dependency Pruning & Architecture Streamlining**: Dropped 10 heavy external dependencies (`duckdb`, `indicatif`, `termimad`, `rustyline`, `zip`, `tar`, `tiktoken-rs`, `scraper`, `htmd`, `clap_complete`) and trimmed `reqwest` compression features (`brotli`, `deflate`) in favor of lightweight in-tree implementations (native terminal UI, spinners, DEFLATE/ustar extractors, shell completions, and in-process token estimation).
 - **Security Hardening (SSRF & Private Network Defense)**: Enforced strict IP validation on URL fetching and HTTP redirects in the scraper, blocking requests to loopback, link-local, carrier-grade NAT, and private network ranges.
 - **News Ranking & Relevance Optimization**: Prioritized top-source relevance and recency over network completion speed, expanded candidate buffers, and automated stop-word cleaning for news digest synthesis.
 - **Terminal UI & Reliability Fixes**: Resolved spinner state resets in non-TTY/CI environments, aligned reasoning step elapsed formatting with terminal logs, and pruned vestigial shims, hidden subcommands, and obsolete flags.

@@ -1,6 +1,6 @@
 # Configuration
 
-`srz` reads its persistent settings from `~/.config/srz/config.toml` (or `$XDG_CONFIG_HOME/srz/config.toml` on Linux, `%APPDATA%\srz\config.toml` / `$env:APPDATA\srz\config.toml` on Windows).
+`srz` resolves its configuration file from `$SRZ_CONFIG`, then `$SRZ_CONFIG_PATH`, then `$XDG_CONFIG_HOME/srz/config.toml`, falling back to `~/.config/srz/config.toml` (or `%LOCALAPPDATA%` / `%APPDATA%` equivalents via home directories on Windows).
 
 You can generate a starter configuration file tailored to your machine's hardware at any time using:
 
@@ -38,6 +38,9 @@ open = false
 # Stream tokens live to stdout (default: false)
 stream = false
 
+# Stream full raw model reasoning trace to stderr (default: false)
+# show_thinking = false
+
 # Storage budget and retention policies
 [cache]
 max_size_mb = 500         # Disk budget (LRU eviction past threshold)
@@ -46,6 +49,7 @@ search_ttl_days = 14      # Book metadata & search candidates TTL
 summaries_ttl_days = 90   # Generated LLM outputs TTL
 views_ttl_days = 14       # Rendered HTML/MD reader views TTL
 auto_prune = true         # Opportunistic background cleanup
+# news_ttl_hours = 2      # Optional override for news/RSS TTL (default: 2 hours)
 
 # Cloud profile (e.g. OpenAI or Anthropic)
 [profiles.openai]
@@ -68,7 +72,7 @@ style = "detailed"
 context_window = 65536
 max_tokens = 8192
 
-# Scripting profile with spinners disabled and cache bypassed
+# Optional custom scripting profile (user-defined example, not emitted by `srz config init`)
 [profiles.quiet]
 base_url = "http://localhost:9931/v1"
 quiet = true
@@ -96,13 +100,13 @@ srz "https://news.ycombinator.com" --profile fast
 
 ## Precedence & Resolution Order
 
-Runtime configuration follows a predictable layered resolution model. Explicit command-line arguments always take top priority, overriding named profile settings from `config.toml`. Profile configurations, in turn, override standard environment variables like `OPENAI_BASE_URL` and root-level config options. If no configuration is provided at any layer, `srz` falls back to its safe, local-first engine defaults:
+Runtime configuration follows a predictable layered resolution model (`Cli::apply_config`). Explicit command-line arguments and environment variables supplied to `clap` take top priority, ahead of `config.toml`. Within `config.toml`, named profile settings (`--profile <NAME>`) override root-level settings. If no configuration is provided at any layer, `srz` falls back to style-aware limits and safe local-first engine defaults:
 
-1. **Explicit CLI flags** (e.g. `--model`, `--base-url`, `--style`, `--stream`, `--context-window`).
-2. **Profile settings** selected via `--profile <NAME>` in `config.toml`.
-3. **Environment variables** (`OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_API_KEY`).
+1. **Explicit CLI flags** (e.g. `--model`, `--base-url`, `--style`, `--stream`, `--show-thinking`, `--context-window`).
+2. **Environment variables** (`OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_API_KEY`).
+3. **Profile settings** selected via `--profile <NAME>` in `config.toml`.
 4. **Root settings** defined in `config.toml`.
-5. **Hardcoded engine defaults** (`http://localhost:9931/v1`, `concise`, 500 MB cache).
+5. **Style-aware & hardcoded defaults** (`http://localhost:9931/v1`, `concise`, style-based `max_tokens`, 500 MB cache).
 
 ---
 
@@ -113,7 +117,7 @@ The `[cache]` table controls how `srz` manages disk storage across `srz.db` and 
 | Setting | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `max_size_mb` | integer | `500` | Total storage budget in megabytes across `srz.db` and `views/`. LRU eviction triggers when exceeded. |
-| `pages_ttl_days` | integer | `7` | Retention for scraped DOM and web article text (YouTube and PDFs retain for 30 days). |
+| `pages_ttl_days` | integer | `7` | Retention for cached web pages, YouTube transcripts, and PDF text in `srz.db`. |
 | `news_ttl_hours` | integer | `2` | Short-lived retention for news articles and syndication feeds to prevent stale briefings. |
 | `search_ttl_days` | integer | `14` | Retention for Open Library book metadata and search query candidates. |
 | `summaries_ttl_days` | integer | `90` | Cache lookup retention window for generated summaries in `srz.db` (`(target, model, style)`). |

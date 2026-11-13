@@ -103,17 +103,17 @@ Recommended Local LLM Setup (Llama GUI / llama.cpp):
 
 ### Single-Pass & CPU Stratified Salience Compression
 
-How `srz` processes your document depends on the relationship between document token length and the server's available context window (`n_ctx`).
+How `srz` processes your document depends on the relationship between document token length and the server's active context budget (`DynamicBudget`).
 
-When a document's token count is within approximately 70% of the active context window, `srz` synthesizes the text directly in a single pass (`1-Pass Mode`). This mode yields the highest-quality summaries because the model maintains complete narrative and thematic awareness across all chapters simultaneously.
+When a document fits inside `single_pass_threshold` (roughly 70% of the context window after reserving completion tokens, a 500-token system margin, and a 5% cushion), `srz` synthesizes the text directly in a single pass (`1-Pass Mode`). This mode yields the highest-quality summaries because the model maintains complete narrative and thematic awareness simultaneously.
 
-When a document exceeds this 70% threshold—such as a 300-page book or a large collection of research papers—`srz` automatically applies **CPU Stratified Salience Compression**. Rather than running slow, multi-pass Map-Reduce loops that tie up local GPU memory, `srz` extracts the most informative paragraphs and structural headings across all sections in `< 20ms` on the CPU, and generates the final synthesis in a single, fast streaming pass.
+When a document exceeds that threshold—such as a long book or a multi-chapter research report—`srz` automatically applies **CPU Lead/Tail Salience Compression** (`compress_document_stratified`). Rather than running slow, multi-pass Map-Reduce loops that tie up local GPU memory, `srz` preserves the opening premise (~65% of the token budget) and closing synthesis/conclusions (~35%) from paragraph boundaries in `< 20ms` on the CPU, generating the final summary in one fast streaming pass.
 
 ### Why Google Gemma 4 (`Q8_0`) on Laptops
 
 Selecting the appropriate local model requires balancing comprehension quality with battery efficiency and RAM usage. For everyday reading on laptops and workstations, `srz` recommends Google's Gemma 4 series with 8-bit quantization (`Q8_0`).
 
-Gemma 4 models offer exceptional reasoning density and instruction adherence per parameter, outperforming earlier-generation 7B and 8B models while drawing less electrical power. While 4-bit quantizations (`Q4_K_M`) reduce download sizes, they often degrade nuanced arguments and introduce hallucinations during long-form synthesis. In contrast, 8-bit `Q8_0` preserves near-lossless precision, fits comfortably in unified memory, and scales natively to 128k context windows without degradation. Furthermore, querying the runner's native `/tokenize` endpoint ensures zero tokenization drift between the CLI and the inference engine.
+Gemma 4 models offer exceptional reasoning density and instruction adherence per parameter, outperforming earlier-generation 7B and 8B models while drawing less electrical power. While 4-bit quantizations (`Q4_K_M`) reduce download sizes, they often degrade nuanced arguments and introduce hallucinations during long-form synthesis. In contrast, 8-bit `Q8_0` preserves near-lossless precision, fits comfortably in unified memory, and scales natively to 128k context windows without degradation. In addition, in-process model-aware tokenizer profiles (`TokenizerKind` covering Gemma, Llama 3, `o200k`, and `cl100k`) estimate context budgets locally with zero network roundtrips.
 
 ---
 
@@ -133,8 +133,8 @@ Extract and synthesize closed-caption transcripts from YouTube URLs:
 srz "https://youtu.be/5C_HPTJg5ek"
 ```
 
-### Summarize a Local PDF or Document
-Pass a path to a `.pdf`, `.html`, `.md`, or `.txt` file:
+### Summarize a Local PDF, EPUB, or Document
+Pass a path to a `.pdf`, `.epub`, `.html`, `.md`, `.txt`, or `.json` file:
 
 ```bash
 srz assets/document.pdf
@@ -159,7 +159,7 @@ srz "The Rust Programming Language" --open
 Aggregate and synthesize news stories from Google News RSS or summarize direct syndication feeds:
 
 ```bash
-# Recent news on a topic (past week by default)
+# Latest news on a topic (`all` timeframe by default)
 srz news "Rust language updates"
 
 # Filter by recency (day, week, month, all)
@@ -202,8 +202,8 @@ Explore your reading history, filter items by category, copy summaries to clipbo
 srz browse
 ```
 
-### Fast Offline BM25 Search (`srz find`)
-Search through past summaries stored in local database without network access:
+### Fast Offline Library Search (`srz find`)
+Search across saved titles and summaries in `srz.db` (10× title boost, stop-word filtered) without network access:
 
 ```bash
 srz find "memory safety"
