@@ -22,16 +22,18 @@ All notable changes to `srz` are documented in this file.
 
 ---
 
-## Unreleased
+## v0.7.10
 
 ### Summary
 
-> Hardens SSRF validation across remote PDFs, direct feeds, and IPv6 transition ranges, rejects symlinked `config.toml` files, eliminates external `quick-xml` and `pulldown-cmark` crates with in-tree zero-dependency parsers, and fixes generated shell completions.
+> Replaces `quick-xml` and `pulldown-cmark` with zero-dependency in-tree parsers, fixes generated shell completions, consolidates core and `redb` helpers, and completes Security Audit #10 hardening across SSRF validation, archive extraction, document loading, terminal streaming, and storage.
 
 ### Changes
-- **SSRF & Config Hardening (`0217dab`)**: Enforced `validate_public_http_url` on remote PDF fetches and direct RSS/Atom/JSON feed URLs, blocked embedded URL userinfo, IPv6 zone IDs (`%`), NAT64 (`64:ff9b::/96`, `64:ff9b:1::/48`), Teredo (`2001::/32`), 6to4 (`2002::/16`), Documentation (`2001:db8::/32`), Benchmarking (`2001:2::/48`), Discard-Only (`100::/64`), and multicast IPv6 targets, and rejected symlinked or oversized (>1 MB) `config.toml` files (`CWE-59`).
-- **Zero-Dependency XML & Markdown Parsers (`ab0b7ee`, `2a18867`)**: Replaced `quick-xml` with the streaming pull parser `system::text_util::XmlScanner`, and replaced `pulldown-cmark` with the shared CommonMark + GFM parser `src/ui/markdown.rs` across both ANSI terminal and HTML5 reader rendering.
-- **Storage, Core Consolidations & Completions (`fd555e5`, `96964ed`, `46b5956`, `9194b64`, `dc2df0c`)**: Consolidated `redb` cache/ID/timestamp helpers and text utilities, removed dead code and unused flags, fixed generated completions (`bash`, `zsh`, `fish`, `powershell`, `elvish`) to match the active CLI surface (including `--show-thinking` / `--thinking`), streamlined the test suite (225 tests), and refreshed documentation.
+- **Zero-Dependency XML & Markdown Parsers**: Replaced `quick-xml` and `pulldown-cmark` with lightweight in-tree streaming XML and CommonMark + GFM parsers shared across terminal and HTML5 reader rendering.
+- **Shell Completions, Consolidation & Docs**: Fixed generated completions (`bash`, `zsh`, `fish`, `powershell`, `elvish`) to match active subcommands and flags (including `--show-thinking` / `--thinking`), consolidated core and `redb` helpers, pruned dead code, and refreshed documentation.
+- **SSRF, Config & Storage Hardening**: Extended public-URL SSRF validation to remote PDFs, direct feeds, and Google News decoded/`batchexecute` URLs (blocking userinfo, IPv6 zone IDs, multicast, and special IPv6 ranges); rejected symlinked or >1 MiB `config.toml` files; bounded `redb` chat session IDs; and hardened CSV formula escaping.
+- **Upgrade Archive & Document Loader Safety**: Hardened `.zip` and `.tar.gz` extraction in `srz upgrade` against decompression bombs, entry-size spoofing, non-regular entries, arithmetic overflows, and empty binaries; closed file-read TOCTOU races across PDF, EPUB, and local loaders; and capped extracted PDF text at 50 MiB.
+- **Streaming Terminal Safety & Diagnostics**: Sanitized ANSI/control escapes across streaming Markdown, progress spinners, and LLM HTTP error messages; capped SSE reasoning and Markdown stream line buffers; and fixed a multi-byte UTF-8 boundary panic in error truncation.
 
 ---
 
