@@ -353,6 +353,10 @@ impl GoogleNewsClient {
                         Err(_) => Err(anyhow::anyhow!("Scrape timed out after 4s")),
                     };
 
+                    if !is_safe_article_url(&direct_url) {
+                        return (idx, item.google_link, None);
+                    }
+
                     let (content, word_count, resolved_title) = if let Ok(page) = scraped
                         && page.word_count > 60
                     {
@@ -386,9 +390,9 @@ impl GoogleNewsClient {
                             content: source.content.clone(),
                             word_count: source.word_count,
                         };
-                        if !is_google_news_link(&source.url) {
+                        if !is_google_news_link(&source.url) && is_safe_article_url(&source.url) {
                             c.set_page(&source.url, &page_record);
-                            if source.url != google_link {
+                            if source.url != google_link && is_safe_article_url(&google_link) {
                                 c.set_page(&google_link, &page_record);
                             }
                         }
@@ -718,6 +722,14 @@ fn decode_base64_url_safe(input: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Returns `true` if `url` is a printable, public HTTP/HTTPS URL safe for external resolution or caching.
+fn is_safe_article_url(url: &str) -> bool {
+    let trimmed = url.trim();
+    !trimmed.chars().any(|c| c.is_control())
+        && crate::system::text_util::is_http_url(trimmed)
+        && crate::scraper::validate_public_http_url(trimmed).is_ok()
+}
+
 /// Scans decoded protobuf byte slices for an embedded `http://` or `https://` payload.
 fn extract_url_from_protobuf(raw: &[u8]) -> Option<String> {
     const SCHEMES: &[&[u8]] = &[b"https://", b"http://"];
@@ -731,8 +743,8 @@ fn extract_url_from_protobuf(raw: &[u8]) -> Option<String> {
                     if let Ok(s) = std::str::from_utf8(slice)
                         && !s
                             .chars()
-                            .any(|c| c.is_control() || c == ' ' || c == '"' || c == '<' || c == '>')
-                        && crate::system::text_util::is_http_url(s)
+                            .any(|c| c == ' ' || c == '"' || c == '<' || c == '>')
+                        && is_safe_article_url(s)
                     {
                         return Some(s.to_string());
                     }
@@ -750,7 +762,7 @@ fn extract_url_from_protobuf(raw: &[u8]) -> Option<String> {
             }
             let slice = &raw[pos..end];
             if let Ok(s) = std::str::from_utf8(slice)
-                && crate::system::text_util::is_http_url(s)
+                && is_safe_article_url(s)
             {
                 return Some(s.to_string());
             }
@@ -809,9 +821,7 @@ pub fn parse_batchexecute_destination_url(text: &str) -> Option<String> {
                 && let Some(dest) = inner.pointer("/1").and_then(|v| v.as_str())
             {
                 let trimmed = dest.trim();
-                if crate::system::text_util::is_http_url(trimmed)
-                    && !trimmed.chars().any(|c| c.is_control())
-                {
+                if is_safe_article_url(trimmed) {
                     return Some(trimmed.to_string());
                 }
             }
@@ -824,9 +834,7 @@ pub fn parse_batchexecute_destination_url(text: &str) -> Option<String> {
         && let Some(dest) = inner.pointer("/1").and_then(|v| v.as_str())
     {
         let trimmed = dest.trim();
-        if crate::system::text_util::is_http_url(trimmed)
-            && !trimmed.chars().any(|c| c.is_control())
-        {
+        if is_safe_article_url(trimmed) {
             return Some(trimmed.to_string());
         }
     }
@@ -1098,5 +1106,96 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("SSRF protection"));
+    }
+
+    fn encode_cbmi_token(target_url: &str) -> String {
+        const TABLE: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut raw = vec![0x08, 0x13, 0x22, target_url.len() as u8];
+        raw.extend_from_slice(target_url.as_bytes());
+        let mut out = String::new();
+        for chunk in raw.chunks(3) {
+            let b0 = chunk[0] as usize;
+            let b1 = *chunk.get(1).unwrap_or(&0) as usize;
+            let b2 = *chunk.get(2).unwrap_or(&0) as usize;
+            out.push(TABLE[b0 >> 2] as char);
+            out.push(TABLE[((b0 & 0x03) << 4) | (b1 >> 4)] as char);
+            if chunk.len() > 1 {
+                out.push(TABLE[((b1 & 0x0f) << 2) | (b2 >> 6)] as char);
+            }
+            if chunk.len() > 2 {
+                out.push(TABLE[b2 & 0x3f] as char);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn test_decode_google_news_url_blocks_private_and_metadata_urls() {
+        let public_link = format!(
+            "https://news.google.com/rss/articles/{}",
+            encode_cbmi_token("https://example.com/public-news")
+        );
+        assert_eq!(
+            decode_google_news_url(&public_link).as_deref(),
+            Some("https://example.com/public-news")
+        );
+
+        for blocked in [
+            "http://127.0.0.1/admin",
+            "http://169.254.169.254/latest/meta-data",
+            "http://localhost:8080/internal",
+            "http://10.0.0.5/secret",
+            "http://[::1]:9000/status",
+        ] {
+            let link = format!(
+                "https://news.google.com/rss/articles/{}",
+                encode_cbmi_token(blocked)
+            );
+            assert_eq!(
+                decode_google_news_url(&link),
+                None,
+                "should block {blocked}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_batchexecute_destination_url_blocks_ssrf_targets() {
+        for blocked in [
+            "http://10.0.0.1/internal",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://localhost:3000/",
+            "http://127.0.0.1:8080/api",
+            "https://user:pass@example.com/story",
+        ] {
+            let fbv4je = serde_json::json!([[
+                "wrb.fr",
+                "Fbv4je",
+                serde_json::json!(["garturlres", blocked]).to_string()
+            ]])
+            .to_string();
+            assert_eq!(
+                parse_batchexecute_destination_url(&fbv4je),
+                None,
+                "Fbv4je should reject {blocked}"
+            );
+
+            let legacy = serde_json::json!([[
+                "wrb.fr",
+                "legacy",
+                serde_json::json!(["garturlres", blocked]).to_string()
+            ]])
+            .to_string();
+            assert_eq!(
+                parse_batchexecute_destination_url(&legacy),
+                None,
+                "legacy should reject {blocked}"
+            );
+        }
+
+        assert!(is_safe_article_url("https://example.com/news"));
+        assert!(!is_safe_article_url("http://192.168.1.1/router"));
+        assert!(!is_safe_article_url("https://example.com/news\nHost: evil"));
     }
 }
