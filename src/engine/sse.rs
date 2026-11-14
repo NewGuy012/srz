@@ -425,8 +425,8 @@ pub fn format_thinking_duration(secs: f64) -> String {
 }
 
 fn format_thinking_spinner_message(step: Option<&str>) -> String {
-    match step {
-        Some(s) => format!("💭 Thinking: {}...", s.trim_end_matches([' ', '.', '…'])),
+    match step.map(normalize_step_colons).filter(|s| !s.is_empty()) {
+        Some(s) => format!("💭 Thinking: {}...", s),
         None => "💭 Thinking...".to_string(),
     }
 }
@@ -441,7 +441,7 @@ pub fn extract_reasoning_step(reasoning: &str) -> Option<String> {
         };
         let cleaned = clean_step_text(candidate);
         if cleaned.chars().count() >= 4 {
-            return Some(truncate_step(&to_sentence_case(&cleaned), 45));
+            return Some(to_sentence_case(&cleaned));
         }
     }
     None
@@ -476,16 +476,47 @@ fn extract_step_candidate(line: &str, allow_heading: bool) -> Option<&str> {
     (!inner.is_empty()).then_some(inner)
 }
 
+fn normalize_step_colons(s: &str) -> String {
+    let trimmed = s.trim_matches(|c: char| c.is_whitespace() || matches!(c, ':' | '.' | '-' | '…'));
+    if !trimmed.contains(':') {
+        return trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+    }
+    let replaced = trimmed.replace(':', " - ");
+    let mut words = Vec::new();
+    for word in replaced.split_whitespace() {
+        if word == "-" && words.last().is_some_and(|&w| w == "-") {
+            continue;
+        }
+        words.push(word);
+    }
+    words.join(" ")
+}
+
 fn clean_step_text(s: &str) -> String {
-    let stripped: String = s
+    let md_stripped: String = s
         .chars()
         .filter(|&c| !matches!(c, '*' | '_' | '#' | '`'))
         .collect();
-    strip_list_number(stripped.trim())
-        .trim_matches(|c: char| c.is_whitespace() || matches!(c, ':' | '.' | '-' | '…'))
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    let without_num = strip_list_number(md_stripped.trim());
+    let mut main = String::with_capacity(without_num.len());
+    let mut depth = 0usize;
+    for c in without_num.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth > 0 => depth -= 1,
+            _ if depth == 0 => main.push(c),
+            _ => {}
+        }
+    }
+    let normalized = normalize_step_colons(&main);
+    if !normalized.is_empty() {
+        return normalized;
+    }
+    let fallback: String = without_num
+        .chars()
+        .filter(|&c| !matches!(c, '(' | ')'))
+        .collect();
+    normalize_step_colons(&fallback)
 }
 
 fn to_sentence_case(s: &str) -> String {
@@ -518,21 +549,6 @@ fn to_sentence_case(s: &str) -> String {
         }
     }
     out
-}
-
-fn truncate_step(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        return s.to_string();
-    }
-    let end = s
-        .char_indices()
-        .nth(max_chars)
-        .map(|(idx, _)| idx)
-        .unwrap_or(s.len());
-    let cut = s[..end].rfind(' ').filter(|&i| i > 10).unwrap_or(end);
-    s[..cut]
-        .trim_end_matches([' ', ':', '.', '-', '…'])
-        .to_string()
 }
 
 pub(crate) fn compute_tokens_per_second(
@@ -620,11 +636,19 @@ mod tests {
         assert_eq!(format_thinking_duration(59.96), "1m 0s");
         assert_eq!(format_thinking_duration(65.0), "1m 5s");
 
-        // Live thinking spinner omits elapsed duration and avoids double ellipsis
+        // Live thinking spinner omits elapsed duration, avoids double ellipsis, and replaces colons with dashes
         assert_eq!(format_thinking_spinner_message(None), "💭 Thinking...");
         assert_eq!(
             format_thinking_spinner_message(Some("Analyze the request")),
             "💭 Thinking: Analyze the request..."
+        );
+        assert_eq!(
+            format_thinking_spinner_message(Some("Draft paragraph 2: technical features:")),
+            "💭 Thinking: Draft paragraph 2 - technical features..."
+        );
+        assert_eq!(
+            format_thinking_spinner_message(Some("...")),
+            "💭 Thinking..."
         );
     }
 
@@ -648,14 +672,48 @@ mod tests {
             Some("US chip export controls")
         );
 
-        // Title-cased model headers become sentence case and spinner formatting avoids '…...'
-        let step_cut = "**Draft Paragraph 2: Technical Depth and Complexity Overview**";
-        let cut = extract_reasoning_step(step_cut).unwrap();
-        assert_eq!(cut, "Draft paragraph 2: technical depth and");
+        // Title-cased model headers preserve full main text in sentence case, replace colons with dashes, and avoid '…...'
+        let step_full = "**Draft Paragraph 2: Technical Depth and Complexity Overview**";
+        let extracted_full = extract_reasoning_step(step_full).unwrap();
         assert_eq!(
-            format_thinking_spinner_message(Some(&cut)),
-            "💭 Thinking: Draft paragraph 2: technical depth and..."
+            extracted_full,
+            "Draft paragraph 2 - technical depth and complexity overview"
         );
+        let spinner_msg = format_thinking_spinner_message(Some(&extracted_full));
+        assert_eq!(
+            spinner_msg,
+            "💭 Thinking: Draft paragraph 2 - technical depth and complexity overview..."
+        );
+        assert_eq!(spinner_msg.matches(':').count(), 1);
+
+        // Parenthetical glosses are stripped so main reasoning text isn't left with dangling '('
+        assert_eq!(
+            extract_reasoning_step(
+                "**Deconstruct the Source Document (Identify Key Themes, Dates, and Claims)**"
+            )
+            .as_deref(),
+            Some("Deconstruct the source document")
+        );
+        assert_eq!(
+            extract_reasoning_step("**1. (Analyze the Request)**").as_deref(),
+            Some("Analyze the request")
+        );
+
+        // Multiple or unspaced colons and adjacent dashes collapse cleanly so only Thinking: keeps a colon
+        for raw in [
+            "**Step 1: Intro: Details**",
+            "**Step 1:Intro:Details**",
+            "**Step 1:: - Intro : Details**",
+        ] {
+            let step = extract_reasoning_step(raw).unwrap();
+            assert_eq!(step, "Step 1 - intro - details");
+            assert_eq!(
+                format_thinking_spinner_message(Some(&step))
+                    .matches(':')
+                    .count(),
+                1
+            );
+        }
 
         // Incomplete heading without trailing newline or unclosed bold does not flicker
         assert_eq!(extract_reasoning_step("### Halfway"), None);
@@ -671,7 +729,7 @@ mod tests {
             None
         );
 
-        // ALL CAPS headings normalize to sentence case and long headings truncate cleanly
+        // ALL CAPS headings normalize to sentence case and trailing ellipsis/dots are stripped without artificial length truncation
         assert_eq!(
             extract_reasoning_step("**ANALYZE THE REQUEST**").as_deref(),
             Some("Analyze the request")
@@ -679,9 +737,10 @@ mod tests {
         let long =
             "**Synthesizing comprehensive developments across all global semiconductor articles…**";
         let extracted = extract_reasoning_step(long).unwrap();
-        assert!(extracted.chars().count() <= 45);
-        assert!(!extracted.ends_with('…'));
-        assert!(!extracted.ends_with('.'));
+        assert_eq!(
+            extracted,
+            "Synthesizing comprehensive developments across all global semiconductor articles"
+        );
     }
 
     #[test]

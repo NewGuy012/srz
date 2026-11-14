@@ -75,10 +75,14 @@ impl ProgressBar {
                 let msg = inner_clone.message.lock().unwrap().clone();
                 if !msg.is_empty() {
                     let tick = TICKS[idx % TICKS.len()];
+                    let display = match crossterm::terminal::size() {
+                        Ok((cols, _)) => fit_spinner_message(&msg, cols as usize),
+                        Err(_) => Cow::Borrowed(msg.as_str()),
+                    };
                     if Ui::use_color() {
-                        eprint!("\r\x1b[2K\x1b[1;36m{}\x1b[0m {}", tick, msg);
+                        eprint!("\r\x1b[2K\x1b[1;36m{}\x1b[0m {}", tick, display);
                     } else {
-                        eprint!("\r\x1b[2K{} {}", tick, msg);
+                        eprint!("\r\x1b[2K{} {}", tick, display);
                     }
                     let _ = std::io::stderr().flush();
                 }
@@ -136,6 +140,52 @@ impl ProgressBar {
             let _ = std::io::stderr().flush();
         }
     }
+}
+
+fn char_display_width(c: char) -> usize {
+    if c.is_ascii() {
+        return 1;
+    }
+    match c as u32 {
+        0x1100..=0x115F
+        | 0x2E80..=0xA4CF
+        | 0xAC00..=0xD7A3
+        | 0xF900..=0xFAFF
+        | 0xFE10..=0xFE6F
+        | 0xFF00..=0xFF60
+        | 0xFFE0..=0xFFE6
+        | 0x1F300..=0x1FAFF => 2,
+        _ => 1,
+    }
+}
+
+/// Fits a single-line spinner message within `terminal_cols` so `\r\x1b[2K` redraws never wrap.
+fn fit_spinner_message(msg: &str, terminal_cols: usize) -> Cow<'_, str> {
+    let max_cols = terminal_cols.saturating_sub(3);
+    if max_cols <= 3 {
+        return Cow::Borrowed("");
+    }
+    let limit = max_cols - 3;
+    let mut width = 0usize;
+    let mut fit_limit_bytes = None;
+    for (idx, c) in msg.char_indices() {
+        let cw = char_display_width(c);
+        if fit_limit_bytes.is_none() && width + cw > limit {
+            fit_limit_bytes = Some(idx);
+        }
+        width += cw;
+        if width > max_cols {
+            let end = fit_limit_bytes.unwrap_or(idx);
+            let min_cut = msg.find(": ").map_or(0, |i| i + 2);
+            let cut = msg[..end]
+                .rfind(' ')
+                .filter(|&i| i > min_cut)
+                .unwrap_or(end);
+            let trimmed = msg[..cut].trim_end_matches([' ', ':', '.', '-', '…', '(']);
+            return Cow::Owned(format!("{}...", trimmed));
+        }
+    }
+    Cow::Borrowed(msg)
 }
 
 static QUIET: AtomicBool = AtomicBool::new(false);
@@ -985,6 +1035,17 @@ mod tests {
         assert!(!stored.contains('\r'));
         assert!(!stored.contains('\n'));
         assert_eq!(stored, "Load file name");
+    }
+
+    #[test]
+    fn test_fit_spinner_message_adapts_to_terminal_width() {
+        let msg = "💭 Thinking: Draft paragraph 2 - technical depth and complexity overview...";
+        assert!(matches!(fit_spinner_message(msg, 120), Cow::Borrowed(_)));
+        assert_eq!(
+            fit_spinner_message(msg, 55),
+            "💭 Thinking: Draft paragraph 2 - technical depth..."
+        );
+        assert_eq!(fit_spinner_message(msg, 6), "");
     }
 
     #[test]
