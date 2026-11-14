@@ -637,29 +637,7 @@ mod tests {
         }
     }
 
-    fn make_summary<'a>(
-        target_type: &'a str,
-        title: &'a str,
-        url: Option<&'a str>,
-        style: SummaryStyle,
-        summary: &'a str,
-    ) -> NewSummaryRecord<'a> {
-        NewSummaryRecord {
-            target_type,
-            title,
-            author: None,
-            url,
-            style: style.as_str(),
-            model: "default",
-            word_count: 100,
-            prompt_tokens: None,
-            completion_tokens: None,
-            duration_ms: 0,
-            tokens_per_second: None,
-            summary,
-            reasoning: None,
-        }
-    }
+    use super::super::make_summary;
 
     #[test]
     fn test_page_cache_roundtrip() {
@@ -700,16 +678,11 @@ mod tests {
 
         let db = cache_enabled.open_database().unwrap();
         let record = NewSummaryRecord {
+            style: SummaryStyle::Detailed.as_str(),
             model: "gemma-4",
             word_count: 420,
             reasoning: Some("Thought process about Dune"),
-            ..make_summary(
-                "book",
-                "\"Dune\"",
-                None,
-                SummaryStyle::Detailed,
-                "Great sci-fi novel.",
-            )
+            ..make_summary("book", "\"Dune\"", None, None, "Great sci-fi novel.")
         };
         db.record_summary_with_key(&record, Some(&Cache::book_cache_title("Dune", None)))
             .unwrap();
@@ -852,13 +825,14 @@ mod tests {
 
         let db = cache.open_database().unwrap();
         let news_record = NewSummaryRecord {
+            model: "default",
             word_count: 350,
             reasoning: Some("Model reasoning trace"),
             ..make_summary(
                 "news",
                 "News: python language news",
+                None,
                 Some("https://news.google.com/search?q=python"),
-                SummaryStyle::Concise,
                 "# Python News Briefing\nPython 3.13 released.",
             )
         };
@@ -895,12 +869,12 @@ mod tests {
         );
 
         let book_record = NewSummaryRecord {
-            author: Some("Frank Herbert"),
+            model: "default",
             ..make_summary(
                 "book",
                 "\"Dune\" by Frank Herbert",
+                Some("Frank Herbert"),
                 None,
-                SummaryStyle::Concise,
                 "Arrakis and spice.",
             )
         };
@@ -1038,8 +1012,8 @@ mod tests {
             ..make_summary(
                 "web",
                 "redb Cache",
+                None,
                 Some(url),
-                SummaryStyle::Concise,
                 "Consolidated cache in redb",
             )
         };

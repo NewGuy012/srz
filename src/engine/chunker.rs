@@ -438,6 +438,18 @@ mod tests {
         let truncated = TextChunker::truncate_by_tokens(&long, 30);
         assert!(truncated.ends_with("[Context trimmed for token budget]"));
         assert!(TokenizerKind::Cl100k.count_tokens(&truncated) <= 45);
+
+        let unbroken = "A".repeat(1000);
+        let trimmed_blob = TextChunker::truncate_by_tokens(&unbroken, 20);
+        assert!(trimmed_blob.len() < 160);
+        assert!(trimmed_blob.ends_with("[Context trimmed for token budget]"));
+        assert!(
+            TokenizerKind::Gemma.count_tokens(&TextChunker::truncate_to_budget(
+                &unbroken,
+                20,
+                TokenizerKind::Gemma
+            )) <= 20
+        );
     }
 
     #[test]

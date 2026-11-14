@@ -1359,31 +1359,8 @@ fn ymd_to_day_number(s: &str) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::make_summary;
     use super::*;
-
-    fn make_summary<'a>(
-        target_type: &'a str,
-        title: &'a str,
-        author: Option<&'a str>,
-        url: Option<&'a str>,
-        summary: &'a str,
-    ) -> NewSummaryRecord<'a> {
-        NewSummaryRecord {
-            target_type,
-            title,
-            author,
-            url,
-            style: "concise",
-            model: "gemma-4",
-            word_count: 500,
-            prompt_tokens: None,
-            completion_tokens: None,
-            duration_ms: 100,
-            tokens_per_second: None,
-            summary,
-            reasoning: None,
-        }
-    }
 
     #[test]
     fn test_database_record_and_history() {

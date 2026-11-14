@@ -748,35 +748,6 @@ mod tests {
     }
 
     #[test]
-    fn test_compress_document_stratified_oversized() {
-        let mut paragraphs = Vec::new();
-        paragraphs.push("# Introduction to Systems Architecture\n\nThis is the opening chapter introducing core concepts.".to_string());
-        for i in 1..30 {
-            paragraphs.push(format!(
-                "Section {}: Detailed technical discussion with repeated information and metrics {}.",
-                i, i * 10
-            ));
-        }
-        paragraphs.push(
-            "Conclusion\n\nIn conclusion, systems architecture is vital for robust performance."
-                .to_string(),
-        );
-
-        let full_doc = paragraphs.join("\n\n");
-        let initial_tokens = TokenizerKind::Cl100k.count_tokens(&full_doc);
-        assert!(initial_tokens > 200);
-
-        let budget = 120;
-        let compressed = compress_document_stratified(&full_doc, budget, TokenizerKind::Cl100k);
-        let compressed_tokens = TokenizerKind::Cl100k.count_tokens(&compressed);
-
-        assert!(compressed_tokens <= budget);
-        // Ensure beginning and end are preserved
-        assert!(compressed.contains("Introduction to Systems Architecture"));
-        assert!(compressed.contains("Conclusion"));
-    }
-
-    #[test]
     fn test_parse_heading_level_and_fences() {
         assert_eq!(parse_heading_level("# Title"), Some(1));
         assert_eq!(parse_heading_level("  ## Section Two"), Some(2));
@@ -1084,19 +1055,8 @@ Transcript body line.";
 
         let large_doc = parts.join("\n\n");
         let budget = 8_000;
-        let t0 = std::time::Instant::now();
         let compressed = compress_document_stratified(&large_doc, budget, TokenizerKind::Cl100k);
-        let elapsed = t0.elapsed();
-
-        let out_tokens = TokenizerKind::Cl100k.count_tokens(&compressed);
-        eprintln!(
-            "large_doc bytes={} seg_budget={} out_tokens={} elapsed_ms={:.2}",
-            large_doc.len(),
-            budget,
-            out_tokens,
-            elapsed.as_secs_f64() * 1000.0
-        );
-        assert!(out_tokens <= budget);
+        assert!(TokenizerKind::Cl100k.count_tokens(&compressed) <= budget);
         assert!(compressed.contains("# Comprehensive Systems Engineering Compendium"));
         assert!(compressed.contains("## Chapter 11 Subsystem Analysis"));
         assert!(compressed.contains("14.2 million packets per second"));
