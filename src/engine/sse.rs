@@ -431,7 +431,7 @@ fn format_thinking_spinner_message(step: Option<&str>) -> String {
     }
 }
 
-/// Extracts the latest top-level reasoning step header in Title Case from `reasoning`.
+/// Extracts the latest top-level reasoning step header in sentence case from `reasoning`.
 pub fn extract_reasoning_step(reasoning: &str) -> Option<String> {
     let ends_with_nl = reasoning.ends_with('\n');
     for (idx, raw_line) in reasoning.rsplit('\n').take(20).enumerate() {
@@ -441,7 +441,7 @@ pub fn extract_reasoning_step(reasoning: &str) -> Option<String> {
         };
         let cleaned = clean_step_text(candidate);
         if cleaned.chars().count() >= 4 {
-            return Some(truncate_step(&to_title_case(&cleaned), 45));
+            return Some(truncate_step(&to_sentence_case(&cleaned), 45));
         }
     }
     None
@@ -488,12 +488,13 @@ fn clean_step_text(s: &str) -> String {
         .join(" ")
 }
 
-fn to_title_case(s: &str) -> String {
+fn to_sentence_case(s: &str) -> String {
     let all_caps = s
         .chars()
         .filter(|c| c.is_alphabetic())
         .all(char::is_uppercase);
     let mut out = String::with_capacity(s.len());
+    let mut capitalized_first = false;
     for word in s.split_whitespace() {
         if !out.is_empty() {
             out.push(' ');
@@ -504,12 +505,12 @@ fn to_title_case(s: &str) -> String {
             && word.chars().all(|c| !c.is_alphabetic() || c.is_uppercase());
         if is_acronym {
             out.push_str(word);
+            capitalized_first = true;
         } else {
-            let mut capitalized = false;
             for c in word.chars() {
-                if !capitalized && c.is_alphabetic() {
+                if !capitalized_first && c.is_alphabetic() {
                     out.extend(c.to_uppercase());
-                    capitalized = true;
+                    capitalized_first = true;
                 } else {
                     out.extend(c.to_lowercase());
                 }
@@ -622,34 +623,38 @@ mod tests {
         // Live thinking spinner omits elapsed duration and avoids double ellipsis
         assert_eq!(format_thinking_spinner_message(None), "💭 Thinking...");
         assert_eq!(
-            format_thinking_spinner_message(Some("Analyze The Request")),
-            "💭 Thinking: Analyze The Request..."
+            format_thinking_spinner_message(Some("Analyze the request")),
+            "💭 Thinking: Analyze the request..."
         );
     }
 
     #[test]
-    fn test_extract_reasoning_step_title_case() {
+    fn test_extract_reasoning_step_sentence_case() {
         // Bold numbered step + indented metadata sub-bullets are skipped automatically
-        let trace = "Here's a thinking process:\n\n1.  **Analyze the request:**\n    *   **Topic:** Nvidia\n    *   **Timeframe:** all time";
+        let trace = "Here's a thinking process:\n\n1.  **Analyze the Request:**\n    *   **Topic:** Nvidia\n    *   **Timeframe:** all time";
         assert_eq!(
             extract_reasoning_step(trace).as_deref(),
-            Some("Analyze The Request")
+            Some("Analyze the request")
         );
 
-        // Completed ATX heading + acronym preservation + Title Case capitalization
-        let heading = "### 2. Comparing the US and LLM API stories\nReviewing sources";
+        // Completed ATX heading converts to sentence case while preserving acronyms
+        let heading = "### 2. Comparing the US and LLM API Stories\nReviewing sources";
         assert_eq!(
             extract_reasoning_step(heading).as_deref(),
-            Some("Comparing The US And LLM API Stories")
+            Some("Comparing the US and LLM API stories")
+        );
+        assert_eq!(
+            extract_reasoning_step("**US Chip Export Controls**").as_deref(),
+            Some("US chip export controls")
         );
 
-        // Truncated words keep Title Case and spinner formatting avoids '…...'
-        let step_cut = "**Draft paragraph 2: technical depth and complexity overview**";
+        // Title-cased model headers become sentence case and spinner formatting avoids '…...'
+        let step_cut = "**Draft Paragraph 2: Technical Depth and Complexity Overview**";
         let cut = extract_reasoning_step(step_cut).unwrap();
-        assert_eq!(cut, "Draft Paragraph 2: Technical Depth And");
+        assert_eq!(cut, "Draft paragraph 2: technical depth and");
         assert_eq!(
             format_thinking_spinner_message(Some(&cut)),
-            "💭 Thinking: Draft Paragraph 2: Technical Depth And..."
+            "💭 Thinking: Draft paragraph 2: technical depth and..."
         );
 
         // Incomplete heading without trailing newline or unclosed bold does not flicker
@@ -666,10 +671,10 @@ mod tests {
             None
         );
 
-        // ALL CAPS headings normalize to Title Case and long headings truncate cleanly
+        // ALL CAPS headings normalize to sentence case and long headings truncate cleanly
         assert_eq!(
             extract_reasoning_step("**ANALYZE THE REQUEST**").as_deref(),
-            Some("Analyze The Request")
+            Some("Analyze the request")
         );
         let long =
             "**Synthesizing comprehensive developments across all global semiconductor articles…**";
