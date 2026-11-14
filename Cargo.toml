@@ -6,7 +6,6 @@ authors = ["Moses Yoo"]
 description = "Fast, modular CLI to summarize webpages, documents, books, and live news using local LLMs"
 license = "BSD-3-Clause"
 repository = "https://github.com/NewGuy012/srz"
-homepage = "https://github.com/NewGuy012/srz"
 documentation = "https://newguy012.github.io/srz/"
 readme = "README.md"
 keywords = ["llm", "summarizer", "cli", "news", "ai"]
