@@ -283,13 +283,17 @@ pub use super::markdown::{is_safe_markdown_url, markdown_to_html};
 
 /// Appends HTML-escaped text directly into the provided output buffer.
 pub fn escape_html_to(out: &mut String, text: &str) {
+    push_html_escaped(out, text, true);
+}
+
+pub(crate) fn push_html_escaped(out: &mut String, text: &str, escape_single_quote: bool) {
     for ch in text.chars() {
         match ch {
             '&' => out.push_str("&amp;"),
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
+            '\'' if escape_single_quote => out.push_str("&#39;"),
             _ => out.push(ch),
         }
     }

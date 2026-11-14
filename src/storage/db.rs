@@ -82,14 +82,7 @@ impl LibraryItem {
         if q.is_empty() {
             return true;
         }
-        let q_low = q.to_lowercase();
-        let has = |field: &str| -> bool {
-            if q.is_ascii() {
-                crate::system::text_util::contains_ascii_case_insensitive(field, q)
-            } else {
-                field.to_lowercase().contains(&q_low)
-            }
-        };
+        let has = |field: &str| crate::system::text_util::contains_case_insensitive(field, q);
         has(&self.title)
             || has(&self.target_type)
             || self.author.as_deref().is_some_and(has)
@@ -337,6 +330,13 @@ fn init_redb_schema(db: &RedbDb) -> Result<()> {
     Ok(())
 }
 
+fn delete_cache_tables(write_txn: &redb::WriteTransaction) {
+    let _ = write_txn.delete_table(TABLE_CACHE_PAGES);
+    let _ = write_txn.delete_table(TABLE_CACHE_SEARCH);
+    let _ = write_txn.delete_table(TABLE_CACHE_CAPS);
+    let _ = write_txn.delete_table(TABLE_CACHE_KEY_TO_ID);
+}
+
 impl Database {
     pub fn default_path() -> PathBuf {
         fs_util::default_data_dir().join("srz.db")
@@ -386,13 +386,10 @@ impl Database {
         let write_txn = self.db.begin_write()?;
         {
             let _ = write_txn.delete_table(TABLE_HISTORY);
-            let _ = write_txn.delete_table(TABLE_CACHE_KEY_TO_ID);
             let _ = write_txn.delete_table(TABLE_CHAT_SESSIONS);
             let _ = write_txn.delete_table(TABLE_CHAT_MESSAGES);
-            let _ = write_txn.delete_table(TABLE_CACHE_PAGES);
-            let _ = write_txn.delete_table(TABLE_CACHE_SEARCH);
-            let _ = write_txn.delete_table(TABLE_CACHE_CAPS);
             let _ = write_txn.delete_table(TABLE_META);
+            delete_cache_tables(&write_txn);
         }
         write_txn.commit()?;
         init_redb_schema(&self.db)?;
@@ -883,23 +880,15 @@ impl Database {
         let items = self.get_all_library_items()?;
         let mut results = Vec::new();
 
-        let contains_term = |haystack: &str, needle: &str| -> bool {
-            if needle.is_ascii() {
-                crate::system::text_util::contains_ascii_case_insensitive(haystack, needle)
-            } else {
-                haystack.to_lowercase().contains(&needle.to_lowercase())
-            }
-        };
-
         for item in items {
             let mut title_matches = 0usize;
             let mut summary_matches = 0usize;
 
             for term in &query_terms {
-                if contains_term(&item.title, term) {
+                if crate::system::text_util::contains_case_insensitive(&item.title, term) {
                     title_matches += 1;
                 }
-                if contains_term(&item.summary, term) {
+                if crate::system::text_util::contains_case_insensitive(&item.summary, term) {
                     summary_matches += 1;
                 }
             }
@@ -1114,12 +1103,7 @@ impl Database {
 
     pub fn clear_cache_tables(&self) -> Result<()> {
         let write_txn = self.db.begin_write()?;
-        {
-            let _ = write_txn.delete_table(TABLE_CACHE_PAGES);
-            let _ = write_txn.delete_table(TABLE_CACHE_SEARCH);
-            let _ = write_txn.delete_table(TABLE_CACHE_CAPS);
-            let _ = write_txn.delete_table(TABLE_CACHE_KEY_TO_ID);
-        }
+        delete_cache_tables(&write_txn);
         write_txn.commit()?;
         init_redb_schema(&self.db)?;
         Ok(())

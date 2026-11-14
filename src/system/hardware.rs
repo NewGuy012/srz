@@ -144,38 +144,45 @@ impl HardwareProfile {
         self.recommended_context * 7 / 10
     }
 
-    /// Serializes the hardware profile into a structured JSON representation for diagnostics and recommendations.
-    pub fn to_json_value(&self) -> serde_json::Value {
+    fn host_json(&self) -> serde_json::Value {
         serde_json::json!({
             "device": self.chip_name,
             "total_memory_bytes": self.total_memory_bytes,
             "total_memory_gb": self.total_memory_gb,
             "tier": self.tier.display_name(),
-            "recommended_family": "Gemma 4",
-            "recommended_model": self.recommended_model,
-            "concise_model": self.concise_model,
-            "recommended_size": self.recommended_size,
-            "recommended_quant": self.recommended_quant,
-            "disk_size": self.disk_size,
-            "recommended_context": self.recommended_context,
-            "recommended_context_display": self.recommended_context_display,
-            "recommended_launch_command": self.recommended_launch_command,
-            "ollama_launch_command": self.ollama_launch_command,
-            "ram_footprint": self.ram_footprint,
-            "one_pass_token_ceiling": self.one_pass_token_ceiling(),
-            "llama_gui_selection": self.llama_gui_selection(),
         })
+    }
+
+    /// Serializes the hardware profile into a structured JSON representation for diagnostics.
+    pub fn to_json_value(&self) -> serde_json::Value {
+        let mut obj = self.host_json();
+        if let Some(map) = obj.as_object_mut() {
+            let extra = serde_json::json!({
+                "recommended_family": "Gemma 4",
+                "recommended_model": self.recommended_model,
+                "concise_model": self.concise_model,
+                "recommended_size": self.recommended_size,
+                "recommended_quant": self.recommended_quant,
+                "disk_size": self.disk_size,
+                "recommended_context": self.recommended_context,
+                "recommended_context_display": self.recommended_context_display,
+                "recommended_launch_command": self.recommended_launch_command,
+                "ollama_launch_command": self.ollama_launch_command,
+                "ram_footprint": self.ram_footprint,
+                "one_pass_token_ceiling": self.one_pass_token_ceiling(),
+                "llama_gui_selection": self.llama_gui_selection(),
+            });
+            if let Some(extra_map) = extra.as_object() {
+                map.extend(extra_map.iter().map(|(k, v)| (k.clone(), v.clone())));
+            }
+        }
+        obj
     }
 
     /// Returns the structured recommendation report matching `srz recommend --json`.
     pub fn to_recommend_report_json(&self) -> serde_json::Value {
         serde_json::json!({
-            "hardware": {
-                "device": self.chip_name,
-                "total_memory_bytes": self.total_memory_bytes,
-                "total_memory_gb": self.total_memory_gb,
-                "tier": self.tier.display_name(),
-            },
+            "hardware": self.host_json(),
             "recommendations": {
                 "family": "Google Gemma 4",
                 "model": self.concise_model,

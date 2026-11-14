@@ -32,11 +32,12 @@ async fn resolve_cached_page_or_fetch(
             let title = page.title.unwrap_or(fallback_title);
             return (title, page.content);
         }
-        // If expired from cache and is a local file that still exists, reload
+        // Local files are cached under file_cache_key (canonical path + size + mtime)
         if target_type == "file" {
             let path = Path::new(u);
             if path.exists()
-                && let Ok(doc) = crate::sources::DocumentLoader::load_file(path, scraper)
+                && let Ok((doc, _)) =
+                    crate::commands::summarize::load_file_with_cache(path, scraper, cache)
             {
                 return (doc.title, doc.content);
             }
@@ -67,7 +68,7 @@ async fn resolve_document_context(
         // 2. Local File
         let path = Path::new(trimmed);
         if path.exists() {
-            let doc = crate::sources::DocumentLoader::load_file(path, scraper)?;
+            let (doc, _) = crate::commands::summarize::load_file_with_cache(path, scraper, cache)?;
             return Ok((doc.title, doc.content));
         } else if crate::cli::is_file_like(trimmed) {
             anyhow::bail!("File not found: {:?}", path);
@@ -727,5 +728,43 @@ mod tests {
         assert_eq!(msgs2[4].content, "A2");
         assert_eq!(msgs2[5].role, "user");
         assert_eq!(msgs2[5].content, "Q3");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_cached_page_or_fetch_reuses_local_file_cache() {
+        let tmp = crate::fs_util::tempdir().unwrap();
+        let cache = Cache::with_dir(tmp.path().join("cache"), true);
+        let scraper = WebScraper::new().unwrap();
+        let file_path = tmp.path().join("notes.txt");
+        std::fs::write(&file_path, "Disk file content.").unwrap();
+
+        let (doc, key) =
+            crate::commands::summarize::load_file_with_cache(&file_path, &scraper, &cache).unwrap();
+        let key = key.expect("file_cache_key should resolve");
+        assert_eq!(doc.content, "Disk file content.");
+
+        // Store sentinel in cache under file_key to prove resolve_cached_page_or_fetch hits cache.
+        cache.set_page(
+            &key,
+            &crate::scraper::ScrapedPage {
+                url: format!("file://{}", file_path.display()),
+                title: Some("notes.txt".to_string()),
+                content: "Cached full document body.".to_string(),
+                word_count: 4,
+            },
+        );
+
+        let path_str = file_path.display().to_string();
+        let (title, content) = resolve_cached_page_or_fetch(
+            &scraper,
+            &cache,
+            "file",
+            Some(&path_str),
+            "Fallback".to_string(),
+            "Summary only".to_string(),
+        )
+        .await;
+        assert_eq!(title, "notes.txt");
+        assert_eq!(content, "Cached full document body.");
     }
 }

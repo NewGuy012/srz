@@ -177,6 +177,62 @@ pub fn write_private_file(path: &Path, contents: impl AsRef<[u8]>) -> std::io::R
     Ok(())
 }
 
+/// Opens a regular file and reads at most `max_bytes`, checking metadata on the open handle
+/// to prevent TOCTOU swaps and optionally rejecting symlinks.
+pub fn read_file_bytes_limited(
+    path: &Path,
+    max_bytes: u64,
+    reject_symlinks: bool,
+    label: &str,
+) -> std::io::Result<Vec<u8>> {
+    use std::io::{Error, ErrorKind, Read};
+
+    if reject_symlinks {
+        reject_symlink(path, &format!("read {label} from symlink"))?;
+    }
+
+    let file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(err) => {
+            if fs::metadata(path).is_ok_and(|m| !m.is_file()) {
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    format!("{label} path is not a regular file: {path:?}"),
+                ));
+            }
+            return Err(Error::new(
+                err.kind(),
+                format!("Failed to open {label} file {path:?}: {err}"),
+            ));
+        }
+    };
+
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!("{label} path is not a regular file: {path:?}"),
+        ));
+    }
+    if meta.len() > max_bytes {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            format!("{label} file is too large (exceeds {max_bytes} bytes): {path:?}"),
+        ));
+    }
+
+    let mut bytes = Vec::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            format!("{label} file is too large (exceeds {max_bytes} bytes): {path:?}"),
+        ));
+    }
+    Ok(bytes)
+}
+
 #[cfg(test)]
 #[derive(Debug)]
 pub(crate) struct TempDir {
@@ -304,5 +360,51 @@ mod tests {
             dir_res.err().unwrap().kind(),
             std::io::ErrorKind::InvalidInput
         );
+    }
+
+    #[test]
+    fn test_read_file_bytes_limited_enforces_size_and_type() {
+        let tmp = tempdir().unwrap();
+        let file = tmp.path().join("sample.bin");
+        fs::write(&file, b"0123456789").unwrap();
+
+        assert_eq!(
+            read_file_bytes_limited(&file, 10, false, "Test").unwrap(),
+            b"0123456789"
+        );
+        assert!(
+            read_file_bytes_limited(&file, 9, false, "Test")
+                .unwrap_err()
+                .to_string()
+                .contains("too large")
+        );
+        assert!(
+            read_file_bytes_limited(tmp.path(), 1024, false, "Test")
+                .unwrap_err()
+                .to_string()
+                .contains("not a regular file")
+        );
+        assert!(
+            read_file_bytes_limited(&tmp.path().join("missing.bin"), 1024, false, "Test")
+                .unwrap_err()
+                .to_string()
+                .contains("Failed to open")
+        );
+
+        #[cfg(unix)]
+        {
+            let link = tmp.path().join("link.bin");
+            std::os::unix::fs::symlink(&file, &link).unwrap();
+            assert_eq!(
+                read_file_bytes_limited(&link, 10, false, "Test").unwrap(),
+                b"0123456789"
+            );
+            assert!(
+                read_file_bytes_limited(&link, 10, true, "Test")
+                    .unwrap_err()
+                    .to_string()
+                    .contains("symlink")
+            );
+        }
     }
 }

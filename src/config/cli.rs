@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -942,40 +941,11 @@ impl Config {
 
     /// Loads the configuration file from a specific path (refusing symlinks and oversized files).
     pub fn load_from_path(path: &Path) -> Result<Self> {
-        use std::io::Read;
-
-        let sym_meta = fs::symlink_metadata(path)
-            .with_context(|| format!("Failed to read config file metadata at {:?}", path))?;
-        anyhow::ensure!(
-            !sym_meta.file_type().is_symlink(),
-            "Refusing to load config from symlink path: {:?}",
-            path
-        );
-        anyhow::ensure!(
-            sym_meta.is_file(),
-            "Config path {:?} is not a regular file",
-            path
-        );
-        let ensure_size = |size: u64| {
-            anyhow::ensure!(
-                size <= MAX_CONFIG_BYTES,
-                "Config file {:?} exceeds maximum allowed size ({} bytes > {} bytes)",
-                path,
-                size,
-                MAX_CONFIG_BYTES
-            );
-            Ok(())
-        };
-        ensure_size(sym_meta.len())?;
-        let file = fs::File::open(path)
-            .with_context(|| format!("Failed to open config file at {:?}", path))?;
-        let mut content = String::new();
-        let bytes_read = file
-            .take(MAX_CONFIG_BYTES + 1)
-            .read_to_string(&mut content)
+        let bytes =
+            crate::fs_util::read_file_bytes_limited(path, MAX_CONFIG_BYTES, true, "Config")?;
+        let content = std::str::from_utf8(&bytes)
             .with_context(|| format!("Failed to read config file at {:?}", path))?;
-        ensure_size(bytes_read as u64)?;
-        toml::from_str(&content)
+        toml::from_str(content)
             .with_context(|| format!("Failed to parse TOML configuration from {:?}", path))
     }
 
@@ -1064,6 +1034,7 @@ max_tokens = 8192
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn test_template_for_hardware_is_valid_toml() {

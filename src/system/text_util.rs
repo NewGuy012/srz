@@ -234,6 +234,18 @@ pub fn contains_ascii_case_insensitive(haystack: &str, lowercase_needle: &str) -
     lowercase_needle.is_empty() || find_ascii_case_insensitive(haystack, lowercase_needle).is_some()
 }
 
+/// Case-insensitive substring check with zero-allocation ASCII fast-path and Unicode fallback.
+pub fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if needle.is_ascii() {
+        find_subslice_ignore_case(haystack.as_bytes(), needle.as_bytes()).is_some()
+    } else {
+        haystack.to_lowercase().contains(&needle.to_lowercase())
+    }
+}
+
 /// Zero-allocation case-insensitive ASCII suffix check (`lowercase_suffix` must already be lowercase ASCII).
 pub fn ends_with_ascii_case_insensitive(haystack: &str, lowercase_suffix: &str) -> bool {
     let h_bytes = haystack.as_bytes();

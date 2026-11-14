@@ -38,18 +38,10 @@ pub fn render_markdown(markdown: &str) -> String {
 }
 
 fn push_escaped(out: &mut String, text: &str, html: bool) {
-    if !html {
+    if html {
+        super::render::push_html_escaped(out, text, false);
+    } else {
         out.push_str(text);
-        return;
-    }
-    for ch in text.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            _ => out.push(ch),
-        }
     }
 }
 

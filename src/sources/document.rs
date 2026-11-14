@@ -1,9 +1,8 @@
+use crate::fs_util::read_file_bytes_limited;
 use crate::system::text_util::{XmlEvent, XmlScanner, xml_attr, xml_local_name};
 use crate::system::zip::ZipReader;
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::io::Read;
 use std::path::Path;
 
 use crate::render;
@@ -12,37 +11,6 @@ use crate::system::text_util::url_decode;
 
 pub const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024; // 20 MB limit for local files
 pub const MAX_PDF_TEXT_BYTES: usize = 50 * 1024 * 1024; // 50 MB limit for extracted PDF text
-
-/// Opens and reads up to `max_bytes` from a local regular file, rejecting oversized
-/// or non-regular targets even if swapped or appended after pre-flight metadata checks.
-pub(super) fn read_file_bytes_limited(path: &Path, max_bytes: u64, label: &str) -> Result<Vec<u8>> {
-    let file = match fs::File::open(path) {
-        Ok(file) => file,
-        Err(err) => {
-            // On Windows, File::open on a directory fails with PermissionDenied before file.metadata().
-            if fs::metadata(path).is_ok_and(|meta| !meta.is_file()) {
-                anyhow::bail!("{label} path is not a regular file: {path:?}");
-            }
-            return Err(err).with_context(|| format!("Failed to open {label} file: {path:?}"));
-        }
-    };
-    let meta = file
-        .metadata()
-        .with_context(|| format!("Failed to stat {label} file: {path:?}"))?;
-    anyhow::ensure!(
-        meta.is_file(),
-        "{label} path is not a regular file: {path:?}"
-    );
-    let mut bytes = Vec::new();
-    file.take(max_bytes.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .with_context(|| format!("Failed to read {label} file at {path:?}"))?;
-    anyhow::ensure!(
-        meta.len() <= max_bytes && bytes.len() as u64 <= max_bytes,
-        "{label} file is too large (exceeds {max_bytes} bytes): {path:?}"
-    );
-    Ok(bytes)
-}
 
 #[derive(Default)]
 struct BoundedIoWriter {
@@ -84,71 +52,69 @@ pub struct LocalDocument {
     pub word_count: usize,
 }
 
+impl LocalDocument {
+    pub fn from_page(page: ScrapedPage, fallback_title: impl FnOnce() -> String) -> Self {
+        Self {
+            title: page.title.unwrap_or_else(fallback_title),
+            content: page.content,
+            word_count: page.word_count,
+        }
+    }
+
+    pub fn to_scraped_page(&self, path: &Path) -> ScrapedPage {
+        ScrapedPage {
+            url: format!("file://{}", path.display()),
+            title: Some(self.title.clone()),
+            content: self.content.clone(),
+            word_count: self.word_count,
+        }
+    }
+}
+
 pub struct DocumentLoader;
 
 impl DocumentLoader {
-    /// Validates that `path` exists, is a regular file, and does not exceed `MAX_FILE_BYTES`.
-    pub fn validate_file(path: &Path) -> Result<()> {
-        if !path.exists() {
-            anyhow::bail!("File not found: {:?}", path);
-        }
-
-        let meta = fs::metadata(path)
-            .with_context(|| format!("Failed to access file metadata: {:?}", path))?;
-        if !meta.is_file() {
-            anyhow::bail!("Path is not a regular file: {:?}", path);
-        }
-        if meta.len() > MAX_FILE_BYTES {
-            anyhow::bail!(
-                "File size ({} bytes) exceeds security limit of {} MB",
-                meta.len(),
-                MAX_FILE_BYTES / (1024 * 1024)
-            );
-        }
-        Ok(())
-    }
-
     /// Validates and loads a local document (PDF, EPUB, HTML, Markdown, or plain text).
     pub fn load_file(path: &Path, scraper: &WebScraper) -> Result<LocalDocument> {
-        Self::validate_file(path)?;
-
         let fallback_title = || {
             path.file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "Local File".to_string())
         };
 
-        let (content, word_count, title) = if path
+        let doc = if path
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
         {
-            let page = PdfExtractor::extract_file(path)?;
-            let t = page.title.unwrap_or_else(fallback_title);
-            (page.content, page.word_count, t)
+            LocalDocument::from_page(PdfExtractor::extract_file(path)?, fallback_title)
         } else if path
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("epub"))
         {
-            let page = EpubExtractor::extract_file(path)?;
-            let t = page.title.unwrap_or_else(fallback_title);
-            (page.content, page.word_count, t)
+            LocalDocument::from_page(EpubExtractor::extract_file(path)?, fallback_title)
         } else {
-            let bytes = read_file_bytes_limited(path, MAX_FILE_BYTES, "Document")?;
+            let bytes = read_file_bytes_limited(path, MAX_FILE_BYTES, false, "Document")?;
             let raw = String::from_utf8(bytes)
                 .with_context(|| format!("Failed to read file: {:?}", path))?;
 
-            Self::normalize_or_plain_text(scraper, &path.display().to_string(), raw, fallback_title)
+            let (content, word_count, title) = Self::normalize_or_plain_text(
+                scraper,
+                &path.display().to_string(),
+                raw,
+                fallback_title,
+            );
+            LocalDocument {
+                title,
+                content,
+                word_count,
+            }
         };
 
-        if content.trim().is_empty() {
+        if doc.content.trim().is_empty() {
             anyhow::bail!("File {:?} is empty.", path);
         }
 
-        Ok(LocalDocument {
-            title,
-            content,
-            word_count,
-        })
+        Ok(doc)
     }
 
     /// Extracts clean text, word count, and title from raw string content, normalizing HTML if detected.
@@ -182,8 +148,7 @@ pub struct PdfExtractor;
 impl PdfExtractor {
     /// Extracts text from a PDF file path.
     pub fn extract_file(path: &Path) -> Result<ScrapedPage> {
-        DocumentLoader::validate_file(path)?;
-        let bytes = read_file_bytes_limited(path, MAX_FILE_BYTES, "PDF")?;
+        let bytes = read_file_bytes_limited(path, MAX_FILE_BYTES, false, "PDF")?;
         Self::extract_from_bytes(&bytes, Some(path))
     }
 
@@ -346,8 +311,7 @@ pub struct EpubExtractor;
 impl EpubExtractor {
     /// Extracts text and metadata from an EPUB file path.
     pub fn extract_file(path: &Path) -> Result<ScrapedPage> {
-        DocumentLoader::validate_file(path)?;
-        let bytes = read_file_bytes_limited(path, MAX_FILE_BYTES, "EPUB")?;
+        let bytes = read_file_bytes_limited(path, MAX_FILE_BYTES, false, "EPUB")?;
         Self::extract_from_bytes(&bytes, Some(path))
     }
 
@@ -767,36 +731,6 @@ mod tests {
         let page = EpubExtractor::extract_from_bytes(&bytes, None).unwrap();
         let occurrences = page.content.matches("Unique single chapter text").count();
         assert_eq!(occurrences, 1);
-    }
-
-    #[test]
-    fn test_read_file_bytes_limited_enforces_size_and_type() {
-        let tmp = crate::fs_util::tempdir().unwrap();
-        let file = tmp.path().join("sample.bin");
-        std::fs::write(&file, b"0123456789").unwrap();
-
-        assert_eq!(
-            read_file_bytes_limited(&file, 10, "Test").unwrap(),
-            b"0123456789"
-        );
-        assert!(
-            read_file_bytes_limited(&file, 9, "Test")
-                .unwrap_err()
-                .to_string()
-                .contains("too large")
-        );
-        assert!(
-            read_file_bytes_limited(tmp.path(), 1024, "Test")
-                .unwrap_err()
-                .to_string()
-                .contains("not a regular file")
-        );
-        assert!(
-            read_file_bytes_limited(&tmp.path().join("missing.bin"), 1024, "Test")
-                .unwrap_err()
-                .to_string()
-                .contains("Failed to open")
-        );
     }
 
     #[test]

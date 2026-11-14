@@ -137,7 +137,7 @@ pub async fn fetch_or_cache_page(
 /// Returns true if the URL points to a remote PDF file (case-insensitive, ignoring query parameters and fragments).
 pub fn is_pdf_url(url: &str) -> bool {
     let clean = url.split(['?', '#']).next().unwrap_or(url);
-    clean.ends_with(".pdf") || clean.ends_with(".PDF")
+    crate::system::text_util::ends_with_ascii_case_insensitive(clean, ".pdf")
 }
 
 /// Determines the target type label ("youtube", "file", or "web") for a given URL.
@@ -243,6 +243,29 @@ pub fn file_cache_key(path: &std::path::Path) -> Option<String> {
     ))
 }
 
+/// Loads a local file using the content cache keyed by canonical path, size, and mtime.
+pub fn load_file_with_cache(
+    path: &std::path::Path,
+    scraper: &WebScraper,
+    cache: &Cache,
+) -> Result<(crate::sources::document::LocalDocument, Option<String>)> {
+    let file_key = file_cache_key(path);
+    let doc = if let Some(ref k) = file_key
+        && let Some(cached_page) = cache.get_page(k)
+    {
+        crate::sources::document::LocalDocument::from_page(cached_page, || {
+            path.display().to_string()
+        })
+    } else {
+        let loaded = crate::sources::DocumentLoader::load_file(path, scraper)?;
+        if let Some(ref k) = file_key {
+            cache.set_page(k, &loaded.to_scraped_page(path));
+        }
+        loaded
+    };
+    Ok((doc, file_key))
+}
+
 pub async fn handle_file(
     path: &std::path::Path,
     scraper: &WebScraper,
@@ -251,31 +274,7 @@ pub async fn handle_file(
     args: &Cli,
 ) -> Result<SummaryOutcome> {
     let path_str = path.display().to_string();
-    let file_key = file_cache_key(path);
-
-    let doc = if let Some(ref k) = file_key
-        && let Some(cached_page) = cache.get_page(k)
-    {
-        crate::sources::document::LocalDocument {
-            title: cached_page
-                .title
-                .unwrap_or_else(|| path.display().to_string()),
-            content: cached_page.content,
-            word_count: cached_page.word_count,
-        }
-    } else {
-        let loaded = crate::sources::DocumentLoader::load_file(path, scraper)?;
-        if let Some(ref k) = file_key {
-            let page_record = crate::scraper::ScrapedPage {
-                url: format!("file://{}", path.display()),
-                title: Some(loaded.title.clone()),
-                content: loaded.content.clone(),
-                word_count: loaded.word_count,
-            };
-            cache.set_page(k, &page_record);
-        }
-        loaded
-    };
+    let (doc, file_key) = load_file_with_cache(path, scraper, cache)?;
 
     Ui::info(&format!(
         "Loaded {} words from file '{}'",
