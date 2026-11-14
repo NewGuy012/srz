@@ -292,12 +292,8 @@ impl SseStreamState {
                 || now.duration_since(self.last_spinner_update) >= Duration::from_millis(100)
             {
                 self.last_spinner_update = now;
-                let elapsed_s = self
-                    .thinking_start
-                    .map(|t| t.elapsed().as_secs_f64())
-                    .unwrap_or(0.0);
                 let step = extract_reasoning_step(&self.reasoning_buf);
-                pb.set_message(format_thinking_spinner_message(step.as_deref(), elapsed_s));
+                pb.set_message(format_thinking_spinner_message(step.as_deref()));
             }
         }
 
@@ -428,11 +424,10 @@ pub fn format_thinking_duration(secs: f64) -> String {
     }
 }
 
-fn format_thinking_spinner_message(step: Option<&str>, elapsed_s: f64) -> String {
-    let duration_str = format_thinking_duration(elapsed_s);
+fn format_thinking_spinner_message(step: Option<&str>) -> String {
     match step {
-        Some(s) => format!("💭 Thinking ({duration_str:>5}): {s}..."),
-        None => format!("💭 Thinking ({duration_str:>5})..."),
+        Some(s) => format!("💭 Thinking: {}...", s.trim_end_matches([' ', '.', '…'])),
+        None => "💭 Thinking...".to_string(),
     }
 }
 
@@ -487,23 +482,18 @@ fn clean_step_text(s: &str) -> String {
         .filter(|&c| !matches!(c, '*' | '_' | '#' | '`'))
         .collect();
     strip_list_number(stripped.trim())
-        .trim_matches(|c: char| c.is_whitespace() || matches!(c, ':' | '.' | '-'))
+        .trim_matches(|c: char| c.is_whitespace() || matches!(c, ':' | '.' | '-' | '…'))
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
 }
 
 fn to_title_case(s: &str) -> String {
-    const MINOR: &[&str] = &[
-        "a", "an", "the", "and", "or", "but", "for", "of", "in", "on", "at", "to", "by", "with",
-        "from", "as", "into", "vs", "via",
-    ];
     let all_caps = s
         .chars()
         .filter(|c| c.is_alphabetic())
         .all(char::is_uppercase);
     let mut out = String::with_capacity(s.len());
-    let mut start_of_phrase = true;
     for word in s.split_whitespace() {
         if !out.is_empty() {
             out.push(' ');
@@ -512,10 +502,7 @@ fn to_title_case(s: &str) -> String {
         let is_acronym = !all_caps
             && (2..=4).contains(&alpha_count)
             && word.chars().all(|c| !c.is_alphabetic() || c.is_uppercase());
-        let lower = word.to_ascii_lowercase();
-        if !start_of_phrase && !is_acronym && MINOR.contains(&lower.as_str()) {
-            out.push_str(&lower);
-        } else if is_acronym {
+        if is_acronym {
             out.push_str(word);
         } else {
             let mut capitalized = false;
@@ -528,7 +515,6 @@ fn to_title_case(s: &str) -> String {
                 }
             }
         }
-        start_of_phrase = word.ends_with(':');
     }
     out
 }
@@ -539,11 +525,13 @@ fn truncate_step(s: &str, max_chars: usize) -> String {
     }
     let end = s
         .char_indices()
-        .nth(max_chars.saturating_sub(1))
+        .nth(max_chars)
         .map(|(idx, _)| idx)
         .unwrap_or(s.len());
     let cut = s[..end].rfind(' ').filter(|&i| i > 10).unwrap_or(end);
-    format!("{}…", s[..cut].trim_end_matches([' ', ':', '.', '-']))
+    s[..cut]
+        .trim_end_matches([' ', ':', '.', '-', '…'])
+        .to_string()
 }
 
 pub(crate) fn compute_tokens_per_second(
@@ -631,18 +619,11 @@ mod tests {
         assert_eq!(format_thinking_duration(59.96), "1m 0s");
         assert_eq!(format_thinking_duration(65.0), "1m 5s");
 
-        // Live spinner keeps constant 5-char width without a leading zero
+        // Live thinking spinner omits elapsed duration and avoids double ellipsis
+        assert_eq!(format_thinking_spinner_message(None), "💭 Thinking...");
         assert_eq!(
-            format_thinking_spinner_message(None, 2.0),
-            "💭 Thinking ( 2.0s)..."
-        );
-        assert_eq!(
-            format_thinking_spinner_message(None, 2.7),
-            "💭 Thinking ( 2.7s)..."
-        );
-        assert_eq!(
-            format_thinking_spinner_message(Some("Analyze the Request"), 12.3),
-            "💭 Thinking (12.3s): Analyze the Request..."
+            format_thinking_spinner_message(Some("Analyze The Request")),
+            "💭 Thinking: Analyze The Request..."
         );
     }
 
@@ -652,14 +633,23 @@ mod tests {
         let trace = "Here's a thinking process:\n\n1.  **Analyze the request:**\n    *   **Topic:** Nvidia\n    *   **Timeframe:** all time";
         assert_eq!(
             extract_reasoning_step(trace).as_deref(),
-            Some("Analyze the Request")
+            Some("Analyze The Request")
         );
 
-        // Completed ATX heading + acronym preservation + minor-word lowercasing
+        // Completed ATX heading + acronym preservation + Title Case capitalization
         let heading = "### 2. Comparing the US and LLM API stories\nReviewing sources";
         assert_eq!(
             extract_reasoning_step(heading).as_deref(),
-            Some("Comparing the US and LLM API Stories")
+            Some("Comparing The US And LLM API Stories")
+        );
+
+        // Truncated words keep Title Case and spinner formatting avoids '…...'
+        let step_cut = "**Draft paragraph 2: technical depth and complexity overview**";
+        let cut = extract_reasoning_step(step_cut).unwrap();
+        assert_eq!(cut, "Draft Paragraph 2: Technical Depth And");
+        assert_eq!(
+            format_thinking_spinner_message(Some(&cut)),
+            "💭 Thinking: Draft Paragraph 2: Technical Depth And..."
         );
 
         // Incomplete heading without trailing newline or unclosed bold does not flicker
@@ -679,13 +669,14 @@ mod tests {
         // ALL CAPS headings normalize to Title Case and long headings truncate cleanly
         assert_eq!(
             extract_reasoning_step("**ANALYZE THE REQUEST**").as_deref(),
-            Some("Analyze the Request")
+            Some("Analyze The Request")
         );
         let long =
-            "**Synthesizing comprehensive developments across all global semiconductor articles**";
+            "**Synthesizing comprehensive developments across all global semiconductor articles…**";
         let extracted = extract_reasoning_step(long).unwrap();
         assert!(extracted.chars().count() <= 45);
-        assert!(extracted.ends_with('…'));
+        assert!(!extracted.ends_with('…'));
+        assert!(!extracted.ends_with('.'));
     }
 
     #[test]
