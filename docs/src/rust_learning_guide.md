@@ -1181,7 +1181,7 @@ flowchart TD
         Discovery["Capability Prober<br/>(Probes /props & /api/show)"]
         BudgetEngine["Dynamic Budget<br/>(Saturating token math)"]
         ModelAwareTokenize["Model-Aware Tokenizer<br/>(TokenizerKind BPE/SentencePiece)"]
-        Chunker["Text Chunker & Compressor<br/>(Lead/tail & BM25 Q&A grounding)"]
+        Chunker["Text Chunker & Compressor<br/>(Heading-skeleton + BM25 compression & Q&A)"]
         LLM["AI Client<br/>(Streams tokens from local LLM)"]
     end
 
@@ -1222,7 +1222,7 @@ flowchart TD
 1. **System & Profiling Layer (`src/system/`)**: Detects physical host memory and CPU architecture via safe native kernel sysctls/WMI and procfs, classifying machines into hardware tiers and recommending optimal high-fidelity Gemma 4 quantization presets (`Q8_0`), alongside zero-dependency SHA-256 hashing (`sha256.rs`), DEFLATE ZIP reading (`zip.rs`), and streaming XML parsing (`XmlScanner`).
 2. **CLI Layer (`src/main.rs`, `src/config/`, `src/commands/`)**: Parses arguments with `clap`, merges defaults from `config.toml`, probes sub-millisecond cache fast-paths, and resolves user intentions into strongly typed `ResolvedAction` variants using exhaustive `match`—dispatching summaries, grounded Q&A (`srz ask`), model recommendations (`srz recommend`), health checks (`srz doctor`), or self-upgrades (`srz upgrade`).
 3. **Sources Layer (`src/sources/`)**: Fetches data from webpages, YouTube timed-text caption tracks (XML/JSON3), PDF documents, EPUB ebooks (`.epub` via `text_util::XmlScanner` and `crate::system::zip`), local text/JSON files, Unix stdin streams, Open Library & Wikipedia book candidates, and live Google News / RSS / Atom / JSON feeds. Uses `dom_smoothie` (Mozilla Readability) and streaming `text_util::XmlScanner` event parsing, enforcing strict SSRF URL checks and byte limits.
-4. **Engine Layer (`src/engine/`)**: Discovers OpenAI/llama.cpp/Ollama server capabilities (`n_ctx`), eliminates tokenizer drift via model-aware `TokenizerKind` profiles, compresses oversized texts via 65%/35% lead/tail splitting, ranks Q&A passages via BM25, and dynamically sizes context budgets and completion headroom (`DynamicBudget`).
+4. **Engine Layer (`src/engine/`)**: Discovers OpenAI/llama.cpp/Ollama server capabilities (`n_ctx`), eliminates tokenizer drift via model-aware `TokenizerKind` profiles, compresses oversized texts via heading-skeleton + centroid BM25 salience and lead/tail anchoring, ranks Q&A passages via BM25, and dynamically sizes context budgets and completion headroom (`DynamicBudget`).
 5. **Storage Layer (`src/storage/`)**: Caches server capabilities (`cache_caps`), scraped pages (`cache_pages`), and search metadata (`cache_search`), and persists reading history (`history` + `cache_key_to_id`) and chat sessions (`chat_sessions`, `chat_messages`) inside pure-Rust `redb` (`srz.db`) using borrowed records (`NewSummaryRecord<'a>`) and stop-word-filtered title-weighted `srz find` search, while keeping rendered HTML/MD files opt-in under `views/`.
 6. **UI Layer (`src/ui/`)**: Renders styled Markdown/HTML via shared CommonMark/GFM parser `ui::markdown`, streams dual-channel reasoning `<think>` tokens to `stderr` and summary text to `stdout`, routes tall outputs to the system `$PAGER`, emits subtle 1-line context advisor footers for constrained hardware, and hosts full-screen interactive browsing safely restored on exit via RAII `TerminalSessionGuard`.
 

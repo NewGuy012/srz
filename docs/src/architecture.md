@@ -47,7 +47,7 @@ flowchart TD
         RefScrape --> Threshold
         NewsScrape --> NewsBriefing["News Digest Synthesis"]
         Grounding --> MultiTurn["Multi-Turn Q&A Prompt Framing"]
-        Threshold -->|"Yes"| StratifiedCompress["CPU Lead/Tail Salience Compression\n(65% Lead / 35% Tail Paragraphs)"]
+        Threshold -->|"Yes"| StratifiedCompress["CPU Stratified Salience Compression\n(Headings Skeleton + Centroid BM25 + Lead/Tail)"]
         Threshold -->|"No"| SinglePass["Direct Single Pass"]
         StratifiedCompress --> SinglePass
         SinglePass --> SSE["Zero-Copy SSE Streaming Client"]
@@ -98,7 +98,7 @@ src/
 | | [`src/commands/library.rs`](https://github.com/NewGuy012/srz/blob/master/src/commands/library.rs) | `commands::library` | Handlers for `history`, `stats`, `find` (title-weighted offline search), and `export`. |
 | | [`src/commands/diagnostics.rs`](https://github.com/NewGuy012/srz/blob/master/src/commands/diagnostics.rs) | `commands::diagnostics` | Backend verification (`doctor`), model enumeration, and config inspection. |
 | **Configuration** | [`src/config/cli.rs`](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs) | `config::cli` | `clap` CLI parser, style presets, flags, target auto-detection heuristics, `config.toml` profiles, symlink-safe config loading, and template generation. |
-| **Engine** | [`src/engine/compressor.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/compressor.rs) | `engine::compressor` | CPU Lead/Tail Compression (65% lead / 35% tail paragraphs) and Robertson-Sparck Jones BM25 context retrieval for `srz ask`. |
+| **Engine** | [`src/engine/compressor.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/compressor.rs) | `engine::compressor` | CPU Heading-Skeleton + Centroid BM25 Stratified Salience Compression and Robertson-Sparck Jones BM25 context retrieval for `srz ask`. |
 | | [`src/engine/llm.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/llm.rs) | `engine::llm` | High-level LLM client, single-pass streaming orchestration, book summarization, and news digest synthesis. |
 | | [`src/engine/sse.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/sse.rs) | `engine::sse` | Zero-copy SSE parser, streaming state machine, live thinking token/elapsed spinner formatting, and generation rate tracking. |
 | | [`src/engine/prompts.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/prompts.rs) | `engine::prompts` | Prompt templating, XML boundary escaping, and untrusted prompt wrapping. |
@@ -350,18 +350,19 @@ Query terms are stop-word filtered and deduplicated first so rare domain concept
 
 Across modern laptops and workstations, `srz` steers users toward **Google Gemma 4 at 8-bit quantization (`Q8_0`)** as its reference profile. Gemma 4 delivers high parameter density and strong instruction adherence across long context windows with low battery draw. Running at `Q8_0` preserves near-FP16 semantic fidelity and avoids the nuance degradation common in aggressive 4-bit quantizations while fitting comfortably within unified memory budgets. See the [Hardware Tier Reference Matrix](quickstart.md#hardware-tier-reference-matrix) for tier-by-tier recommendations.
 
-### Synthesis Strategy: Single-Pass with CPU Lead/Tail Salience Compression
+### Synthesis Strategy: Single-Pass with CPU Stratified Salience Compression
 
 Local LLMs have an asymmetric latency profile: prompt prefill runs compute-bound at high throughput, while token generation (decode) is memory-bandwidth bound. Traditional Map-Reduce and recursive tree reduction multiply decoding passes, forcing the local runner through sequential intermediate generation loops that lock up consumer GPUs and unified memory.
 
 To eliminate multi-minute latency on local machines, `srz` guarantees **Single-Pass Streaming Synthesis** across all document lengths:
 
 1. **Direct Single-Pass**: When a document fits within `single_pass_threshold`, `srz` feeds the complete text directly into the model's attention window, preserving global thematic coherence and full cross-chapter context.
-2. **CPU Lead/Tail Compression (`compress_document_stratified`)**: When content exceeds `single_pass_threshold` (such as long PDF reports or 300-page EPUB books), `srz` compresses the document deterministically in **< 20ms on the CPU**:
-   - Evaluates an $O(1)$ byte-length fast path (`content.len() <= max_tokens`) to skip compression on short inputs.
-   - Splits non-empty paragraphs on `\n\n` boundaries (falling back to binary-search token truncation via `TextChunker::truncate_by_tokens` for monolithic single-paragraph blocks).
-   - Allocates **65%** of the token budget to leading paragraphs (establishing premises, definitions, and opening chapters) and the remaining **35%** to trailing paragraphs (preserving conclusions and final synthesis), joined by `\n\n...\n\n`.
-   - Enforces a final token check via the active `TokenizerKind` profile, truncating on clean boundaries if needed so total input stays $\le \text{single\_pass\_threshold}$.
+2. **CPU Stratified Salience Compression (`compress_document_stratified`)**: When content exceeds `single_pass_threshold` (such as long PDF reports, transcripts, or 300-page EPUB books), `srz` compresses the document deterministically in milliseconds on the CPU:
+   - Evaluates an $O(1)$ byte-length fast path (`content.len() <= max_tokens`) and token check to skip compression on inputs that already fit.
+   - Parses paragraphs and ATX Markdown headings (`#`, `##`, `###`, including `[MM:SS]`/`[HH:MM:SS]` timestamped YouTube chapter headings) while ignoring `#` comments inside fenced code blocks (```` ``` ```` / `~~~`), subdividing oversized blocks on line, sentence, and word boundaries.
+   - Anchors opening and closing segments (**25%** lead / **15%** tail budget caps) and preserves a document-wide outline skeleton of `#`, `##`, and `###` headings (up to **30%** of the budget, prioritizing `#` -> `##` -> `###` with evenly spaced sampling on heading-heavy documents).
+   - Scores segments in a single $O(\text{bytes})$ pass against top document centroid terms (boosting heading and lead/tail anchor terms) via Robertson-Sparck Jones BM25 (`score_bm25_matrix`) and greedily fills the remaining budget with the highest-salience middle body paragraphs joined in document order with `\n\n...\n\n`.
+   - Enforces a strict `<= single_pass_threshold` check across every active `TokenizerKind` profile by evicting lower-priority middle selections before anchors and safely trimming on clean boundaries if needed.
 
 This guarantees that every command streams live output to the terminal without recursive tree reduction loops or context overflow.
 
@@ -389,7 +390,7 @@ To eliminate the 15–25% token count drift typical when applying generic BPE to
 
 | Subsystem | Core Optimization | Architectural Benefit |
 | :--- | :--- | :--- |
-| **LLM Inference** | Single-Pass Streaming + CPU Lead/Tail Compression + Zero-Drift Tokenization | Fast live streaming on long documents without multi-pass decode penalties. |
+| **LLM Inference** | Single-Pass Streaming + CPU Stratified Salience Compression + Zero-Drift Tokenization | Fast live streaming on long documents without multi-pass decode penalties. |
 | **Streaming & Reasoning** | Live dimmed chain-of-thought on `stderr` + line-buffered `StreamMarkdownRenderer` | Real-time cognitive visibility; flicker-free ANSI Markdown without mid-line style breaks. |
 | **Unix Stream Separation** | Strict stream routing: clean stdout for pipelines; diagnostics and links on `stderr` | Seamless piping into UNIX tools (`jq`, `cat`, files) without ANSI code contamination. |
 | **Terminal & Pager** | Unified document composition piped directly into `$PAGER` (`less -RFX`) | Header, body, links, and hints kept together without viewport truncation. |
@@ -416,7 +417,7 @@ When answering questions in `srz ask`, candidate document chunks are scored in m
 To eliminate latency on uncached runs, `srz` activates transparent HTTP `gzip` payload compression across web scraping, feed parsing, and API roundtrips. During startup on uncached book summaries, LLM capability probing (`/props` or `/api/show`) runs concurrently with target search via `tokio::join!`, and opportunistic storage maintenance (`maybe_auto_prune`) is deferred until after output presentation.
 
 #### Style-Aware Token Budgeting & CPU Context Compression
-Rather than allocating a fixed 8,192-token completion budget regardless of requested length, `srz` scales default completion reservations dynamically based on summary preset (`concise` $\to$ 1,536, `bullets` $\to$ 2,048, `detailed` $\to$ 8,192). This expands available input context on concise and bulleted runs, allowing medium-length documents and transcripts to fit in a single uncompressed inference pass. When documents exceed context capacity, CPU Lead/Tail Salience Compression (`compress_document_stratified`) trims the text to fit within `single_pass_threshold` in <20ms, ensuring all outputs stream live in a single generation pass.
+Rather than allocating a fixed 8,192-token completion budget regardless of requested length, `srz` scales default completion reservations dynamically based on summary preset (`concise` $\to$ 1,536, `bullets` $\to$ 2,048, `detailed` $\to$ 8,192). This expands available input context on concise and bulleted runs, allowing medium-length documents and transcripts to fit in a single uncompressed inference pass. When documents exceed context capacity, CPU Stratified Salience Compression (`compress_document_stratified`) preserves structural headings alongside lead/tail anchors and top centroid BM25 middle paragraphs to fit within `single_pass_threshold` in milliseconds, ensuring all outputs stream live in a single generation pass.
 
 #### Boilerplate HTML Tag Stripping & PDF Clean Extraction
 Before parsing web pages with Mozilla Readability, raw HTML is scanned to strip `<script>`, `<style>`, `<svg>`, and `<noscript>` blocks, reducing DOM tree size substantially on hydration-heavy sites. For PDF documents, `PdfExtractor` strips trailing `References`, `Bibliography`, and inline citation markers (`[1]`, `[12, 15]`), reconstructs natural paragraph boundaries, and remote PDF extractions are cached in `cache_pages` to accelerate subsequent style adjustments and interactive chat.

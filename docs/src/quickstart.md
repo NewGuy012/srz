@@ -107,7 +107,7 @@ How `srz` processes your document depends on the relationship between document t
 
 When a document fits inside `single_pass_threshold` (roughly 70% of the context window after reserving completion tokens, a 500-token system margin, and a 5% cushion), `srz` synthesizes the text directly in a single pass (`1-Pass Mode`). This mode yields the highest-quality summaries because the model maintains complete narrative and thematic awareness simultaneously.
 
-When a document exceeds that threshold—such as a long book or a multi-chapter research report—`srz` automatically applies **CPU Lead/Tail Salience Compression** (`compress_document_stratified`). Rather than running slow, multi-pass Map-Reduce loops that tie up local GPU memory, `srz` preserves the opening premise (~65% of the token budget) and closing synthesis/conclusions (~35%) from paragraph boundaries in `< 20ms` on the CPU, generating the final summary in one fast streaming pass.
+When a document exceeds that threshold—such as a long book, transcript, or multi-chapter research report—`srz` automatically applies **CPU Stratified Salience Compression** (`compress_document_stratified`). Rather than running slow, multi-pass Map-Reduce loops that tie up local GPU memory, `srz` anchors the opening premise and closing conclusion, preserves a Markdown heading outline (`#`, `##`, `###`, plus timestamped YouTube chapters), and fills remaining budget with the highest-salience middle paragraphs ranked via centroid BM25 on the CPU—generating the final summary in one fast streaming pass.
 
 ### Why Google Gemma 4 (`Q8_0`) on Laptops
 
