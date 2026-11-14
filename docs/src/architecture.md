@@ -233,7 +233,7 @@ Before assuming leftover text is a book title, `srz` compares single words again
 Within web links, `srz` routes special links automatically. YouTube links (`youtube.com/watch`, `youtu.be/`, `/shorts/`) pull subtitles and chapters directly without downloading video files. Links ending in `.pdf` extract readable text from the PDF, and ordinary webpages are fetched and stripped of ads and menus.
 
 #### Follow-Up Q&A (`srz ask`)
-`srz ask` works with a target plus a question (`srz ask article.pdf "what changed?"`), or with just a question on its own (`srz ask "what changed?"`). When you leave out the target, `srz` automatically looks up your most recent summary in `srz.db`, and if the cached copy of that page or file has expired, it refreshes the source before searching for passages to answer your question.
+`srz ask` works with a target plus a question (`srz ask article.pdf "what changed?"`), or with just a question on its own (`srz ask "what changed?"`). Local file targets share the canonical `file://` page cache in `srz.db` (`load_file_with_cache`) between `srz <file>` and `srz ask <file>`. When you leave out the target, `srz` automatically looks up your most recent summary in `srz.db`, and if the cached copy of that page or file has expired, it refreshes the source before searching for passages to answer your question.
 
 #### Multi-Model Routers & Proxies
 If you use a local router or proxy that serves multiple AI models (`llama.cpp` routers often report a placeholder `n_ctx: 0`), `srz` notices automatically and sends a second check specifically for your selected model so it still gets the right context window size.
@@ -397,7 +397,7 @@ Because different AI models count words and subwords slightly differently (off b
 ### How `srz` Stays Fast
 
 #### Smooth Live Streaming Without Mid-Word Glitches
-As answers arrive from your AI server, `srz` reads text fragments directly from the network buffer without unnecessary copying, and skips heavy sizing work completely on short inputs. When `--stream` is active, output waits for each complete line and tracks code blocks cleanly so terminal bolding, lists, and syntax styling never break mid-word.
+As answers arrive from your AI server, `srz` reads text fragments directly from the network buffer without unnecessary copying, and skips heavy sizing work completely on short inputs. When `--stream` is active, `StreamMarkdownRenderer` buffers complete lines and shares the CommonMark fence parser (`parse_fence_open` / `is_fence_close`) across backtick and tilde code blocks so terminal bolding, lists, and syntax styling never break mid-word.
 
 #### Faster Google News Link Resolution
 Google News feeds wrap article addresses inside encoded links that normally require multiple extra web requests just to find the real website. `srz` decodes those links offline right away—cutting feed loading time by roughly 60–90%—downloads articles concurrently within a safe cap, caches scraped pages, and falls back gracefully to the news feed's short summary when a publisher site is paywalled.
@@ -425,7 +425,7 @@ Before extracting article text from HTML, `srz` removes scripts, stylesheets, ve
 Every line of `srz` is written in 100% safe Rust—`unsafe` code is banned project-wide at the compiler level (`#![forbid(unsafe_code)]` in both `src/lib.rs` and `src/main.rs`). That means whole classes of memory corruption, buffer overflows, and crash bugs are prevented at compile time.
 
 ### Private Local Storage & Safe File Writes
-`srz` never sends telemetry, analytics, or usage data anywhere. Its history and cache folders are locked to your user account only (`0700` directory and `0600` file permissions). Settings files (`config.toml`), databases, and updates refuse shortcut links (`symlinks`) and write safely through temporary files before renaming, blocking tricks that attempt to overwrite unrelated system files.
+`srz` never sends telemetry, analytics, or usage data anywhere. Its history and cache folders are locked to your user account only (`0700` directory and `0600` file permissions). Settings files (`config.toml`), local document loads (`fs_util::read_file_bytes_limited` inspecting file-descriptor metadata before bounded reads), databases, and updates refuse shortcut links (`symlinks`) and write safely through temporary files before renaming, blocking tricks that attempt to overwrite unrelated system files. EPUB ZIP entry resolution (`resolve_epub_path`) additionally normalizes both `/` and `\` segments after percent-decoding to clamp in-archive path traversal.
 
 ### Keeping Web Text Separate from Instructions
 Because downloaded webpages and PDFs can contain hidden prompt-injection instructions, `srz` wraps all external content inside `<source_document>` boundaries and neutralizes any look-alike closing tags inside the text so untrusted documents stay strictly treated as data to summarize.
@@ -434,7 +434,7 @@ Because downloaded webpages and PDFs can contain hidden prompt-injection instruc
 Untrusted webpage titles and model outputs can contain hidden terminal control sequences that corrupt your screen, fake text direction, or interact with clipboard escapes. `srz` filters all titles, metadata, spinners, and streamed text through `sanitize_terminal_text` before anything prints to your terminal.
 
 ### Network Limits & Verified Self-Updates
-Every public web request (`srz` articles, remote PDFs, feeds, and redirects up to 10 hops) checks the destination address first (`validate_public_http_url`) to block accidental or malicious connections to your local machine, home network, or cloud metadata addresses—alongside strict size caps (10 MB for webpages and piped text, 20 MB for local files, and 50 MB for update archives) and request timeouts. When updating via `srz upgrade`, downloaded packages are verified against cryptographic SHA-256 checksums before swapping binaries cleanly with automatic rollback if anything fails.
+Every public web request (`srz` articles, remote PDFs, feeds, DuckDuckGo search result URLs, and redirects up to 10 hops) checks the destination address first (`validate_public_http_url`) to block accidental or malicious connections to your local machine, home network, or cloud metadata addresses—alongside strict size caps (10 MB for webpages and piped text, 20 MB for local files, and 50 MB for update archives) and request timeouts. When updating via `srz upgrade`, redirect hops are enforced as HTTPS-only public hosts (`validate_upgrade_redirect_url`) and downloaded packages are verified against cryptographic SHA-256 checksums before swapping binaries cleanly with automatic rollback if anything fails.
 
 ---
 

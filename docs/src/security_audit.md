@@ -3,7 +3,7 @@
 **Project:** `srz` (Summarize CLI)  
 **Repository:** [github.com/NewGuy012/srz](https://github.com/NewGuy012/srz)  
 **Language & Platform:** Rust (Edition 2024) · macOS / Linux / Windows  
-**Cumulative Posture:** 🛡️ **100% Safe Rust** (`#![forbid(unsafe_code)]` enforced) · ✅ **54 / 54 Audit Vulnerabilities + Post-v0.7.9 Hardening Resolved** · ✅ **242 / 242 Tests Passing**
+**Cumulative Posture:** 🛡️ **100% Safe Rust** (`#![forbid(unsafe_code)]` enforced) · ✅ **54 / 54 Audit Vulnerabilities + Post-v0.7.9 Hardening Resolved** · ✅ **199 / 199 Consolidated Tests Passing (193 unit + 6 integration)**
 
 This document serves as the reverse-chronological security audit ledger (latest audit first) for `srz`. Each audit section is recorded with its execution timestamp, assessed scope, identified vulnerabilities, implemented remediations, and verification results.
 
@@ -1371,19 +1371,13 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 ```
 
-### Complete Test Suite Breakdown (242 Total Tests)
+### Complete Test Suite Breakdown (199 Total Consolidated Tests)
 
-| Test Suite Module | Tests | Verified Security & Operational Controls | Result |
+| Test Suite Target | Tests | Verified Security & Operational Controls | Result |
 |:---|:---:|:---|:---:|
-| **`src/lib.rs` & `src/main.rs`** | 139 | Custom `ZipReader` stored/deflate bounds, bounded `StreamMarkdownRenderer` & `ProgressBar` escape sanitization, SSE reasoning/content limits, `DocumentLoader` TOCTOU & PDF text layer caps, Google News `CBMi`/`batchexecute` SSRF validation, LLM error UTF-8 boundary & ANSI sanitization, chat session key-range & CSV formula hardening, EPUB decompression bounds & deduplication, YouTube captions & SSRF checks, TUI filtering & sanitization, `DynamicBudget` overflow safety, safe Markdown URL neutralization, config symlink & size bounds, shell completion surface checks | ✅ Pass |
-| **`tests/integration/cache.rs`** | 15 | POSIX `0700`/`0600` modes, SHA-256 keys, auto-prune, capability cache invalidation, unified `redb` cache & permissions, news timeframe discrimination, LRU eviction | ✅ Pass |
-| **`tests/integration/cli.rs`** | 34 | Flag parsing precedence, target auto-detection, subcommands, output formats, upgrade flags, `--show-thinking`, Llama GUI naming, `doctor` | ✅ Pass |
-| **`tests/integration/config.rs`** | 7 | Safe config deserialization, profile & env override rules, saturating arithmetic, context window merge | ✅ Pass |
-| **`tests/integration/content.rs`** | 11 | CSP injection, single quote escaping, case-insensitive closing tag escaping, ask prompt guardrails, HTML & ANSI Markdown rendering, PDF/EPUB extraction | ✅ Pass |
-| **`tests/integration/db.rs`** | 15 | ACID `redb` transactions, safe multibyte UTF-8 snippet extraction, symlink refusal on `Database::open_at` & exports, CSV formula escaping & Markdown vault escaping, title-weighted library search, chat lifecycle | ✅ Pass |
-| **`tests/integration/search.rs`** | 8 | Wikipedia & DuckDuckGo disambiguation, URL deduplication, work description parsing, candidate ranking, client pooling | ✅ Pass |
-| **`tests/integration/upgrade.rs`** | 13 | Atomic temp file creation, staged cleanup on error, symlink overwrite rejection, SHA-256 verification, version tag canonicalization, `tar.gz` stream bomb/typeflag/octal/empty rejection & `.zip` empty binary checks | ✅ Pass |
-| **Total** | **242 / 242** | **Zero Failures · Zero Ignored · Zero Clippy Warnings · `#![forbid(unsafe_code)]`** | ✅ **100% Pass** |
+| **`src/lib.rs` (unit tests)** | 193 | Custom `ZipReader` stored/deflate bounds, bounded `StreamMarkdownRenderer` & `ProgressBar` escape sanitization, SSE reasoning/content limits, unified FD-based TOCTOU & symlink-safe `read_file_bytes_limited`, PDF text layer caps, DuckDuckGo & Google News `CBMi`/`batchexecute` SSRF validation, `srz upgrade` HTTPS-only public-host redirect validation & archive bomb/symlink rejection, EPUB ZIP `/`+`\` path normalization & deduplication, LLM error UTF-8 boundary & ANSI sanitization, chat session key-range & CSV/Markdown vault escaping, safe Markdown URL neutralization, `DynamicBudget` & `TextChunker` bounds, TUI filtering & sanitization, cache TTL/LRU & SHA-256 keys, shell completion surface checks | ✅ Pass |
+| **`tests/integration_tests.rs` (integration)** | 6 | Cross-module CLI target resolution & typo guards, config TOML deserialization & CLI merge, PDF asset extraction & search/news/LLM client construction, `recommend`/`doctor` command execution | ✅ Pass |
+| **Total** | **199 / 199** | **Zero Failures · Zero Ignored · Zero Clippy Warnings · `#![forbid(unsafe_code)]`** | ✅ **100% Pass** |
 
 ---
 
@@ -1393,7 +1387,7 @@ cargo clippy --all-targets -- -D warnings
 While `srz` is hardened for local CLI usage across macOS, Linux, and Windows, the following recommendations and completed security remediations are documented:
 
 ### 1. Server-Side Request Forgery (SSRF) Guardrails (✅ Completed & Hardened)
-* **Implementation:** `validate_public_http_url` and `validate_parsed_public_http_url` enforce strict public-host validation across `WebScraper` (including HTTP redirects), remote PDF fetches (`fetch_url_content`), and direct RSS/Atom feed URLs (`GoogleNewsClient::fetch_feed`), rejecting embedded userinfo credentials, IPv6 zone IDs (`%`), loopback/private RFC 1918 subnets, cloud metadata (`169.254.169.254`), link-local/ULA/multicast/unspecified ranges, and special-purpose IPv6 blocks (NAT64, Teredo, 6to4, Discard-Only, Benchmarking, Documentation).
+* **Implementation:** `validate_public_http_url` and `validate_parsed_public_http_url` enforce strict public-host validation across `WebScraper` (including HTTP redirects), DuckDuckGo search result URLs (`search_duckduckgo`), remote PDF fetches (`fetch_url_content`), direct RSS/Atom feed URLs (`GoogleNewsClient::fetch_feed`), and `srz upgrade` download redirects (`validate_upgrade_redirect_url`, also requiring `https`), rejecting embedded userinfo credentials, IPv6 zone IDs (`%`), loopback/private RFC 1918 subnets, cloud metadata (`169.254.169.254`), link-local/ULA/multicast/unspecified ranges, and special-purpose IPv6 blocks (NAT64, Teredo, 6to4, Discard-Only, Benchmarking, Documentation).
 
 ### 2. Automated Dependency Auditing in CI (✅ Completed in Audit #3 & Audit #4)
 * **Implementation:** Deployed `.github/workflows/ci.yml` integrating `rustsec/audit-check@v1.4.1` and dual-OS matrix testing on every push and PR to `master`, triggered on all code and `Cargo.toml`/`Cargo.lock` changes.
@@ -1404,5 +1398,5 @@ While `srz` is hardened for local CLI usage across macOS, Linux, and Windows, th
 ### 4. Supply Chain Attack Surface Reduction & Dependency Elimination (✅ Completed)
 * **Implementation:** Eliminated redundant external dependencies (`rustyline`, `termimad`, `tar`, `indicatif`, `zip`, `htmd`, `clap_complete`, `quick-xml`, `pulldown-cmark`, `scraper`, `duckdb`) in favor of `redb` plus zero-dependency in-tree streaming parsers (`text_util::XmlScanner`, `ui::markdown`), terminal controls, deflate/ustar extractors, and shell completions, dramatically shrinking the transitive dependency tree and supply-chain exposure.
 
-### 5. Symlink & Configuration File Hardening (✅ Completed)
-* **Implementation:** `Config::load_from_path`, `Database::open_at`, and `upgrade::replace_binary` inspect `fs::symlink_metadata` to refuse symlinks (`CWE-59`) and non-regular files, and bound config reads with `.take(MAX_CONFIG_BYTES + 1)` to prevent TOCTOU oversized reads.
+### 5. Symlink, TOCTOU & Path Normalization Hardening (✅ Completed)
+* **Implementation:** `Config::load_from_path`, local document loading (`PdfExtractor`, `EpubExtractor`, `DocumentLoader`), `Database::open_at`, and `upgrade::replace_binary` refuse symlinks (`CWE-59`) and non-regular files. `fs_util::read_file_bytes_limited` opens the file first, validates `file.metadata()` on the live file descriptor to eliminate TOCTOU races, and caps reads with `.take(max_bytes + 1)`. Inside EPUB archives, `resolve_epub_path` decodes percent-encoded separators and normalizes both `/` and `\` traversal segments.
