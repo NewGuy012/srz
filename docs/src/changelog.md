@@ -22,6 +22,20 @@ All notable changes to `srz` are documented in this file.
 
 ---
 
+## v0.7.12
+
+### Summary
+
+> Upgrades document compression to preserve hierarchical outlines and top BM25-salient middle passages in one pass, refines word-wrapped terminal streaming and sentence-case thinking spinners, fixes `srz ask` local-file cache reuse, and hardens search, EPUB path, config, and self-upgrade boundaries alongside a broad codebase and documentation cleanup.
+
+### Changes
+- **Hierarchical Salience Compression**: Upgraded `compress_document_stratified` to retain full `#`, `##`, and `###` Markdown outlines (including `[MM:SS]` / `[HH:MM:SS]` YouTube chapters), lead/tail anchors, and top centroid BM25-salient middle paragraphs, while streamlining body segmentation and strict tokenizer-aware truncation (`TextChunker::truncate_to_budget`).
+- **Terminal Wrapping, Streaming Fences & Thinking UI**: Added word-boundary terminal wrapping across plain, streamed, and Q&A output (`StreamMarkdownRenderer`), unified CommonMark backtick/tilde code-fence tracking, refined live thinking spinners to show sentence-case reasoning headlines without active elapsed-time churn, and lowercased news timeframe display labels (`today / past 24 hours`, `past week`, `past month`, `all time`).
+- **Local-File Cache Reuse & Security Hardening**: Fixed `srz ask` to reuse canonical `file://` page caches populated by `srz <file>`; enforced SSRF validation on DuckDuckGo result URLs and HTTPS-only public-host redirect checks (`validate_upgrade_redirect_url`) in `srz upgrade`; normalized `/` and `\` percent-decoded EPUB ZIP paths; and unified FD-verified bounded file reading (`read_file_bytes_limited`) across config and document loaders.
+- **Codebase Simplification & Documentation**: Consolidated duplicated helpers (HTML escaping, case-insensitive matching, `redb` cache cleanup, hardware host JSON, URL domain parsing, and shared storage test fixtures), pruned dead code and redundant tests, ordered the security audit ledger newest-first, disabled unused `book.toml` sidebar folds, and updated architecture and security docs.
+
+---
+
 ## v0.7.11
 
 ### Summary
@@ -32,7 +46,7 @@ All notable changes to `srz` are documented in this file.
 - **Dependency Upgrades & Semver Constraints**: Upgraded `redb` (`4.5.0` → `4.6.0`), `toml` (`1.1.8` → `1.2.1`), and `flate2` (`1.1.10` → `1.1.11`), and loosened `Cargo.toml` version constraints to compatible major/minor ranges (`1`, `0.30`, `0.29`, `0.12`).
 - **Installer & Script Hardening**: Hardened `scripts/install.sh` (`set -eu`, strict semver validation, signal cleanup traps, atomic `mktemp` binary install) and `scripts/install.ps1` (scoped preference restoration, case-sensitive semver check, PowerShell 5.1/7 compatibility); improved `scripts/release.sh` (`--locked` tests, safe dry-run checks, exact changelog/tag validation) and `.githooks/pre-commit` for partially staged files.
 - **CI, Release & Security Pipelines**: Pinned GitHub Actions to commit SHAs with least-privilege permissions, enforced `wildcards = "deny"` in `deny.toml` and packaging dry-runs in CI, and added post-release SLSA provenance and installer/self-upgrade verification.
-- **Codebase Simplification, Security Hardening & Test Consolidation**: Consolidated duplicated helpers (HTML escaping, case-insensitive matching, hardware host JSON, redb cache cleanup, FD-based `read_file_bytes_limited`, and CommonMark fence tracking in `StreamMarkdownRenderer`); simplified token budget truncation, URL domain parsing, and body segmentation; fixed `srz ask` reuse of cached local `file://` documents; hardened DuckDuckGo result URLs, EPUB `/`+`\` path normalization, and `srz upgrade` HTTPS-only public-host redirects; pruned dead code; consolidated unit and integration tests into owning `src/` modules and table-driven `tests/integration_tests.rs`; and updated architecture and security docs.
+- **Codebase Simplification & Test Consolidation**: Simplified and deduplicated internal helpers, tightened module visibility and re-exports, pruned dead code, consolidated unit and integration tests into owning `src/` modules and table-driven `tests/integration_tests.rs`, and updated architecture and guide docs.
 
 ---
 
