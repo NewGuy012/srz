@@ -296,11 +296,8 @@ impl SseStreamState {
                     .thinking_start
                     .map(|t| t.elapsed().as_secs_f64())
                     .unwrap_or(0.0);
-                let duration_str = format_thinking_duration(elapsed_s);
-                pb.set_message(format!(
-                    "💭 Thinking... ({} tokens • {})",
-                    self.thinking_tokens, duration_str
-                ));
+                let step = extract_reasoning_step(&self.reasoning_buf);
+                pb.set_message(format_thinking_spinner_message(step.as_deref(), elapsed_s));
             }
         }
 
@@ -338,10 +335,7 @@ impl SseStreamState {
             }
         } else if self.thinking_tokens > 0 {
             let total_duration_str = format_thinking_duration(total_elapsed_s);
-            let thought_line = format!(
-                "💭 Thought for {} ({} tokens)",
-                total_duration_str, self.thinking_tokens
-            );
+            let thought_line = format!("💭 Thought for {}", total_duration_str);
 
             if matches!(mode, StreamMode::Buffered) {
                 pb.println(thought_line);
@@ -419,20 +413,137 @@ fn update_generating_spinner(pb: &crate::ui::ProgressBar, spinner_label: &str) {
     pb.set_message(format!("{}...", gen_label));
 }
 
-/// Formats an elapsed thinking duration into a clean Antigravity/Gemini style string (e.g., "4s", "19s", "35s", "0.4s").
+/// Formats an elapsed thinking duration consistently (`"0.4s"`, `"2.0s"`, `"12.3s"`, `"1m 5s"`).
 pub fn format_thinking_duration(secs: f64) -> String {
-    if secs < 1.0 {
-        format!("{:.1}s", secs)
-    } else if secs < 10.0 {
-        let rounded_10 = (secs * 10.0).round();
-        if rounded_10 % 10.0 == 0.0 {
-            format!("{}s", (rounded_10 / 10.0) as u64)
-        } else {
-            format!("{:.1}s", secs)
-        }
+    let tenths = if secs.is_finite() && secs > 0.0 {
+        (secs * 10.0).round() as u64
     } else {
-        format!("{}s", secs.round() as u64)
+        0
+    };
+    if tenths < 600 {
+        format!("{}.{}s", tenths / 10, tenths % 10)
+    } else {
+        let total_secs = (tenths + 5) / 10;
+        format!("{}m {}s", total_secs / 60, total_secs % 60)
     }
+}
+
+fn format_thinking_spinner_message(step: Option<&str>, elapsed_s: f64) -> String {
+    let duration_str = format_thinking_duration(elapsed_s);
+    match step {
+        Some(s) => format!("💭 Thinking ({duration_str:>5}): {s}..."),
+        None => format!("💭 Thinking ({duration_str:>5})..."),
+    }
+}
+
+/// Extracts the latest top-level reasoning step header in Title Case from `reasoning`.
+pub fn extract_reasoning_step(reasoning: &str) -> Option<String> {
+    let ends_with_nl = reasoning.ends_with('\n');
+    for (idx, raw_line) in reasoning.rsplit('\n').take(20).enumerate() {
+        let allow_heading = idx > 0 || ends_with_nl;
+        let Some(candidate) = extract_step_candidate(raw_line, allow_heading) else {
+            continue;
+        };
+        let cleaned = clean_step_text(candidate);
+        if cleaned.chars().count() >= 4 {
+            return Some(truncate_step(&to_title_case(&cleaned), 45));
+        }
+    }
+    None
+}
+
+fn strip_list_number(s: &str) -> &str {
+    let digits = s.bytes().take_while(u8::is_ascii_digit).count();
+    if digits > 0 && (s[digits..].starts_with(". ") || s[digits..].starts_with(") ")) {
+        s[digits + 2..].trim_start()
+    } else {
+        s
+    }
+}
+
+fn extract_step_candidate(line: &str, allow_heading: bool) -> Option<&str> {
+    let trimmed = line.trim_end_matches(['\r', ' ', '\t']);
+    if trimmed.is_empty()
+        || trimmed.starts_with([' ', '\t'])
+        || trimmed.starts_with("- ")
+        || trimmed.starts_with("+ ")
+        || (trimmed.starts_with('*') && !trimmed.starts_with("**"))
+    {
+        return None;
+    }
+    if allow_heading && trimmed.starts_with('#') {
+        let text = trimmed.trim_start_matches('#').trim();
+        return (!text.is_empty()).then_some(text);
+    }
+    let rest = strip_list_number(trimmed).strip_prefix("**")?;
+    let end = rest.find("**")?;
+    let inner = rest[..end].trim();
+    (!inner.is_empty()).then_some(inner)
+}
+
+fn clean_step_text(s: &str) -> String {
+    let stripped: String = s
+        .chars()
+        .filter(|&c| !matches!(c, '*' | '_' | '#' | '`'))
+        .collect();
+    strip_list_number(stripped.trim())
+        .trim_matches(|c: char| c.is_whitespace() || matches!(c, ':' | '.' | '-'))
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn to_title_case(s: &str) -> String {
+    const MINOR: &[&str] = &[
+        "a", "an", "the", "and", "or", "but", "for", "of", "in", "on", "at", "to", "by", "with",
+        "from", "as", "into", "vs", "via",
+    ];
+    let all_caps = s
+        .chars()
+        .filter(|c| c.is_alphabetic())
+        .all(char::is_uppercase);
+    let mut out = String::with_capacity(s.len());
+    let mut start_of_phrase = true;
+    for word in s.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        let alpha_count = word.chars().filter(|c| c.is_alphabetic()).count();
+        let is_acronym = !all_caps
+            && (2..=4).contains(&alpha_count)
+            && word.chars().all(|c| !c.is_alphabetic() || c.is_uppercase());
+        let lower = word.to_ascii_lowercase();
+        if !start_of_phrase && !is_acronym && MINOR.contains(&lower.as_str()) {
+            out.push_str(&lower);
+        } else if is_acronym {
+            out.push_str(word);
+        } else {
+            let mut capitalized = false;
+            for c in word.chars() {
+                if !capitalized && c.is_alphabetic() {
+                    out.extend(c.to_uppercase());
+                    capitalized = true;
+                } else {
+                    out.extend(c.to_lowercase());
+                }
+            }
+        }
+        start_of_phrase = word.ends_with(':');
+    }
+    out
+}
+
+fn truncate_step(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    let end = s
+        .char_indices()
+        .nth(max_chars.saturating_sub(1))
+        .map(|(idx, _)| idx)
+        .unwrap_or(s.len());
+    let cut = s[..end].rfind(' ').filter(|&i| i > 10).unwrap_or(end);
+    format!("{}…", s[..cut].trim_end_matches([' ', ':', '.', '-']))
 }
 
 pub(crate) fn compute_tokens_per_second(
@@ -514,11 +625,67 @@ mod tests {
     #[test]
     fn test_format_thinking_duration() {
         assert_eq!(format_thinking_duration(0.4), "0.4s");
-        assert_eq!(format_thinking_duration(4.0), "4s");
-        assert_eq!(format_thinking_duration(4.2), "4.2s");
-        assert_eq!(format_thinking_duration(19.0), "19s");
-        assert_eq!(format_thinking_duration(19.8), "20s");
-        assert_eq!(format_thinking_duration(35.2), "35s");
+        assert_eq!(format_thinking_duration(2.0), "2.0s");
+        assert_eq!(format_thinking_duration(2.7), "2.7s");
+        assert_eq!(format_thinking_duration(19.0), "19.0s");
+        assert_eq!(format_thinking_duration(59.96), "1m 0s");
+        assert_eq!(format_thinking_duration(65.0), "1m 5s");
+
+        // Live spinner keeps constant 5-char width without a leading zero
+        assert_eq!(
+            format_thinking_spinner_message(None, 2.0),
+            "💭 Thinking ( 2.0s)..."
+        );
+        assert_eq!(
+            format_thinking_spinner_message(None, 2.7),
+            "💭 Thinking ( 2.7s)..."
+        );
+        assert_eq!(
+            format_thinking_spinner_message(Some("Analyze the Request"), 12.3),
+            "💭 Thinking (12.3s): Analyze the Request..."
+        );
+    }
+
+    #[test]
+    fn test_extract_reasoning_step_title_case() {
+        // Bold numbered step + indented metadata sub-bullets are skipped automatically
+        let trace = "Here's a thinking process:\n\n1.  **Analyze the request:**\n    *   **Topic:** Nvidia\n    *   **Timeframe:** all time";
+        assert_eq!(
+            extract_reasoning_step(trace).as_deref(),
+            Some("Analyze the Request")
+        );
+
+        // Completed ATX heading + acronym preservation + minor-word lowercasing
+        let heading = "### 2. Comparing the US and LLM API stories\nReviewing sources";
+        assert_eq!(
+            extract_reasoning_step(heading).as_deref(),
+            Some("Comparing the US and LLM API Stories")
+        );
+
+        // Incomplete heading without trailing newline or unclosed bold does not flicker
+        assert_eq!(extract_reasoning_step("### Halfway"), None);
+        assert_eq!(extract_reasoning_step("**Unclosed bold"), None);
+
+        // Mid-sentence bold emphasis or plain prose returns None
+        assert_eq!(
+            extract_reasoning_step("The article mentions **Nvidia** chips in passing."),
+            None
+        );
+        assert_eq!(
+            extract_reasoning_step("Just thinking in plain prose."),
+            None
+        );
+
+        // ALL CAPS headings normalize to Title Case and long headings truncate cleanly
+        assert_eq!(
+            extract_reasoning_step("**ANALYZE THE REQUEST**").as_deref(),
+            Some("Analyze the Request")
+        );
+        let long =
+            "**Synthesizing comprehensive developments across all global semiconductor articles**";
+        let extracted = extract_reasoning_step(long).unwrap();
+        assert!(extracted.chars().count() <= 45);
+        assert!(extracted.ends_with('…'));
     }
 
     #[test]
