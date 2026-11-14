@@ -528,7 +528,7 @@ pub fn wrap_for_terminal<'a>(text: Cow<'a, str>, width: Option<usize>) -> Cow<'a
 /// Incremental line-buffered markdown stream renderer for real-time terminal output.
 pub struct StreamMarkdownRenderer {
     line_buf: String,
-    in_code_block: bool,
+    fence: Option<(u8, usize)>,
     use_color: bool,
     wrap_width: Option<usize>,
 }
@@ -547,7 +547,7 @@ impl StreamMarkdownRenderer {
     pub fn with_options(use_color: bool) -> Self {
         Self {
             line_buf: String::with_capacity(256),
-            in_code_block: false,
+            fence: None,
             use_color,
             wrap_width: terminal_width(),
         }
@@ -592,13 +592,29 @@ impl StreamMarkdownRenderer {
     fn render_complete_line(&mut self, line_trimmed: &str) -> String {
         let sanitized = sanitize_terminal_text_cow(line_trimmed);
         let safe = sanitized.as_ref();
+        let trimmed = safe.trim_start();
+        let in_fence = self.fence.is_some();
+        let is_fence_line = if let Some((ch, min_len)) = self.fence {
+            if super::markdown::is_fence_close(trimmed, ch, min_len) {
+                self.fence = None;
+                true
+            } else {
+                false
+            }
+        } else if let Some((ch, len, _)) = super::markdown::parse_fence_open(trimmed) {
+            self.fence = Some((ch, len));
+            true
+        } else {
+            false
+        };
+
         if !self.use_color {
-            let text = wrap_for_terminal(Cow::Borrowed(safe), self.wrap_width);
+            let width = self.wrap_width.filter(|_| !in_fence && !is_fence_line);
+            let text = wrap_for_terminal(Cow::Borrowed(safe), width);
             format!("{}\n", text)
-        } else if safe.trim_start().starts_with("```") {
-            self.in_code_block = !self.in_code_block;
+        } else if is_fence_line {
             format!("\x1b[32m{}\x1b[0m\n", safe)
-        } else if self.in_code_block {
+        } else if in_fence {
             format!("\x1b[32m  {}\x1b[0m\n", safe)
         } else if safe.is_empty() {
             "\n".to_string()
@@ -621,7 +637,7 @@ impl StreamMarkdownRenderer {
         } else {
             Cow::Owned(render_markdown(safe))
         };
-        let width = self.wrap_width.filter(|_| !self.in_code_block);
+        let width = self.wrap_width.filter(|_| self.fence.is_none());
         wrap_for_terminal(rendered, width).into_owned()
     }
 

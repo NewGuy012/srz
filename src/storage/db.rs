@@ -243,17 +243,10 @@ fn next_meta_id(write_txn: &redb::WriteTransaction, key: &str) -> Result<u64> {
 }
 
 fn extract_domain(url: &str) -> Option<String> {
-    let without_scheme = if let Some(rest) = url.strip_prefix("https://") {
-        rest
-    } else {
-        url.strip_prefix("http://")?
-    };
-    let host = without_scheme.split(&['/', ':', '?', '#'][..]).next()?;
-    if host.is_empty() {
-        None
-    } else {
-        Some(host.to_string())
-    }
+    let parsed = reqwest::Url::parse(url).ok()?;
+    matches!(parsed.scheme(), "http" | "https")
+        .then(|| parsed.host_str().map(str::to_string))
+        .flatten()
 }
 
 pub fn escape_yaml_string(s: &str) -> String {

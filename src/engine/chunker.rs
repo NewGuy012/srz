@@ -58,9 +58,26 @@ impl TokenizerKind {
 
 pub struct TextChunker;
 
+fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
+    idx = idx.min(s.len());
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
+}
+
+fn max_base_tokens(kind: TokenizerKind, max_tokens: usize) -> usize {
+    let scale = match kind {
+        TokenizerKind::Cl100k | TokenizerKind::O200k => 100,
+        TokenizerKind::Llama3 => 112,
+        TokenizerKind::Gemma => 118,
+    };
+    max_tokens.saturating_mul(100) / scale
+}
+
 impl TextChunker {
     /// Truncates `text` to `max_tokens` (estimated) while preserving paragraph boundaries and
-    /// returning `Cow::Borrowed` when under budget.
+    /// enforcing byte limits on unbroken tokens; returns `Cow::Borrowed` when under budget.
     pub fn truncate_by_tokens(text: &str, max_tokens: usize) -> Cow<'_, str> {
         if max_tokens == 0 {
             return Cow::Borrowed("[Context trimmed for token budget]");
@@ -69,7 +86,57 @@ impl TextChunker {
             return Cow::Borrowed(text);
         }
         let max_words = ((max_tokens * 3) / 4).max(1);
-        crate::engine::prompts::truncate_words_preserving_lines(text, max_words)
+        let trimmed = crate::engine::prompts::truncate_words_preserving_lines(text, max_words);
+        let max_bytes = max_tokens.saturating_mul(4);
+        if trimmed.len() <= max_bytes.saturating_add(64)
+            || estimate_tokens(&trimmed) <= max_tokens.saturating_add(16)
+        {
+            return trimmed;
+        }
+        let cut = floor_char_boundary(text, max_bytes.max(1));
+        Cow::Owned(format!(
+            "{}\n\n[Context trimmed for token budget]",
+            text[..cut].trim_end()
+        ))
+    }
+
+    /// Strictly truncates `text` to at most `max_tokens` under `kind`, returning `Cow::Borrowed`
+    /// when already within budget and `""` if even a single word exceeds the budget.
+    pub fn truncate_to_budget<'a>(
+        text: &'a str,
+        max_tokens: usize,
+        kind: TokenizerKind,
+    ) -> Cow<'a, str> {
+        if kind.count_tokens(text) <= max_tokens {
+            return Cow::Borrowed(text);
+        }
+        let base_budget = max_base_tokens(kind, max_tokens);
+        let max_words = base_budget.saturating_mul(3) / 4;
+        if max_words == 0 {
+            return Cow::Borrowed("");
+        }
+
+        let base_ptr = text.as_ptr() as usize;
+        let max_bytes = base_budget.saturating_mul(4);
+        let mut end = 0usize;
+        for (i, word) in text.split_whitespace().take(max_words).enumerate() {
+            let word_end = (word.as_ptr() as usize) - base_ptr + word.len();
+            if word_end > (i + 1).saturating_mul(16) && word_end > max_bytes {
+                break;
+            }
+            end = word_end;
+        }
+
+        if end == 0 {
+            end = floor_char_boundary(text, max_bytes);
+        }
+        while end > 0 && kind.count_tokens(&text[..end]) > max_tokens {
+            end = text[..end]
+                .rfind(char::is_whitespace)
+                .filter(|&w| w > 0)
+                .unwrap_or_else(|| floor_char_boundary(text, end - 1));
+        }
+        Cow::Borrowed(text[..end].trim_end())
     }
 
     /// Splits text into chunks of roughly `max_tokens` with `overlap_tokens` overlap using the specified tokenizer kind,

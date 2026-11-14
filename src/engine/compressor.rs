@@ -278,46 +278,24 @@ fn push_body_segment<'a>(
 
     // Fallback for giant unbroken lines without newlines: chunk at whitespace boundaries.
     let target_words = ((max_seg_tokens * 3) / 5).max(8);
-    let mut start = 0;
-    let mut words = 0;
-    let mut in_word = false;
+    let base_ptr = text.as_ptr() as usize;
+    let mut words = text.split_whitespace();
+    let mut start = 0usize;
     let mut first = true;
 
-    for (idx, ch) in text.char_indices() {
-        if ch.is_whitespace() {
-            if in_word {
-                in_word = false;
-                if words >= target_words {
-                    let piece = text[start..idx].trim();
-                    if !piece.is_empty() {
-                        segments.push(Segment {
-                            text: piece,
-                            tokens: tok_kind.count_tokens(piece),
-                            heading_level: None,
-                            after_heading: first && *after_heading,
-                        });
-                        first = false;
-                    }
-                    start = idx + ch.len_utf8();
-                    words = 0;
-                }
-            } else if start == idx {
-                start = idx + ch.len_utf8();
-            }
-        } else if !in_word {
-            in_word = true;
-            words += 1;
+    while let Some(last_word) = words.by_ref().take(target_words).last() {
+        let end = (last_word.as_ptr() as usize) - base_ptr + last_word.len();
+        let piece = text[start..end].trim();
+        if !piece.is_empty() {
+            segments.push(Segment {
+                text: piece,
+                tokens: tok_kind.count_tokens(piece),
+                heading_level: None,
+                after_heading: first && *after_heading,
+            });
+            first = false;
         }
-    }
-
-    let tail = text[start..].trim();
-    if !tail.is_empty() {
-        segments.push(Segment {
-            text: tail,
-            tokens: tok_kind.count_tokens(tail),
-            heading_level: None,
-            after_heading: first && *after_heading,
-        });
+        start = end;
     }
     *after_heading = false;
 }
@@ -565,45 +543,6 @@ fn assemble_segments(segments: &[Segment<'_>], selected: &[bool]) -> String {
     out
 }
 
-fn truncate_to_budget<'a>(
-    text: &'a str,
-    max_tokens: usize,
-    tok_kind: TokenizerKind,
-) -> Cow<'a, str> {
-    if tok_kind.count_tokens(text) <= max_tokens {
-        return Cow::Borrowed(text);
-    }
-    let cl_budget = match tok_kind {
-        TokenizerKind::Cl100k | TokenizerKind::O200k => max_tokens,
-        TokenizerKind::Llama3 => (max_tokens * 89) / 100,
-        TokenizerKind::Gemma => (max_tokens * 84) / 100,
-    }
-    .max(1);
-
-    let truncated = TextChunker::truncate_by_tokens(text, cl_budget);
-    if tok_kind.count_tokens(&truncated) <= max_tokens {
-        return Cow::Owned(truncated.into_owned());
-    }
-
-    let mut cut = text.len().min(max_tokens.saturating_mul(6));
-    while !text.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    while cut > 0 && tok_kind.count_tokens(&text[..cut]) > max_tokens {
-        cut = text[..cut]
-            .rfind(char::is_whitespace)
-            .filter(|&w| w > 0)
-            .unwrap_or_else(|| {
-                let mut prev = cut - 1;
-                while prev > 0 && !text.is_char_boundary(prev) {
-                    prev -= 1;
-                }
-                prev
-            });
-    }
-    Cow::Owned(text[..cut].trim_end().to_string())
-}
-
 /// Compresses an oversized document into `max_tokens` using CPU Heading-Skeleton + Centroid BM25
 /// Salience Compression. Anchors lead and tail, preserves an outline skeleton of `#`, `##`, `###`
 /// headings (including timestamped YouTube chapter headings), and fills the remaining budget with
@@ -625,7 +564,7 @@ pub fn compress_document_stratified<'a>(
         return Cow::Borrowed("");
     }
     if segments.len() <= 1 {
-        return truncate_to_budget(content, max_tokens, tok_kind);
+        return TextChunker::truncate_to_budget(content, max_tokens, tok_kind);
     }
 
     let n = segments.len();
@@ -756,7 +695,7 @@ pub fn compress_document_stratified<'a>(
     // 4. Assemble and enforce strict <= max_tokens under `tok_kind`.
     let mut out = assemble_segments(&segments, &selected);
     if out.is_empty() {
-        return truncate_to_budget(content, max_tokens, tok_kind);
+        return TextChunker::truncate_to_budget(content, max_tokens, tok_kind);
     }
 
     // `pop()` removes from the back: drop lowest-salience body first, then headings, then inner lead/tail.
@@ -769,10 +708,14 @@ pub fn compress_document_stratified<'a>(
 
     while tok_kind.count_tokens(&out) > max_tokens {
         if selected_count <= 1 {
-            return Cow::Owned(truncate_to_budget(&out, max_tokens, tok_kind).into_owned());
+            return Cow::Owned(
+                TextChunker::truncate_to_budget(&out, max_tokens, tok_kind).into_owned(),
+            );
         }
         let Some(drop_idx) = evictable.pop() else {
-            return Cow::Owned(truncate_to_budget(&out, max_tokens, tok_kind).into_owned());
+            return Cow::Owned(
+                TextChunker::truncate_to_budget(&out, max_tokens, tok_kind).into_owned(),
+            );
         };
         if selected[drop_idx] {
             selected[drop_idx] = false;

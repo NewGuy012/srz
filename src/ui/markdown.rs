@@ -223,7 +223,7 @@ fn render_blocks(md: &str, out: &mut String, html: bool) {
     }
 }
 
-fn parse_fence_open(trimmed: &str) -> Option<(u8, usize, &str)> {
+pub(super) fn parse_fence_open(trimmed: &str) -> Option<(u8, usize, &str)> {
     let first = *trimmed.as_bytes().first()?;
     if first != b'`' && first != b'~' {
         return None;
@@ -239,7 +239,7 @@ fn parse_fence_open(trimmed: &str) -> Option<(u8, usize, &str)> {
     Some((first, count, info))
 }
 
-fn is_fence_close(trimmed: &str, fence_char: u8, min_len: usize) -> bool {
+pub(super) fn is_fence_close(trimmed: &str, fence_char: u8, min_len: usize) -> bool {
     let count = trimmed.bytes().take_while(|&b| b == fence_char).count();
     count >= min_len && trimmed[count..].trim().is_empty()
 }
