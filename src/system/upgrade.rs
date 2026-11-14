@@ -429,13 +429,36 @@ impl UpgradeResult {
 
 /// Resolves the latest version tag from GitHub.
 /// Uses a HEAD request to inspect the redirect URL to avoid GitHub's REST API rate limit (60 req/hr).
+/// Validates that an upgrade redirect target remains HTTPS on a public host.
+fn validate_upgrade_redirect_url(url: &reqwest::Url) -> Result<()> {
+    if url.scheme() != "https" {
+        anyhow::bail!("Refusing non-HTTPS upgrade redirect: {}", url.scheme());
+    }
+    crate::scraper::validate_parsed_public_http_url(url)
+}
+
+fn build_upgrade_client(
+    user_agent: Option<&str>,
+    timeout: std::time::Duration,
+    redirect: reqwest::redirect::Policy,
+) -> std::result::Result<reqwest::Client, reqwest::Error> {
+    let mut builder = reqwest::Client::builder()
+        .redirect(redirect)
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(timeout);
+    if let Some(ua) = user_agent {
+        builder = builder.user_agent(ua);
+    }
+    builder.build()
+}
+
 pub async fn resolve_latest_version(client: &reqwest::Client, repo: &str) -> Result<String> {
     let redirect_url = format!("https://github.com/{}/releases/latest", repo);
-    let no_redirect = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(std::time::Duration::from_secs(5))
-        .timeout(std::time::Duration::from_secs(15))
-        .build();
+    let no_redirect = build_upgrade_client(
+        None,
+        std::time::Duration::from_secs(15),
+        reqwest::redirect::Policy::none(),
+    );
 
     if let Ok(no_redirect_client) = no_redirect
         && let Ok(resp) = no_redirect_client.head(&redirect_url).send().await
@@ -645,13 +668,22 @@ pub async fn run_upgrade(
         }
     };
 
-    // 3. Setup HTTP client
-    let client = reqwest::Client::builder()
-        .user_agent(format!("srz/{}", current_version_str))
-        .connect_timeout(std::time::Duration::from_secs(5))
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .context("Failed to build HTTP client")?;
+    // 3. Setup HTTP client with HTTPS-only public-host redirect validation
+    let redirect_policy = reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= 10 {
+            return attempt.error("Too many redirects during upgrade");
+        }
+        if let Err(err) = validate_upgrade_redirect_url(attempt.url()) {
+            return attempt.error(err.to_string());
+        }
+        attempt.follow()
+    });
+    let client = build_upgrade_client(
+        Some(&format!("srz/{}", current_version_str)),
+        std::time::Duration::from_secs(60),
+        redirect_policy,
+    )
+    .context("Failed to build HTTP client")?;
 
     // 4. Resolve target version
     let spinner = Ui::spinner("Checking for updates...");
@@ -830,6 +862,26 @@ pub async fn run_upgrade(
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn test_validate_upgrade_redirect_url() {
+        let valid = reqwest::Url::parse("https://objects.githubusercontent.com/release/srz.tar.gz")
+            .unwrap();
+        assert!(validate_upgrade_redirect_url(&valid).is_ok());
+
+        for bad in [
+            "http://github.com/NewGuy012/srz/releases/download/v1.0.0/srz.tar.gz",
+            "https://127.0.0.1/srz.tar.gz",
+            "https://169.254.169.254/latest/meta-data",
+            "https://localhost/srz.tar.gz",
+        ] {
+            let parsed = reqwest::Url::parse(bad).unwrap();
+            assert!(
+                validate_upgrade_redirect_url(&parsed).is_err(),
+                "expected redirect target {bad} to be rejected"
+            );
+        }
+    }
 
     fn build_ustar_header(name: &str, typeflag: u8, size_octal: &str) -> [u8; 512] {
         let mut header = [0u8; 512];

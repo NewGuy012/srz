@@ -503,19 +503,20 @@ fn parse_opf(archive: &ZipReader, opf_path: &str) -> Result<(Option<String>, Vec
     Ok((title, chapter_paths))
 }
 
-/// Resolves relative EPUB href path against base OPF directory and cleans ./ and ../ segments.
+/// Resolves relative EPUB href path against base OPF directory, normalizing `/` and `\` segments.
 fn resolve_epub_path(base_dir: &str, href: &str) -> String {
-    let clean_href = href.split('#').next().unwrap_or(href);
+    let clean_href = href.split(['?', '#']).next().unwrap_or(href);
     let decoded = url_decode(clean_href).unwrap_or(std::borrow::Cow::Borrowed(clean_href));
+    let decoded_base = url_decode(base_dir).unwrap_or(std::borrow::Cow::Borrowed(base_dir));
 
-    let full = if base_dir.is_empty() {
-        decoded.to_string()
+    let full = if decoded_base.is_empty() {
+        decoded.into_owned()
     } else {
-        format!("{}{}", base_dir, decoded)
+        format!("{}/{}", decoded_base.trim_end_matches(['/', '\\']), decoded)
     };
 
     let mut parts: Vec<&str> = Vec::new();
-    for part in full.split('/') {
+    for part in full.split(['/', '\\']) {
         if part.is_empty() || part == "." {
             continue;
         }
@@ -731,6 +732,19 @@ mod tests {
         let page = EpubExtractor::extract_from_bytes(&bytes, None).unwrap();
         let occurrences = page.content.matches("Unique single chapter text").count();
         assert_eq!(occurrences, 1);
+
+        assert_eq!(
+            resolve_epub_path("OEBPS/", "chapters/ch1.xhtml#p1"),
+            "OEBPS/chapters/ch1.xhtml"
+        );
+        assert_eq!(
+            resolve_epub_path("OEBPS/text/", "..\\..\\secret%2ffile.xhtml?v=1#top"),
+            "secret/file.xhtml"
+        );
+        assert_eq!(
+            resolve_epub_path("OEBPS/text/", "../images%5Cfig1.xhtml"),
+            "OEBPS/images/fig1.xhtml"
+        );
     }
 
     #[test]

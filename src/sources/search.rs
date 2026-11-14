@@ -315,7 +315,7 @@ impl BookSearcher {
                 continue;
             };
             let actual_url = extract_ddg_url(raw_href);
-            if !actual_url.starts_with("http") {
+            if crate::scraper::validate_public_http_url(&actual_url).is_err() {
                 continue;
             }
 
@@ -847,5 +847,24 @@ The dichotomy between two modes of thought, heuristics and biases, and prospect 
         let new_json = r#"{"canonical_title":"The Hobbit","author":"J. R. R. Tolkien","first_publish_year":1937,"work_key":"/works/OL262758W"}"#;
         let meta_new: BookMetadata = serde_json::from_str(new_json).unwrap();
         assert_eq!(meta_new.work_key.as_deref(), Some("/works/OL262758W"));
+    }
+
+    #[test]
+    fn test_duckduckgo_redirect_url_validation() {
+        let public =
+            extract_ddg_url("https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fbook");
+        assert!(crate::scraper::validate_public_http_url(&public).is_ok());
+
+        for unsafe_raw in [
+            "https://duckduckgo.com/l/?uddg=http%3A%2F%2F127.0.0.1%2Fadmin",
+            "https://duckduckgo.com/l/?uddg=http%3A%2F%2F169.254.169.254%2Flatest",
+            "javascript:alert(1)",
+        ] {
+            let extracted = extract_ddg_url(unsafe_raw);
+            assert!(
+                crate::scraper::validate_public_http_url(&extracted).is_err(),
+                "expected {extracted} to be rejected"
+            );
+        }
     }
 }
