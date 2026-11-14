@@ -14,50 +14,102 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 jobs:
   verify-version:
     name: Verify Tag & Cargo.toml Version Match
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     outputs:
       version: ${{ steps.version.outputs.version }}
       clean_version: ${{ steps.version.outputs.clean_version }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Verify Git Tag matches Cargo.toml
         id: version
+        env:
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          EVENT_NAME: ${{ github.event_name }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          CARGO_VER=$(cargo metadata --no-deps --format-version 1 | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4)
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            TAG_VER="${GITHUB_REF_NAME#v}"
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ] && [[ "${REF}" != refs/tags/v* ]] && [ "${DRY_RUN}" != "true" ]; then
+            echo "::error::Manual non-dry-run releases must be dispatched from a 'v*' tag (got '${REF}')."
+            exit 1
+          fi
+
+          CARGO_VER=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "srz") | .version')
+          if [[ "${REF}" == refs/tags/v* ]]; then
+            TAG_VER="${REF_NAME#v}"
             if [ "$CARGO_VER" != "$TAG_VER" ]; then
               echo "::error::Tag version ($TAG_VER) does not match Cargo.toml version ($CARGO_VER)!"
               exit 1
             fi
             echo "Verified: Git tag ($TAG_VER) matches Cargo.toml version ($CARGO_VER)"
-            echo "version=v${TAG_VER}" >> $GITHUB_OUTPUT
-            echo "clean_version=${TAG_VER}" >> $GITHUB_OUTPUT
           else
-            echo "Workflow dispatched manually without tag. Using Cargo.toml version: v${CARGO_VER}"
-            echo "version=v${CARGO_VER}" >> $GITHUB_OUTPUT
-            echo "clean_version=${CARGO_VER}" >> $GITHUB_OUTPUT
+            echo "Workflow dispatched manually on non-tag ref (${REF}). Using Cargo.toml version: v${CARGO_VER} (dry-run only)."
           fi
+
+          if [[ "$CARGO_VER" == *-* ]]; then
+            IS_PRERELEASE="true"
+          else
+            IS_PRERELEASE="false"
+          fi
+
+          {
+            echo "version=v${CARGO_VER}"
+            echo "clean_version=${CARGO_VER}"
+            echo "is_prerelease=${IS_PRERELEASE}"
+          } >> "$GITHUB_OUTPUT"
+
+  verify-tests:
+    name: Pre-Release Test, Lint & Security Gate
+    needs: verify-version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config build-essential cmake
+
+      - name: Verify formatting, clippy, and test suite
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked --all-targets
+          cargo test --locked --doc
+
+      - name: Run cargo-deny security & license checks
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check advisories bans licenses sources
 
   build-release:
     name: Build release (${{ matrix.target }})
     needs: verify-version
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -77,38 +129,40 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          cache-targets: false
 
       - name: Install Linux build dependencies
         if: startsWith(matrix.os, 'ubuntu')
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev build-essential cmake
+          sudo apt-get install -y pkg-config build-essential cmake
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo build --release --locked --target "$TARGET"
 
       - name: Package asset & generate completions (Unix)
         if: matrix.archive == 'tar.gz'
+        env:
+          VERSION: ${{ needs.verify-version.outputs.version }}
+          TARGET: ${{ matrix.target }}
         run: |
-          VERSION="${{ needs.verify-version.outputs.version }}"
-          ARCHIVE_VERSION="srz-${VERSION}-${{ matrix.target }}.tar.gz"
-          ARCHIVE_LATEST="srz-${{ matrix.target }}.tar.gz"
+          ARCHIVE_VERSION="srz-${VERSION}-${TARGET}.tar.gz"
+          ARCHIVE_LATEST="srz-${TARGET}.tar.gz"
 
-          STAGE_DIR="staging-${{ matrix.target }}"
+          STAGE_DIR="staging-${TARGET}"
           mkdir -p "${STAGE_DIR}/completions"
 
-          cp "target/${{ matrix.target }}/release/srz" "${STAGE_DIR}/"
+          cp "target/${TARGET}/release/srz" "${STAGE_DIR}/"
           cp README.md LICENSE "${STAGE_DIR}/"
 
           # Generate shell completions using the built release binary
@@ -116,26 +170,34 @@ jobs:
           "${STAGE_DIR}/srz" completions zsh > "${STAGE_DIR}/completions/_srz"
           "${STAGE_DIR}/srz" completions fish > "${STAGE_DIR}/completions/srz.fish"
           "${STAGE_DIR}/srz" completions powershell > "${STAGE_DIR}/completions/_srz.ps1"
+          "${STAGE_DIR}/srz" completions elvish > "${STAGE_DIR}/completions/srz.elv"
 
           # Create archive with root binary and bundled documentation / completions
           tar -czf "${ARCHIVE_VERSION}" -C "${STAGE_DIR}" srz README.md LICENSE completions
           cp "${ARCHIVE_VERSION}" "${ARCHIVE_LATEST}"
 
-          shasum -a 256 "${ARCHIVE_VERSION}" > "${ARCHIVE_VERSION}.sha256" 2>/dev/null || sha256sum "${ARCHIVE_VERSION}" > "${ARCHIVE_VERSION}.sha256"
-          shasum -a 256 "${ARCHIVE_LATEST}" > "${ARCHIVE_LATEST}.sha256" 2>/dev/null || sha256sum "${ARCHIVE_LATEST}" > "${ARCHIVE_LATEST}.sha256"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${ARCHIVE_VERSION}" > "${ARCHIVE_VERSION}.sha256"
+            sha256sum "${ARCHIVE_LATEST}" > "${ARCHIVE_LATEST}.sha256"
+          else
+            shasum -a 256 "${ARCHIVE_VERSION}" > "${ARCHIVE_VERSION}.sha256"
+            shasum -a 256 "${ARCHIVE_LATEST}" > "${ARCHIVE_LATEST}.sha256"
+          fi
 
       - name: Package asset & generate completions (Windows)
         if: matrix.archive == 'zip'
         shell: bash
+        env:
+          VERSION: ${{ needs.verify-version.outputs.version }}
+          TARGET: ${{ matrix.target }}
         run: |
-          VERSION="${{ needs.verify-version.outputs.version }}"
-          ARCHIVE_VERSION="srz-${VERSION}-${{ matrix.target }}.zip"
-          ARCHIVE_LATEST="srz-${{ matrix.target }}.zip"
+          ARCHIVE_VERSION="srz-${VERSION}-${TARGET}.zip"
+          ARCHIVE_LATEST="srz-${TARGET}.zip"
 
-          STAGE_DIR="staging-${{ matrix.target }}"
+          STAGE_DIR="staging-${TARGET}"
           mkdir -p "${STAGE_DIR}/completions"
 
-          cp "target/${{ matrix.target }}/release/srz.exe" "${STAGE_DIR}/"
+          cp "target/${TARGET}/release/srz.exe" "${STAGE_DIR}/"
           cp README.md LICENSE "${STAGE_DIR}/"
 
           # Generate shell completions using the built release binary
@@ -143,16 +205,17 @@ jobs:
           "./${STAGE_DIR}/srz.exe" completions zsh > "${STAGE_DIR}/completions/_srz"
           "./${STAGE_DIR}/srz.exe" completions fish > "${STAGE_DIR}/completions/srz.fish"
           "./${STAGE_DIR}/srz.exe" completions powershell > "${STAGE_DIR}/completions/_srz.ps1"
+          "./${STAGE_DIR}/srz.exe" completions elvish > "${STAGE_DIR}/completions/srz.elv"
 
           ROOT_DIR="$(pwd)"
           (cd "${STAGE_DIR}" && 7z a "${ROOT_DIR}/${ARCHIVE_VERSION}" srz.exe README.md LICENSE completions)
           cp "${ARCHIVE_VERSION}" "${ARCHIVE_LATEST}"
 
-          shasum -a 256 "${ARCHIVE_VERSION}" > "${ARCHIVE_VERSION}.sha256" 2>/dev/null || sha256sum "${ARCHIVE_VERSION}" > "${ARCHIVE_VERSION}.sha256"
-          shasum -a 256 "${ARCHIVE_LATEST}" > "${ARCHIVE_LATEST}.sha256" 2>/dev/null || sha256sum "${ARCHIVE_LATEST}" > "${ARCHIVE_LATEST}.sha256"
+          sha256sum "${ARCHIVE_VERSION}" > "${ARCHIVE_VERSION}.sha256"
+          sha256sum "${ARCHIVE_LATEST}" > "${ARCHIVE_LATEST}.sha256"
 
       - name: Upload Build Artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-assets-${{ matrix.target }}
           path: |
@@ -163,125 +226,87 @@ jobs:
 
   publish-release-notes:
     name: Publish GitHub Release Notes
-    needs: [verify-version, build-release]
+    needs: [verify-version, verify-tests, build-release]
     runs-on: ubuntu-24.04
-    if: (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && inputs.dry_run != true
+    timeout-minutes: 10
+    if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
     permissions:
       contents: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Check Existing Release & Extract Release Notes
         id: changelog
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.verify-version.outputs.version }}
         run: |
-          VERSION="${{ needs.verify-version.outputs.version }}"
-
           # Check if a release already exists on GitHub with non-empty notes
-          EXISTING_BODY=$(gh release view "${VERSION}" --json body -q .body 2>/dev/null || true)
-          TRIMMED_BODY=$(echo "${EXISTING_BODY}" | tr -d '[:space:]')
-
-          if [ -n "${TRIMMED_BODY}" ]; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-            echo "Existing release body detected on GitHub for ${VERSION}. Leaving release page untouched."
-            exit 0
+          if EXISTING_BODY=$(gh release view "${VERSION}" --json body -q .body 2>/dev/null); then
+            TRIMMED_BODY=$(printf '%s' "${EXISTING_BODY}" | tr -d '[:space:]')
+            if [ -n "${TRIMMED_BODY}" ]; then
+              echo "exists=true" >> "$GITHUB_OUTPUT"
+              echo "Existing release body detected on GitHub for ${VERSION}. Leaving release page untouched."
+              exit 0
+            fi
           fi
 
-          echo "exists=false" >> $GITHUB_OUTPUT
+          echo "exists=false" >> "$GITHUB_OUTPUT"
 
           mkdir -p dist
           echo "Extracting release notes for ${VERSION} from docs/src/changelog.md..."
           awk -v ver="${VERSION}" '
-            $0 ~ "^## " ver { found=1; next }
+            $0 == "## " ver { found=1; next }
             found && /^## / { exit }
             found && /^---/ { exit }
             found { print }
           ' docs/src/changelog.md > dist/release_notes.md
 
-          if [ -s dist/release_notes.md ]; then
-            echo "has_notes=true" >> $GITHUB_OUTPUT
+          TRIMMED_NOTES=$(tr -d '[:space:]' < dist/release_notes.md)
+          if [ -n "${TRIMMED_NOTES}" ]; then
+            echo "has_notes=true" >> "$GITHUB_OUTPUT"
           else
-            echo "has_notes=false" >> $GITHUB_OUTPUT
+            echo "has_notes=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create GitHub Release with Changelog Notes
         if: steps.changelog.outputs.exists != 'true' && steps.changelog.outputs.has_notes == 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ needs.verify-version.outputs.version }}
           name: ${{ needs.verify-version.outputs.version }}
           body_path: dist/release_notes.md
+          prerelease: ${{ needs.verify-version.outputs.is_prerelease == 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create GitHub Release with Auto-generated Notes
         if: steps.changelog.outputs.exists != 'true' && steps.changelog.outputs.has_notes != 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ needs.verify-version.outputs.version }}
           name: ${{ needs.verify-version.outputs.version }}
           generate_release_notes: true
+          prerelease: ${{ needs.verify-version.outputs.is_prerelease == 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  publish-crates-io:
-    name: Publish to Crates.io
-    needs: [verify-version, build-release]
-    if: (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && inputs.dry_run != true
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          cache-targets: false
-
-      - name: Install Linux build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev build-essential cmake
-
-      - name: Publish to Crates.io
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
-        run: |
-          if cargo publish 2>&1 | tee publish.log; then
-            echo "Successfully published to crates.io!"
-          else
-            if grep -iq "already exists on crates.io" publish.log; then
-              echo "::notice::srz@${{ needs.verify-version.outputs.clean_version }} is already published on crates.io. Skipping publish step."
-              rm -f publish.log
-              exit 0
-            else
-              echo "::error::cargo publish failed with an unexpected error."
-              rm -f publish.log
-              exit 1
-            fi
-          fi
-          rm -f publish.log
-
   attach-release-assets:
     name: Attach Assets & Attestations to Release
-    needs: [verify-version, build-release, publish-release-notes]
+    needs: [verify-version, verify-tests, build-release, publish-release-notes]
     runs-on: ubuntu-24.04
-    if: (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && inputs.dry_run != true
+    timeout-minutes: 15
+    if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
     permissions:
       contents: write
       id-token: write
       attestations: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
       - name: Download all release assets
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           path: dist
           merge-multiple: true
@@ -293,16 +318,17 @@ jobs:
           cat SHA256SUMS
 
       - name: Generate Artifact Attestations (SLSA Provenance)
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             dist/srz-*.tar.gz
             dist/srz-*.zip
 
       - name: Attach Compiled Binaries & Checksums
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ needs.verify-version.outputs.version }}
+          prerelease: ${{ needs.verify-version.outputs.is_prerelease == 'true' }}
           files: |
             dist/srz-*.tar.gz
             dist/srz-*.zip
@@ -311,25 +337,74 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  bump-homebrew:
-    name: Bump Homebrew Formula
-    needs: [verify-version, build-release, attach-release-assets]
+  publish-crates-io:
+    name: Publish to Crates.io
+    needs: [verify-version, verify-tests, build-release, attach-release-assets]
     if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config build-essential cmake
+
+      - name: Publish to Crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+          CLEAN_VERSION: ${{ needs.verify-version.outputs.clean_version }}
+        run: |
+          if [ -z "${CARGO_REGISTRY_TOKEN}" ]; then
+            echo "::error::CRATES_IO_TOKEN secret is not set."
+            exit 1
+          fi
+          if cargo publish --locked 2>&1 | tee publish.log; then
+            echo "Successfully published to crates.io!"
+          else
+            if grep -iq "already exists on crates.io" publish.log; then
+              echo "::notice::srz@${CLEAN_VERSION} is already published on crates.io. Skipping publish step."
+              rm -f publish.log
+              exit 0
+            else
+              echo "::error::cargo publish failed with an unexpected error."
+              rm -f publish.log
+              exit 1
+            fi
+          fi
+          rm -f publish.log
+
+  bump-homebrew:
+    name: Bump Homebrew Formula
+    needs: [verify-version, verify-tests, build-release, attach-release-assets]
+    if: startsWith(github.ref, 'refs/tags/v') && needs.verify-version.outputs.is_prerelease != 'true' && inputs.dry_run != true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - name: Check if HOMEBREW_TAP_TOKEN is configured
         id: check-token
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          if [ -z "${{ secrets.HOMEBREW_TAP_TOKEN }}" ]; then
-            echo "skip=true" >> $GITHUB_OUTPUT
+          if [ -z "${TAP_TOKEN}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "::warning::HOMEBREW_TAP_TOKEN secret is not set. Skipping Homebrew formula bump."
           else
-            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Download release assets for checksum extraction
         if: steps.check-token.outputs.skip != 'true'
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           path: dist
           merge-multiple: true
@@ -337,17 +412,16 @@ jobs:
       - name: Update Homebrew formula in tap
         if: steps.check-token.outputs.skip != 'true'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ needs.verify-version.outputs.clean_version }}
+          TAG: ${{ needs.verify-version.outputs.version }}
         run: |
-          VERSION="${{ needs.verify-version.outputs.clean_version }}"
-          TAG="${{ needs.verify-version.outputs.version }}"
           echo "Updating Homebrew tap for srz v${VERSION} (${TAG})..."
 
-          # Read checksums directly from downloaded build artifacts (no polling/download loop)
-          SHA_ARM64_MAC=$(awk '{print $1}' dist/srz-${TAG}-aarch64-apple-darwin.tar.gz.sha256 | head -1)
-          SHA_X86_LINUX=$(awk '{print $1}' dist/srz-${TAG}-x86_64-unknown-linux-gnu.tar.gz.sha256 | head -1)
-          SHA_ARM_LINUX=$(awk '{print $1}' dist/srz-${TAG}-aarch64-unknown-linux-gnu.tar.gz.sha256 | head -1)
+          # Read checksums directly from downloaded build artifacts
+          SHA_ARM64_MAC=$(awk '{print $1}' "dist/srz-${TAG}-aarch64-apple-darwin.tar.gz.sha256" | head -1)
+          SHA_X86_LINUX=$(awk '{print $1}' "dist/srz-${TAG}-x86_64-unknown-linux-gnu.tar.gz.sha256" | head -1)
+          SHA_ARM_LINUX=$(awk '{print $1}' "dist/srz-${TAG}-aarch64-unknown-linux-gnu.tar.gz.sha256" | head -1)
 
           if [ -z "$SHA_ARM64_MAC" ] || [ -z "$SHA_X86_LINUX" ] || [ -z "$SHA_ARM_LINUX" ]; then
             echo "::error::Could not extract all required sha256 checksums from local artifacts."
@@ -358,14 +432,47 @@ jobs:
           echo "Linux x86_64  SHA256: ${SHA_X86_LINUX}"
           echo "Linux aarch64 SHA256: ${SHA_ARM_LINUX}"
 
-          # Clone tap repository
-          git clone "https://x-access-token:${TAP_TOKEN}@github.com/NewGuy012/homebrew-tap.git" tap
+          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${TAP_TOKEN}" | base64 | tr -d '\n')"
+          git -c "http.https://github.com/.extraheader=${AUTH_HEADER}" clone "https://github.com/NewGuy012/homebrew-tap.git" tap
           cd tap
 
           mkdir -p Formula
 
-          # Generate formula with automated shell completions and multi-arch Linux support
-          printf 'class Srz < Formula\n  desc "Fast, modular CLI to summarize webpages, documents, books, and live news using local LLMs"\n  homepage "https://github.com/NewGuy012/srz"\n  version "%s"\n\n  on_macos do\n    on_arm do\n      url "https://github.com/NewGuy012/srz/releases/download/v#{version}/srz-v#{version}-aarch64-apple-darwin.tar.gz"\n      sha256 "%s"\n    end\n  end\n\n  on_linux do\n    on_intel do\n      url "https://github.com/NewGuy012/srz/releases/download/v#{version}/srz-v#{version}-x86_64-unknown-linux-gnu.tar.gz"\n      sha256 "%s"\n    end\n    on_arm do\n      url "https://github.com/NewGuy012/srz/releases/download/v#{version}/srz-v#{version}-aarch64-unknown-linux-gnu.tar.gz"\n      sha256 "%s"\n    end\n  end\n\n  def install\n    bin.install "srz"\n    generate_completions_from_executable(bin/"srz", "completions")\n  end\n\n  test do\n    assert_match "srz", shell_output("#{bin}/srz --version")\n  end\nend\n' "$VERSION" "$SHA_ARM64_MAC" "$SHA_X86_LINUX" "$SHA_ARM_LINUX" > Formula/srz.rb
+          cat > Formula/srz.rb <<EOF
+          class Srz < Formula
+            desc "Fast, modular CLI to summarize webpages, documents, books, and live news using local LLMs"
+            homepage "https://github.com/NewGuy012/srz"
+            version "${VERSION}"
+            license "BSD-3-Clause"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/NewGuy012/srz/releases/download/v#{version}/srz-v#{version}-aarch64-apple-darwin.tar.gz"
+                sha256 "${SHA_ARM64_MAC}"
+              end
+            end
+
+            on_linux do
+              on_intel do
+                url "https://github.com/NewGuy012/srz/releases/download/v#{version}/srz-v#{version}-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_X86_LINUX}"
+              end
+              on_arm do
+                url "https://github.com/NewGuy012/srz/releases/download/v#{version}/srz-v#{version}-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_ARM_LINUX}"
+              end
+            end
+
+            def install
+              bin.install "srz"
+              generate_completions_from_executable(bin/"srz", "completions")
+            end
+
+            test do
+              assert_match "srz", shell_output("#{bin}/srz --version")
+            end
+          end
+          EOF
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -381,6 +488,36 @@ jobs:
             echo "Formula already up-to-date. No changes to commit."
           else
             git commit -m "Update srz formula to v${VERSION}"
-            git push origin "$TARGET_BRANCH"
+            git -c "http.https://github.com/.extraheader=${AUTH_HEADER}" push origin "$TARGET_BRANCH"
             echo "Successfully updated Formula/srz.rb to v${VERSION} on branch ${TARGET_BRANCH}!"
           fi
+
+  verify-attestation:
+    name: Verify Release Checksums & SLSA Provenance
+    needs: [verify-version, attach-release-assets]
+    if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - name: Download release assets & verify SHA256SUMS + SLSA attestation
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.verify-version.outputs.version }}
+        run: |
+          mkdir -p verify-dist
+          gh release download "$TAG" --repo "$REPO" --dir verify-dist
+          cd verify-dist
+          sha256sum -c SHA256SUMS
+          for f in srz-*.tar.gz srz-*.zip; do
+            gh attestation verify "$f" --repo "$REPO"
+          done
+
+  verify-release-install:
+    name: Post-Release Installer & Upgrade Verification
+    needs: [verify-version, attach-release-assets]
+    if: startsWith(github.ref, 'refs/tags/v') && needs.verify-version.outputs.is_prerelease != 'true' && inputs.dry_run != true
+    uses: ./.github/workflows/install-test.yml

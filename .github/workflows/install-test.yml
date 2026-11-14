@@ -18,11 +18,12 @@ on:
   schedule:
     # Weekly verification on Monday at 06:00 UTC
     - cron: '0 6 * * 1'
+  workflow_call:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -30,22 +31,28 @@ permissions:
 jobs:
   test-unix-installer:
     name: Test install.sh (${{ matrix.os }})
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-latest]
+        os:
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+          - macos-latest
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Make install.sh executable
-        run: chmod +x scripts/install.sh
+      - name: Verify install.sh executable bit in git
+        run: test -x scripts/install.sh
 
-      - name: Test versioned direct execution (install.sh)
+      - name: Test versioned direct execution without v-prefix (install.sh)
         run: |
           mkdir -p "${RUNNER_TEMP}/bin_direct"
-          INSTALL_DIR="${RUNNER_TEMP}/bin_direct" VERSION="v0.4.0" ./scripts/install.sh
+          INSTALL_DIR="${RUNNER_TEMP}/bin_direct" VERSION="0.7.10" ./scripts/install.sh
           "${RUNNER_TEMP}/bin_direct/srz" --version
           "${RUNNER_TEMP}/bin_direct/srz" --help
 
@@ -58,33 +65,46 @@ jobs:
       - name: Test piped execution (cat install.sh | sh)
         run: |
           mkdir -p "${RUNNER_TEMP}/bin_pipe"
-          cat scripts/install.sh | INSTALL_DIR="${RUNNER_TEMP}/bin_pipe" VERSION="v0.4.0" sh
+          cat scripts/install.sh | INSTALL_DIR="${RUNNER_TEMP}/bin_pipe" VERSION="v0.7.10" sh
           "${RUNNER_TEMP}/bin_pipe/srz" --version
 
-      - name: Test invalid semver validation
+      - name: Test invalid semver and multiline injection validation
         run: |
           mkdir -p "${RUNNER_TEMP}/bin_invalid"
-          if INSTALL_DIR="${RUNNER_TEMP}/bin_invalid" VERSION="invalid-semver-string" ./scripts/install.sh; then
-            echo "::error::install.sh failed to reject invalid semver version!"
-            exit 1
-          else
-            echo "✔ Correctly rejected invalid semver string."
-          fi
+          for bad_ver in "invalid-semver-string" "V0.7.10" $'0.7.10\nfoo'; do
+            if INSTALL_DIR="${RUNNER_TEMP}/bin_invalid" VERSION="$bad_ver" ./scripts/install.sh; then
+              echo "::error::install.sh failed to reject invalid version '$bad_ver'!"
+              exit 1
+            fi
+          done
+          echo "✔ Correctly rejected invalid semver strings."
+
+      - name: Test self-upgrade round-trip (v0.7.9 -> latest)
+        run: |
+          mkdir -p "${RUNNER_TEMP}/bin_upgrade"
+          INSTALL_DIR="${RUNNER_TEMP}/bin_upgrade" VERSION="0.7.9" ./scripts/install.sh
+          "${RUNNER_TEMP}/bin_upgrade/srz" --version
+          "${RUNNER_TEMP}/bin_upgrade/srz" upgrade --check
+          "${RUNNER_TEMP}/bin_upgrade/srz" upgrade
+          "${RUNNER_TEMP}/bin_upgrade/srz" --version
 
   test-windows-installer:
     name: Test install.ps1 (windows-latest)
     runs-on: windows-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Test versioned direct execution (install.ps1)
+      - name: Test versioned direct execution without v-prefix (pwsh)
         shell: pwsh
         run: |
           $InstallDir = Join-Path $env:RUNNER_TEMP "bin_direct"
           New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
           $env:INSTALL_DIR = $InstallDir
-          $env:VERSION = "v0.4.0"
+          $env:VERSION = "0.7.10"
 
           .\scripts\install.ps1
 
@@ -96,7 +116,7 @@ jobs:
           & $ExePath --version
           & $ExePath --help
 
-      - name: Test default unversioned execution (latest release)
+      - name: Test default unversioned execution (latest release, pwsh)
         shell: pwsh
         run: |
           $InstallDir = Join-Path $env:RUNNER_TEMP "bin_latest"
@@ -113,13 +133,30 @@ jobs:
 
           & $ExePath --version
 
-      - name: Test piped execution (Get-Content install.ps1 | iex)
+      - name: Test piped execution under Windows PowerShell 5.1 (powershell)
+        shell: powershell
+        run: |
+          $InstallDir = Join-Path $env:RUNNER_TEMP "bin_winps_pipe"
+          New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+          $env:INSTALL_DIR = $InstallDir
+          $env:VERSION = "v0.7.10"
+
+          Get-Content .\scripts\install.ps1 -Raw | Invoke-Expression
+
+          $ExePath = Join-Path $InstallDir "srz.exe"
+          if (-not (Test-Path $ExePath)) {
+            throw "srz.exe was not found in $InstallDir after piped Windows PowerShell 5.1 installation."
+          }
+
+          & $ExePath --version
+
+      - name: Test piped execution under PowerShell 7 (pwsh)
         shell: pwsh
         run: |
           $InstallDir = Join-Path $env:RUNNER_TEMP "bin_pipe"
           New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
           $env:INSTALL_DIR = $InstallDir
-          $env:VERSION = "v0.4.0"
+          $env:VERSION = "v0.7.10"
 
           Get-Content .\scripts\install.ps1 -Raw | Invoke-Expression
 
@@ -130,21 +167,42 @@ jobs:
 
           & $ExePath --version
 
-      - name: Test invalid semver validation
+      - name: Test invalid and uppercase semver validation
         shell: pwsh
         run: |
-          $InstallDir = Join-Path $env:RUNNER_TEMP "bin_invalid"
+          foreach ($badVer in @("invalid-semver-string", "V0.7.10")) {
+            $InstallDir = Join-Path $env:RUNNER_TEMP "bin_invalid"
+            $env:INSTALL_DIR = $InstallDir
+            $env:VERSION = $badVer
+
+            $FailedAsExpected = $false
+            try {
+              .\scripts\install.ps1
+            } catch {
+              $FailedAsExpected = $true
+              Write-Host "✔ Correctly rejected '$badVer': $_" -ForegroundColor Green
+            }
+
+            if (-not $FailedAsExpected) {
+              throw "install.ps1 did not reject invalid semver '$badVer'!"
+            }
+            if (Test-Path $InstallDir) {
+              throw "install.ps1 unexpectedly created $InstallDir on invalid semver!"
+            }
+          }
+
+      - name: Test self-upgrade round-trip (v0.7.9 -> latest)
+        shell: pwsh
+        run: |
+          $InstallDir = Join-Path $env:RUNNER_TEMP "bin_upgrade"
+          New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
           $env:INSTALL_DIR = $InstallDir
-          $env:VERSION = "invalid-semver-string"
+          $env:VERSION = "0.7.9"
 
-          $FailedAsExpected = $false
-          try {
-            .\scripts\install.ps1
-          } catch {
-            $FailedAsExpected = $true
-            Write-Host "✔ Correctly rejected invalid semver: $_" -ForegroundColor Green
-          }
+          .\scripts\install.ps1
 
-          if (-not $FailedAsExpected) {
-            throw "install.ps1 did not reject invalid semver format!"
-          }
+          $ExePath = Join-Path $InstallDir "srz.exe"
+          & $ExePath --version
+          & $ExePath upgrade --check
+          & $ExePath upgrade
+          & $ExePath --version

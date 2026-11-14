@@ -7,9 +7,12 @@ on:
     paths:
       - 'src/**'
       - 'tests/**'
+      - 'assets/document.pdf'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'deny.toml'
+      - 'README.md'
+      - 'LICENSE'
       - '.github/workflows/ci.yml'
   pull_request:
     branches:
@@ -20,8 +23,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -29,6 +32,8 @@ permissions:
 jobs:
   test:
     name: Test & Lint (${{ matrix.os }})
+    if: github.event_name != 'schedule'
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -39,11 +44,14 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
+          toolchain: stable
           components: clippy, rustfmt
 
       - name: Check code formatting (rustfmt)
@@ -51,16 +59,16 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Set up sccache
-        uses: mozilla-actions/sccache-action@v0.0.11
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
 
       - name: Configure sccache
         shell: bash
         run: |
-          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
 
       - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-targets: false
 
@@ -68,24 +76,24 @@ jobs:
         if: startsWith(matrix.os, 'ubuntu')
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev build-essential cmake
+          sudo apt-get install -y pkg-config build-essential cmake
+
+      - name: Run cargo clippy (warnings denied)
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Check documentation links & warnings
         if: startsWith(matrix.os, 'ubuntu')
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features
 
       - name: Validate Crates.io packaging (dry-run)
         if: startsWith(matrix.os, 'ubuntu')
-        run: cargo publish --dry-run
-
-      - name: Run cargo clippy (warnings denied)
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo publish --dry-run --locked
 
       - name: Run cargo test
-        run: cargo test --all-targets
+        run: cargo test --locked --all-targets
 
       - name: Run cargo doc tests
-        run: cargo test --doc
+        run: cargo test --locked --doc
 
       - name: Show sccache stats
         if: always()
@@ -94,12 +102,15 @@ jobs:
   security-audit:
     name: Dependency Security & License Audit
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Run cargo-deny checks
-        uses: EmbarkStudios/cargo-deny-action@v2
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check advisories bans licenses sources
 
@@ -107,12 +118,17 @@ jobs:
     name: All CI Checks Passed
     needs: [test, security-audit]
     runs-on: ubuntu-24.04
-    if: always()
+    timeout-minutes: 5
+    if: ${{ always() && !cancelled() }}
     steps:
       - name: Verify all required checks succeeded
+        env:
+          TEST_RESULT: ${{ needs.test.result }}
+          AUDIT_RESULT: ${{ needs.security-audit.result }}
         run: |
-          if [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.security-audit.result }}" != "success" ]; then
-            echo "::error::One or more upstream CI jobs failed."
+          if { [ "$TEST_RESULT" != "success" ] && [ "$TEST_RESULT" != "skipped" ]; } || \
+             { [ "$AUDIT_RESULT" != "success" ] && [ "$AUDIT_RESULT" != "skipped" ]; }; then
+            echo "::error::One or more upstream CI jobs failed (test=${TEST_RESULT}, security-audit=${AUDIT_RESULT})."
             exit 1
           fi
-          echo "✔ All test, lint, doc, packaging, and security checks passed successfully!"
+          echo "✔ All applicable test, lint, doc, packaging, and security checks passed!"
