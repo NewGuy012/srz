@@ -22,6 +22,19 @@ All notable changes to `srz` are documented in this file.
 
 ---
 
+## v0.7.13
+
+### Summary
+
+> Fixes `redb` `DatabaseAlreadyOpen` lock conflicts across `srz doctor`, `srz ask`, `srz browse`, and `srz cache clean --reset-db`, refines reasoning spinner formatting to fit the live terminal width without wrapping, and cleans up `Cargo.toml` metadata.
+
+### Changes
+- **Database Handle Reuse (`DatabaseAlreadyOpen` Fix)**: Reused any open `Cache` database handle in `srz doctor` (`diagnose_database`), `srz ask`, `srz browse`, and `srz cache clean --reset-db` instead of opening a conflicting second `redb` connection to `srz.db`.
+- **Reasoning Spinner Cleanup & Terminal Width Fitting**: Updated `extract_reasoning_step` and `ProgressBar` to strip parenthetical notes, normalize internal colons to ` - `, remove the fixed 45-character cap, and dynamically truncate spinner messages at word boundaries (accounting for wide CJK/emoji characters) so single-line redraws never wrap.
+- **Package Metadata Cleanup**: Removed the redundant `package.homepage` field from `Cargo.toml`.
+
+---
+
 ## v0.7.12
 
 ### Summary
