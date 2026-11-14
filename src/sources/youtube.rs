@@ -744,79 +744,51 @@ mod tests {
 
     #[test]
     fn test_extract_youtube_video_id() {
-        assert_eq!(
-            extract_youtube_video_id("https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
-            Some("dQw4w9WgXcQ")
-        );
-        assert_eq!(
-            extract_youtube_video_id("https://youtube.com/watch?v=dQw4w9WgXcQ&t=42s"),
-            Some("dQw4w9WgXcQ")
-        );
-        assert_eq!(
-            extract_youtube_video_id("https://youtu.be/dQw4w9WgXcQ?si=12345"),
-            Some("dQw4w9WgXcQ")
-        );
-        assert_eq!(
-            extract_youtube_video_id("https://m.youtube.com/watch?v=dQw4w9WgXcQ"),
-            Some("dQw4w9WgXcQ")
-        );
-        assert_eq!(
-            extract_youtube_video_id("https://www.youtube.com/shorts/dQw4w9WgXcQ"),
-            Some("dQw4w9WgXcQ")
-        );
-        assert_eq!(
-            extract_youtube_video_id("https://www.youtube.com/embed/dQw4w9WgXcQ"),
-            Some("dQw4w9WgXcQ")
-        );
-        assert_eq!(
-            extract_youtube_video_id("https://example.com/article"),
-            None
-        );
-        assert_eq!(extract_youtube_video_id("Dune"), None);
+        for url in [
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            "https://youtube.com/watch?v=dQw4w9WgXcQ&t=42s",
+            "https://youtu.be/dQw4w9WgXcQ?si=12345",
+            "https://m.youtube.com/watch?v=dQw4w9WgXcQ",
+            "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+            "https://www.youtube.com/embed/dQw4w9WgXcQ",
+        ] {
+            assert_eq!(
+                extract_youtube_video_id(url),
+                Some("dQw4w9WgXcQ"),
+                "url={url}"
+            );
+        }
 
-        // Security regression: ensure non-YouTube hosts with YouTube paths/params are rejected
-        assert_eq!(
-            extract_youtube_video_id("https://evil.com/watch?v=dQw4w9WgXcQ"),
-            None
-        );
-        assert_eq!(
-            extract_youtube_video_id("https://evil.com/youtu.be/dQw4w9WgXcQ"),
-            None
-        );
-        assert_eq!(
-            extract_youtube_video_id("https://attacker.com/shorts/dQw4w9WgXcQ"),
-            None
-        );
-        assert_eq!(
-            extract_youtube_video_id("https://notyoutube.com/watch?v=dQw4w9WgXcQ"),
-            None
-        );
-        assert_eq!(
-            extract_youtube_video_id("https://youtube.com.evil.com/watch?v=dQw4w9WgXcQ"),
-            None
-        );
+        // Non-YouTube hosts (including SSRF/lookalike domains) and plain text must be rejected
+        for url in [
+            "https://example.com/article",
+            "Dune",
+            "https://evil.com/watch?v=dQw4w9WgXcQ",
+            "https://evil.com/youtu.be/dQw4w9WgXcQ",
+            "https://attacker.com/shorts/dQw4w9WgXcQ",
+            "https://notyoutube.com/watch?v=dQw4w9WgXcQ",
+            "https://youtube.com.evil.com/watch?v=dQw4w9WgXcQ",
+        ] {
+            assert_eq!(extract_youtube_video_id(url), None, "url={url}");
+        }
     }
 
     #[test]
     fn test_is_safe_caption_url() {
-        assert!(is_safe_caption_url(
-            "https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en"
-        ));
-        assert!(is_safe_caption_url(
-            "https://youtube.com/api/timedtext?v=dQw4w9WgXcQ"
-        ));
-        assert!(!is_safe_caption_url(
-            "http://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ"
-        )); // insecure HTTP
-        assert!(!is_safe_caption_url(
-            "https://evil.com/api/timedtext?v=dQw4w9WgXcQ"
-        )); // evil domain
-        assert!(!is_safe_caption_url(
-            "http://169.254.169.254/latest/meta-data"
-        )); // cloud metadata SSRF
-        assert!(!is_safe_caption_url(
-            "https://www.youtube.com/account_settings"
-        )); // non-caption path
+        for url in [
+            "https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en",
+            "https://youtube.com/api/timedtext?v=dQw4w9WgXcQ",
+        ] {
+            assert!(is_safe_caption_url(url), "expected safe: {url}");
+        }
+        for url in [
+            "http://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ",
+            "https://evil.com/api/timedtext?v=dQw4w9WgXcQ",
+            "http://169.254.169.254/latest/meta-data",
+            "https://www.youtube.com/account_settings",
+        ] {
+            assert!(!is_safe_caption_url(url), "expected blocked: {url}");
+        }
     }
 
     #[test]
@@ -897,19 +869,6 @@ mod tests {
         assert_eq!(
             extract_video_title(html),
             Some("Rust in 100 Seconds".to_string())
-        );
-    }
-
-    #[test]
-    fn test_decode_html_entities_single_pass_and_zero_copy() {
-        let plain = "Plain subtitle cue without entities";
-        assert!(matches!(
-            decode_html_entities(plain),
-            std::borrow::Cow::Borrowed(_)
-        ));
-        assert_eq!(
-            decode_html_entities("A &amp;lt; B &quot;ok&quot;"),
-            "A &lt; B \"ok\""
         );
     }
 

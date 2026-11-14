@@ -912,16 +912,21 @@ mod tests {
 
     #[test]
     fn test_is_reference_heading_wikipedia_variants() {
-        assert!(is_reference_heading("## References"));
-        assert!(is_reference_heading("## References [edit]"));
-        assert!(is_reference_heading("## References [edit source]"));
-        assert!(is_reference_heading("### External links [edit]"));
-        assert!(is_reference_heading("== References =="));
-        assert!(is_reference_heading("=== Further reading ==="));
-        assert!(is_reference_heading("## Notes and references"));
-        assert!(is_reference_heading("## See also"));
-        assert!(!is_reference_heading("## Language features"));
-        assert!(!is_reference_heading("## History of Rust"));
+        for heading in [
+            "## References",
+            "## References [edit]",
+            "## References [edit source]",
+            "### External links [edit]",
+            "== References ==",
+            "=== Further reading ===",
+            "## Notes and references",
+            "## See also",
+        ] {
+            assert!(is_reference_heading(heading), "expected true: {heading}");
+        }
+        for heading in ["## Language features", "## History of Rust"] {
+            assert!(!is_reference_heading(heading), "expected false: {heading}");
+        }
     }
 
     #[test]
@@ -937,46 +942,50 @@ mod tests {
 
     #[test]
     fn test_ssrf_validation_blocks_private_and_local_targets() {
-        // Blocked: localhost & local domains
-        assert!(validate_public_http_url("http://localhost/").is_err());
-        assert!(validate_public_http_url("http://localhost:8080/admin").is_err());
-        assert!(validate_public_http_url("http://server.local/").is_err());
-        assert!(validate_public_http_url("http://service.internal/").is_err());
+        for blocked in [
+            "http://localhost/",
+            "http://localhost:8080/admin",
+            "http://server.local/",
+            "http://service.internal/",
+            "http://127.0.0.1/",
+            "http://127.0.0.2:9000/",
+            "http://10.0.0.1/status",
+            "http://172.16.0.1/",
+            "http://172.31.255.254/",
+            "http://192.168.1.1/router",
+            "http://169.254.169.254/latest/meta-data",
+            "http://0.0.0.0/",
+            "http://[::1]/",
+            "http://[fe80::1]/",
+            "http://[fe80::1%25eth0]/",
+            "http://[::ffff:127.0.0.1]/",
+            "http://[::ffff:169.254.169.254]/",
+            "http://[64:ff9b::7f00:1]/",
+            "http://[2002:7f00:1::]/",
+            "http://[2001::1]/",
+            "http://[2001:db8::1]/",
+            "http://[ff02::1]/",
+            "http://user:pass@example.com/",
+            "https://token@example.com/",
+            "ftp://example.com/file",
+            "file:///etc/passwd",
+            "gopher://example.com/",
+        ] {
+            assert!(
+                validate_public_http_url(blocked).is_err(),
+                "expected blocked: {blocked}"
+            );
+        }
 
-        // Blocked: IPv4 loopback & RFC1918 & link-local
-        assert!(validate_public_http_url("http://127.0.0.1/").is_err());
-        assert!(validate_public_http_url("http://127.0.0.2:9000/").is_err());
-        assert!(validate_public_http_url("http://10.0.0.1/status").is_err());
-        assert!(validate_public_http_url("http://172.16.0.1/").is_err());
-        assert!(validate_public_http_url("http://172.31.255.254/").is_err());
-        assert!(validate_public_http_url("http://192.168.1.1/router").is_err());
-        assert!(validate_public_http_url("http://169.254.169.254/latest/meta-data").is_err());
-        assert!(validate_public_http_url("http://0.0.0.0/").is_err());
-
-        // Blocked: IPv6 loopback, link-local, special/transitional, and zone-scoped targets
-        assert!(validate_public_http_url("http://[::1]/").is_err());
-        assert!(validate_public_http_url("http://[fe80::1]/").is_err());
-        assert!(validate_public_http_url("http://[fe80::1%25eth0]/").is_err());
-        assert!(validate_public_http_url("http://[::ffff:127.0.0.1]/").is_err());
-        assert!(validate_public_http_url("http://[::ffff:169.254.169.254]/").is_err());
-        assert!(validate_public_http_url("http://[64:ff9b::7f00:1]/").is_err());
-        assert!(validate_public_http_url("http://[2002:7f00:1::]/").is_err());
-        assert!(validate_public_http_url("http://[2001::1]/").is_err());
-        assert!(validate_public_http_url("http://[2001:db8::1]/").is_err());
-        assert!(validate_public_http_url("http://[ff02::1]/").is_err());
-
-        // Blocked: embedded userinfo credentials
-        assert!(validate_public_http_url("http://user:pass@example.com/").is_err());
-        assert!(validate_public_http_url("https://token@example.com/").is_err());
-
-        // Blocked: non-HTTP schemes
-        assert!(validate_public_http_url("ftp://example.com/file").is_err());
-        assert!(validate_public_http_url("file:///etc/passwd").is_err());
-        assert!(validate_public_http_url("gopher://example.com/").is_err());
-
-        // Allowed: public HTTP/HTTPS URLs
-        assert!(validate_public_http_url("https://example.com").is_ok());
-        assert!(validate_public_http_url("https://en.wikipedia.org/wiki/Rust").is_ok());
-        assert!(validate_public_http_url("http://93.184.216.34/").is_ok());
+        for allowed in [
+            "https://example.com",
+            "https://en.wikipedia.org/wiki/Rust",
+            "http://93.184.216.34/",
+        ] {
+            assert!(
+                validate_public_http_url(allowed).is_ok(),
+                "expected allowed: {allowed}"
+            );
+        }
     }
 }

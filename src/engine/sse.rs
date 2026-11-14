@@ -569,15 +569,6 @@ mod tests {
     }
 
     #[test]
-    fn test_pb_reset_resumes_spinner() {
-        let pb = crate::ui::ProgressBar::new_spinner();
-        pb.finish_and_clear();
-        assert!(pb.is_finished());
-        pb.reset();
-        assert!(!pb.is_finished());
-    }
-
-    #[test]
     fn test_sse_stream_state_compact_vs_verbose_thinking() {
         let pb = crate::ui::ProgressBar::hidden();
 
@@ -630,41 +621,24 @@ mod tests {
     #[test]
     fn test_sse_stream_state_bounds_reasoning_and_post_think_content() {
         let pb = crate::ui::ProgressBar::hidden();
-
-        // 1. reasoning_content exceeding MAX_CONTENT_BUFFER_BYTES must truncate and cap buffer
-        let mut state = SseStreamState::new(std::time::Instant::now(), false);
         let huge = "R".repeat(MAX_CONTENT_BUFFER_BYTES + 1024);
-        let payload = format!(
-            "data: {{\"choices\":[{{\"delta\":{{\"reasoning_content\":\"{}\"}}}}]}}",
-            huge
-        );
-        assert!(state.process_line(payload.as_bytes(), &pb, "", StreamMode::Silent));
-        assert!(state.truncated);
-        assert!(state.reasoning_buf.len() <= MAX_CONTENT_BUFFER_BYTES);
 
-        // 2. Unclosed <think> tag exceeding MAX_CONTENT_BUFFER_BYTES must truncate
-        let mut think_state = SseStreamState::new(std::time::Instant::now(), false);
-        let think_payload = format!(
-            "data: {{\"choices\":[{{\"delta\":{{\"content\":\"<think>{}\"}}}}]}}",
-            huge
-        );
-        assert!(think_state.process_line(think_payload.as_bytes(), &pb, "", StreamMode::Silent));
-        assert!(think_state.truncated);
-        assert!(think_state.reasoning_buf.len() <= MAX_CONTENT_BUFFER_BYTES);
-
-        // 3. Visible content immediately after </think> exceeding MAX_CONTENT_BUFFER_BYTES must truncate
-        let mut post_think_state = SseStreamState::new(std::time::Instant::now(), false);
-        let post_payload = format!(
-            "data: {{\"choices\":[{{\"delta\":{{\"content\":\"<think>short</think>{}\"}}}}]}}",
-            huge
-        );
-        assert!(post_think_state.process_line(
-            post_payload.as_bytes(),
-            &pb,
-            "",
-            StreamMode::Silent
-        ));
-        assert!(post_think_state.truncated);
-        assert!(post_think_state.content_buf.len() <= MAX_CONTENT_BUFFER_BYTES);
+        for (field, prefix, check_content) in [
+            ("reasoning_content", "", false),
+            ("content", "<think>", false),
+            ("content", "<think>short</think>", true),
+        ] {
+            let mut state = SseStreamState::new(std::time::Instant::now(), false);
+            let payload =
+                format!(r#"data: {{"choices":[{{"delta":{{"{field}":"{prefix}{huge}"}}}}]}}"#);
+            assert!(state.process_line(payload.as_bytes(), &pb, "", StreamMode::Silent));
+            assert!(state.truncated);
+            let buf_len = if check_content {
+                state.content_buf.len()
+            } else {
+                state.reasoning_buf.len()
+            };
+            assert!(buf_len <= MAX_CONTENT_BUFFER_BYTES);
+        }
     }
 }

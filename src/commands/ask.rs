@@ -742,43 +742,4 @@ mod tests {
         assert_eq!(msgs2[5].role, "user");
         assert_eq!(msgs2[5].content, "Q3");
     }
-
-    #[test]
-    fn test_select_relevant_context_bm25_stopword_filtering() {
-        // Construct three distinct chunks:
-        // Chunk 1: Mentions "the" and "is" repeatedly but nothing about cryptography
-        // Chunk 2: Specifically explains quantum cryptography
-        // Chunk 3: Discusses biology
-        let chunk1 = format!(
-            "{}\n\n",
-            "This is the first section. It discusses the general background of the topic in the world."
-                .repeat(25)
-        );
-        let chunk2 = format!(
-            "{}\n\n",
-            "Quantum cryptography utilizes photon entanglement to guarantee secure key distribution."
-                .repeat(25)
-        );
-        let chunk3 = format!(
-            "{}\n\n",
-            "Photosynthesis in plants converts solar energy into chemical sugars.".repeat(25)
-        );
-
-        let combined = format!("{}{}{}", chunk1, chunk2, chunk3);
-
-        // Ask a question loaded with stop words plus the discriminative keyword "cryptography"
-        let question = "What is the main advantage of quantum cryptography?";
-
-        // Request a budget that only fits ~1-2 chunks
-        let selected =
-            select_relevant_context_bm25(&combined, Some(question), 600, TokenizerKind::Cl100k);
-
-        // The BM25 algorithm with stop-word filtering should prioritize the quantum cryptography chunk!
-        assert!(selected.contains("Quantum cryptography utilizes photon entanglement"));
-
-        // Verify with Llama3 tokenizer
-        let selected_llama =
-            select_relevant_context_bm25(&combined, Some(question), 600, TokenizerKind::Llama3);
-        assert!(selected_llama.contains("Quantum cryptography utilizes photon entanglement"));
-    }
 }

@@ -599,81 +599,106 @@ mod tests {
 
     #[test]
     fn test_is_stop_word() {
-        assert!(is_stop_word("the"));
-        assert!(is_stop_word("The"));
-        assert!(is_stop_word("what"));
-        assert!(is_stop_word("is"));
-        assert!(is_stop_word("about"));
-        assert!(!is_stop_word("quantum"));
-        assert!(!is_stop_word("cryptography"));
-        assert!(!is_stop_word("architecture"));
+        for w in ["the", "The", "what", "is", "about"] {
+            assert!(is_stop_word(w));
+        }
+        for w in ["quantum", "cryptography", "architecture"] {
+            assert!(!is_stop_word(w));
+        }
     }
 
     #[test]
     fn test_damerau_levenshtein() {
-        assert_eq!(damerau_levenshtein("", ""), 0);
-        assert_eq!(damerau_levenshtein("a", ""), 1);
-        assert_eq!(damerau_levenshtein("", "b"), 1);
-        assert_eq!(damerau_levenshtein("kitten", "sitting"), 3);
-        // Transposition test
-        assert_eq!(damerau_levenshtein("ca", "ac"), 1);
-        assert_eq!(damerau_levenshtein("banana", "banna"), 1);
+        for ((a, b), expected) in [
+            (("", ""), 0),
+            (("a", ""), 1),
+            (("", "b"), 1),
+            (("kitten", "sitting"), 3),
+            (("ca", "ac"), 1),
+            (("banana", "banna"), 1),
+        ] {
+            assert_eq!(damerau_levenshtein(a, b), expected);
+        }
     }
 
     #[test]
     fn test_tokenize_terms_and_search_terms() {
         let text = "The Quick Brown Fox jumps over 123 lazy dogs! #Rust_2026-edition";
         let terms = tokenize_terms(text);
-        assert!(terms.contains(&"quick".to_string()));
-        assert!(terms.contains(&"brown".to_string()));
-        assert!(terms.contains(&"the".to_string()));
-        assert!(terms.contains(&"rust_2026-edition".to_string()));
+        for expected in ["quick", "brown", "the", "rust_2026-edition"] {
+            assert!(terms.contains(&expected.to_string()));
+        }
 
         let search_terms = tokenize_search_terms(text);
         // "the" is a stop word and should be filtered out
         assert!(!search_terms.contains(&"the".to_string()));
-        assert!(search_terms.contains(&"quick".to_string()));
-        assert!(search_terms.contains(&"fox".to_string()));
-        assert!(search_terms.contains(&"dogs".to_string()));
+        for expected in ["quick", "fox", "dogs"] {
+            assert!(search_terms.contains(&expected.to_string()));
+        }
+
+        for empty in ["", "   \t\n  ", "!@#$%^&*()+=~`"] {
+            assert!(tokenize_terms(empty).is_empty());
+        }
+        assert_eq!(
+            tokenize_terms("Rust-2024_edition & AI 🤖"),
+            vec!["rust-2024_edition", "ai"]
+        );
+        assert_eq!(tokenize_terms("--flag_name--"), vec!["flag_name"]);
     }
 
     #[test]
     fn test_decode_html_entities() {
-        assert_eq!(decode_html_entities("Hello world"), "Hello world");
         assert!(matches!(
             decode_html_entities("Hello world"),
-            Cow::Borrowed(_)
+            Cow::Borrowed("Hello world")
         ));
-        assert_eq!(
-            decode_html_entities("&lt;div&gt;&quot;Hello &amp; welcome&quot;&lt;/div&gt;"),
-            "<div>\"Hello & welcome\"</div>"
-        );
-        assert_eq!(
-            decode_html_entities("It&#39;s sunny &amp; warm"),
-            "It's sunny & warm"
-        );
+        for (raw, expected) in [
+            (
+                "&lt;div&gt;&quot;Hello &amp; welcome&quot;&lt;/div&gt;",
+                "<div>\"Hello & welcome\"</div>",
+            ),
+            ("It&#39;s sunny &amp; warm", "It's sunny & warm"),
+            ("A &amp;lt; B &quot;ok&quot;", "A &lt; B \"ok\""),
+        ] {
+            assert_eq!(decode_html_entities(raw), expected);
+        }
     }
 
     #[test]
     fn test_ascii_case_insensitive() {
-        assert_eq!(find_ascii_case_insensitive("Hello World", "world"), Some(6));
-        assert_eq!(find_ascii_case_insensitive("Hello World", "WORLD"), Some(6));
-        assert_eq!(find_ascii_case_insensitive("Hello", "xyz"), None);
+        for (haystack, needle, expected) in [
+            ("Hello World", "world", Some(6)),
+            ("Hello World", "WORLD", Some(6)),
+            ("Hello", "xyz", None),
+            ("<ITEM>", "<item>", Some(0)),
+            ("Short", "LongerPattern", None),
+            ("abc", "", Some(0)),
+        ] {
+            assert_eq!(find_ascii_case_insensitive(haystack, needle), expected);
+        }
         assert!(contains_ascii_case_insensitive("Hello World", "world"));
         assert!(!contains_ascii_case_insensitive("Hello World", "xyz"));
-        assert!(ends_with_ascii_case_insensitive("test.RSS", ".rss"));
-        assert!(ends_with_ascii_case_insensitive("test.rss", ".RSS"));
-        assert!(!ends_with_ascii_case_insensitive("test.xml", ".rss"));
-        assert!(!ends_with_ascii_case_insensitive("rss", ".rss"));
+        for (text, suffix, expected) in [
+            ("test.RSS", ".rss", true),
+            ("test.rss", ".RSS", true),
+            ("test.xml", ".rss", false),
+            ("rss", ".rss", false),
+        ] {
+            assert_eq!(ends_with_ascii_case_insensitive(text, suffix), expected);
+        }
     }
 
     #[test]
     fn test_is_http_url() {
-        assert!(is_http_url("http://example.com"));
-        assert!(is_http_url("https://example.com/feed"));
-        assert!(!is_http_url("ftp://example.com"));
-        assert!(!is_http_url("example.com"));
-        assert!(!is_http_url("/path/to/file"));
+        for (url, expected) in [
+            ("http://example.com", true),
+            ("https://example.com/feed", true),
+            ("ftp://example.com", false),
+            ("example.com", false),
+            ("/path/to/file", false),
+        ] {
+            assert_eq!(is_http_url(url), expected);
+        }
     }
 
     #[test]

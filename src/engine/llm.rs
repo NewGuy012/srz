@@ -1109,215 +1109,181 @@ mod tests {
 
     #[test]
     fn test_parse_error_body_formats() {
-        // OpenAI / llama.cpp format
-        let openai_err = r#"{"error":{"code":400,"message":"model 'gemma-4' not found","type":"invalid_request_error"}}"#;
-        assert_eq!(
-            LlmClient::parse_error_body(openai_err),
-            Some("model 'gemma-4' not found".to_string())
-        );
-
-        // Ollama format
-        let ollama_err = r#"{"error":"model 'gemma-4' not found, try pulling it first"}"#;
-        assert_eq!(
-            LlmClient::parse_error_body(ollama_err),
-            Some("model 'gemma-4' not found, try pulling it first".to_string())
-        );
-
-        // FastAPI / vLLM format
-        let fastapi_err = r#"{"detail":"Model 'gemma-4' does not exist"}"#;
-        assert_eq!(
-            LlmClient::parse_error_body(fastapi_err),
-            Some("Model 'gemma-4' does not exist".to_string())
-        );
-
-        // Generic JSON format
-        let generic_err = r#"{"message":"Unknown model specified"}"#;
-        assert_eq!(
-            LlmClient::parse_error_body(generic_err),
-            Some("Unknown model specified".to_string())
-        );
-
-        // Error code only
-        let code_err = r#"{"error":{"code":"model_not_found"}}"#;
-        assert_eq!(
-            LlmClient::parse_error_body(code_err),
-            Some("Error code: model_not_found".to_string())
-        );
-
-        // HTML response should be suppressed to avoid dumping raw tags
-        let html_err = "<html><body>502 Bad Gateway</body></html>";
-        assert_eq!(LlmClient::parse_error_body(html_err), None);
-
-        // Plain text error
-        let plain_err = "Server connection timeout while preparing request";
-        assert_eq!(
-            LlmClient::parse_error_body(plain_err),
-            Some("Server connection timeout while preparing request".to_string())
-        );
-
-        // Empty body
-        assert_eq!(LlmClient::parse_error_body("   "), None);
+        for (raw, expected) in [
+            (
+                r#"{"error":{"code":400,"message":"model 'gemma-4' not found","type":"invalid_request_error"}}"#,
+                Some("model 'gemma-4' not found"),
+            ),
+            (
+                r#"{"error":"model 'gemma-4' not found, try pulling it first"}"#,
+                Some("model 'gemma-4' not found, try pulling it first"),
+            ),
+            (
+                r#"{"detail":"Model 'gemma-4' does not exist"}"#,
+                Some("Model 'gemma-4' does not exist"),
+            ),
+            (
+                r#"{"message":"Unknown model specified"}"#,
+                Some("Unknown model specified"),
+            ),
+            (
+                r#"{"error":{"code":"model_not_found"}}"#,
+                Some("Error code: model_not_found"),
+            ),
+            ("<html><body>502 Bad Gateway</body></html>", None),
+            (
+                "Server connection timeout while preparing request",
+                Some("Server connection timeout while preparing request"),
+            ),
+            ("   ", None),
+        ] {
+            assert_eq!(
+                LlmClient::parse_error_body(raw).as_deref(),
+                expected,
+                "raw={raw}"
+            );
+        }
     }
 
     #[test]
     fn test_is_model_not_found_error_detection() {
-        // llama.cpp 400 Bad Request
-        assert!(LlmClient::is_model_not_found_error(
-            reqwest::StatusCode::BAD_REQUEST,
-            Some("model 'gemma-4' not found"),
-            r#"{"error":{"code":400,"message":"model 'gemma-4' not found","type":"invalid_request_error"}}"#,
-            "gemma-4"
-        ));
-
-        // Ollama 404 Not Found
-        assert!(LlmClient::is_model_not_found_error(
-            reqwest::StatusCode::NOT_FOUND,
-            Some("model 'gemma-4' not found, try pulling it first"),
-            r#"{"error":"model 'gemma-4' not found, try pulling it first"}"#,
-            "gemma-4"
-        ));
-
-        // LM Studio "no model is loaded"
-        assert!(LlmClient::is_model_not_found_error(
-            reqwest::StatusCode::BAD_REQUEST,
-            Some("No model is loaded"),
-            r#"{"error":{"message":"No model is loaded"}}"#,
-            "gemma-4"
-        ));
-
-        // vLLM "Model 'gemma-4' does not exist"
-        assert!(LlmClient::is_model_not_found_error(
-            reqwest::StatusCode::NOT_FOUND,
-            Some("Model 'gemma-4' does not exist"),
-            r#"{"detail":"Model 'gemma-4' does not exist"}"#,
-            "gemma-4"
-        ));
-
-        // Unrelated 400 Bad Request (e.g. invalid parameter)
-        assert!(!LlmClient::is_model_not_found_error(
-            reqwest::StatusCode::BAD_REQUEST,
-            Some("temperature must be between 0.0 and 2.0"),
-            r#"{"error":{"message":"temperature must be between 0.0 and 2.0"}}"#,
-            "gemma-4"
-        ));
-
-        // Rate limit 429
-        assert!(!LlmClient::is_model_not_found_error(
-            reqwest::StatusCode::TOO_MANY_REQUESTS,
-            Some("Rate limit exceeded"),
-            r#"{"error":{"message":"Rate limit exceeded"}}"#,
-            "gemma-4"
-        ));
+        use reqwest::StatusCode;
+        for (status, parsed, raw, expected) in [
+            (
+                StatusCode::BAD_REQUEST,
+                Some("model 'gemma-4' not found"),
+                r#"{"error":{"code":400,"message":"model 'gemma-4' not found","type":"invalid_request_error"}}"#,
+                true,
+            ),
+            (
+                StatusCode::NOT_FOUND,
+                Some("model 'gemma-4' not found, try pulling it first"),
+                r#"{"error":"model 'gemma-4' not found, try pulling it first"}"#,
+                true,
+            ),
+            (
+                StatusCode::BAD_REQUEST,
+                Some("No model is loaded"),
+                r#"{"error":{"message":"No model is loaded"}}"#,
+                true,
+            ),
+            (
+                StatusCode::NOT_FOUND,
+                Some("Model 'gemma-4' does not exist"),
+                r#"{"detail":"Model 'gemma-4' does not exist"}"#,
+                true,
+            ),
+            (
+                StatusCode::BAD_REQUEST,
+                Some("temperature must be between 0.0 and 2.0"),
+                r#"{"error":{"message":"temperature must be between 0.0 and 2.0"}}"#,
+                false,
+            ),
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                Some("Rate limit exceeded"),
+                r#"{"error":{"message":"Rate limit exceeded"}}"#,
+                false,
+            ),
+        ] {
+            assert_eq!(
+                LlmClient::is_model_not_found_error(status, parsed, raw, "gemma-4"),
+                expected,
+                "raw={raw}"
+            );
+        }
     }
 
     #[test]
     fn test_format_http_error_messages() {
-        // Model not found - without available models
+        use reqwest::StatusCode;
         let raw_err = r#"{"error":{"code":400,"message":"model 'gemma-4' not found","type":"invalid_request_error"}}"#;
-        let formatted = LlmClient::format_http_error(
-            reqwest::StatusCode::BAD_REQUEST,
-            raw_err,
-            Some("model 'gemma-4' not found"),
-            "gemma-4",
-            "http://localhost:9931/v1",
-            None,
-        );
-        assert_eq!(
-            formatted,
-            "Local model not detected: model 'gemma-4' was not found on LLM backend at 'http://localhost:9931/v1'."
-        );
-
-        // Model not found - with available models on backend
         let available = vec!["qwen2.5-coder-7b".to_string(), "llama3.2".to_string()];
-        let formatted_with_models = LlmClient::format_http_error(
-            reqwest::StatusCode::BAD_REQUEST,
-            raw_err,
-            Some("model 'gemma-4' not found"),
-            "gemma-4",
-            "http://localhost:9931/v1",
-            Some(&available),
-        );
-        assert_eq!(
-            formatted_with_models,
-            "Local model not detected: model 'gemma-4' was not found on LLM backend at 'http://localhost:9931/v1'. (Available models on server: 'qwen2.5-coder-7b', 'llama3.2')"
-        );
+        let similar = vec!["gemma-2-9b-it".to_string(), "llama3.2".to_string()];
+        let empty: Vec<String> = vec![];
+        let ctx_err = "request (34851 tokens) exceeds the available context size (32768 tokens), try increasing it";
 
-        // Model not found - with fuzzy match suggestion
-        let similar_models = vec!["gemma-2-9b-it".to_string(), "llama3.2".to_string()];
+        for (status, raw, parsed, model, url, models, expected) in [
+            (
+                StatusCode::BAD_REQUEST,
+                raw_err,
+                Some("model 'gemma-4' not found"),
+                "gemma-4",
+                "http://localhost:9931/v1",
+                None,
+                "Local model not detected: model 'gemma-4' was not found on LLM backend at 'http://localhost:9931/v1'.",
+            ),
+            (
+                StatusCode::BAD_REQUEST,
+                raw_err,
+                Some("model 'gemma-4' not found"),
+                "gemma-4",
+                "http://localhost:9931/v1",
+                Some(&available),
+                "Local model not detected: model 'gemma-4' was not found on LLM backend at 'http://localhost:9931/v1'. (Available models on server: 'qwen2.5-coder-7b', 'llama3.2')",
+            ),
+            (
+                StatusCode::BAD_REQUEST,
+                raw_err,
+                Some("model 'gemma-4' not found"),
+                "gemma-4",
+                "http://localhost:9931/v1",
+                Some(&empty),
+                "Local model not detected: model 'gemma-4' was not found on LLM backend at 'http://localhost:9931/v1'. (No models are currently loaded on this backend).",
+            ),
+            (
+                StatusCode::NOT_FOUND,
+                r#"{"error":"model 'gemma-4' not found, try pulling it first"}"#,
+                Some("model 'gemma-4' not found, try pulling it first"),
+                "gemma-4",
+                "http://localhost:11434",
+                None,
+                "Local model not detected: model 'gemma-4' was not found on LLM backend at 'http://localhost:11434'. (model 'gemma-4' not found, try pulling it first)",
+            ),
+            (
+                StatusCode::UNAUTHORIZED,
+                r#"{"error":{"message":"Invalid API key"}}"#,
+                Some("Invalid API key"),
+                "gemma-4",
+                "https://api.openai.com/v1",
+                None,
+                "LLM backend authentication error (HTTP 401 Unauthorized): Invalid API key",
+            ),
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                r#"{"error":{"message":"CUDA out of memory"}}"#,
+                Some("CUDA out of memory"),
+                "gemma-4",
+                "http://localhost:9931/v1",
+                None,
+                "LLM server internal error (HTTP 500 Internal Server Error): CUDA out of memory",
+            ),
+        ] {
+            assert_eq!(
+                LlmClient::format_http_error(
+                    status,
+                    raw,
+                    parsed,
+                    model,
+                    url,
+                    models.map(Vec::as_slice)
+                ),
+                expected
+            );
+        }
+
         let formatted_fuzzy = LlmClient::format_http_error(
-            reqwest::StatusCode::BAD_REQUEST,
+            StatusCode::BAD_REQUEST,
             raw_err,
             Some("model 'gemma-2' not found"),
             "gemma-2",
             "http://localhost:9931/v1",
-            Some(&similar_models),
+            Some(&similar),
         );
         assert!(formatted_fuzzy.contains("Did you mean 'gemma-2-9b-it'?"));
 
-        // Model not found - 0 models loaded
-        let empty_available: Vec<String> = vec![];
-        let formatted_empty = LlmClient::format_http_error(
-            reqwest::StatusCode::BAD_REQUEST,
-            raw_err,
-            Some("model 'gemma-4' not found"),
-            "gemma-4",
-            "http://localhost:9931/v1",
-            Some(&empty_available),
-        );
-        assert_eq!(
-            formatted_empty,
-            "Local model not detected: model 'gemma-4' was not found on LLM backend at 'http://localhost:9931/v1'. (No models are currently loaded on this backend)."
-        );
-
-        // Model not found - Ollama extra instruction
-        let ollama_raw = r#"{"error":"model 'gemma-4' not found, try pulling it first"}"#;
-        let formatted_ollama = LlmClient::format_http_error(
-            reqwest::StatusCode::NOT_FOUND,
-            ollama_raw,
-            Some("model 'gemma-4' not found, try pulling it first"),
-            "gemma-4",
-            "http://localhost:11434",
-            None,
-        );
-        assert_eq!(
-            formatted_ollama,
-            "Local model not detected: model 'gemma-4' was not found on LLM backend at 'http://localhost:11434'. (model 'gemma-4' not found, try pulling it first)"
-        );
-
-        // Authentication error (401)
-        let auth_raw = r#"{"error":{"message":"Invalid API key"}}"#;
-        let formatted_auth = LlmClient::format_http_error(
-            reqwest::StatusCode::UNAUTHORIZED,
-            auth_raw,
-            Some("Invalid API key"),
-            "gemma-4",
-            "https://api.openai.com/v1",
-            None,
-        );
-        assert_eq!(
-            formatted_auth,
-            "LLM backend authentication error (HTTP 401 Unauthorized): Invalid API key"
-        );
-
-        // Server error (500)
-        let oom_raw = r#"{"error":{"message":"CUDA out of memory"}}"#;
-        let formatted_500 = LlmClient::format_http_error(
-            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
-            oom_raw,
-            Some("CUDA out of memory"),
-            "gemma-4",
-            "http://localhost:9931/v1",
-            None,
-        );
-        assert_eq!(
-            formatted_500,
-            "LLM server internal error (HTTP 500 Internal Server Error): CUDA out of memory"
-        );
-
-        // Context window exceeded error (400)
-        let ctx_err = "request (34851 tokens) exceeds the available context size (32768 tokens), try increasing it";
         let formatted_ctx = LlmClient::format_http_error(
-            reqwest::StatusCode::BAD_REQUEST,
+            StatusCode::BAD_REQUEST,
             ctx_err,
             Some(ctx_err),
             "meta-llama-3.1-8b",

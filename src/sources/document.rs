@@ -612,4 +612,48 @@ mod tests {
         let occurrences = page.content.matches("Unique single chapter text").count();
         assert_eq!(occurrences, 1);
     }
+
+    #[test]
+    fn test_read_file_bytes_limited_enforces_size_and_type() {
+        let tmp = crate::fs_util::tempdir().unwrap();
+        let file = tmp.path().join("sample.bin");
+        std::fs::write(&file, b"0123456789").unwrap();
+
+        assert_eq!(
+            read_file_bytes_limited(&file, 10, "Test").unwrap(),
+            b"0123456789"
+        );
+        assert!(
+            read_file_bytes_limited(&file, 9, "Test")
+                .unwrap_err()
+                .to_string()
+                .contains("too large")
+        );
+        assert!(
+            read_file_bytes_limited(tmp.path(), 1024, "Test")
+                .unwrap_err()
+                .to_string()
+                .contains("not a regular file")
+        );
+    }
+
+    #[test]
+    fn test_pdf_extract_text_bounded_enforces_limit() {
+        let pdf_bytes =
+            std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/document.pdf")).unwrap();
+        let doc = pdf_extract::Document::load_mem(&pdf_bytes).unwrap();
+
+        assert!(
+            !PdfExtractor::extract_pdf_text_bounded(&doc, MAX_PDF_TEXT_BYTES)
+                .unwrap()
+                .trim()
+                .is_empty()
+        );
+        assert!(
+            PdfExtractor::extract_pdf_text_bounded(&doc, 16)
+                .unwrap_err()
+                .to_string()
+                .contains("exceeds maximum allowed size")
+        );
+    }
 }

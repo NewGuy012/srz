@@ -780,27 +780,20 @@ mod tests {
 
     #[test]
     fn test_spinner_lifecycle() {
-        let pb = ProgressBar::new_spinner();
-        pb.set_message("Testing spinner");
-        assert!(!pb.is_finished());
-        pb.finish_and_clear();
-        assert!(pb.is_finished());
-        pb.reset();
-        assert!(!pb.is_finished());
-        pb.finish_and_clear();
-    }
+        let active = ProgressBar::new_spinner();
+        active.set_message("Testing spinner");
+        let hidden = ProgressBar::hidden();
+        assert!(hidden.is_hidden());
 
-    #[test]
-    fn test_hidden_spinner_lifecycle() {
-        let pb = ProgressBar::hidden();
-        assert!(pb.is_hidden());
-        assert!(!pb.is_finished());
-        pb.finish_and_clear();
-        assert!(pb.is_finished());
-        pb.reset();
-        assert!(!pb.is_finished());
-        pb.finish_and_clear();
-        assert!(pb.is_finished());
+        for pb in [active, hidden] {
+            assert!(!pb.is_finished());
+            pb.finish_and_clear();
+            assert!(pb.is_finished());
+            pb.reset();
+            assert!(!pb.is_finished());
+            pb.finish_and_clear();
+            assert!(pb.is_finished());
+        }
     }
 
     #[test]

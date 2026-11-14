@@ -401,91 +401,54 @@ mod tests {
         assert!(llama_count >= cl100k_count);
     }
 
-    #[test]
-    fn test_chunk_monolithic_block_without_double_newlines() {
-        // Monolithic text with NO \n\n (reproduces the unchunked fallthrough bug)
-        let sentence =
-            "This is a detailed analysis of the system architecture without any double newlines. ";
-        let monolithic = sentence.repeat(40); // ~560 tokens
-        let total_tokens = TokenizerKind::Cl100k.count_tokens(&monolithic);
-        assert!(total_tokens > 400);
-
+    fn assert_chunks_within_budget(
+        text: &str,
+        budget: usize,
+        overlap: usize,
+        min_chunks: usize,
+        max_measured: usize,
+    ) {
         let chunks = TextChunker::chunk_by_tokens_with_counts_and_kind(
-            &monolithic,
-            100,
-            15,
+            text,
+            budget,
+            overlap,
             TokenizerKind::Cl100k,
         );
         assert!(
-            chunks.len() >= 4,
-            "Expected at least 4 chunks, got {}",
+            chunks.len() >= min_chunks,
+            "Expected >= {min_chunks} chunks, got {}",
             chunks.len()
         );
         for (i, (c, count)) in chunks.iter().enumerate() {
             assert!(
-                *count <= 125,
-                "Chunk #{} has {} tokens, exceeding limit of 125",
-                i,
-                count
+                *count <= max_measured,
+                "Chunk #{i} has {count} tokens > {max_measured}"
             );
-            let measured = TokenizerKind::Cl100k.count_tokens(c);
-            assert!(measured <= 125);
+            assert!(TokenizerKind::Cl100k.count_tokens(c) <= max_measured);
         }
     }
 
     #[test]
-    fn test_chunk_single_newline_separated_text() {
-        // Single \n separated lines (e.g. PDF text, code, log files)
-        let lines: Vec<String> = (0..50)
-            .map(|i| format!("Line #{}: system event telemetry metric logging item.", i))
-            .collect();
-        let text = lines.join("\n"); // strictly single \n, no \n\n
-        let total_tokens = TokenizerKind::Cl100k.count_tokens(&text);
-        assert!(total_tokens > 300);
+    fn test_chunk_fallback_splitting_modes() {
+        let monolithic =
+            "This is a detailed analysis of the system architecture without any double newlines. "
+                .repeat(40);
+        assert!(TokenizerKind::Cl100k.count_tokens(&monolithic) > 400);
+        assert_chunks_within_budget(&monolithic, 100, 15, 4, 125);
 
-        let chunks =
-            TextChunker::chunk_by_tokens_with_counts_and_kind(&text, 80, 10, TokenizerKind::Cl100k);
-        assert!(
-            chunks.len() >= 4,
-            "Expected >= 4 chunks, got {}",
-            chunks.len()
-        );
-        for (c, count) in &chunks {
-            assert!(
-                *count <= 100,
-                "Chunk tokens {} exceeded expected budget",
-                count
-            );
-            let measured = TokenizerKind::Cl100k.count_tokens(c);
-            assert!(measured <= 100);
-        }
-    }
+        let single_nl = (0..50)
+            .map(|i| format!("Line #{i}: system event telemetry metric logging item."))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(TokenizerKind::Cl100k.count_tokens(&single_nl) > 300);
+        assert_chunks_within_budget(&single_nl, 80, 10, 4, 100);
 
-    #[test]
-    fn test_chunk_oversized_paragraph_in_multiparagraph_document() {
-        let p_intro = "Introductory context paragraph.";
-        let p_huge =
+        let oversized_para = format!(
+            "Introductory context paragraph.\n\n{}\n\nConcluding summary paragraph.",
             "Massive continuous detailed sentence repeating for testing paragraph decomposition. "
-                .repeat(30);
-        let p_outro = "Concluding summary paragraph.";
-        let text = format!("{}\n\n{}\n\n{}", p_intro, p_huge, p_outro);
-
-        let chunks = TextChunker::chunk_by_tokens_with_counts_and_kind(
-            &text,
-            100,
-            15,
-            TokenizerKind::Cl100k,
+                .repeat(30)
         );
-        assert!(
-            chunks.len() >= 3,
-            "Expected >= 3 chunks for oversized paragraph, got {}",
-            chunks.len()
-        );
-        for (c, count) in &chunks {
-            assert!(*count <= 130, "Chunk tokens {} exceeded budget", count);
-            let measured = TokenizerKind::Cl100k.count_tokens(c);
-            assert!(measured <= 130);
-        }
+        assert_chunks_within_budget(&oversized_para, 100, 15, 3, 130);
     }
 
     #[test]

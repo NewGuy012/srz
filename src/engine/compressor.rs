@@ -330,9 +330,9 @@ mod tests {
 
         let combined = format!("{}{}{}", chunk1, chunk2, chunk3);
         let question = "What is the main advantage of quantum cryptography?";
-        let selected =
-            select_relevant_context_bm25(&combined, Some(question), 600, TokenizerKind::Cl100k);
-
-        assert!(selected.contains("Quantum cryptography utilizes photon entanglement"));
+        for kind in [TokenizerKind::Cl100k, TokenizerKind::Llama3] {
+            let selected = select_relevant_context_bm25(&combined, Some(question), 600, kind);
+            assert!(selected.contains("Quantum cryptography utilizes photon entanglement"));
+        }
     }
 }

@@ -642,85 +642,86 @@ mod tests {
         assert_eq!(render::target_icon("youtube"), "📺");
     }
 
+    fn make_item(
+        id: i64,
+        target_type: &str,
+        title: &str,
+        author: Option<&str>,
+        url: Option<&str>,
+        summary: &str,
+    ) -> LibraryItem {
+        LibraryItem {
+            id,
+            target_type: target_type.into(),
+            title: title.into(),
+            author: author.map(Into::into),
+            url: url.map(Into::into),
+            summary: summary.into(),
+            style: "concise".into(),
+            model: "gemma".into(),
+            word_count: 500,
+            prompt_tokens: None,
+            completion_tokens: None,
+            duration_ms: 100,
+            tokens_per_second: None,
+            created_at: "2026-10-28 12:00".into(),
+            reasoning: None,
+        }
+    }
+
     #[test]
     fn test_app_state_filtering() {
         let items = vec![
-            LibraryItem {
-                id: 1,
-                target_type: "book".into(),
-                title: "Dune".into(),
-                author: Some("Frank Herbert".into()),
-                url: None,
-                summary: "Spice and sandworms on Arrakis".into(),
-                style: "concise".into(),
-                model: "gemma".into(),
-                word_count: 500,
-                prompt_tokens: Some(100),
-                completion_tokens: Some(50),
-                duration_ms: 1200,
-                tokens_per_second: Some(41.6),
-                created_at: "2026-10-28 12:00".into(),
-                reasoning: None,
-            },
-            LibraryItem {
-                id: 2,
-                target_type: "web".into(),
-                title: "Rust 2026 Edition".into(),
-                author: None,
-                url: Some("https://rust-lang.org".into()),
-                summary: "New features in modern Rust".into(),
-                style: "detailed".into(),
-                model: "gemma".into(),
-                word_count: 800,
-                prompt_tokens: Some(150),
-                completion_tokens: Some(70),
-                duration_ms: 1500,
-                tokens_per_second: Some(46.6),
-                created_at: "2026-10-28 13:00".into(),
-                reasoning: None,
-            },
+            make_item(
+                1,
+                "book",
+                "Dune",
+                Some("Frank Herbert"),
+                None,
+                "Spice and sandworms on Arrakis",
+            ),
+            make_item(
+                2,
+                "web",
+                "Rust 2026 Edition",
+                None,
+                Some("https://rust-lang.org"),
+                "New features in modern Rust",
+            ),
         ];
 
         let mut state = AppState::new(items, std::path::PathBuf::from("/tmp"));
         assert_eq!(state.filtered_indices.len(), 2);
 
-        state.filter_query = "arrakis".into();
-        state.apply_filter();
-        assert_eq!(state.filtered_indices.len(), 1);
-        assert_eq!(state.selected_item().unwrap().title, "Dune");
-
-        state.filter_query = "rust".into();
-        state.apply_filter();
-        assert_eq!(state.filtered_indices.len(), 1);
-        assert_eq!(state.selected_item().unwrap().title, "Rust 2026 Edition");
-
-        state.filter_query = "nonexistent".into();
-        state.apply_filter();
-        assert_eq!(state.filtered_indices.len(), 0);
-        assert!(state.selected_item().is_none());
+        for (query, expected) in [
+            ("arrakis", Some("Dune")),
+            ("rust", Some("Rust 2026 Edition")),
+            ("nonexistent", None),
+        ] {
+            state.filter_query = query.into();
+            state.apply_filter();
+            assert_eq!(
+                state.selected_item().map(|i| i.title.as_str()),
+                expected,
+                "query={query}"
+            );
+        }
     }
 
     #[test]
     fn test_app_state_sanitizes_untrusted_item_fields() {
-        let malicious_items = vec![LibraryItem {
-            id: 1,
-            target_type: "web".into(),
-            title: "\x1b[31mRed Title\x1b[0m\nSecond Line".into(),
-            author: Some("Evil\u{202E}Author\x1b]0;Title\x07".into()),
-            url: Some("https://example.com/\x1b[2Jevil".into()),
-            summary: "Malicious \x1b[31;1mANSI\x1b[0m and \u{202E}BiDi summary".into(),
-            style: "concise\r\n".into(),
-            model: "gemma\x07".into(),
-            word_count: 100,
-            prompt_tokens: None,
-            completion_tokens: None,
-            duration_ms: 100,
-            tokens_per_second: None,
-            created_at: "2026-10-28\n12:00".into(),
-            reasoning: None,
-        }];
+        let mut item = make_item(
+            1,
+            "web",
+            "\x1b[31mRed Title\x1b[0m\nSecond Line",
+            Some("Evil\u{202E}Author\x1b]0;Title\x07"),
+            Some("https://example.com/\x1b[2Jevil"),
+            "Malicious \x1b[31;1mANSI\x1b[0m and \u{202E}BiDi summary",
+        );
+        item.style = "concise\r\n".into();
+        item.model = "gemma\x07".into();
 
-        let state = AppState::new(malicious_items, std::path::PathBuf::from("/tmp"));
+        let state = AppState::new(vec![item], std::path::PathBuf::from("/tmp"));
         let item = &state.items[0];
         assert_eq!(item.title, "Red Title Second Line");
         assert!(!item.author.as_ref().unwrap().contains('\u{202E}'));

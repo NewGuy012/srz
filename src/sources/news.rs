@@ -1,7 +1,5 @@
 use crate::cli::NewsTimeframe;
 use crate::scraper::{ScrapedPage, WebScraper};
-#[cfg(test)]
-use crate::system::text_util::find_ascii_case_insensitive;
 use crate::system::text_util::{
     XmlEvent, XmlScanner, decode_html_entities, extract_attr_value, xml_attr, xml_local_name,
 };
@@ -880,14 +878,6 @@ mod tests {
     }
 
     #[test]
-    fn test_find_ascii_case_insensitive() {
-        assert_eq!(find_ascii_case_insensitive("Hello World", "world"), Some(6));
-        assert_eq!(find_ascii_case_insensitive("<ITEM>", "<item>"), Some(0));
-        assert_eq!(find_ascii_case_insensitive("Short", "LongerPattern"), None);
-        assert_eq!(find_ascii_case_insensitive("abc", ""), Some(0));
-    }
-
-    #[test]
     fn test_google_news_url_extraction() {
         let url = "https://news.google.com/rss/articles/CBMiWmh0dHBzOi8vd3d3LnNpdGVwb2ludC5jb20vamF2YXNjcmlwdC1uZXdzLw?oc=5";
         assert_eq!(
@@ -908,41 +898,26 @@ mod tests {
 
     #[test]
     fn test_google_news_url_extraction_security() {
-        // Must reject foreign origins
-        assert_eq!(
-            extract_article_id("https://attacker.com/articles/CBMi12345"),
-            None
-        );
-        assert_eq!(
-            extract_article_id("http://evil.news.google.com.attacker.com/articles/CBMi12345"),
-            None
-        );
-
-        // Must reject non-base64 characters / path traversal
-        assert_eq!(
-            extract_article_id("https://news.google.com/articles/../../etc/passwd"),
-            None
-        );
-        assert_eq!(
-            extract_article_id("https://news.google.com/articles/<script>"),
-            None
-        );
-
-        // Valid Google News article URL
+        for bad in [
+            "https://attacker.com/articles/CBMi12345",
+            "http://evil.news.google.com.attacker.com/articles/CBMi12345",
+            "https://news.google.com/articles/../../etc/passwd",
+            "https://news.google.com/articles/<script>",
+        ] {
+            assert_eq!(extract_article_id(bad), None, "should reject {bad}");
+        }
         assert_eq!(
             extract_article_id("https://news.google.com/articles/CBMi-Valid_Id=123?oc=5"),
             Some("CBMi-Valid_Id=123")
         );
 
-        // Reject dangerous destination schemes from RPC
-        let xss_rpc = ")]}'\n\n[[\"wrb.fr\",\"Fbv4je\",\"[\\\"garturlreq\\\",\\\"javascript:alert(1)\\\"]\"]]";
-        assert_eq!(parse_batchexecute_destination_url(xss_rpc), None);
+        for bad_dest in ["javascript:alert(1)", "file:///etc/passwd"] {
+            let rpc = format!(
+                ")]}}'\n\n[[\"wrb.fr\",\"Fbv4je\",\"[\\\"garturlreq\\\",\\\"{bad_dest}\\\"]\"]]"
+            );
+            assert_eq!(parse_batchexecute_destination_url(&rpc), None);
+        }
 
-        let file_rpc =
-            ")]}'\n\n[[\"wrb.fr\",\"Fbv4je\",\"[\\\"garturlreq\\\",\\\"file:///etc/passwd\\\"]\"]]";
-        assert_eq!(parse_batchexecute_destination_url(file_rpc), None);
-
-        // Reject non-http links in RSS items
         let bad_rss = r#"<rss version="2.0"><channel>
             <item><title>XSS Link</title><link>javascript:alert(1)</link></item>
             <item><title>File Link</title><link>file:///etc/passwd</link></item>
@@ -957,7 +932,6 @@ mod tests {
             decode_google_news_url(url),
             Some("https://www.sitepoint.com/javascript-news/".to_string())
         );
-
         // Non-CBMi IDs return None to fall back to RPC
         assert_eq!(
             decode_google_news_url("https://news.google.com/articles/CBIi98765"),
@@ -967,16 +941,14 @@ mod tests {
 
     #[test]
     fn test_is_google_news_link() {
-        assert!(is_google_news_link(
-            "https://news.google.com/rss/articles/CBMi123"
-        ));
-        assert!(is_google_news_link(
-            "http://news.google.com/articles/CBMi123"
-        ));
-        assert!(!is_google_news_link(
-            "https://www.infoworld.com/article/123"
-        ));
-        assert!(!is_google_news_link("https://example.com/feed"));
+        for (url, expected) in [
+            ("https://news.google.com/rss/articles/CBMi123", true),
+            ("http://news.google.com/articles/CBMi123", true),
+            ("https://www.infoworld.com/article/123", false),
+            ("https://example.com/feed", false),
+        ] {
+            assert_eq!(is_google_news_link(url), expected);
+        }
     }
 
     #[test]
