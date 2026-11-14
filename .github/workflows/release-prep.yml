@@ -1,0 +1,231 @@
+name: Prepare Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump type (when mode=pr)'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - custom
+      custom_version:
+        description: 'Explicit semver when bump=custom (e.g. 0.8.0 or 0.8.0-rc.1)'
+        required: false
+        default: ''
+        type: string
+      mode:
+        description: 'pr = bump Cargo.toml/Cargo.lock and open PR; tag = verify CI on master and push tag'
+        required: true
+        default: 'pr'
+        type: choice
+        options:
+          - pr
+          - tag
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare-pr:
+    name: Open Release Preparation PR
+    if: inputs.mode == 'pr'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+
+      - name: Calculate & apply version bump
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+          CUSTOM_VERSION: ${{ inputs.custom_version }}
+        run: |
+          CURRENT_VER=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "srz") | .version')
+          CORE_VER="${CURRENT_VER%%-*}"
+          CORE_VER="${CORE_VER%%+*}"
+          MAJOR=$(printf '%s' "$CORE_VER" | cut -d. -f1)
+          MINOR=$(printf '%s' "$CORE_VER" | cut -d. -f2)
+          PATCH=$(printf '%s' "$CORE_VER" | cut -d. -f3)
+
+          case "$BUMP" in
+            patch)  NEW_VER="${MAJOR}.${MINOR}.$((PATCH + 1))" ;;
+            minor)  NEW_VER="${MAJOR}.$((MINOR + 1)).0" ;;
+            major)  NEW_VER="$((MAJOR + 1)).0.0" ;;
+            custom)
+              NEW_VER="${CUSTOM_VERSION#v}"
+              if ! printf '%s\n' "$NEW_VER" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+                echo "::error::Invalid custom_version '${CUSTOM_VERSION}'. Must be valid semver (e.g. 0.8.0 or 0.8.0-rc.1)."
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::Unsupported bump option '$BUMP'."
+              exit 1
+              ;;
+          esac
+
+          if [ "$NEW_VER" = "$CURRENT_VER" ]; then
+            echo "::error::Target version ($NEW_VER) matches current Cargo.toml version ($CURRENT_VER)."
+            exit 1
+          fi
+
+          awk -v new_ver="$NEW_VER" '
+            /^\[package\]/ { in_pkg=1 }
+            in_pkg && /^\[/ && !/^\[package\]/ { in_pkg=0 }
+            in_pkg && !done && /^version *= *"/ {
+              print "version = \"" new_ver "\""
+              done=1
+              next
+            }
+            { print }
+          ' Cargo.toml > Cargo.toml.tmp
+          mv Cargo.toml.tmp Cargo.toml
+
+          cargo update -p srz --offline
+
+          HAS_CHANGELOG="false"
+          if [ -f "docs/src/changelog.md" ] && grep -Fxq "## v${NEW_VER}" docs/src/changelog.md; then
+            HAS_CHANGELOG="true"
+          fi
+
+          {
+            echo "current=${CURRENT_VER}"
+            echo "new=${NEW_VER}"
+            echo "tag=v${NEW_VER}"
+            echo "has_changelog=${HAS_CHANGELOG}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Commit version bump and open Pull Request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          REPO: ${{ github.repository }}
+          NEW_VER: ${{ steps.version.outputs.new }}
+          TAG: ${{ steps.version.outputs.tag }}
+          CURRENT_VER: ${{ steps.version.outputs.current }}
+          HAS_CHANGELOG: ${{ steps.version.outputs.has_changelog }}
+        run: |
+          TOKEN="${RELEASE_TOKEN:-$GH_TOKEN}"
+          BRANCH="release/${TAG}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git checkout -b "$BRANCH"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore: bump version to ${TAG}"
+
+          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+          git -c "http.https://github.com/.extraheader=${AUTH_HEADER}" fetch origin "refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" 2>/dev/null || true
+          git -c "http.https://github.com/.extraheader=${AUTH_HEADER}" push --force-with-lease -u origin "$BRANCH"
+
+          if [ "$HAS_CHANGELOG" = "true" ]; then
+            NOTE_STATUS="Changelog section \`## ${TAG}\` is present in \`docs/src/changelog.md\`."
+          else
+            NOTE_STATUS="⚠️ Missing \`## ${TAG}\` section in \`docs/src/changelog.md\` — add release notes to this PR before merging or GitHub will auto-generate notes."
+          fi
+
+          PR_BODY=$(cat <<EOF
+          Automated release preparation bump: \`${CURRENT_VER}\` -> \`${NEW_VER}\`.
+
+          - ${NOTE_STATUS}
+          - After merging to \`master\` and verifying CI is green, run **Prepare Release** with \`mode: tag\` (or push tag \`${TAG}\`) to trigger the release pipeline.
+          EOF
+          )
+
+          if GH_TOKEN="$TOKEN" gh pr view "$BRANCH" --repo "$REPO" >/dev/null 2>&1; then
+            GH_TOKEN="$TOKEN" gh pr edit "$BRANCH" --repo "$REPO" --title "chore: release ${TAG}" --body "$PR_BODY"
+          else
+            GH_TOKEN="$TOKEN" gh pr create --repo "$REPO" --base master --head "$BRANCH" --title "chore: release ${TAG}" --body "$PR_BODY"
+          fi
+
+  tag-and-release:
+    name: Tag Master & Trigger Release
+    if: inputs.mode == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+
+      - name: Verify CI status and create release tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          CARGO_VER=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "srz") | .version')
+          TAG="v${CARGO_VER}"
+          TARGET_SHA=$(git rev-parse HEAD)
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::Tag ${TAG} already exists on origin!"
+            exit 1
+          fi
+
+          CI_RUNS_JSON=$(gh api "repos/${REPO}/actions/workflows/ci.yml/runs?branch=master&head_sha=${TARGET_SHA}&per_page=10")
+          CI_RUN_COUNT=$(printf '%s' "$CI_RUNS_JSON" | jq '.workflow_runs | length')
+
+          if [ "$CI_RUN_COUNT" -gt 0 ]; then
+            CI_STATUS=$(printf '%s' "$CI_RUNS_JSON" | jq -r '.workflow_runs[0].status // ""')
+            CI_CONCLUSION=$(printf '%s' "$CI_RUNS_JSON" | jq -r '.workflow_runs[0].conclusion // ""')
+            if [ "$CI_CONCLUSION" != "success" ]; then
+              echo "::error::CI & Security has not succeeded for master commit ${TARGET_SHA} (status: '${CI_STATUS:-none}', conclusion: '${CI_CONCLUSION:-none}')."
+              exit 1
+            fi
+            echo "Verified CI & Security succeeded for master commit ${TARGET_SHA}."
+          else
+            echo "No CI & Security run found for master commit ${TARGET_SHA} (likely skipped by path filters); running cargo test --locked --all-targets fallback."
+            sudo apt-get update
+            sudo apt-get install -y pkg-config build-essential cmake
+            cargo test --locked --all-targets
+          fi
+
+          if [ -f "docs/src/changelog.md" ] && ! grep -Fxq "## ${TAG}" docs/src/changelog.md; then
+            echo "::warning::No '## ${TAG}' section found in docs/src/changelog.md; release notes will fall back to auto-generated notes."
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release ${TAG}"
+
+          TOKEN="${RELEASE_TOKEN:-$GH_TOKEN}"
+          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+          git -c "http.https://github.com/.extraheader=${AUTH_HEADER}" push origin "refs/tags/${TAG}"
+
+          # Tags pushed via GITHUB_TOKEN do not trigger downstream workflows automatically
+          if [ -z "$RELEASE_TOKEN" ]; then
+            gh workflow run release.yml --repo "$REPO" --ref "$TAG" -f dry_run=false
+          fi

@@ -73,7 +73,7 @@
             if ($ComputedHash -ne $ExpectedHash) {
                 throw "SHA256 checksum mismatch! Expected: $ExpectedHash, Computed: $ComputedHash"
             }
-            Write-Host "✔ Checksum verified successfully." -ForegroundColor Green
+            Write-Host "$([char]0x2714) Checksum verified successfully." -ForegroundColor Green
         }
 
         $ExtractDir = Join-Path $TempDir "unpacked"
@@ -111,7 +111,7 @@
             Copy-Item -Path $ExeSource -Destination $ExeDest -Force
         }
 
-        Write-Host "✔ Successfully installed srz to $ExeDest" -ForegroundColor Green
+        Write-Host "$([char]0x2714) Successfully installed srz to $ExeDest" -ForegroundColor Green
 
         # Check and update User PATH if not present
         $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -124,7 +124,7 @@
             $NewUserPath = if ($UserPath -eq "") { $NormalizedInstallDir } else { "$UserPath;$NormalizedInstallDir" }
             [Environment]::SetEnvironmentVariable("Path", $NewUserPath, "User")
             $env:Path = "$env:Path;$NormalizedInstallDir"
-            Write-Host "✔ Added $NormalizedInstallDir to your User PATH." -ForegroundColor Green
+            Write-Host "$([char]0x2714) Added $NormalizedInstallDir to your User PATH." -ForegroundColor Green
             Write-Host "Restart your terminal if 'srz' is not recognized immediately." -ForegroundColor Yellow
 
             # Broadcast WM_SETTINGCHANGE to notify running Explorer and terminal sessions
@@ -135,7 +135,9 @@ public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wP
             try {
                 $result = [UIntPtr]::Zero
                 [Win32.NativeMethods]::SendMessageTimeout([IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, "Environment", 2, 5000, [ref]$result) | Out-Null
-            } catch {}
+            } catch {
+                Write-Verbose "WM_SETTINGCHANGE broadcast skipped: $_"
+            }
         }
     }
     catch {
