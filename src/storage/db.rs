@@ -1,5 +1,4 @@
 use crate::fs_util;
-use crate::scraper::ScrapedPage;
 use crate::ui::render::slugify;
 use anyhow::Result;
 use redb::{Database as RedbDb, ReadableDatabase, ReadableTable, TableDefinition};
@@ -10,17 +9,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-pub use crate::system::text_util::{tokenize_search_terms, tokenize_terms};
+use crate::system::text_util::tokenize_search_terms;
 
-pub const TABLE_HISTORY: TableDefinition<u64, &[u8]> = TableDefinition::new("history");
-pub const TABLE_CACHE_KEY_TO_ID: TableDefinition<&str, u64> =
-    TableDefinition::new("cache_key_to_id");
-pub const TABLE_CHAT_SESSIONS: TableDefinition<u64, &[u8]> = TableDefinition::new("chat_sessions");
-pub const TABLE_CHAT_MESSAGES: TableDefinition<u64, &[u8]> = TableDefinition::new("chat_messages");
-pub const TABLE_CACHE_PAGES: TableDefinition<&str, &[u8]> = TableDefinition::new("cache_pages");
-pub const TABLE_CACHE_SEARCH: TableDefinition<&str, &[u8]> = TableDefinition::new("cache_search");
-pub const TABLE_CACHE_CAPS: TableDefinition<&str, &[u8]> = TableDefinition::new("cache_caps");
-pub const TABLE_META: TableDefinition<&str, u64> = TableDefinition::new("meta");
+const TABLE_HISTORY: TableDefinition<u64, &[u8]> = TableDefinition::new("history");
+const TABLE_CACHE_KEY_TO_ID: TableDefinition<&str, u64> = TableDefinition::new("cache_key_to_id");
+const TABLE_CHAT_SESSIONS: TableDefinition<u64, &[u8]> = TableDefinition::new("chat_sessions");
+const TABLE_CHAT_MESSAGES: TableDefinition<u64, &[u8]> = TableDefinition::new("chat_messages");
+pub(super) const TABLE_CACHE_PAGES: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("cache_pages");
+pub(super) const TABLE_CACHE_SEARCH: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("cache_search");
+pub(super) const TABLE_CACHE_CAPS: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("cache_caps");
+const TABLE_META: TableDefinition<&str, u64> = TableDefinition::new("meta");
 
 pub struct NewSummaryRecord<'a> {
     pub target_type: &'a str,
@@ -378,7 +379,8 @@ impl Database {
         ))
     }
 
-    pub fn open_in_memory() -> Result<Self> {
+    #[cfg(test)]
+    pub(super) fn open_in_memory() -> Result<Self> {
         let db = redb::Builder::new().create_with_backend(redb::backends::InMemoryBackend::new())?;
         init_redb_schema(&db)?;
         Ok(Self {
@@ -1259,8 +1261,8 @@ impl Database {
         )
     }
 
-    #[doc(hidden)]
-    pub fn backdate_page_cache_for_test(&self, url: &str, delta_secs: u64) {
+    #[cfg(test)]
+    pub(super) fn backdate_page_cache_for_test(&self, url: &str, delta_secs: u64) {
         let Ok(write_txn) = self.db.begin_write() else {
             return;
         };
@@ -1272,7 +1274,10 @@ impl Database {
                 .flatten()
                 .filter_map(|(k, v)| {
                     let mut rec =
-                        serde_json::from_slice::<CachedEntry<ScrapedPage>>(v.value()).ok()?;
+                        serde_json::from_slice::<CachedEntry<crate::scraper::ScrapedPage>>(
+                            v.value(),
+                        )
+                        .ok()?;
                     if rec.value.url != url && k.value() != url {
                         return None;
                     }
@@ -1287,8 +1292,8 @@ impl Database {
         let _ = write_txn.commit();
     }
 
-    #[doc(hidden)]
-    pub fn backdate_history_for_test(&self, title: &str, delta_secs: u64) {
+    #[cfg(test)]
+    pub(super) fn backdate_history_for_test(&self, title: &str, delta_secs: u64) {
         let Ok(write_txn) = self.db.begin_write() else {
             return;
         };
@@ -1384,4 +1389,511 @@ fn ymd_to_day_number(s: &str) -> Option<i64> {
     let m = (m + 9) % 12;
     let y = y - m / 10;
     Some(365 * y + y / 4 - y / 100 + y / 400 + (m * 306 + 5) / 10 + (d - 1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_summary<'a>(
+        target_type: &'a str,
+        title: &'a str,
+        author: Option<&'a str>,
+        url: Option<&'a str>,
+        summary: &'a str,
+    ) -> NewSummaryRecord<'a> {
+        NewSummaryRecord {
+            target_type,
+            title,
+            author,
+            url,
+            style: "concise",
+            model: "gemma-4",
+            word_count: 500,
+            prompt_tokens: None,
+            completion_tokens: None,
+            duration_ms: 100,
+            tokens_per_second: None,
+            summary,
+            reasoning: None,
+        }
+    }
+
+    #[test]
+    fn test_database_record_and_history() {
+        let db = Database::open_in_memory().unwrap();
+        let record = NewSummaryRecord {
+            style: "detailed",
+            word_count: 11106,
+            prompt_tokens: Some(5200),
+            completion_tokens: Some(1840),
+            duration_ms: 4200,
+            tokens_per_second: Some(43.8),
+            reasoning: Some("Analyzed Herbert's ecological themes."),
+            ..make_summary(
+                "book",
+                "Dune",
+                Some("Frank Herbert"),
+                Some("https://en.wikipedia.org/wiki/Dune_(novel)"),
+                "Dune is a 1965 epic sci-fi novel about Arrakis, ecology, and Melange spice.",
+            )
+        };
+        db.record_summary(&record).unwrap();
+
+        let history = db.get_history(10).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].title, "Dune");
+        assert_eq!(history[0].author.as_deref(), Some("Frank Herbert"));
+        assert_eq!(history[0].word_count, 11106);
+        assert_eq!(history[0].prompt_tokens, Some(5200));
+        assert_eq!(history[0].completion_tokens, Some(1840));
+
+        let items = db.get_all_library_items().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].reasoning.as_deref(),
+            Some("Analyzed Herbert's ecological themes.")
+        );
+    }
+
+    #[test]
+    fn test_database_exports() {
+        let db = Database::open_in_memory().unwrap();
+        let record = NewSummaryRecord {
+            style: "detailed",
+            word_count: 11106,
+            prompt_tokens: Some(5200),
+            completion_tokens: Some(1840),
+            duration_ms: 4200,
+            tokens_per_second: Some(43.8),
+            ..make_summary(
+                "book",
+                "Dune",
+                Some("Frank Herbert"),
+                Some("https://en.wikipedia.org/wiki/Dune_(novel)"),
+                "Dune is a 1965 epic sci-fi novel about Arrakis.",
+            )
+        };
+        db.record_summary(&record).unwrap();
+
+        let tmp = crate::fs_util::tempdir().unwrap();
+        let json_path = tmp.path().join("export.json");
+        db.export_json(&json_path).unwrap();
+        assert!(
+            std::fs::read_to_string(&json_path)
+                .unwrap()
+                .contains("Dune")
+        );
+
+        let vault_dir = tmp.path().join("vault");
+        assert_eq!(db.export_markdown_vault(&vault_dir).unwrap(), 1);
+        let md_content = std::fs::read_to_string(vault_dir.join("dune.md")).unwrap();
+        assert!(md_content.starts_with("---\n"));
+        assert!(md_content.contains("author: \"Frank Herbert\""));
+        assert!(md_content.contains("# Dune"));
+        assert!(md_content.contains("Arrakis"));
+
+        let csv_path = tmp.path().join("export.csv");
+        db.export_csv(&csv_path).unwrap();
+        let csv_str = std::fs::read_to_string(&csv_path).unwrap();
+        assert!(csv_str.contains("Dune"));
+        assert!(csv_str.contains("Frank Herbert"));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let csv_meta = std::fs::metadata(&csv_path).unwrap();
+            assert_eq!(csv_meta.permissions().mode() & 0o777, 0o600);
+
+            let symlink_target = tmp.path().join("target.csv");
+            let symlink_path = tmp.path().join("symlink.csv");
+            std::fs::write(&symlink_target, "dummy").unwrap();
+            std::os::unix::fs::symlink(&symlink_target, &symlink_path).unwrap();
+            let err = db.export_csv(&symlink_path).unwrap_err();
+            assert!(err.to_string().contains("symlink"));
+        }
+    }
+
+    #[test]
+    fn test_database_stats() {
+        let db = Database::open_in_memory().unwrap();
+        db.record_summary(&NewSummaryRecord {
+            style: "detailed",
+            word_count: 10000,
+            prompt_tokens: Some(5000),
+            completion_tokens: Some(1500),
+            duration_ms: 3000,
+            tokens_per_second: Some(50.0),
+            ..make_summary(
+                "book",
+                "Dune",
+                Some("Frank Herbert"),
+                None,
+                "Book summary 1",
+            )
+        })
+        .unwrap();
+        db.record_summary(&NewSummaryRecord {
+            word_count: 2000,
+            prompt_tokens: Some(2500),
+            completion_tokens: Some(500),
+            duration_ms: 1000,
+            tokens_per_second: Some(50.0),
+            ..make_summary(
+                "web",
+                "Rust Article",
+                None,
+                Some("https://example.com/rust"),
+                "Web summary 2",
+            )
+        })
+        .unwrap();
+
+        let stats = db.get_stats().unwrap();
+        assert_eq!(stats.total_summaries, 2);
+        assert_eq!(stats.book_summaries, 1);
+        assert_eq!(stats.web_summaries, 1);
+        assert_eq!(stats.file_summaries, 0);
+        assert_eq!(stats.stdin_summaries, 0);
+        assert_eq!(stats.video_summaries, 0);
+        assert_eq!(stats.total_source_words, 12000);
+        assert_eq!(stats.total_prompt_tokens, 7500);
+        assert_eq!(stats.total_completion_tokens, 2000);
+        assert_eq!(stats.total_duration_ms, 4000);
+        assert!((stats.avg_tokens_per_second - 50.0).abs() < 0.1);
+        assert_eq!(stats.reads_today, 2);
+        assert_eq!(stats.active_reading_days, 1);
+        assert_eq!(stats.current_streak_days, 1);
+        assert!(stats.estimated_minutes_saved > 0.0);
+        assert_eq!(stats.models.len(), 1);
+        assert_eq!(stats.models[0].model, "gemma-4");
+        assert_eq!(stats.models[0].runs, 2);
+        assert_eq!(stats.top_domains.len(), 1);
+        assert_eq!(stats.top_domains[0].domain, "example.com");
+    }
+
+    #[test]
+    fn test_database_search_library_and_special_queries() {
+        let db = Database::open_in_memory().unwrap();
+        db.record_summary(&make_summary(
+            "book",
+            "Dune",
+            Some("Frank Herbert"),
+            Some("https://en.wikipedia.org/wiki/Dune_(novel)"),
+            "Set on the harsh desert planet Arrakis, the sole source of Melange spice and SQL injection discussions.",
+        ))
+        .unwrap();
+
+        let hits = db.search("Melange").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "Dune");
+        assert!(hits[0].snippet.contains("Melange"));
+
+        for empty_query in ["Cyberpunk", "'; DROP TABLE library; --", "% * _ ?", ""] {
+            assert!(db.search(empty_query).unwrap().is_empty(), "{empty_query}");
+        }
+
+        assert_eq!(db.search("injection").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_database_search_multibyte_utf8_snippet_safety() {
+        let db = Database::open_in_memory().unwrap();
+        db.record_summary(&make_summary(
+            "book",
+            "Le Petit Prince 👑",
+            Some("Antoine de Saint-Exupéry"),
+            None,
+            "🌟 Voici mon secret. Il est très simple: on ne voit bien qu’avec le cœur. L’essentiel est invisible pour les yeux. 🚀🪐✨ 狐狸 and roses.",
+        ))
+        .unwrap();
+
+        for term in ["secret", "狐狸"] {
+            let hits = db.search(term).unwrap();
+            assert_eq!(hits.len(), 1);
+            assert!(hits[0].snippet.contains(term));
+        }
+    }
+
+    #[test]
+    fn test_database_search_bm25_relevance_ranking() {
+        let db = Database::open_in_memory().unwrap();
+        db.record_summary(&NewSummaryRecord {
+            style: "detailed",
+            word_count: 3500,
+            ..make_summary(
+                "web",
+                "Rust Compiler Deep Dive",
+                Some("Compiler Team"),
+                Some("https://example.com/rust-compiler"),
+                "The rust compiler achieves zero-cost abstractions and memory safety through borrow checker analysis. Rust compiler optimizations are extensive.",
+            )
+        })
+        .unwrap();
+        db.record_summary(&NewSummaryRecord {
+            word_count: 5000,
+            ..make_summary(
+                "web",
+                "General Software Patterns",
+                Some("John Doe"),
+                Some("https://example.com/patterns"),
+                "Design patterns in systems programming. Briefly mentions rust compiler in passing.",
+            )
+        })
+        .unwrap();
+
+        let hits = db.search("Rust Compiler").unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].title, "Rust Compiler Deep Dive");
+        assert!(hits[0].score.unwrap() > hits[1].score.unwrap());
+        assert!(hits[0].snippet.to_lowercase().contains("rust"));
+    }
+
+    #[test]
+    fn test_database_library_items_and_deletion() {
+        let db = Database::open_in_memory().unwrap();
+        db.record_summary(&make_summary(
+            "book",
+            "Dune",
+            Some("Frank Herbert"),
+            None,
+            "Spice on Arrakis.",
+        ))
+        .unwrap();
+        db.record_summary(&NewSummaryRecord {
+            style: "detailed",
+            word_count: 800,
+            ..make_summary(
+                "web",
+                "Rust Lang",
+                None,
+                Some("https://rust-lang.org"),
+                "Modern systems programming.",
+            )
+        })
+        .unwrap();
+
+        let items = db.get_all_library_items().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].title, "Rust Lang");
+        assert_eq!(items[1].title, "Dune");
+        assert_eq!(db.get_latest_summary().unwrap().unwrap().title, "Rust Lang");
+
+        db.delete_library_item(items[0].id).unwrap();
+        let items_after = db.get_all_library_items().unwrap();
+        assert_eq!(items_after.len(), 1);
+        assert_eq!(items_after[0].title, "Dune");
+    }
+
+    #[test]
+    fn test_database_reset() {
+        let db = Database::open_in_memory().unwrap();
+        db.record_summary(&make_summary(
+            "book",
+            "Dune",
+            Some("Frank Herbert"),
+            None,
+            "Dune summary text",
+        ))
+        .unwrap();
+        assert_eq!(db.get_history(10).unwrap().len(), 1);
+        assert_eq!(db.get_stats().unwrap().total_summaries, 1);
+        assert_eq!(db.search("Dune").unwrap().len(), 1);
+
+        db.reset().unwrap();
+        assert_eq!(db.get_history(10).unwrap().len(), 0);
+        assert_eq!(db.get_stats().unwrap().total_summaries, 0);
+        assert_eq!(db.search("Dune").unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_database_file_open_and_reopen() {
+        let tmp = crate::fs_util::tempdir().unwrap();
+        let db_path = tmp.path().join("reopen.db");
+
+        {
+            let db = Database::open_at(&db_path).unwrap();
+            db.record_summary(&make_summary(
+                "book",
+                "Reopen Test",
+                None,
+                None,
+                "Reopen content",
+            ))
+            .unwrap();
+        }
+
+        let db = Database::open_at(&db_path).unwrap();
+        let history = db.get_history(10).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].title, "Reopen Test");
+        assert_eq!(
+            db.get_latest_summary().unwrap().unwrap().summary,
+            "Reopen content"
+        );
+    }
+
+    #[test]
+    fn test_library_item_matches_query() {
+        let db = Database::open_in_memory().unwrap();
+        db.record_summary(&make_summary(
+            "book",
+            "Foundation and Empire",
+            Some("Isaac Asimov"),
+            Some("https://example.com/foundation"),
+            "The Mule attacks the Galactic Empire.",
+        ))
+        .unwrap();
+        db.record_summary(&make_summary(
+            "book",
+            "Les Misérables",
+            Some("Victor Hugo"),
+            None,
+            "Jean Valjean and Cosette in 19th-century France.",
+        ))
+        .unwrap();
+
+        let items = db.get_all_library_items().unwrap();
+        let foundation = items
+            .iter()
+            .find(|i| i.title == "Foundation and Empire")
+            .unwrap();
+        for q in [
+            "foundation",
+            "ASIMOV",
+            "empire",
+            "mule",
+            "example.com",
+            "book",
+            "",
+        ] {
+            assert!(foundation.matches_query(q), "expected match: {q}");
+        }
+        for q in ["sandworms", "cyberpunk"] {
+            assert!(!foundation.matches_query(q), "expected miss: {q}");
+        }
+
+        let les_mis = items.iter().find(|i| i.title == "Les Misérables").unwrap();
+        assert!(les_mis.matches_query("Misérables"));
+        assert!(les_mis.matches_query("misérables"));
+        assert!(!les_mis.matches_query("München"));
+    }
+
+    #[test]
+    fn test_database_chat_sessions_lifecycle() {
+        let db = Database::open_in_memory().unwrap();
+        let session_id = db
+            .create_chat_session(
+                "Rust Concurrency Guide",
+                "web",
+                Some("https://example.com/rust-concurrency"),
+                "gemma-4",
+            )
+            .unwrap();
+        assert!(session_id > 0);
+
+        db.add_chat_turn(
+            session_id,
+            "What is the difference between Arc and Rc?",
+            "Arc is thread-safe (atomic reference counting), whereas Rc is for single-threaded use.",
+        )
+        .unwrap();
+        db.add_chat_turn(
+            session_id,
+            "When should I use Mutex with Arc?",
+            "Wrap the inner value in Mutex or RwLock when multiple threads need mutable access.",
+        )
+        .unwrap();
+
+        let sessions = db.get_chat_sessions(10).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, session_id);
+        assert_eq!(sessions[0].title, "Rust Concurrency Guide");
+        assert_eq!(sessions[0].message_count, 4);
+        assert_eq!(
+            sessions[0].last_question.as_deref(),
+            Some("When should I use Mutex with Arc?")
+        );
+
+        let (session, messages) = db.get_chat_session(session_id).unwrap().unwrap();
+        assert_eq!(session.id, session_id);
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(
+            messages[0].content,
+            "What is the difference between Arc and Rc?"
+        );
+        assert_eq!(messages[1].role, "assistant");
+        assert_eq!(messages[2].role, "user");
+        assert_eq!(messages[3].role, "assistant");
+
+        assert!(db.delete_chat_session(session_id).unwrap());
+        assert!(db.get_chat_session(session_id).unwrap().is_none());
+        assert!(db.get_chat_sessions(10).unwrap().is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_database_refuses_symlink() {
+        let tmp = crate::fs_util::tempdir().unwrap();
+        let real_db = tmp.path().join("real.db");
+        let symlink_db = tmp.path().join("symlink.db");
+
+        {
+            let db = Database::open_at(&real_db).expect("Create real db");
+            assert!(db.get_stats().is_ok());
+        }
+        std::os::unix::fs::symlink(&real_db, &symlink_db).unwrap();
+
+        let err = Database::open_at(&symlink_db).err().unwrap();
+        assert!(err.to_string().contains("is a symlink"));
+    }
+
+    #[test]
+    fn test_export_markdown_vault_escaping_and_collisions() {
+        let db = Database::open_in_memory().unwrap();
+        db.record_summary(&make_summary(
+            "web",
+            "Article with \"Quotes\" and \nNewlines and \\Backslash",
+            Some("Author \"Name\"\nInjectedField: \"true\""),
+            Some("https://example.com/page?a=1&b=\"2\"\nmalicious_key: true"),
+            "Summary content 1",
+        ))
+        .unwrap();
+        db.record_summary(&NewSummaryRecord {
+            word_count: 600,
+            duration_ms: 250,
+            ..make_summary(
+                "web",
+                "Article with \"Quotes\" and \nNewlines and \\Backslash",
+                Some("Author 2"),
+                Some("https://example.com/different"),
+                "Summary content 2",
+            )
+        })
+        .unwrap();
+
+        let tmp = crate::fs_util::tempdir().unwrap();
+        let vault_dir = tmp.path().join("vault");
+        assert_eq!(db.export_markdown_vault(&vault_dir).unwrap(), 2);
+
+        let all_content: Vec<String> = std::fs::read_dir(&vault_dir)
+            .unwrap()
+            .map(|r| std::fs::read_to_string(r.unwrap().path()).unwrap())
+            .collect();
+        assert_eq!(all_content.len(), 2);
+
+        for content in &all_content {
+            let frontmatter = content.split("---").nth(1).expect("frontmatter block");
+            assert!(!frontmatter.contains("\nInjectedField:"));
+            assert!(!frontmatter.contains("\nmalicious_key:"));
+            assert!(frontmatter.contains("\\\"Quotes\\\""));
+            assert!(frontmatter.contains("\\\\Backslash"));
+        }
+        assert!(
+            all_content
+                .iter()
+                .any(|c| c.contains("\\nmalicious_key: true"))
+        );
+    }
 }
