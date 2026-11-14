@@ -16,8 +16,16 @@ pub const MAX_PDF_TEXT_BYTES: usize = 50 * 1024 * 1024; // 50 MB limit for extra
 /// Opens and reads up to `max_bytes` from a local regular file, rejecting oversized
 /// or non-regular targets even if swapped or appended after pre-flight metadata checks.
 pub(super) fn read_file_bytes_limited(path: &Path, max_bytes: u64, label: &str) -> Result<Vec<u8>> {
-    let file =
-        fs::File::open(path).with_context(|| format!("Failed to open {label} file: {path:?}"))?;
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(err) => {
+            // On Windows, File::open on a directory fails with PermissionDenied before file.metadata().
+            if fs::metadata(path).is_ok_and(|meta| !meta.is_file()) {
+                anyhow::bail!("{label} path is not a regular file: {path:?}");
+            }
+            return Err(err).with_context(|| format!("Failed to open {label} file: {path:?}"));
+        }
+    };
     let meta = file
         .metadata()
         .with_context(|| format!("Failed to stat {label} file: {path:?}"))?;
@@ -782,6 +790,12 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("not a regular file")
+        );
+        assert!(
+            read_file_bytes_limited(&tmp.path().join("missing.bin"), 1024, "Test")
+                .unwrap_err()
+                .to_string()
+                .contains("Failed to open")
         );
     }
 

@@ -1053,7 +1053,7 @@ mod tests {
         let cache = Cache::with_dir(tmp.path().to_path_buf(), false);
         let scraper = WebScraper::new().unwrap();
         let err = fetch_url_content(
-            "http://169.254.169.254/latest/meta-data.pdf",
+            "https://169.254.169.254/latest/meta-data.pdf",
             &scraper,
             &cache,
             false,
