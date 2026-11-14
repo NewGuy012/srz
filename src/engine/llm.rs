@@ -19,13 +19,6 @@ use std::borrow::Cow;
 use std::io::{self, Write};
 use std::time::Duration;
 
-/// Maximum tokens of grounded reference context for a 32k context window (~16k tokens),
-/// leaving ample headroom for up to 8,192 completion tokens (thinking + summary).
-pub const MAX_CONTEXT_TOKENS: usize = 16_000;
-
-/// Maximum words of grounded reference context for legacy word-based boundaries.
-pub const MAX_CONTEXT_WORDS: usize = 12_000;
-
 #[derive(Clone)]
 pub struct LlmClient {
     client: reqwest::Client,

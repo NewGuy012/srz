@@ -116,16 +116,6 @@ pub enum ExportFormat {
     Csv,
 }
 
-impl ExportFormat {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Markdown => "markdown",
-            Self::Json => "json",
-            Self::Csv => "csv",
-        }
-    }
-}
-
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Shell {

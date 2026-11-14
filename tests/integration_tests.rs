@@ -647,11 +647,9 @@ context_window = 65536
 #[test]
 fn test_cross_module_clients_and_assets_pdf() {
     let scraper = srz::scraper::WebScraper::new().unwrap();
-    let searcher = srz::search::BookSearcher::with_client(scraper.client().clone());
-    let news = srz::news::GoogleNewsClient::with_client(scraper.client().clone());
-    for client in [scraper.client(), searcher.client(), news.client()] {
-        assert!(client.get("https://example.com").build().is_ok());
-    }
+    let _searcher = srz::search::BookSearcher::with_client(scraper.client().clone());
+    let _news = srz::news::GoogleNewsClient::with_client(scraper.client().clone());
+    assert!(scraper.client().get("https://example.com").build().is_ok());
 
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/document.pdf");
     assert!(

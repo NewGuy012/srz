@@ -1,5 +1,5 @@
 use std::env;
-use std::fs::{self, File, OpenOptions};
+use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -136,26 +136,6 @@ pub fn create_private_dir_all(path: &Path) -> std::io::Result<()> {
     fs::create_dir_all(path)?;
     set_private_dir_perms(path);
     Ok(())
-}
-
-/// Atomically opens or creates a file with owner-only permissions (`0600` on Unix).
-/// Rejects symlink targets to prevent arbitrary file truncation/privilege escalation (CWE-59).
-pub fn open_private_file_for_write(path: &Path) -> std::io::Result<File> {
-    reject_symlink(path, "open symlink for writing")?;
-    let mut opts = OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let file = opts.open(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = file.set_permissions(fs::Permissions::from_mode(0o600));
-    }
-    Ok(file)
 }
 
 /// Writes `contents` to `path` with crash-safe atomic rename and owner-only permissions (`0600` on Unix).
@@ -307,15 +287,7 @@ mod tests {
         let link = dir.join("symlink_file.txt");
         symlink(&target, &link).unwrap();
 
-        // Opening symlink for private write must be rejected with InvalidInput
-        let write_res = open_private_file_for_write(&link);
-        assert!(write_res.is_err());
-        assert_eq!(
-            write_res.err().unwrap().kind(),
-            std::io::ErrorKind::InvalidInput
-        );
-
-        // Atomic write to symlink must also be rejected
+        // Atomic write to symlink must be rejected
         let atomic_res = write_private_file(&link, b"hijack attempt");
         assert!(atomic_res.is_err());
         assert_eq!(

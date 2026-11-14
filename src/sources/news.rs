@@ -41,10 +41,6 @@ impl GoogleNewsClient {
         Self { client }
     }
 
-    pub fn client(&self) -> &reqwest::Client {
-        &self.client
-    }
-
     /// Returns whether the provided topic is a direct HTTP/HTTPS feed URL.
     pub fn is_direct_feed(topic: &str) -> bool {
         crate::system::text_util::is_http_url(topic.trim())

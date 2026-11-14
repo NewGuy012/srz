@@ -413,20 +413,15 @@ pub async fn dispatch_cli(
                     target,
                     question,
                     interactive,
-                    list_chats,
                     resume,
-                    show_chat,
-                    delete_chat,
+                    ..
                 } => {
                     if let Err(err) = handle_ask(
                         AskArgs {
                             target,
                             question,
                             interactive,
-                            list_chats,
                             resume,
-                            show_chat,
-                            delete_chat,
                         },
                         &scraper,
                         &llm,

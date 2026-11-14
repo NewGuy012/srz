@@ -217,7 +217,6 @@ struct CachedAtOnly {
 #[derive(Clone)]
 pub struct Database {
     db: Arc<RedbDb>,
-    path: Option<PathBuf>,
 }
 
 fn now_unix_secs() -> u64 {
@@ -360,10 +359,7 @@ impl Database {
                 Ok(db) => {
                     fs_util::set_private_file_perms(path);
                     init_redb_schema(&db)?;
-                    return Ok(Self {
-                        db: Arc::new(db),
-                        path: Some(path.to_path_buf()),
-                    });
+                    return Ok(Self { db: Arc::new(db) });
                 }
                 Err(e) => {
                     last_err = Some(e);
@@ -383,14 +379,7 @@ impl Database {
     pub(super) fn open_in_memory() -> Result<Self> {
         let db = redb::Builder::new().create_with_backend(redb::backends::InMemoryBackend::new())?;
         init_redb_schema(&db)?;
-        Ok(Self {
-            db: Arc::new(db),
-            path: None,
-        })
-    }
-
-    pub fn path(&self) -> Option<&Path> {
-        self.path.as_deref()
+        Ok(Self { db: Arc::new(db) })
     }
 
     pub fn reset(&self) -> Result<()> {

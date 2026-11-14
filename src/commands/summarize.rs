@@ -1,6 +1,6 @@
 use crate::cache::{Cache, CachedSummary};
 use crate::cli::Cli;
-use crate::llm::{self, LlmClient, LlmOutput, StreamMode};
+use crate::llm::{LlmClient, LlmOutput, StreamMode};
 use crate::scraper::{ScrapedPage, WebScraper};
 use crate::search::{BookSearcher, SearchResult};
 use crate::sources::document::DocumentLoader;
@@ -797,11 +797,7 @@ async fn resolve_book_reference_context(
                         (cleaned, wc)
                     };
 
-                    Ui::info(&format!(
-                        "Grounded reference text: {} words (budgeted up to {} words for 32k LLM context)",
-                        words_to_use,
-                        llm::MAX_CONTEXT_WORDS
-                    ));
+                    Ui::info(&format!("Grounded reference text: {} words", words_to_use));
 
                     return Some((res.url.clone(), content_to_use, words_to_use));
                 }

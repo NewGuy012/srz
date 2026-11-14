@@ -45,10 +45,6 @@ impl BookSearcher {
         Self { client }
     }
 
-    pub fn client(&self) -> &reqwest::Client {
-        &self.client
-    }
-
     async fn get_with_timeout(&self, url: &str, timeout_secs: u64) -> Option<reqwest::Response> {
         let fetch_fut = self.client.get(url).send();
         match tokio::time::timeout(Duration::from_secs(timeout_secs), fetch_fut).await {
