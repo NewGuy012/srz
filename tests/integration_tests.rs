@@ -10,5 +10,3 @@ mod content;
 mod db;
 #[path = "integration/search.rs"]
 mod search;
-#[path = "integration/upgrade.rs"]
-mod upgrade;

@@ -655,19 +655,201 @@ mod tests {
 
     #[test]
     fn test_is_valid_work_key() {
-        assert!(is_valid_work_key("/works/OL12345W"));
-        assert!(is_valid_work_key("works/OL12345W"));
-        assert!(is_valid_work_key("works/OL12345-M"));
-        assert!(is_valid_work_key("works/OL123_45"));
-
+        for valid in [
+            "/works/OL12345W",
+            "works/OL12345W",
+            "works/OL12345-M",
+            "works/OL123_45",
+        ] {
+            assert!(is_valid_work_key(valid), "expected valid: {valid}");
+        }
         // Path traversal / SSRF rejections
-        assert!(!is_valid_work_key("/works/../admin"));
-        assert!(!is_valid_work_key("works/OL123?param=val"));
-        assert!(!is_valid_work_key("works/OL123#frag"));
-        assert!(!is_valid_work_key("works/OL123/sub"));
-        assert!(!is_valid_work_key("@attacker.com/works/OL123"));
-        assert!(!is_valid_work_key("authors/OL123A"));
-        assert!(!is_valid_work_key("works/"));
-        assert!(!is_valid_work_key(""));
+        for invalid in [
+            "/works/../admin",
+            "works/OL123?param=val",
+            "works/OL123#frag",
+            "works/OL123/sub",
+            "@attacker.com/works/OL123",
+            "authors/OL123A",
+            "works/",
+            "",
+        ] {
+            assert!(!is_valid_work_key(invalid), "expected invalid: {invalid}");
+        }
+    }
+
+    #[test]
+    fn test_extract_ddg_url() {
+        assert_eq!(
+            extract_ddg_url(
+                "/l/?uddg=https%3A%2F%2Fen.wikipedia.org%2Fwiki%2FDune_%28novel%29&rut=123"
+            ),
+            "https://en.wikipedia.org/wiki/Dune_(novel)"
+        );
+        let direct_link = "https://example.com/summary";
+        assert_eq!(extract_ddg_url(direct_link), direct_link);
+    }
+
+    #[test]
+    fn test_deduplicate_candidates_normalizes_encoded_urls() {
+        let list = vec![
+            SearchResult::new(
+                "Dune (novel) (Wikipedia)",
+                "https://en.wikipedia.org/wiki/Dune_%28novel%29",
+                None,
+            ),
+            SearchResult::new(
+                "Dune (novel) - Wikipedia",
+                "https://en.wikipedia.org/wiki/Dune_(novel)/",
+                Some("Duplicate URL from DDG".to_string()),
+            ),
+            SearchResult::new("Other Source", "https://example.com/dune", None),
+        ];
+
+        let deduped = deduplicate_candidates(list);
+        assert_eq!(deduped.len(), 2);
+        assert_eq!(deduped[0].title, "Dune (novel) (Wikipedia)");
+        assert_eq!(deduped[1].url, "https://example.com/dune");
+    }
+
+    #[test]
+    fn test_rank_candidates_prioritizes_exact_novel_over_commentary_and_films() {
+        let mut candidates = vec![
+            SearchResult::new(
+                "The History of The Hobbit (Wikipedia)",
+                "https://en.wikipedia.org/wiki/The_History_of_The_Hobbit",
+                Some("A scholarly study by John D. Rateliff".to_string()),
+            ),
+            SearchResult::new(
+                "The Hobbit (film series) (Wikipedia)",
+                "https://en.wikipedia.org/wiki/The_Hobbit_(film_series)",
+                Some("Peter Jackson film trilogy".to_string()),
+            ),
+            SearchResult::new(
+                "The Hobbit (Wikipedia)",
+                "https://en.wikipedia.org/wiki/The_Hobbit",
+                Some("1937 fantasy novel by English author J. R. R. Tolkien".to_string()),
+            ),
+        ];
+
+        rank_candidates("The Hobbit", None, &mut candidates);
+        assert_eq!(candidates[0].title, "The Hobbit (Wikipedia)");
+        assert!(candidates[0].score > candidates[1].score);
+        assert!(candidates[0].score > candidates[2].score);
+
+        // If author is supplied, score is boosted even further
+        rank_candidates("The Hobbit", Some("J. R. R. Tolkien"), &mut candidates);
+        assert_eq!(candidates[0].title, "The Hobbit (Wikipedia)");
+        assert!(candidates[0].score >= 150);
+        // Verify high-confidence short-circuit threshold logic (score >= 85)
+        assert!(candidates[0].score >= 85);
+    }
+
+    #[test]
+    fn test_extract_wikipedia_synopsis() {
+        let cases: &[(&str, &[&str], &[&str])] = &[
+            (
+                r#"# Dune (novel)
+
+Dune is a 1965 epic science fiction novel by American author Frank Herbert. Set in the distant future.
+
+## Background
+Frank Herbert began researching in Oregon in 1957.
+
+## Plot
+Set in the distant future amidst a feudal interstellar society, Dune tells the story of young Paul Atreides, whose family accepts the stewardship of the desert planet Arrakis.
+
+### Arrakis
+Arrakis is the only source of the spice melange, the most valuable substance in the universe. The spice extends human life and provides higher levels of thought. Paul must navigate treacherous political alliances and survive the harsh desert sands.
+
+## Themes
+The novel explores the interplay between religion, politics, and ecology.
+
+## Adaptations
+A film adaptation was directed by David Lynch in 1984.
+
+## References
+[1] Herbert, Frank. Dune (1965).
+"#,
+                &[
+                    "Dune is a 1965 epic science fiction novel",
+                    "## Plot",
+                    "Paul Atreides",
+                    "Arrakis is the only source of the spice",
+                ],
+                &[
+                    "## Background",
+                    "Frank Herbert began researching",
+                    "## Adaptations",
+                    "David Lynch",
+                    "## References",
+                ],
+            ),
+            (
+                r#"# Thinking, Fast and Slow
+
+Thinking, Fast and Slow is a 2011 best-selling book by Nobel Memorial Prize in Economic Sciences laureate Daniel Kahneman.
+
+## Overview
+The book summarizes research that Kahneman conducted over decades, often in collaboration with Amos Tversky. It covers all three phases of his career: his early days working on cognitive biases, his work on prospect theory, and his later work on happiness. The central thesis is a dichotomy between two modes of thought: System 1 is fast, instinctive and emotional; System 2 is slower, more deliberative, and more logical.
+
+## Key themes
+The dichotomy between two modes of thought, heuristics and biases, and prospect theory.
+
+## References
+[1] Kahneman, Daniel. Thinking, Fast and Slow (2011). Farrar, Straus and Giroux.
+"#,
+                &[
+                    "Thinking, Fast and Slow is a 2011 best-selling book",
+                    "## Overview",
+                    "System 1 is fast, instinctive and emotional",
+                ],
+                &["## References", "Farrar, Straus and Giroux"],
+            ),
+        ];
+
+        for (wiki_markdown, expected, excluded) in cases {
+            let text = extract_wikipedia_synopsis(wiki_markdown).expect("expected synopsis");
+            for needle in *expected {
+                assert!(text.contains(needle), "missing {needle:?} in:\n{text}");
+            }
+            for needle in *excluded {
+                assert!(!text.contains(needle), "unexpected {needle:?} in:\n{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_work_description() {
+        for (json, expected) in [
+            (
+                r#"{"title": "Dune", "description": "Dune is a science fiction novel by Frank Herbert."}"#,
+                Some("Dune is a science fiction novel by Frank Herbert."),
+            ),
+            (
+                r#"{"title": "1984", "description": {"type": "/type/text", "value": "Nineteen Eighty-Four is a dystopian social science fiction novel by George Orwell."}}"#,
+                Some(
+                    "Nineteen Eighty-Four is a dystopian social science fiction novel by George Orwell.",
+                ),
+            ),
+            (r#"{"title": "Unknown Book", "description": ""}"#, None),
+            (r#"{"title": "No Description"}"#, None),
+        ] {
+            assert_eq!(parse_work_description(json.as_bytes()).as_deref(), expected);
+        }
+    }
+
+    #[test]
+    fn test_book_metadata_serde_backward_compatibility() {
+        let old_json = r#"{"canonical_title":"The Hobbit","author":"J. R. R. Tolkien","first_publish_year":1937}"#;
+        let meta: BookMetadata = serde_json::from_str(old_json).unwrap();
+        assert_eq!(meta.canonical_title, "The Hobbit");
+        assert_eq!(meta.author.as_deref(), Some("J. R. R. Tolkien"));
+        assert_eq!(meta.first_publish_year, Some(1937));
+        assert_eq!(meta.work_key, None);
+
+        let new_json = r#"{"canonical_title":"The Hobbit","author":"J. R. R. Tolkien","first_publish_year":1937,"work_key":"/works/OL262758W"}"#;
+        let meta_new: BookMetadata = serde_json::from_str(new_json).unwrap();
+        assert_eq!(meta_new.work_key.as_deref(), Some("/works/OL262758W"));
     }
 }

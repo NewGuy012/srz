@@ -825,3 +825,302 @@ pub async fn run_upgrade(
         json,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn build_ustar_header(name: &str, typeflag: u8, size_octal: &str) -> [u8; 512] {
+        let mut header = [0u8; 512];
+        let name_bytes = name.as_bytes();
+        header[..name_bytes.len()].copy_from_slice(name_bytes);
+        header[100..108].copy_from_slice(b"0000755\0");
+        let size_bytes = size_octal.as_bytes();
+        header[124..124 + size_bytes.len()].copy_from_slice(size_bytes);
+        header[156] = typeflag;
+        header[257..263].copy_from_slice(b"ustar\0");
+        header[148..156].copy_from_slice(b"        ");
+        let cksum: u32 = header.iter().map(|&b| b as u32).sum();
+        let cksum_octal = format!("{:06o}\0 ", cksum);
+        header[148..156].copy_from_slice(cksum_octal.as_bytes());
+        header
+    }
+
+    fn gzip_tar_entries(
+        entries: &[([u8; 512], &[u8])],
+        pad_and_eof: bool,
+        trailing_zeros: usize,
+    ) -> Vec<u8> {
+        let mut gz_encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        for (header, body) in entries {
+            gz_encoder.write_all(header).unwrap();
+            gz_encoder.write_all(body).unwrap();
+            if pad_and_eof {
+                let pad = (512 - (body.len() % 512)) % 512;
+                if pad > 0 {
+                    gz_encoder.write_all(&vec![0u8; pad]).unwrap();
+                }
+            }
+        }
+        if pad_and_eof && trailing_zeros > 0 {
+            let chunk = [0u8; 64 * 1024];
+            let mut remaining = trailing_zeros;
+            while remaining > 0 {
+                let n = remaining.min(chunk.len());
+                gz_encoder.write_all(&chunk[..n]).unwrap();
+                remaining -= n;
+            }
+        }
+        gz_encoder.finish().expect("Failed to finish gzip encoding")
+    }
+
+    #[test]
+    fn test_detect_target_mappings() {
+        for (os, arch, target, format, binary_name) in [
+            (
+                "macos",
+                "aarch64",
+                "aarch64-apple-darwin",
+                ArchiveFormat::TarGz,
+                "srz",
+            ),
+            (
+                "linux",
+                "x86_64",
+                "x86_64-unknown-linux-gnu",
+                ArchiveFormat::TarGz,
+                "srz",
+            ),
+            (
+                "linux",
+                "aarch64",
+                "aarch64-unknown-linux-gnu",
+                ArchiveFormat::TarGz,
+                "srz",
+            ),
+            (
+                "windows",
+                "x86_64",
+                "x86_64-pc-windows-msvc",
+                ArchiveFormat::Zip,
+                "srz.exe",
+            ),
+        ] {
+            let info = detect_target_from(os, arch).expect("Valid target");
+            assert_eq!(info.target, target);
+            assert_eq!(info.format, format);
+            assert_eq!(info.binary_name, binary_name);
+        }
+
+        let mac_intel_err = detect_target_from("macos", "x86_64").unwrap_err();
+        assert!(mac_intel_err.contains("Intel Macs (x86_64) are not supported"));
+
+        for (os, arch) in [("solaris", "sparc"), ("linux", "arm")] {
+            assert!(detect_target_from(os, arch).is_err());
+        }
+    }
+
+    #[test]
+    fn test_detect_install_origin() {
+        for (path, expected) in [
+            ("/opt/homebrew/bin/srz", InstallOrigin::Homebrew),
+            (
+                "/opt/homebrew/Cellar/srz/0.1.0/bin/srz",
+                InstallOrigin::Homebrew,
+            ),
+            (
+                "/usr/local/Cellar/srz/0.1.0/bin/srz",
+                InstallOrigin::Homebrew,
+            ),
+            (
+                "/home/linuxbrew/.linuxbrew/bin/srz",
+                InstallOrigin::Homebrew,
+            ),
+            (
+                "/home/linuxbrew/.linuxbrew/Cellar/srz/0.1.0/bin/srz",
+                InstallOrigin::Homebrew,
+            ),
+            ("/home/user/.cargo/bin/srz", InstallOrigin::Cargo),
+            (
+                "C:\\Users\\User\\.cargo\\bin\\srz.exe",
+                InstallOrigin::Cargo,
+            ),
+            ("/home/user/.local/bin/srz", InstallOrigin::Direct),
+            ("/usr/local/bin/srz", InstallOrigin::Direct),
+        ] {
+            assert_eq!(detect_install_origin(Path::new(path)), expected, "{path}");
+        }
+    }
+
+    #[test]
+    fn test_parse_sha256_checksum_and_sha256_computation() {
+        let test_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        for (input, expected) in [
+            (format!("{test_hash}  srz-v0.1.0.tar.gz\n"), Some(test_hash)),
+            (format!("{test_hash} *srz-v0.1.0.tar.gz"), Some(test_hash)),
+            (test_hash.to_string(), Some(test_hash)),
+            ("   \n\n  ".to_string(), None),
+        ] {
+            assert_eq!(parse_sha256_checksum(&input), expected);
+        }
+
+        let computed =
+            Sha256::digest_hex(b"Arbitrary release archive test data for SHA256 hashing.");
+        let sha256_file = format!("{computed}  srz.tar.gz");
+        let parsed = parse_sha256_checksum(&sha256_file).expect("Parsed hash");
+        assert_eq!(parsed, computed);
+        assert!(parsed.eq_ignore_ascii_case(&computed.to_uppercase()));
+    }
+
+    #[test]
+    fn test_format_asset_names() {
+        for (target, fmt, expected_v, expected_l) in [
+            (
+                "aarch64-apple-darwin",
+                ArchiveFormat::TarGz,
+                "srz-v0.2.0-aarch64-apple-darwin.tar.gz",
+                "srz-aarch64-apple-darwin.tar.gz",
+            ),
+            (
+                "x86_64-pc-windows-msvc",
+                ArchiveFormat::Zip,
+                "srz-v0.2.0-x86_64-pc-windows-msvc.zip",
+                "srz-x86_64-pc-windows-msvc.zip",
+            ),
+        ] {
+            let (v, l) = format_asset_names("v0.2.0", target, fmt);
+            assert_eq!(v, expected_v);
+            assert_eq!(l, expected_l);
+        }
+    }
+
+    #[test]
+    fn test_extract_binary_from_tar_gz() {
+        let binary_content = b"echo 'srz v0.2.0'";
+        let hdr = build_ustar_header("srz", b'0', &format!("{:011o} ", binary_content.len()));
+        let archive_bytes = gzip_tar_entries(&[(hdr, binary_content)], true, 1024);
+
+        let extracted =
+            extract_binary_from_tar_gz(&archive_bytes, "srz").expect("Extraction should succeed");
+        assert_eq!(extracted, binary_content);
+        assert!(extract_binary_from_tar_gz(&archive_bytes, "nonexistent").is_err());
+    }
+
+    #[test]
+    fn test_extract_binary_from_zip() {
+        let binary_content = b"MZ-mock-binary-srz-exe";
+        let zip_bytes = crate::system::zip::create_test_zip(&[("srz.exe", binary_content)]);
+
+        let extracted =
+            extract_binary_from_zip(&zip_bytes, "srz.exe").expect("Extraction should succeed");
+        assert_eq!(extracted, binary_content);
+        assert!(extract_binary_from_zip(&zip_bytes, "srz-other.exe").is_err());
+
+        let empty_zip = crate::system::zip::create_test_zip(&[("srz.exe", b"")]);
+        assert!(extract_binary_from_zip(&empty_zip, "srz.exe").is_err());
+    }
+
+    #[test]
+    fn test_parse_clean_version_canonicalization_and_rejection() {
+        for (input, major, minor, patch) in [
+            ("v0.1.0", 0, 1, 0),
+            ("0.2.5", 0, 2, 5),
+            ("  v1.3.4-alpha.1 \n", 1, 3, 4),
+            ("v0.7.1", 0, 7, 1),
+            (" 0.7.1 ", 0, 7, 1),
+        ] {
+            let v = parse_clean_version(input).unwrap();
+            assert_eq!((v.major, v.minor, v.patch), (major, minor, patch));
+        }
+
+        for invalid in [
+            "invalid-version",
+            "../../../evil",
+            "latest",
+            "v0.7.1/payload",
+            "; rm -rf /",
+        ] {
+            assert!(parse_clean_version(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn test_upgrade_temp_file_creation_and_symlink_safety() {
+        let tmp = crate::fs_util::tempdir().unwrap();
+        let target_file = tmp.path().join(".srz-upgrade-existing");
+        std::fs::write(&target_file, b"existing-content").unwrap();
+
+        // create_new(true) fails if file already exists (preventing symlink overwrites)
+        assert!(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target_file)
+                .is_err()
+        );
+
+        #[cfg(unix)]
+        {
+            let new_binary = tmp.path().join("new_bin");
+            let real_target = tmp.path().join("real_target");
+            let symlink_target = tmp.path().join("symlink_target");
+            std::fs::write(&new_binary, b"new binary content").unwrap();
+            std::fs::write(&real_target, b"old target content").unwrap();
+            std::os::unix::fs::symlink(&real_target, &symlink_target).unwrap();
+
+            let res = replace_binary(&new_binary, &symlink_target);
+            assert!(res.unwrap_err().to_string().contains("symlink"));
+        }
+    }
+
+    #[test]
+    fn test_extract_binary_from_tar_gz_rejects_bomb_and_oversized_entries() {
+        // 1. Decompressed tar stream exceeding MAX_TAR_STREAM_BYTES (gzip bomb / huge stream)
+        let filler_len = (MAX_TAR_STREAM_BYTES as usize) + 1024;
+        let filler_header =
+            build_ustar_header("filler.bin", b'0', &format!("{:011o} ", filler_len));
+        let bomb_bytes = gzip_tar_entries(&[(filler_header, b"")], true, filler_len);
+        assert!(extract_binary_from_tar_gz(&bomb_bytes, "srz").is_err());
+
+        // 2. Target binary claiming size > MAX_BINARY_BYTES without backing payload
+        let target_header =
+            build_ustar_header("srz", b'0', &format!("{:011o} ", MAX_BINARY_BYTES + 1));
+        let oversized_tar = gzip_tar_entries(&[(target_header, b"short")], true, 1024);
+        assert!(extract_binary_from_tar_gz(&oversized_tar, "srz").is_err());
+
+        // 3. Non-matching entry with huge 12-digit octal size (no panic / clean error)
+        let skip_header = build_ustar_header("other.bin", b'0', "777777777777");
+        let huge_skip_tar = gzip_tar_entries(&[(skip_header, b"")], true, 1024);
+        assert!(extract_binary_from_tar_gz(&huge_skip_tar, "srz").is_err());
+    }
+
+    #[test]
+    fn test_extract_binary_from_tar_gz_skips_symlinks_and_directories_and_rejects_empty() {
+        // 1. Symlink and directory entries named "srz" are ignored; regular file "srz" succeeds
+        let symlink_hdr = build_ustar_header("srz", b'2', "00000000000 ");
+        let dir_hdr = build_ustar_header("srz", b'5', "00000000000 ");
+        let payload = b"real-srz-binary";
+        let reg_hdr = build_ustar_header("srz", b'0', &format!("{:011o} ", payload.len()));
+        let mixed_tar = gzip_tar_entries(
+            &[(symlink_hdr, b""), (dir_hdr, b""), (reg_hdr, payload)],
+            true,
+            1024,
+        );
+        assert_eq!(
+            extract_binary_from_tar_gz(&mixed_tar, "srz").unwrap(),
+            payload
+        );
+
+        // 2-4. Symlink-only, 0-byte regular file, and truncated payload must fail
+        let empty_hdr = build_ustar_header("srz", b'0', "00000000000 ");
+        let truncated_hdr = build_ustar_header("srz", b'0', &format!("{:011o} ", 100usize));
+        for archive in [
+            gzip_tar_entries(&[(symlink_hdr, b"")], true, 1024),
+            gzip_tar_entries(&[(empty_hdr, b"")], true, 1024),
+            gzip_tar_entries(&[(truncated_hdr, b"only10byte")], false, 0),
+        ] {
+            assert!(extract_binary_from_tar_gz(&archive, "srz").is_err());
+        }
+    }
+}
