@@ -84,10 +84,10 @@ impl NewsTimeframe {
 
     pub fn display_label(&self) -> &'static str {
         match self {
-            Self::Day => "Today / Past 24 Hours",
-            Self::Week => "Past Week",
-            Self::Month => "Past Month",
-            Self::All => "All Time",
+            Self::Day => "today / past 24 hours",
+            Self::Week => "past week",
+            Self::Month => "past month",
+            Self::All => "all time",
         }
     }
 }
@@ -1140,6 +1140,20 @@ mod tests {
             std::os::unix::fs::symlink(&real_config, &sym_config).unwrap();
             let err = Config::load_from_path(&sym_config).unwrap_err();
             assert!(err.to_string().contains("symlink"));
+        }
+    }
+
+    #[test]
+    fn test_news_timeframe_display_labels_are_lowercase() {
+        for (tf, expected) in [
+            (NewsTimeframe::Day, "today / past 24 hours"),
+            (NewsTimeframe::Week, "past week"),
+            (NewsTimeframe::Month, "past month"),
+            (NewsTimeframe::All, "all time"),
+        ] {
+            let label = tf.display_label();
+            assert_eq!(label, expected);
+            assert_eq!(label, label.to_ascii_lowercase());
         }
     }
 }
