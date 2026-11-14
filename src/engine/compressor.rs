@@ -217,7 +217,6 @@ pub fn select_relevant_context_bm25<'a>(
     Cow::Owned(out)
 }
 
-#[derive(Clone, Copy)]
 struct Segment<'a> {
     text: &'a str,
     tokens: usize,
@@ -225,159 +224,85 @@ struct Segment<'a> {
     after_heading: bool,
 }
 
-#[derive(Default)]
-struct VocabEntry {
-    df: usize,
-    weight: f64,
-    in_heading: bool,
-    in_anchor: bool,
-    last_seg: Option<usize>,
-    postings: Vec<(usize, usize)>,
-}
-
-impl VocabEntry {
-    fn record(&mut self, seg_idx: usize, is_heading: bool, is_anchor: bool, weight_inc: f64) {
-        self.weight += weight_inc;
-        if is_heading {
-            self.in_heading = true;
-        }
-        if is_anchor {
-            self.in_anchor = true;
-        }
-        if self.last_seg == Some(seg_idx) {
-            if let Some(last) = self.postings.last_mut() {
-                last.1 += 1;
-            }
-        } else {
-            self.df += 1;
-            self.last_seg = Some(seg_idx);
-            self.postings.push((seg_idx, 1));
-        }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SelectionTier {
-    AnchorLead,
-    AnchorTail,
-    Lead,
-    Tail,
-    Heading(u8),
-    SalientBody(usize),
-}
-
-impl SelectionTier {
-    /// Higher eviction key means lower retention priority (evicted first on budget guard).
-    fn eviction_key(self, idx: usize) -> (u8, usize, usize) {
-        match self {
-            Self::SalientBody(rank) => (5, rank, idx),
-            Self::Heading(level) => (4, level as usize, idx),
-            Self::Tail => (3, usize::MAX - idx, idx),
-            Self::Lead => (2, idx, idx),
-            Self::AnchorTail => (1, 0, idx),
-            Self::AnchorLead => (0, 0, idx),
-        }
-    }
-}
-
-fn detect_fence_marker(trimmed: &str) -> Option<(u8, usize)> {
-    let first = *trimmed.as_bytes().first()?;
-    if first != b'`' && first != b'~' {
-        return None;
-    }
-    let count = trimmed.bytes().take_while(|&b| b == first).count();
-    if count >= 3 && !(first == b'`' && trimmed[count..].contains('`')) {
-        Some((first, count))
-    } else {
-        None
-    }
-}
-
-fn is_closing_fence(trimmed: &str, fence_char: u8, fence_len: usize) -> bool {
-    let count = trimmed.bytes().take_while(|&b| b == fence_char).count();
-    count >= fence_len && trimmed[count..].trim().is_empty()
-}
-
-fn strip_optional_timestamp_prefix(s: &str) -> &str {
-    if !s.starts_with('[') {
-        return s;
-    }
-    if let Some(close) = s.find(']') {
-        let inner = &s[1..close];
-        let mut has_colon = false;
-        let valid_ts = !inner.is_empty()
-            && inner.bytes().all(|b| {
-                if b == b':' {
-                    has_colon = true;
-                    true
-                } else {
-                    b.is_ascii_digit()
-                }
-            });
-        if valid_ts && has_colon {
-            return s[close + 1..].trim_start_matches([' ', '\t']);
-        }
-    }
-    s
-}
-
-/// Detects ATX Markdown headings at levels 1..=3 (`#`, `##`, `###`), including
-/// YouTube chapter headings prefixed with `[MM:SS]` or `[HH:MM:SS]`.
+/// Detects ATX Markdown headings (`#`, `##`, `###`), including YouTube chapter
+/// headings prefixed with `[MM:SS]` or `[HH:MM:SS]`.
 fn parse_heading_level(raw_line: &str) -> Option<u8> {
     if raw_line.starts_with('\t') {
         return None;
     }
-    let leading_spaces = raw_line.bytes().take_while(|&b| b == b' ').count();
-    if leading_spaces >= 4 {
+    let spaces = raw_line.bytes().take_while(|&b| b == b' ').count();
+    if spaces >= 4 {
         return None;
     }
-    let trimmed = strip_optional_timestamp_prefix(raw_line[leading_spaces..].trim_end());
-    let hashes = trimmed.bytes().take_while(|&b| b == b'#').count();
+
+    let mut line = raw_line[spaces..].trim_end();
+    if let Some(rest) = line.strip_prefix('[')
+        && let Some((ts, after)) = rest.split_once(']')
+        && !ts.is_empty()
+        && ts.contains(':')
+        && ts.bytes().all(|b| b.is_ascii_digit() || b == b':')
+    {
+        line = after.trim_start_matches([' ', '\t']);
+    }
+
+    let hashes = line.bytes().take_while(|&b| b == b'#').count();
     if !(1..=3).contains(&hashes) {
         return None;
     }
-    let rest = &trimmed[hashes..];
-    if !rest.starts_with([' ', '\t']) || rest.trim().is_empty() {
-        return None;
-    }
-    Some(hashes as u8)
+    let title = &line[hashes..];
+    (title.starts_with([' ', '\t']) && !title.trim().is_empty()).then_some(hashes as u8)
 }
 
-fn split_oversized_span_by_words<'a>(
-    span: &'a str,
+fn push_body_segment<'a>(
+    block: &'a str,
     max_seg_tokens: usize,
     tok_kind: TokenizerKind,
-    out: &mut Vec<&'a str>,
+    after_heading: &mut bool,
+    segments: &mut Vec<Segment<'a>>,
 ) {
-    let span = span.trim();
-    if span.is_empty() {
+    let text = block.trim();
+    if text.is_empty() {
         return;
     }
-    if tok_kind.count_tokens(span) <= max_seg_tokens {
-        out.push(span);
+    let tokens = tok_kind.count_tokens(text);
+    if tokens <= max_seg_tokens {
+        segments.push(Segment {
+            text,
+            tokens,
+            heading_level: None,
+            after_heading: *after_heading,
+        });
+        *after_heading = false;
         return;
     }
 
-    // In BPE approximation, ~3 words ≈ 4 tokens; scale down conservatively to stay <= max_seg_tokens.
+    // Fallback for giant unbroken lines without newlines: chunk at whitespace boundaries.
     let target_words = ((max_seg_tokens * 3) / 5).max(8);
-    let mut chunk_start = 0;
+    let mut start = 0;
     let mut words = 0;
     let mut in_word = false;
+    let mut first = true;
 
-    for (idx, ch) in span.char_indices() {
+    for (idx, ch) in text.char_indices() {
         if ch.is_whitespace() {
             if in_word {
                 in_word = false;
                 if words >= target_words {
-                    let piece = span[chunk_start..idx].trim();
+                    let piece = text[start..idx].trim();
                     if !piece.is_empty() {
-                        out.push(piece);
+                        segments.push(Segment {
+                            text: piece,
+                            tokens: tok_kind.count_tokens(piece),
+                            heading_level: None,
+                            after_heading: first && *after_heading,
+                        });
+                        first = false;
                     }
-                    chunk_start = idx + ch.len_utf8();
+                    start = idx + ch.len_utf8();
                     words = 0;
                 }
-            } else if chunk_start == idx {
-                chunk_start = idx + ch.len_utf8();
+            } else if start == idx {
+                start = idx + ch.len_utf8();
             }
         } else if !in_word {
             in_word = true;
@@ -385,393 +310,109 @@ fn split_oversized_span_by_words<'a>(
         }
     }
 
-    let tail = span[chunk_start..].trim();
+    let tail = text[start..].trim();
     if !tail.is_empty() {
-        out.push(tail);
-    }
-}
-
-fn split_long_line_by_sentences<'a>(
-    line: &'a str,
-    max_seg_tokens: usize,
-    tok_kind: TokenizerKind,
-    out: &mut Vec<&'a str>,
-) {
-    let line = line.trim();
-    if line.is_empty() {
-        return;
-    }
-    if tok_kind.count_tokens(line) <= max_seg_tokens {
-        out.push(line);
-        return;
-    }
-
-    let bytes = line.as_bytes();
-    let mut sentences: Vec<&'a str> = Vec::new();
-    let mut sent_start = 0;
-    let mut i = 0;
-
-    while i < bytes.len() {
-        let b = bytes[i];
-        if matches!(b, b'.' | b'?' | b'!' | b';')
-            && (i + 1 == bytes.len() || bytes[i + 1].is_ascii_whitespace())
-        {
-            let slice = line[sent_start..=i].trim();
-            if !slice.is_empty() {
-                sentences.push(slice);
-            }
-            let mut next = i + 1;
-            while next < bytes.len() && bytes[next].is_ascii_whitespace() {
-                next += 1;
-            }
-            sent_start = next;
-            i = next;
-            continue;
-        }
-        i += 1;
-    }
-    if sent_start < line.len() {
-        let tail = line[sent_start..].trim();
-        if !tail.is_empty() {
-            sentences.push(tail);
-        }
-    }
-
-    if sentences.is_empty() {
-        split_oversized_span_by_words(line, max_seg_tokens, tok_kind, out);
-        return;
-    }
-
-    let line_ptr = line.as_ptr() as usize;
-    let mut group_start: Option<usize> = None;
-    let mut group_end = 0usize;
-
-    for sent in sentences {
-        let s_rel = (sent.as_ptr() as usize) - line_ptr;
-        let e_rel = s_rel + sent.len();
-        let sent_tokens = tok_kind.count_tokens(sent);
-
-        if sent_tokens > max_seg_tokens {
-            if let Some(gs) = group_start.take() {
-                let piece = line[gs..group_end].trim();
-                if !piece.is_empty() {
-                    out.push(piece);
-                }
-            }
-            split_oversized_span_by_words(sent, max_seg_tokens, tok_kind, out);
-            continue;
-        }
-
-        if let Some(gs) = group_start {
-            let candidate = line[gs..e_rel].trim();
-            if tok_kind.count_tokens(candidate) > max_seg_tokens {
-                let piece = line[gs..group_end].trim();
-                if !piece.is_empty() {
-                    out.push(piece);
-                }
-                group_start = Some(s_rel);
-                group_end = e_rel;
-            } else {
-                group_end = e_rel;
-            }
-        } else {
-            group_start = Some(s_rel);
-            group_end = e_rel;
-        }
-    }
-
-    if let Some(gs) = group_start {
-        let piece = line[gs..group_end].trim();
-        if !piece.is_empty() {
-            out.push(piece);
-        }
-    }
-}
-
-fn split_oversized_block(block: &str, max_seg_tokens: usize, tok_kind: TokenizerKind) -> Vec<&str> {
-    let mut out = Vec::new();
-    let mut chunk_start: Option<usize> = None;
-    let mut chunk_end = 0usize;
-    let mut chunk_tokens = 0usize;
-
-    let mut pos = 0;
-    while pos < block.len() {
-        let ls = pos;
-        let le = match block[pos..].find('\n') {
-            Some(rel) => pos + rel,
-            None => block.len(),
-        };
-        pos = if le < block.len() {
-            le + 1
-        } else {
-            block.len()
-        };
-
-        let raw = block[ls..le].trim_end_matches('\r');
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let leading_ws = raw.len() - raw.trim_start().len();
-        let cs = ls + leading_ws;
-        let ce = ls + raw.trim_end().len();
-        let line_tokens = tok_kind.count_tokens(trimmed);
-
-        if line_tokens > max_seg_tokens {
-            if let Some(s) = chunk_start.take() {
-                let piece = block[s..chunk_end].trim();
-                if !piece.is_empty() {
-                    out.push(piece);
-                }
-            }
-            chunk_tokens = 0;
-            split_long_line_by_sentences(trimmed, max_seg_tokens, tok_kind, &mut out);
-            continue;
-        }
-
-        if let Some(s) = chunk_start {
-            if chunk_tokens + line_tokens > max_seg_tokens {
-                let piece = block[s..chunk_end].trim();
-                if !piece.is_empty() {
-                    out.push(piece);
-                }
-                chunk_start = Some(cs);
-                chunk_end = ce;
-                chunk_tokens = line_tokens;
-            } else {
-                chunk_end = ce;
-                chunk_tokens += line_tokens;
-            }
-        } else {
-            chunk_start = Some(cs);
-            chunk_end = ce;
-            chunk_tokens = line_tokens;
-        }
-    }
-
-    if let Some(s) = chunk_start {
-        let piece = block[s..chunk_end].trim();
-        if !piece.is_empty() {
-            out.push(piece);
-        }
-    }
-
-    out
-}
-
-fn push_body_block<'a>(
-    block: &'a str,
-    max_seg_tokens: usize,
-    tok_kind: TokenizerKind,
-    prev_was_heading: &mut bool,
-    segments: &mut Vec<Segment<'a>>,
-) {
-    let trimmed = block.trim();
-    if trimmed.is_empty() {
-        return;
-    }
-    let tokens = tok_kind.count_tokens(trimmed);
-    if tokens <= max_seg_tokens {
         segments.push(Segment {
-            text: trimmed,
-            tokens,
+            text: tail,
+            tokens: tok_kind.count_tokens(tail),
             heading_level: None,
-            after_heading: *prev_was_heading,
-        });
-        *prev_was_heading = false;
-        return;
-    }
-
-    let chunks = split_oversized_block(trimmed, max_seg_tokens, tok_kind);
-    for (idx, chunk) in chunks.into_iter().enumerate() {
-        let c_tokens = tok_kind.count_tokens(chunk);
-        segments.push(Segment {
-            text: chunk,
-            tokens: c_tokens,
-            heading_level: None,
-            after_heading: idx == 0 && *prev_was_heading,
+            after_heading: first && *after_heading,
         });
     }
-    *prev_was_heading = false;
+    *after_heading = false;
 }
 
-/// Decomposes `content` into zero-copy heading (`#`, `##`, `###`, including `[MM:SS] ## Title`)
-/// and body segments while ignoring `# comments` inside fenced code blocks and splitting
-/// oversized blocks across line/sentence boundaries.
+/// Splits `content` into zero-copy heading (`#`, `##`, `###`) and body segments while ignoring
+/// `#` lines inside fenced code blocks and bounding huge blocks to `max_seg_tokens`.
 fn parse_document_segments<'a>(
     content: &'a str,
     max_seg_tokens: usize,
     tok_kind: TokenizerKind,
 ) -> Vec<Segment<'a>> {
     let mut segments = Vec::new();
-    let mut body_start: Option<usize> = None;
-    let mut body_end = 0usize;
+    let mut body: Option<(usize, usize, usize)> = None; // (start_byte, end_byte, approx_tokens)
     let mut fence: Option<(u8, usize)> = None;
-    let mut prev_was_heading = false;
+    let mut after_heading = false;
+    let mut offset = 0;
 
-    let mut pos = 0;
-    while pos < content.len() {
-        let line_start = pos;
-        let line_end = match content[pos..].find('\n') {
-            Some(rel) => pos + rel,
-            None => content.len(),
-        };
-        pos = if line_end < content.len() {
-            line_end + 1
-        } else {
-            content.len()
-        };
+    let flush_body = |body: &mut Option<(usize, usize, usize)>,
+                      after_h: &mut bool,
+                      segs: &mut Vec<Segment<'a>>| {
+        if let Some((s, e, _)) = body.take() {
+            push_body_segment(&content[s..e], max_seg_tokens, tok_kind, after_h, segs);
+        }
+    };
 
-        let raw_line = content[line_start..line_end].trim_end_matches('\r');
-        let trimmed = raw_line.trim();
+    for raw in content.split_inclusive('\n') {
+        let line_start = offset;
+        offset += raw.len();
+        let line = raw.trim_end_matches(['\r', '\n']);
+        let trimmed = line.trim();
 
         if let Some((fc, flen)) = fence {
-            if !trimmed.is_empty() {
-                let leading_ws = raw_line.len() - raw_line.trim_start().len();
-                let cs = line_start + leading_ws;
-                let ce = line_start + raw_line.trim_end().len();
-                if body_start.is_none() {
-                    body_start = Some(cs);
+            if trimmed.is_empty() {
+                continue;
+            }
+            let close_len = trimmed.bytes().take_while(|&b| b == fc).count();
+            if close_len >= flen && trimmed[close_len..].trim().is_empty() {
+                fence = None;
+            }
+        } else if trimmed.is_empty() {
+            flush_body(&mut body, &mut after_heading, &mut segments);
+            continue;
+        } else {
+            let first_byte = trimmed.as_bytes()[0];
+            if first_byte == b'`' || first_byte == b'~' {
+                let flen = trimmed.bytes().take_while(|&b| b == first_byte).count();
+                if flen >= 3 && !(first_byte == b'`' && trimmed[flen..].contains('`')) {
+                    fence = Some((first_byte, flen));
                 }
-                body_end = ce;
-                if is_closing_fence(trimmed, fc, flen) {
-                    fence = None;
-                }
             }
-            continue;
+            if fence.is_none()
+                && let Some(level) = parse_heading_level(line)
+            {
+                flush_body(&mut body, &mut after_heading, &mut segments);
+                segments.push(Segment {
+                    text: trimmed,
+                    tokens: tok_kind.count_tokens(trimmed),
+                    heading_level: Some(level),
+                    after_heading: false,
+                });
+                after_heading = true;
+                continue;
+            }
         }
 
-        if trimmed.is_empty() {
-            if let Some(s) = body_start.take() {
-                push_body_block(
-                    &content[s..body_end],
-                    max_seg_tokens,
-                    tok_kind,
-                    &mut prev_was_heading,
-                    &mut segments,
-                );
-            }
-            continue;
+        let cs = line_start + (line.len() - line.trim_start().len());
+        let ce = line_start + line.trim_end().len();
+        let lt = tok_kind.count_tokens(trimmed);
+        if body.is_some_and(|(_, _, bt)| bt + lt > max_seg_tokens) {
+            flush_body(&mut body, &mut after_heading, &mut segments);
         }
-
-        if let Some(new_fence) = detect_fence_marker(trimmed) {
-            fence = Some(new_fence);
-            let leading_ws = raw_line.len() - raw_line.trim_start().len();
-            let cs = line_start + leading_ws;
-            let ce = line_start + raw_line.trim_end().len();
-            if body_start.is_none() {
-                body_start = Some(cs);
-            }
-            body_end = ce;
-            continue;
-        }
-
-        if let Some(level) = parse_heading_level(raw_line) {
-            if let Some(s) = body_start.take() {
-                push_body_block(
-                    &content[s..body_end],
-                    max_seg_tokens,
-                    tok_kind,
-                    &mut prev_was_heading,
-                    &mut segments,
-                );
-            }
-            let tokens = tok_kind.count_tokens(trimmed);
-            segments.push(Segment {
-                text: trimmed,
-                tokens,
-                heading_level: Some(level),
-                after_heading: false,
-            });
-            prev_was_heading = true;
-            continue;
-        }
-
-        let leading_ws = raw_line.len() - raw_line.trim_start().len();
-        let cs = line_start + leading_ws;
-        let ce = line_start + raw_line.trim_end().len();
-        if body_start.is_none() {
-            body_start = Some(cs);
-        }
-        body_end = ce;
+        body = Some(match body {
+            Some((s, _, bt)) => (s, ce, bt + lt),
+            None => (cs, ce, lt),
+        });
     }
 
-    if let Some(s) = body_start {
-        push_body_block(
-            &content[s..body_end],
-            max_seg_tokens,
-            tok_kind,
-            &mut prev_was_heading,
-            &mut segments,
-        );
-    }
-
+    flush_body(&mut body, &mut after_heading, &mut segments);
     segments
 }
 
-fn scan_segment_terms(
-    text: &str,
-    seg_idx: usize,
-    is_heading: bool,
-    is_anchor: bool,
-    scratch: &mut String,
-    vocab: &mut HashMap<String, VocabEntry>,
-) {
-    const HEADING_TERM_WEIGHT: f64 = 3.0;
-    const ANCHOR_TERM_WEIGHT: f64 = 2.0;
-    const MAX_CENTROID_VOCAB: usize = 50_000;
-
-    let mut chars = text.char_indices().peekable();
-    while let Some((_, ch)) = chars.next() {
-        if !ch.is_alphanumeric() {
-            continue;
-        }
-        scratch.clear();
-        for lc in ch.to_lowercase() {
-            scratch.push(lc);
-        }
-        while let Some(&(_, next_ch)) = chars.peek() {
-            if next_ch.is_alphanumeric() || next_ch == '_' {
-                for lc in next_ch.to_lowercase() {
-                    scratch.push(lc);
-                }
-                chars.next();
-            } else {
-                break;
-            }
-        }
-        while scratch.ends_with('_') {
-            scratch.pop();
-        }
-        if scratch.len() < 2
-            || !scratch.chars().any(char::is_alphabetic)
-            || is_stop_word_lower(scratch.as_str())
-        {
-            continue;
-        }
-
-        let weight_inc = if is_heading {
-            HEADING_TERM_WEIGHT
-        } else if is_anchor {
-            ANCHOR_TERM_WEIGHT
-        } else {
-            1.0
-        };
-        if let Some(entry) = vocab.get_mut(scratch.as_str()) {
-            entry.record(seg_idx, is_heading, is_anchor, weight_inc);
-        } else if vocab.len() < MAX_CENTROID_VOCAB {
-            let mut entry = VocabEntry::default();
-            entry.record(seg_idx, is_heading, is_anchor, weight_inc);
-            vocab.insert(scratch.clone(), entry);
-        }
-    }
-}
-
-/// Scores all document segments against top TF-IDF centroid terms (boosting heading and lead/tail
-/// anchor terms) in a single O(bytes) tokenization pass + shared [`score_bm25_matrix`] evaluation.
+/// Scores document segments in a single O(bytes) pass against top TF-IDF centroid terms
+/// (boosting heading and lead/tail anchor terms) via [`score_bm25_matrix`].
 fn score_segments_centroid_bm25(segments: &[Segment<'_>]) -> Vec<f64> {
     const MAX_CENTROID_TERMS: usize = 48;
+    const MAX_VOCAB: usize = 50_000;
+
+    struct TermEntry {
+        df: usize,
+        weight: f64,
+        in_heading: bool,
+        in_anchor: bool,
+        last_seg: usize,
+        postings: Vec<(usize, usize)>,
+    }
 
     let n_docs = segments.len();
     if n_docs == 0 {
@@ -779,63 +420,98 @@ fn score_segments_centroid_bm25(segments: &[Segment<'_>]) -> Vec<f64> {
     }
 
     let anchor_window = (n_docs / 20).clamp(1, 4);
-    let mut vocab: HashMap<String, VocabEntry> = HashMap::new();
-    let mut scratch = String::with_capacity(64);
+    let mut vocab: HashMap<String, TermEntry> = HashMap::new();
+    let mut scratch = String::with_capacity(48);
     let mut lengths = Vec::with_capacity(n_docs);
     let mut total_tokens = 0usize;
 
-    for (idx, seg) in segments.iter().enumerate() {
+    for (seg_idx, seg) in segments.iter().enumerate() {
         lengths.push(seg.tokens);
         total_tokens += seg.tokens;
-        let is_anchor = idx < anchor_window || idx >= n_docs.saturating_sub(anchor_window);
-        scan_segment_terms(
-            seg.text,
-            idx,
-            seg.heading_level.is_some(),
-            is_anchor,
-            &mut scratch,
-            &mut vocab,
-        );
+        let is_heading = seg.heading_level.is_some();
+        let is_anchor = seg_idx < anchor_window || seg_idx >= n_docs.saturating_sub(anchor_window);
+        let weight_inc = if is_heading {
+            3.0
+        } else if is_anchor {
+            2.0
+        } else {
+            1.0
+        };
+
+        for raw_tok in seg.text.split(|c: char| !c.is_alphanumeric() && c != '_') {
+            let tok = raw_tok.trim_end_matches('_');
+            if tok.len() < 2 || !tok.chars().any(char::is_alphabetic) {
+                continue;
+            }
+            scratch.clear();
+            if tok.is_ascii() {
+                scratch.push_str(tok);
+                scratch.make_ascii_lowercase();
+            } else {
+                scratch.extend(tok.chars().flat_map(char::to_lowercase));
+            }
+            if is_stop_word_lower(&scratch) {
+                continue;
+            }
+
+            if let Some(e) = vocab.get_mut(scratch.as_str()) {
+                e.weight += weight_inc;
+                e.in_heading |= is_heading;
+                e.in_anchor |= is_anchor;
+                if e.last_seg == seg_idx {
+                    if let Some(last) = e.postings.last_mut() {
+                        last.1 += 1;
+                    }
+                } else {
+                    e.df += 1;
+                    e.last_seg = seg_idx;
+                    e.postings.push((seg_idx, 1));
+                }
+            } else if vocab.len() < MAX_VOCAB {
+                vocab.insert(
+                    scratch.clone(),
+                    TermEntry {
+                        df: 1,
+                        weight: weight_inc,
+                        in_heading: is_heading,
+                        in_anchor: is_anchor,
+                        last_seg: seg_idx,
+                        postings: vec![(seg_idx, 1)],
+                    },
+                );
+            }
+        }
     }
 
     if vocab.is_empty() {
         return vec![0.0; n_docs];
     }
 
-    let mut ranked_terms: Vec<(f64, VocabEntry)> = vocab
+    let mut ranked: Vec<(f64, TermEntry)> = vocab
         .into_values()
-        .map(|entry| {
-            let df = entry.df;
-            let idf = (((n_docs.saturating_sub(df)) as f64 + 0.5) / (df as f64 + 0.5) + 1.0)
+        .map(|e| {
+            let idf = (((n_docs.saturating_sub(e.df)) as f64 + 0.5) / (e.df as f64 + 0.5) + 1.0)
                 .ln()
                 .max(0.1);
-            let spread = if n_docs >= 8 && df == 1 && !entry.in_heading && !entry.in_anchor {
+            let spread = if n_docs >= 8 && e.df == 1 && !e.in_heading && !e.in_anchor {
                 0.35
             } else {
                 1.0
             };
-            let mut anchor_mult = 1.0;
-            if entry.in_heading {
-                anchor_mult *= 2.0;
-            }
-            if entry.in_anchor {
-                anchor_mult *= 2.0;
-            }
-            let centroid_score = entry.weight.ln_1p() * idf * spread * anchor_mult;
-            (centroid_score, entry)
+            let mult = if e.in_heading { 2.0 } else { 1.0 } * if e.in_anchor { 2.0 } else { 1.0 };
+            (e.weight.ln_1p() * idf * spread * mult, e)
         })
         .collect();
 
-    if ranked_terms.len() > MAX_CENTROID_TERMS {
-        ranked_terms.select_nth_unstable_by(MAX_CENTROID_TERMS, |a, b| b.0.total_cmp(&a.0));
-        ranked_terms.truncate(MAX_CENTROID_TERMS);
+    if ranked.len() > MAX_CENTROID_TERMS {
+        ranked.select_nth_unstable_by(MAX_CENTROID_TERMS, |a, b| b.0.total_cmp(&a.0));
+        ranked.truncate(MAX_CENTROID_TERMS);
     }
 
-    let n_terms = ranked_terms.len();
+    let n_terms = ranked.len();
     let mut term_dfs = Vec::with_capacity(n_terms);
     let mut flat_tfs = vec![0usize; n_docs * n_terms];
-
-    for (term_idx, (_, entry)) in ranked_terms.into_iter().enumerate() {
+    for (term_idx, (_, entry)) in ranked.into_iter().enumerate() {
         term_dfs.push(entry.df);
         for (seg_idx, tf) in entry.postings {
             flat_tfs[seg_idx * n_terms + term_idx] = tf;
@@ -844,7 +520,6 @@ fn score_segments_centroid_bm25(segments: &[Segment<'_>]) -> Vec<f64> {
 
     let avgdl = (total_tokens as f64 / n_docs as f64).max(1.0);
     let mut scores = score_bm25_matrix(n_docs, n_terms, &lengths, &term_dfs, &flat_tfs, avgdl);
-
     for (idx, score) in scores.iter_mut().enumerate() {
         if segments[idx].after_heading {
             *score *= 1.15;
@@ -853,234 +528,44 @@ fn score_segments_centroid_bm25(segments: &[Segment<'_>]) -> Vec<f64> {
             *score *= 0.25;
         }
     }
-
     scores
 }
 
-struct SelectionState {
-    selected: Vec<bool>,
-    tiers: Vec<Option<SelectionTier>>,
-    used_tokens: usize,
-    min_selected: Option<usize>,
-    max_selected: Option<usize>,
-}
-
-impl SelectionState {
-    fn new(n: usize) -> Self {
-        Self {
-            selected: vec![false; n],
-            tiers: vec![None; n],
-            used_tokens: 0,
-            min_selected: None,
-            max_selected: None,
-        }
-    }
-
-    fn gap_delta(&self, idx: usize) -> isize {
-        let left_adj = idx > 0 && self.selected[idx - 1];
-        let right_adj = idx + 1 < self.selected.len() && self.selected[idx + 1];
-        let any_left = self.min_selected.is_some_and(|m| m < idx);
-        let any_right = self.max_selected.is_some_and(|m| m > idx);
-
-        match (any_left, any_right) {
-            (false, false) => 0,
-            (true, false) => isize::from(!left_adj),
-            (false, true) => isize::from(!right_adj),
-            (true, true) => isize::from(!left_adj) + isize::from(!right_adj) - 1,
-        }
-    }
-
-    fn add_cost(&self, idx: usize, seg_tokens: usize, ellipsis_tokens: usize) -> usize {
-        let gap_tokens = self.gap_delta(idx) * (ellipsis_tokens as isize);
-        (seg_tokens as isize + gap_tokens).max(0) as usize
-    }
-
-    fn try_select(
-        &mut self,
-        idx: usize,
-        seg_tokens: usize,
-        ellipsis_tokens: usize,
-        max_tokens: usize,
-        tier: SelectionTier,
-    ) -> Option<usize> {
-        if self.selected[idx] {
-            return None;
-        }
-        let cost = self.add_cost(idx, seg_tokens, ellipsis_tokens);
-        if self.used_tokens + cost > max_tokens {
-            return None;
-        }
-        self.selected[idx] = true;
-        self.tiers[idx] = Some(tier);
-        self.used_tokens += cost;
-        self.min_selected = Some(self.min_selected.map_or(idx, |m| m.min(idx)));
-        self.max_selected = Some(self.max_selected.map_or(idx, |m| m.max(idx)));
-        Some(cost)
-    }
-
-    fn selected_count(&self) -> usize {
-        self.selected.iter().filter(|&&s| s).count()
-    }
-
-    fn deselect_lowest_priority(&mut self) -> bool {
-        let target = self
-            .tiers
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, tier)| tier.map(|t| (t.eviction_key(idx), idx)))
-            .max_by(|a, b| a.0.cmp(&b.0))
-            .map(|(_, idx)| idx);
-
-        let Some(idx) = target else {
-            return false;
-        };
-        self.selected[idx] = false;
-        self.tiers[idx] = None;
-        self.min_selected = self.selected.iter().position(|&s| s);
-        self.max_selected = self.selected.iter().rposition(|&s| s);
-        true
+fn gap_ellipsis_delta(idx: usize, selected: &[bool], bounds: Option<(usize, usize)>) -> isize {
+    let Some((min_s, max_s)) = bounds else {
+        return 0;
+    };
+    let left_adj = idx > 0 && selected[idx - 1];
+    let right_adj = idx + 1 < selected.len() && selected[idx + 1];
+    match (min_s < idx, max_s > idx) {
+        (false, false) => 0,
+        (true, false) => isize::from(!left_adj),
+        (false, true) => isize::from(!right_adj),
+        (true, true) => isize::from(!left_adj) + isize::from(!right_adj) - 1,
     }
 }
 
-fn simulate_batch_heading_cost(
-    sel: &SelectionState,
-    indices: &[usize],
-    segments: &[Segment<'_>],
-    ellipsis_tokens: usize,
-) -> usize {
-    let mut temp = sel.selected.clone();
-    let mut min_s = sel.min_selected;
-    let mut max_s = sel.max_selected;
-    let mut total = 0usize;
-
-    for &idx in indices {
-        if temp[idx] {
-            continue;
-        }
-        let left_adj = idx > 0 && temp[idx - 1];
-        let right_adj = idx + 1 < temp.len() && temp[idx + 1];
-        let any_left = min_s.is_some_and(|m| m < idx);
-        let any_right = max_s.is_some_and(|m| m > idx);
-        let delta = match (any_left, any_right) {
-            (false, false) => 0isize,
-            (true, false) => isize::from(!left_adj),
-            (false, true) => isize::from(!right_adj),
-            (true, true) => isize::from(!left_adj) + isize::from(!right_adj) - 1,
-        };
-        let cost =
-            (segments[idx].tokens as isize + delta * ellipsis_tokens as isize).max(0) as usize;
-        total += cost;
-        temp[idx] = true;
-        min_s = Some(min_s.map_or(idx, |m| m.min(idx)));
-        max_s = Some(max_s.map_or(idx, |m| m.max(idx)));
-    }
-
-    total
-}
-
-/// Preserves an outline skeleton of `#`, `##`, and `###` headings across the middle of the
-/// document, falling back to tier priority (`#` -> `##` -> `###`) with evenly spaced
-/// sampling if the heading count exceeds the heading budget cap.
-fn select_heading_skeleton(
-    sel: &mut SelectionState,
-    segments: &[Segment<'_>],
-    max_tokens: usize,
-    heading_cap: usize,
-    ellipsis_tokens: usize,
-) {
-    let mut heading_spent = 0usize;
-
-    for level in 1u8..=3u8 {
-        let level_indices: Vec<usize> = segments
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, seg)| {
-                if !sel.selected[idx] && seg.heading_level == Some(level) {
-                    Some(idx)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        if level_indices.is_empty() {
-            continue;
-        }
-
-        let heading_budget_left = heading_cap
-            .saturating_sub(heading_spent)
-            .min(max_tokens.saturating_sub(sel.used_tokens));
-        if heading_budget_left == 0 {
-            break;
-        }
-
-        let full_cost = simulate_batch_heading_cost(sel, &level_indices, segments, ellipsis_tokens);
-        if full_cost <= heading_budget_left {
-            for idx in level_indices {
-                let effective_limit = sel.used_tokens + heading_cap.saturating_sub(heading_spent);
-                if let Some(cost) = sel.try_select(
-                    idx,
-                    segments[idx].tokens,
-                    ellipsis_tokens,
-                    effective_limit.min(max_tokens),
-                    SelectionTier::Heading(level),
-                ) {
-                    heading_spent += cost;
-                }
-            }
-            continue;
-        }
-
-        let target_count = ((level_indices.len() * heading_budget_left) / full_cost.max(1))
-            .max(1)
-            .min(level_indices.len());
-        let denom = (target_count.saturating_sub(1)).max(1);
-        let span = level_indices.len().saturating_sub(1);
-
-        for step in 0..target_count {
-            let pos = if target_count == 1 {
-                0
-            } else {
-                (step * span) / denom
-            };
-            let idx = level_indices[pos];
-            let effective_limit = sel.used_tokens + heading_cap.saturating_sub(heading_spent);
-            if let Some(cost) = sel.try_select(
-                idx,
-                segments[idx].tokens,
-                ellipsis_tokens,
-                effective_limit.min(max_tokens),
-                SelectionTier::Heading(level),
-            ) {
-                heading_spent += cost;
-            }
-        }
-    }
-}
-
-fn assemble_selected_segments(segments: &[Segment<'_>], selected: &[bool]) -> String {
+fn assemble_segments(segments: &[Segment<'_>], selected: &[bool]) -> String {
     let mut out = String::new();
-    let mut last_idx: Option<usize> = None;
-
+    let mut prev_idx: Option<usize> = None;
     for (idx, seg) in segments.iter().enumerate() {
         if !selected[idx] {
             continue;
         }
-        if let Some(prev) = last_idx {
-            if idx == prev + 1 {
-                out.push_str("\n\n");
+        if let Some(prev) = prev_idx {
+            out.push_str(if idx == prev + 1 {
+                "\n\n"
             } else {
-                out.push_str("\n\n...\n\n");
-            }
+                "\n\n...\n\n"
+            });
         }
         out.push_str(seg.text);
-        last_idx = Some(idx);
+        prev_idx = Some(idx);
     }
-
     out
 }
 
-fn truncate_single_to_budget<'a>(
+fn truncate_to_budget<'a>(
     text: &'a str,
     max_tokens: usize,
     tok_kind: TokenizerKind,
@@ -1088,8 +573,6 @@ fn truncate_single_to_budget<'a>(
     if tok_kind.count_tokens(text) <= max_tokens {
         return Cow::Borrowed(text);
     }
-
-    // `TextChunker::truncate_by_tokens` estimates tokens with Cl100k; scale conservatively for larger tokenizers.
     let cl_budget = match tok_kind {
         TokenizerKind::Cl100k | TokenizerKind::O200k => max_tokens,
         TokenizerKind::Llama3 => (max_tokens * 89) / 100,
@@ -1102,36 +585,21 @@ fn truncate_single_to_budget<'a>(
         return Cow::Owned(truncated.into_owned());
     }
 
-    // Guarantee exact `<= max_tokens` under any `TokenizerKind` via UTF-8-safe binary search.
-    let mut lo = 0usize;
-    let mut hi = text.len();
-    while lo < hi {
-        let mid = lo + (hi - lo).div_ceil(2);
-        let mut boundary = mid;
-        while boundary > lo && !text.is_char_boundary(boundary) {
-            boundary -= 1;
-        }
-        if boundary == lo {
-            boundary = mid;
-            while boundary < hi && !text.is_char_boundary(boundary) {
-                boundary += 1;
-            }
-        }
-        if tok_kind.count_tokens(&text[..boundary]) <= max_tokens {
-            lo = boundary;
-        } else {
-            hi = boundary - 1;
-            while hi > lo && !text.is_char_boundary(hi) {
-                hi -= 1;
-            }
-        }
+    let mut cut = text.len().min(max_tokens.saturating_mul(6));
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
     }
-
-    let mut cut = lo;
-    if let Some(ws) = text[..cut].rfind(char::is_whitespace)
-        && ws > cut / 2
-    {
-        cut = ws;
+    while cut > 0 && tok_kind.count_tokens(&text[..cut]) > max_tokens {
+        cut = text[..cut]
+            .rfind(char::is_whitespace)
+            .filter(|&w| w > 0)
+            .unwrap_or_else(|| {
+                let mut prev = cut - 1;
+                while prev > 0 && !text.is_char_boundary(prev) {
+                    prev -= 1;
+                }
+                prev
+            });
     }
     Cow::Owned(text[..cut].trim_end().to_string())
 }
@@ -1148,24 +616,16 @@ pub fn compress_document_stratified<'a>(
     if max_tokens == 0 {
         return Cow::Borrowed("");
     }
-
-    // Fast path: In BPE, 1 token is at least 1 byte.
-    if content.len() <= max_tokens {
+    if content.len() <= max_tokens || tok_kind.count_tokens(content) <= max_tokens {
         return Cow::Borrowed(content);
     }
 
-    if tok_kind.count_tokens(content) <= max_tokens {
-        return Cow::Borrowed(content);
-    }
-
-    let max_seg_tokens = (max_tokens / 5).clamp(16, 512);
-    let segments = parse_document_segments(content, max_seg_tokens, tok_kind);
-
+    let segments = parse_document_segments(content, (max_tokens / 5).clamp(16, 512), tok_kind);
     if segments.is_empty() {
         return Cow::Borrowed("");
     }
     if segments.len() <= 1 {
-        return truncate_single_to_budget(content, max_tokens, tok_kind);
+        return truncate_to_budget(content, max_tokens, tok_kind);
     }
 
     let n = segments.len();
@@ -1174,112 +634,151 @@ pub fn compress_document_stratified<'a>(
     let tail_cap = (max_tokens * 15) / 100;
     let heading_cap = (max_tokens * 30) / 100;
 
-    let mut sel = SelectionState::new(n);
+    let mut selected = vec![false; n];
+    let mut bounds: Option<(usize, usize)> = None;
+    let mut used = 0usize;
 
-    // 1. Anchor lead (index 0) and tail (index n - 1), then expand contiguous lead/tail windows.
-    let mut lead_tokens = sel
-        .try_select(
-            0,
-            segments[0].tokens,
-            ellipsis_tokens,
-            max_tokens,
-            SelectionTier::AnchorLead,
-        )
-        .unwrap_or(0);
-    let mut tail_tokens = sel
-        .try_select(
-            n - 1,
-            segments[n - 1].tokens,
-            ellipsis_tokens,
-            max_tokens,
-            SelectionTier::AnchorTail,
-        )
-        .unwrap_or(0);
+    let try_add = |idx: usize,
+                   limit: usize,
+                   selected: &mut [bool],
+                   bounds: &mut Option<(usize, usize)>,
+                   used: &mut usize|
+     -> Option<usize> {
+        if selected[idx] {
+            return None;
+        }
+        let delta = gap_ellipsis_delta(idx, selected, *bounds) * (ellipsis_tokens as isize);
+        let cost = (segments[idx].tokens as isize + delta).max(0) as usize;
+        if *used + cost > limit {
+            return None;
+        }
+        selected[idx] = true;
+        *used += cost;
+        *bounds = Some(match *bounds {
+            Some((lo, hi)) => (lo.min(idx), hi.max(idx)),
+            None => (idx, idx),
+        });
+        Some(cost)
+    };
+
+    // 1. Anchor lead (0) and tail (n - 1), then expand contiguous lead/tail windows.
+    let mut lead_used = try_add(0, max_tokens, &mut selected, &mut bounds, &mut used).unwrap_or(0);
+    let mut tail_used =
+        try_add(n - 1, max_tokens, &mut selected, &mut bounds, &mut used).unwrap_or(0);
+    let mut inner_lead_tail = Vec::new();
 
     for (idx, seg) in segments.iter().enumerate().take(n - 1).skip(1) {
-        if lead_tokens + seg.tokens > lead_cap {
+        if lead_used + seg.tokens > lead_cap {
             break;
         }
-        if let Some(cost) = sel.try_select(
-            idx,
-            seg.tokens,
-            ellipsis_tokens,
-            max_tokens,
-            SelectionTier::Lead,
-        ) {
-            lead_tokens += cost;
-        } else {
+        let Some(cost) = try_add(idx, max_tokens, &mut selected, &mut bounds, &mut used) else {
             break;
-        }
+        };
+        lead_used += cost;
+        inner_lead_tail.push(idx);
     }
-
     for idx in (1..n - 1).rev() {
-        if sel.selected[idx] || tail_tokens + segments[idx].tokens > tail_cap {
+        if selected[idx] || tail_used + segments[idx].tokens > tail_cap {
             break;
         }
-        if let Some(cost) = sel.try_select(
-            idx,
-            segments[idx].tokens,
-            ellipsis_tokens,
-            max_tokens,
-            SelectionTier::Tail,
-        ) {
-            tail_tokens += cost;
-        } else {
+        let Some(cost) = try_add(idx, max_tokens, &mut selected, &mut bounds, &mut used) else {
             break;
+        };
+        tail_used += cost;
+        inner_lead_tail.push(idx);
+    }
+
+    // 2. Preserve outline skeleton of `#`, `##`, `###` headings across middle segments.
+    let mut heading_used = 0usize;
+    let mut picked_headings = Vec::new();
+    for level in 1u8..=3 {
+        let level_indices: Vec<usize> = segments
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| (!selected[i] && s.heading_level == Some(level)).then_some(i))
+            .collect();
+        let heading_left = heading_cap
+            .saturating_sub(heading_used)
+            .min(max_tokens.saturating_sub(used));
+        if level_indices.is_empty() || heading_left == 0 {
+            continue;
+        }
+
+        let est_cost: usize = level_indices
+            .iter()
+            .map(|&i| segments[i].tokens + ellipsis_tokens)
+            .sum();
+        let count = if est_cost <= heading_left {
+            level_indices.len()
+        } else {
+            ((level_indices.len() * heading_left) / est_cost.max(1))
+                .max(1)
+                .min(level_indices.len())
+        };
+        let span = level_indices.len().saturating_sub(1);
+        let denom = count.saturating_sub(1).max(1);
+
+        for step in 0..count {
+            let pos = if count == 1 { 0 } else { (step * span) / denom };
+            let limit = (used + heading_cap.saturating_sub(heading_used)).min(max_tokens);
+            if let Some(cost) = try_add(
+                level_indices[pos],
+                limit,
+                &mut selected,
+                &mut bounds,
+                &mut used,
+            ) {
+                heading_used += cost;
+                picked_headings.push(level_indices[pos]);
+            }
         }
     }
 
-    // 2. Preserve middle Markdown heading skeleton (#, ##, ###).
-    select_heading_skeleton(
-        &mut sel,
-        &segments,
-        max_tokens,
-        heading_cap,
-        ellipsis_tokens,
-    );
-
-    // 3. Score all segments against document centroid terms and greedily fill remaining budget
-    //    with the highest-salience middle body paragraphs.
+    // 3. Fill remaining budget with top centroid BM25-salient middle body paragraphs.
     let scores = score_segments_centroid_bm25(&segments);
     let mut candidates: Vec<(f64, usize)> = segments
         .iter()
         .enumerate()
-        .filter_map(|(idx, seg)| {
-            if !sel.selected[idx] && seg.heading_level.is_none() {
-                Some((scores[idx], idx))
-            } else {
-                None
-            }
-        })
+        .filter_map(|(i, s)| (!selected[i] && s.heading_level.is_none()).then_some((scores[i], i)))
         .collect();
-
     candidates.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
 
-    for (rank, (_, idx)) in candidates.into_iter().enumerate() {
-        if sel.used_tokens >= max_tokens {
+    let mut picked_body = Vec::new();
+    for (_, idx) in candidates {
+        if used >= max_tokens {
             break;
         }
-        let _ = sel.try_select(
-            idx,
-            segments[idx].tokens,
-            ellipsis_tokens,
-            max_tokens,
-            SelectionTier::SalientBody(rank),
-        );
+        if try_add(idx, max_tokens, &mut selected, &mut bounds, &mut used).is_some() {
+            picked_body.push(idx);
+        }
     }
 
-    // 4. Assemble in document order and enforce strict <= max_tokens invariant under `tok_kind`.
-    let mut out = assemble_selected_segments(&segments, &sel.selected);
+    // 4. Assemble and enforce strict <= max_tokens under `tok_kind`.
+    let mut out = assemble_segments(&segments, &selected);
     if out.is_empty() {
-        return truncate_single_to_budget(content, max_tokens, tok_kind);
+        return truncate_to_budget(content, max_tokens, tok_kind);
     }
+
+    // `pop()` removes from the back: drop lowest-salience body first, then headings, then inner lead/tail.
+    let mut evictable: Vec<usize> = inner_lead_tail
+        .into_iter()
+        .chain(picked_headings)
+        .chain(picked_body)
+        .collect();
+    let mut selected_count = selected.iter().filter(|&&s| s).count();
 
     while tok_kind.count_tokens(&out) > max_tokens {
-        if sel.selected_count() <= 1 || !sel.deselect_lowest_priority() {
-            return Cow::Owned(truncate_single_to_budget(&out, max_tokens, tok_kind).into_owned());
+        if selected_count <= 1 {
+            return Cow::Owned(truncate_to_budget(&out, max_tokens, tok_kind).into_owned());
         }
-        out = assemble_selected_segments(&segments, &sel.selected);
+        let Some(drop_idx) = evictable.pop() else {
+            return Cow::Owned(truncate_to_budget(&out, max_tokens, tok_kind).into_owned());
+        };
+        if selected[drop_idx] {
+            selected[drop_idx] = false;
+            selected_count -= 1;
+            out = assemble_segments(&segments, &selected);
+        }
     }
 
     Cow::Owned(out)
