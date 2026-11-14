@@ -85,7 +85,7 @@ pub fn handle_cache(cmd: CacheCommand, cache: &Cache) -> Result<()> {
         CacheCommand::Clean { reset_db } => {
             let stats = cache.clean().context("Failed to clean cache directory")?;
             let mut db_reset = false;
-            if reset_db && let Some(database) = open_db_or_warn() {
+            if reset_db && let Some(database) = cache.open_database().or_else(open_db_or_warn) {
                 database.reset().context("Failed to reset database")?;
                 db_reset = true;
             }
@@ -272,7 +272,11 @@ pub async fn dispatch_cli(
         }
         crate::cli::ResolvedAction::Browse => {
             loop {
-                let action = with_db(|db| crate::ui::run_tui(db, &cache))?;
+                let action = if let Some(db) = cache.open_database() {
+                    crate::ui::run_tui(&db, &cache)?
+                } else {
+                    with_db(|db| crate::ui::run_tui(db, &cache))?
+                };
                 match action {
                     crate::ui::TuiAction::Exit => break,
                     crate::ui::TuiAction::Ask { target } => {
@@ -813,5 +817,32 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_cache_clean_reset_db_reuses_open_cache_handle() {
+        let tmp = crate::fs_util::tempdir().unwrap();
+        let cache = Cache::with_dir(tmp.path().to_path_buf(), true);
+        let db = cache.open_database().unwrap();
+        db.record_summary(&crate::db::NewSummaryRecord {
+            target_type: "web",
+            title: "Lock Safety",
+            author: None,
+            url: Some("https://example.com"),
+            style: "concise",
+            model: "gemma-4",
+            word_count: 10,
+            prompt_tokens: None,
+            completion_tokens: None,
+            duration_ms: 0,
+            tokens_per_second: None,
+            summary: "Summary text",
+            reasoning: None,
+        })
+        .unwrap();
+        assert_eq!(db.get_stats().unwrap().total_summaries, 1);
+
+        handle_cache(CacheCommand::Clean { reset_db: true }, &cache).unwrap();
+        assert_eq!(db.get_stats().unwrap().total_summaries, 0);
     }
 }

@@ -97,15 +97,8 @@ pub async fn handle_doctor(
     // 2. Hardware profile detection
     let hw = crate::system::hardware::HardwareProfile::detect();
 
-    // 3. redb database check
-    let db_path = Database::default_path();
-    let (db_ok, db_entries_count, db_err) = match Database::open_default() {
-        Ok(db) => match db.get_stats() {
-            Ok(stats) => (true, stats.total_summaries, None),
-            Err(e) => (false, 0, Some(format!("Failed to retrieve stats: {:#}", e))),
-        },
-        Err(e) => (false, 0, Some(format!("{:#}", e))),
-    };
+    // 3. redb database check (reusing any open cache handle to avoid self-locking)
+    let (db_path, db_ok, db_entries_count, db_err) = diagnose_database(cache);
 
     // 4. Cache directory check
     let cache_dir = cache.dir().to_path_buf();
@@ -285,6 +278,22 @@ pub async fn handle_doctor(
     Ok(())
 }
 
+fn diagnose_database(cache: &Cache) -> (std::path::PathBuf, bool, i64, Option<String>) {
+    let db_path = cache.db_path().to_path_buf();
+    let (db_ok, db_entries_count, db_err) = match cache
+        .open_database()
+        .map(Ok)
+        .unwrap_or_else(|| Database::open_at(&db_path))
+    {
+        Ok(db) => match db.get_stats() {
+            Ok(stats) => (true, stats.total_summaries, None),
+            Err(e) => (false, 0, Some(format!("Failed to retrieve stats: {:#}", e))),
+        },
+        Err(e) => (false, 0, Some(format!("{:#}", e))),
+    };
+    (db_path, db_ok, db_entries_count, db_err)
+}
+
 fn print_host_device_info(hw: &crate::system::hardware::HardwareProfile) {
     println!("  • Device: {}", hw.chip_name);
     println!(
@@ -321,4 +330,57 @@ pub fn handle_recommend(as_json: bool) -> Result<()> {
     println!();
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::ServerCapabilities;
+
+    #[test]
+    fn test_diagnose_database_reuses_open_cache_handle() {
+        let tmp = crate::fs_util::tempdir().unwrap();
+        let cache = Cache::with_dir(tmp.path().to_path_buf(), true);
+
+        // Simulate handle_doctor step 1 caching server capabilities (opens srz.db inside cache)
+        cache.set_server_capabilities(&ServerCapabilities {
+            endpoint: "http://localhost:9931/v1".to_string(),
+            model_id: "gemma-4".to_string(),
+            n_ctx: 65536,
+            backend_kind: "llama.cpp".to_string(),
+        });
+
+        let (db_path, db_ok, count, err) = diagnose_database(&cache);
+        assert_eq!(db_path, cache.db_path());
+        assert!(db_ok, "expected healthy db, got error: {:?}", err);
+        assert_eq!(count, 0);
+        assert!(err.is_none());
+    }
+
+    #[test]
+    fn test_diagnose_database_works_when_cache_disabled() {
+        let tmp = crate::fs_util::tempdir().unwrap();
+        let cache = Cache::with_dir(tmp.path().to_path_buf(), false);
+
+        let (db_path, db_ok, count, err) = diagnose_database(&cache);
+        assert_eq!(db_path, cache.db_path());
+        assert!(db_ok, "expected healthy db, got error: {:?}", err);
+        assert_eq!(count, 0);
+        assert!(err.is_none());
+    }
+
+    #[test]
+    fn test_diagnose_database_reports_external_lock_conflict() {
+        let tmp = crate::fs_util::tempdir().unwrap();
+        let cache = Cache::with_dir(tmp.path().to_path_buf(), true);
+        let _external_hold = Database::open_at(cache.db_path()).unwrap();
+
+        let (_db_path, db_ok, _count, err) = diagnose_database(&cache);
+        assert!(!db_ok);
+        let err_msg = err.expect("expected lock error message");
+        assert!(
+            err_msg.contains("DatabaseAlreadyOpen"),
+            "unexpected error: {err_msg}"
+        );
+    }
 }

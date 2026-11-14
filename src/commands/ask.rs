@@ -286,7 +286,7 @@ pub async fn handle_ask(
     cache: &Cache,
     args: &Cli,
 ) -> Result<()> {
-    let db = open_db_or_warn();
+    let db = cache.open_database().or_else(open_db_or_warn);
 
     // Resolve document context & active session
     let mut chat_id: Option<i64> = ask_args.resume;
