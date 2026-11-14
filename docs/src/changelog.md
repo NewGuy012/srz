@@ -22,6 +22,20 @@ All notable changes to `srz` are documented in this file.
 
 ---
 
+## v0.7.11
+
+### Summary
+
+> Hardens installer, release, and CI/CD pipelines with pinned action SHAs and post-release verification, upgrades core dependencies, simplifies internal helpers, and consolidates the test suite.
+
+### Changes
+- **Dependency Upgrades & Semver Constraints**: Upgraded `redb` (`4.5.0` → `4.6.0`), `toml` (`1.1.8` → `1.2.1`), and `flate2` (`1.1.10` → `1.1.11`), and loosened `Cargo.toml` version constraints to compatible major/minor ranges (`1`, `0.30`, `0.29`, `0.12`).
+- **Installer & Script Hardening**: Hardened `scripts/install.sh` (`set -eu`, strict semver validation, signal cleanup traps, atomic `mktemp` binary install) and `scripts/install.ps1` (scoped preference restoration, case-sensitive semver check, PowerShell 5.1/7 compatibility); improved `scripts/release.sh` (`--locked` tests, safe dry-run checks, exact changelog/tag validation) and `.githooks/pre-commit` for partially staged files.
+- **CI, Release & Security Pipelines**: Pinned GitHub Actions to commit SHAs with least-privilege permissions, enforced `wildcards = "deny"` in `deny.toml` and packaging dry-runs in CI, and added post-release SLSA provenance and installer/self-upgrade verification.
+- **Codebase Simplification & Test Consolidation**: Simplified and deduplicated internal helpers, tightened module visibility and re-exports, pruned dead code, consolidated unit and integration tests into owning `src/` modules and table-driven `tests/integration_tests.rs`, and updated architecture and guide docs.
+
+---
+
 ## v0.7.10
 
 ### Summary
