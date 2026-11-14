@@ -813,10 +813,19 @@ fn test_recommend_subcommand_execution() {
 
 #[tokio::test]
 async fn test_doctor_subcommand_execution() {
+    struct TempTestDir(std::path::PathBuf);
+    impl Drop for TempTestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     let cli = Cli::parse_from(["srz", "doctor"]);
     let config = srz::config::Config::default();
-    let temp_cache_dir = srz::fs_util::tempdir().unwrap();
-    let cache = srz::storage::cache::Cache::with_dir(temp_cache_dir.path().to_path_buf(), true);
+    let dir_path = std::env::temp_dir().join(format!("srz-doctor-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir_path).unwrap();
+    let temp_cache_dir = TempTestDir(dir_path);
+    let cache = srz::storage::cache::Cache::with_dir(temp_cache_dir.0.clone(), true);
 
     assert!(
         srz::commands::handle_doctor(&cli, &config, None, &cache, false)

@@ -744,4 +744,152 @@ mod tests {
         let slug_no_key = slugify_unique("Getting Started", None);
         assert_eq!(slug_no_key, "getting-started");
     }
+
+    #[test]
+    fn test_markdown_to_styled_html_rendering_and_view_files() {
+        assert_eq!(
+            slugify("\"Dune\" by Frank Herbert"),
+            "dune-by-frank-herbert"
+        );
+
+        let md = "# Literary Analysis: Dune\n\n***\n\n## 1. Overview\n\n**Author:** Frank Herbert\n**Genre:** *Science Fiction*\n\n- Key item 1\n- Key item 2";
+        let html_body = markdown_to_html(md);
+        for expected in [
+            "<h1>Literary Analysis: Dune</h1>",
+            "<hr>",
+            "<h2>1. Overview</h2>",
+            "<strong>Author:</strong> Frank Herbert",
+            "<em>Science Fiction</em>",
+            "<ul>",
+            "<li>Key item 1</li>",
+        ] {
+            assert!(html_body.contains(expected), "missing {expected}");
+        }
+
+        let gfm_html = markdown_to_html(
+            "| Header 1 | Header 2 |\n|---|---|\n| Cell 1 | Cell 2 |\n\n~~strikethrough~~",
+        );
+        for expected in [
+            "<table>",
+            "<th>Header 1</th>",
+            "<td>Cell 1</td>",
+            "<del>strikethrough</del>",
+        ] {
+            assert!(gfm_html.contains(expected), "missing GFM {expected}");
+        }
+
+        let full_doc = render_html_document_with_reasoning("\"Dune\"", md, None);
+        assert!(full_doc.contains("<!DOCTYPE html>"));
+        assert!(full_doc.contains("Summary: &quot;Dune&quot;"));
+        assert!(full_doc.contains("<meta http-equiv=\"Content-Security-Policy\""));
+
+        let escaped_quote = render_html_document_with_reasoning("O'Reilly", "It's a test", None);
+        assert!(escaped_quote.contains("O&#39;Reilly"));
+        assert!(escaped_quote.contains("<p>It's a test</p>"));
+
+        let tmp = crate::fs_util::tempdir().unwrap();
+        let rendered =
+            ensure_view_files_unique(tmp.path(), "Dune", "Initial summary", None, None, true)
+                .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&rendered.md_path).unwrap(),
+            "Initial summary"
+        );
+
+        let reused =
+            ensure_view_files_unique(tmp.path(), "Dune", "Updated summary", None, None, false)
+                .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&reused.md_path).unwrap(),
+            "Initial summary"
+        );
+
+        let overwritten =
+            ensure_view_files_unique(tmp.path(), "Dune", "Updated summary", None, None, true)
+                .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&overwritten.md_path).unwrap(),
+            "Updated summary"
+        );
+    }
+
+    #[test]
+    fn test_render_index_html() {
+        let stats = LibraryStats {
+            total_summaries: 2,
+            book_summaries: 1,
+            web_summaries: 1,
+            file_summaries: 0,
+            stdin_summaries: 0,
+            news_summaries: 0,
+            video_summaries: 0,
+            total_source_words: 5000,
+            total_summary_words: 600,
+            total_prompt_tokens: 3500,
+            total_completion_tokens: 800,
+            avg_tokens_per_second: 42.0,
+            max_tokens_per_second: 55.0,
+            total_duration_ms: 12000,
+            estimated_minutes_saved: 18.0,
+            reads_today: 1,
+            reads_this_week: 2,
+            reads_this_month: 2,
+            active_reading_days: 2,
+            current_streak_days: 1,
+            models: Vec::new(),
+            top_domains: Vec::new(),
+        };
+        let entries = vec![
+            HistoryEntry {
+                id: 1,
+                target_type: "book".to_string(),
+                title: "Dune".to_string(),
+                author: Some("Frank Herbert".to_string()),
+                url: None,
+                style: "concise".to_string(),
+                model: "gemma-4".to_string(),
+                word_count: 3000,
+                prompt_tokens: Some(2000),
+                completion_tokens: Some(400),
+                duration_ms: 6000,
+                tokens_per_second: Some(45.0),
+                created_at: "2026-10-28 10:00".to_string(),
+            },
+            HistoryEntry {
+                id: 2,
+                target_type: "web".to_string(),
+                title: "Rust 2026 Edition".to_string(),
+                author: None,
+                url: Some("https://rust-lang.org".to_string()),
+                style: "bullets".to_string(),
+                model: "gemma-4".to_string(),
+                word_count: 2000,
+                prompt_tokens: Some(1500),
+                completion_tokens: Some(400),
+                duration_ms: 6000,
+                tokens_per_second: Some(40.0),
+                created_at: "2026-10-28 10:15".to_string(),
+            },
+        ];
+
+        let html = render_index_html(&stats, &entries);
+        for expected in [
+            "srz &bull; Summary Library",
+            "Dune",
+            "Frank Herbert",
+            "Rust 2026 Edition",
+            "data-type=\"book\"",
+            "data-type=\"web\"",
+        ] {
+            assert!(html.contains(expected), "missing {expected}");
+        }
+
+        let expected_web_slug = slugify_unique("Rust 2026 Edition", Some("https://rust-lang.org"));
+        assert!(html.contains(&format!("href=\"./{expected_web_slug}.html\"")));
+        assert!(html.contains(&format!("href=\"./{expected_web_slug}.md\"")));
+
+        let tmp = crate::fs_util::tempdir().unwrap();
+        let index_file = ensure_index_file(tmp.path(), &stats, &entries).unwrap();
+        assert_eq!(std::fs::read_to_string(&index_file).unwrap(), html);
+    }
 }

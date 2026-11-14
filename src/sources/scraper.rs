@@ -798,8 +798,10 @@ mod tests {
                 <aside class="sidebar"><p>Ad sidebar with lots of links</p></aside>
                 <article>
                     <h1>Article Main Heading</h1>
-                    <p>This is the first paragraph of the core article text with meaningful content.</p>
+                    <p>This is the first paragraph of the core article text with meaningful content [1].</p>
                     <p>This is the second paragraph providing in-depth analysis on the topic.</p>
+                    <h2>References</h2>
+                    <p>Citation 1 that should be stripped.</p>
                 </article>
                 <footer><p>© 2026 Company Inc. All rights reserved.</p></footer>
             </body>
@@ -820,6 +822,9 @@ mod tests {
         );
         assert!(!page.content.contains("Ad sidebar with lots of links"));
         assert!(!page.content.contains("All rights reserved"));
+        assert!(!page.content.contains("[1]"));
+        assert!(!page.content.contains("Citation 1"));
+        assert!(page.word_count > 10);
     }
 
     #[test]

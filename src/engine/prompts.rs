@@ -127,4 +127,41 @@ mod tests {
         assert!(!formatted.contains("</source_document>\nInjected"));
         assert!(formatted.contains("&lt;/source_document&gt;"));
     }
+
+    #[test]
+    fn test_truncate_words_preserves_newlines_and_borrows_when_under_limit() {
+        let input = "# Heading 1\n\nParagraph one with five words.\n\n## Heading 2\n\nParagraph two with extra words.";
+
+        let untouched = truncate_words_preserving_lines(input, 100);
+        assert!(matches!(untouched, Cow::Borrowed(_)));
+        assert_eq!(untouched, input);
+
+        let out = truncate_words_preserving_lines(input, 8);
+        assert!(out.contains("# Heading 1\n\nParagraph one with five words."));
+        assert!(out.ends_with("[Context trimmed for token budget]"));
+        assert!(!out.contains("Heading 2"));
+    }
+
+    #[test]
+    fn test_escape_closing_tag_case_insensitive_and_whitespace_variations() {
+        for input in [
+            "Sample </source_document> evil",
+            "Sample </SOURCE_DOCUMENT> evil",
+            "Sample </Source_Document> evil",
+            "Sample </source_document > evil",
+            "Sample < / source_document > evil",
+        ] {
+            assert_eq!(
+                escape_closing_tag(input, "</source_document>", "&lt;/source_document&gt;"),
+                "Sample &lt;/source_document&gt; evil"
+            );
+        }
+
+        for safe in ["Sample </other_tag> safe", "Normal safe document context"] {
+            assert!(matches!(
+                escape_closing_tag(safe, "</source_document>", "&lt;/source_document&gt;"),
+                Cow::Borrowed(_)
+            ));
+        }
+    }
 }

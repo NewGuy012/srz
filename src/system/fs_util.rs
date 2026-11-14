@@ -197,8 +197,59 @@ pub fn write_private_file(path: &Path, contents: impl AsRef<[u8]>) -> std::io::R
     Ok(())
 }
 
-// Re-export test utilities from dedicated testing module for backward compatibility
-pub use crate::testing::{TempDir, tempdir};
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct TempDir {
+    path: PathBuf,
+}
+
+#[cfg(test)]
+impl TempDir {
+    pub(crate) fn new() -> std::io::Result<Self> {
+        Self::new_in(std::env::temp_dir(), "srz-test")
+    }
+
+    pub(crate) fn new_in(parent: impl AsRef<Path>, prefix: &str) -> std::io::Result<Self> {
+        let parent = parent.as_ref();
+        if !parent.exists() {
+            fs::create_dir_all(parent)?;
+        }
+        let path = create_temp_file_path(parent, prefix, "");
+        create_private_dir_all(&path)?;
+        Ok(Self { path })
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+#[cfg(test)]
+impl AsRef<Path> for TempDir {
+    fn as_ref(&self) -> &Path {
+        &self.path
+    }
+}
+
+#[cfg(test)]
+impl std::ops::Deref for TempDir {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.path
+    }
+}
+
+#[cfg(test)]
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn tempdir() -> std::io::Result<TempDir> {
+    TempDir::new()
+}
 
 #[cfg(test)]
 mod tests {

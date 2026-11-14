@@ -575,13 +575,161 @@ mod tests {
         assert_eq!(processed, "");
     }
 
+    fn build_pdf_with_stream_content(content: &[u8]) -> Vec<u8> {
+        use pdf_extract::{Dictionary, Document, Object, Stream};
+
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+
+        let mut font = Dictionary::new();
+        font.set("Type", "Font");
+        font.set("Subtype", "Type1");
+        font.set("BaseFont", "Helvetica");
+        let font_id = doc.add_object(font);
+
+        let mut fonts_dict = Dictionary::new();
+        fonts_dict.set("F1", font_id);
+        let mut resources = Dictionary::new();
+        resources.set("Font", fonts_dict);
+        let resources_id = doc.add_object(resources);
+
+        let content_id = doc.add_object(Stream::new(Dictionary::new(), content.to_vec()));
+
+        let mut page = Dictionary::new();
+        page.set("Type", "Page");
+        page.set("Parent", pages_id);
+        page.set("Contents", content_id);
+        page.set("Resources", resources_id);
+        page.set("MediaBox", vec![0.into(), 0.into(), 612.into(), 792.into()]);
+        let page_id = doc.add_object(page);
+
+        let mut pages = Dictionary::new();
+        pages.set("Type", "Pages");
+        pages.set("Kids", vec![page_id.into()]);
+        pages.set("Count", 1);
+        doc.objects.insert(pages_id, Object::Dictionary(pages));
+
+        let mut catalog = Dictionary::new();
+        catalog.set("Type", "Catalog");
+        catalog.set("Pages", pages_id);
+        let catalog_id = doc.add_object(catalog);
+        doc.trailer.set("Root", catalog_id);
+
+        let mut buffer = Vec::new();
+        doc.save_to(&mut buffer)
+            .expect("Failed to serialize sample PDF");
+        buffer
+    }
+
     #[test]
     fn test_extract_pdf_from_mem() {
         let content = b"BT /F1 12 Tf 100 700 Td (Hello from Rust PDF extractor with enough words to pass the minimum text threshold for testing purposes) Tj ET";
-        let buffer = crate::testing::build_pdf_with_stream_content(content);
+        let buffer = build_pdf_with_stream_content(content);
         let page = PdfExtractor::extract_from_bytes(&buffer, None).unwrap();
         assert!(page.content.contains("Hello from Rust PDF extractor"));
         assert_eq!(page.title.as_deref(), Some("PDF Document"));
+
+        let sample_content = b"BT /F1 12 Tf 50 720 Td (srz - High-Performance Modular Rust CLI for Summarization) Tj /F1 10 Tf 0 -30 Td (srz extracts and synthesizes structured summaries using local OpenAI-compliant LLMs.) Tj 0 -20 Td (Key Features: Universal Ingestion for Web, YouTube captions, local PDFs, and live news.) Tj 0 -20 Td (Private and Secure: 100 percent offline local inference with strict POSIX permissions.) Tj 0 -20 Td (Offline Library: Embedded redb database stores every summary for instant full-text search.) Tj 0 -20 Td (Terminal Paging: Syntax-highlighted output with automatic terminal paging via less.) Tj 0 -20 Td (Interactive Grounded Q and A: Ask questions grounded on full source documents or past reads.) Tj ET";
+        let sample_page =
+            PdfExtractor::extract_from_bytes(&build_pdf_with_stream_content(sample_content), None)
+                .unwrap();
+        assert!(
+            sample_page
+                .content
+                .contains("srz - High-Performance Modular Rust CLI")
+        );
+        assert!(sample_page.content.contains("Universal Ingestion"));
+        assert!(sample_page.word_count >= 50);
+    }
+
+    #[test]
+    fn test_pdf_extractor_bounds_type_checks_and_crlf_recovery() {
+        assert!(PdfExtractor::extract_file(Path::new("/tmp/does_not_exist_srz_test.pdf")).is_err());
+        assert!(PdfExtractor::extract_file(&std::env::temp_dir()).is_err());
+
+        let original_bytes =
+            std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/document.pdf")).unwrap();
+        let mut crlf_bytes = Vec::with_capacity(original_bytes.len() + 256);
+        for &b in &original_bytes {
+            if b == b'\n' {
+                crlf_bytes.push(b'\r');
+            }
+            crlf_bytes.push(b);
+        }
+        let page = PdfExtractor::extract_from_bytes(&crlf_bytes, None)
+            .expect("PdfExtractor should recover from CRLF line ending corruption");
+        assert!(page.content.contains("THE HISTORY OF RUST"));
+        assert!(page.word_count >= 100);
+    }
+
+    #[test]
+    fn test_epub_extractor_and_document_loader() {
+        let container_xml = br#"<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>"#;
+        let opf_xml = br#"<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub-id">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>The Great Gatsby</dc:title>
+    <dc:creator>F. Scott Fitzgerald</dc:creator>
+  </metadata>
+  <manifest>
+    <item id="c1" href="chapters/ch1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c2" href="chapters/ch2.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="c1"/>
+    <itemref idref="c2"/>
+  </spine>
+</package>"#;
+        let ch1_xhtml = br#"<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Chapter 1</title></head>
+<body>
+  <h1>Chapter 1</h1>
+  <p>In my younger and more vulnerable years my father gave me some advice that I've been turning over in my mind ever since.</p>
+</body>
+</html>"#;
+        let ch2_xhtml = br#"<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Chapter 2</title></head>
+<body>
+  <h1>Chapter 2</h1>
+  <p>About half way between West Egg and New York the motor road hastily joins the railroad.</p>
+</body>
+</html>"#;
+
+        let epub_bytes = crate::system::zip::create_test_zip(&[
+            ("META-INF/container.xml", &container_xml[..]),
+            ("OEBPS/content.opf", &opf_xml[..]),
+            ("OEBPS/chapters/ch1.xhtml", &ch1_xhtml[..]),
+            ("OEBPS/chapters/ch2.xhtml", &ch2_xhtml[..]),
+        ]);
+
+        let page = EpubExtractor::extract_from_bytes(&epub_bytes, None).unwrap();
+        assert_eq!(page.title.as_deref(), Some("The Great Gatsby"));
+        assert!(
+            page.content
+                .contains("In my younger and more vulnerable years")
+        );
+        assert!(page.content.contains("About half way between West Egg"));
+        assert!(page.word_count >= 20);
+
+        let temp_dir = crate::fs_util::tempdir().unwrap();
+        let epub_file = temp_dir.path().join("gatsby.epub");
+        std::fs::write(&epub_file, &epub_bytes).unwrap();
+
+        let scraper = WebScraper::new().unwrap();
+        let doc = DocumentLoader::load_file(&epub_file, &scraper).unwrap();
+        assert_eq!(doc.title, "The Great Gatsby");
+        assert!(
+            doc.content
+                .contains("In my younger and more vulnerable years")
+        );
+        assert_eq!(doc.word_count, page.word_count);
     }
 
     #[test]

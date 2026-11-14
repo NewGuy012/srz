@@ -174,8 +174,8 @@ impl<'a> ZipReader<'a> {
 }
 
 /// Helper function to create valid ZIP archives in tests without external dependencies.
-#[doc(hidden)]
-pub fn create_test_zip(files: &[(&str, &[u8])]) -> Vec<u8> {
+#[cfg(test)]
+pub(crate) fn create_test_zip(files: &[(&str, &[u8])]) -> Vec<u8> {
     let mut out = Vec::new();
     let mut cd = Vec::new();
 

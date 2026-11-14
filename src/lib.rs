@@ -6,7 +6,6 @@ pub mod engine;
 pub mod sources;
 pub mod storage;
 pub mod system;
-pub mod testing;
 pub mod ui;
 
 // Aliases for crate root
