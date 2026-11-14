@@ -76,7 +76,7 @@ Local targets receive similarly intelligent routing. If `<TARGET>` matches an ex
 | `--plain` | | Output raw Markdown without terminal formatting, ANSI colors, or paging. |
 | `--paging <MODE>` | | Terminal paging control: `auto` (default), `always`, `never`. |
 | `--stream` | | Stream LLM output tokens live to `stdout` as they are generated. |
-| `--show-thinking` | `--thinking` | Stream full raw model reasoning trace to `stderr` (default: compact timing summary like `💭 Thought for Xs (N tokens)`). |
+| `--show-thinking` | `--thinking` | Stream full raw model reasoning trace to `stderr` (default: compact timing summary like `💭 Thought for X.Xs`). |
 | `--json` | | Emit machine-readable JSON output for scripts and automation. |
 | `--no-cache` | | Bypass the local cache and force fresh scraping and synthesis. |
 | `--quiet` | `-q` | Suppress status spinners and non-essential progress messages. |
