@@ -69,7 +69,7 @@ flowchart TD
 
 ### Subsystem Directory Organization
 
-The codebase is organized into seven domain modules under `src/` (plus shared test utilities in `src/testing.rs`), separating command orchestration from low-level ingestion, inference, and storage engines:
+The codebase is organized into seven domain modules under `src/`, separating command orchestration from low-level ingestion, inference, and storage engines:
 
 ```text
 src/
@@ -79,7 +79,6 @@ src/
 ├── sources/      # Content ingestion: web scraper, book search, YouTube, and feeds
 ├── storage/      # Embedded redb cache, library database, and pruning
 ├── system/       # Hardware profiling, SHA-256, ZIP/text/XML utilities, atomic filesystem, and updater
-├── testing.rs    # Integration & unit test fixtures (RAII TempDir, PDF generator)
 ├── ui/           # Shared Markdown parser, terminal formatting/spinners, HTML reader, and TUI
 ├── lib.rs        # Library crate root and public module exports
 └── main.rs       # Binary entry point and CLI orchestration
@@ -122,7 +121,6 @@ src/
 | | [`src/system/fs_util.rs`](https://github.com/NewGuy012/srz/blob/master/src/system/fs_util.rs) | `system::fs_util` | Platform filesystem helpers, `0700`/`0600` permissions, consolidated safe unique tempfile creation, and atomic file writes. |
 | | [`src/system/zip.rs`](https://github.com/NewGuy012/srz/blob/master/src/system/zip.rs) | `system::zip` | Lightweight safe ZIP archive extractor & deflate decompressor (`flate2`). |
 | | [`src/system/upgrade.rs`](https://github.com/NewGuy012/srz/blob/master/src/system/upgrade.rs) | `system::upgrade` | In-place self-updater with release queries, SHA-256 verification, zero-dependency streaming USTAR tar decoder, and atomic swap with automatic rollback. |
-| **Testing** | [`src/testing.rs`](https://github.com/NewGuy012/srz/blob/master/src/testing.rs) | `testing` | Shared test fixtures, RAII `TempDir` automatic cleanup, private file writers, and synthetic PDF generation. |
 
 ---
 

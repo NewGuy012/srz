@@ -353,7 +353,7 @@ Structs allow you to package related values together into named types, creating 
 > 1. In [`src/commands/mod.rs#L388`](https://github.com/NewGuy012/srz/blob/master/src/commands/mod.rs#L388), look at the main `match action` block. Adding a new variant to `ResolvedAction` in [`src/config/cli.rs`](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs#L389-L440) without handling it produces compiler error `E0004` (*non-exhaustive patterns*).
 > 2. Notice why the fast-path `match` at `#L231` ends with `_ => {}`: removing `_ => {}` wouldn't compile unless every remaining `ResolvedAction` variant were listed explicitly. Run the CLI routing suite to see how all action resolutions are tested:
 >    ```bash
->    cargo test --test integration_tests cli::test_ask_subcommand_resolution
+>    cargo test --test integration_tests test_cli_action_resolution_and_validation
 >    ```
 
 ---
@@ -573,7 +573,7 @@ In application code (like CLIs and servers), writing dozens of custom error enum
 > 2. Run both lifetime-heavy streaming tests and generic cache tests locally:
 >    ```bash
 >    cargo test --lib sse::tests
->    cargo test --test integration_tests cache::test_page_cache_roundtrip
+>    cargo test --lib storage::cache::tests::test_page_cache_roundtrip
 >    ```
 
 ---
@@ -743,7 +743,7 @@ In application code (like CLIs and servers), writing dozens of custom error enum
 > 1. Inspect how [`TerminalSessionGuard`](https://github.com/NewGuy012/srz/blob/master/src/ui/tui.rs#L155-L186) restores canonical mode on exit even if `run_tui` returns `Err(...)`. Think: why doesn't `Drop` itself propagate a `Result`?
 > 2. Run the HTML-entity single-pass `Cow` unit test and filesystem guard tests:
 >    ```bash
->    cargo test --lib youtube::tests::test_decode_html_entities_single_pass_and_zero_copy
+>    cargo test --lib system::text_util::tests::test_decode_html_entities
 >    cargo test --lib fs_util::tests
 >    ```
 
@@ -1114,10 +1114,11 @@ Rust tasks spawned onto Tokio run cooperatively. An application can comfortably 
 - 🔍 **Real Code in `srz` ([src/storage/db.rs](https://github.com/NewGuy012/srz/blob/master/src/storage/db.rs#L15-L23) & [src/config/cli.rs](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs#L965-L997)):**
   ```rust
   // 1. Compile-time typed redb tables (src/storage/db.rs)
-  pub const TABLE_HISTORY: TableDefinition<u64, &[u8]> = TableDefinition::new("history");
-  pub const TABLE_CACHE_KEY_TO_ID: TableDefinition<&str, u64> =
+  const TABLE_HISTORY: TableDefinition<u64, &[u8]> = TableDefinition::new("history");
+  const TABLE_CACHE_KEY_TO_ID: TableDefinition<&str, u64> =
       TableDefinition::new("cache_key_to_id");
-  pub const TABLE_CACHE_CAPS: TableDefinition<&str, &[u8]> = TableDefinition::new("cache_caps");
+  pub(super) const TABLE_CACHE_CAPS: TableDefinition<&str, &[u8]> =
+      TableDefinition::new("cache_caps");
 
   // 2. Symlink + 1 MiB read-cap enforcement (src/config/cli.rs)
   let sym_meta = fs::symlink_metadata(path)
@@ -1133,7 +1134,7 @@ Rust tasks spawned onto Tokio run cooperatively. An application can comfortably 
 - 🧪 **Verify Locally:** Run the config bounds, database symlink, and SSRF tests:
   ```bash
   cargo test --lib config::cli::tests::test_load_from_path_bounds_and_file_type
-  cargo test --test integration_tests db::test_database_refuses_symlink
+  cargo test --lib storage::db::tests::test_database_refuses_symlink
   ```
 - 📖 **The Rust Book Reference:** [Chapter 19.3: Advanced Types](https://doc.rust-lang.org/book/ch19-03-advanced-types.html) and [Chapter 18.3: Matching Ranges & Destructuring](https://doc.rust-lang.org/book/ch18-03-pattern-syntax.html)
 
