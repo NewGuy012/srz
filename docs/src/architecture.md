@@ -1,8 +1,8 @@
 # Architecture & Design
 
-`srz` (Summarize) is a modular, high-performance Rust CLI tool for extracting and synthesizing structured summaries from **webpages**, **YouTube video transcripts**, **PDFs & local documents**, **Unix stdin streams**, **books**, and **live news digests** using local OpenAI-compliant LLMs (`llama.cpp`, `Ollama`, `LM Studio`, `vLLM`).
+`srz` (Summarize) is a fast command-line tool that turns **webpages**, **YouTube videos**, **PDFs & ebooks**, **local files**, **piped text**, **books**, and **news feeds** into clear summaries using AI models—especially local models running privately on your own computer (`llama.cpp`, `Ollama`, `LM Studio`, `vLLM`).
 
-Designed from the ground up as a local-first systems utility, `srz` pairs zero-copy network streaming and hardware-aware token budgeting with an embedded analytical database. Every subsystem is engineered for instantaneous startup, predictable memory ceilings, and complete local privacy.
+Designed to work locally first, `srz` starts immediately, stays comfortably within your computer's memory limits, saves your reading history in a single private database on your device, and streams answers live as the model writes them.
 
 ---
 
@@ -84,7 +84,7 @@ src/
 └── main.rs       # Binary entry point and CLI orchestration
 ```
 
-`src/lib.rs` exposes the core subsystems as a testable library crate, while `src/main.rs` serves as a thin binary entry point responsible for configuration merging, signal handling, and dispatching resolved actions.
+Most of `srz`'s reusable building blocks live inside `src/` (made available through `src/lib.rs`), while `src/main.rs` handles reading your settings and launching whichever action you requested.
 
 ### Module Responsibilities
 
@@ -172,26 +172,26 @@ sequenceDiagram
 
 ### Execution Lifecycle Phases
 
-#### Sub-Millisecond Cache Fast-Path & Offline Dispatch
-Every summarization request begins by constructing a deterministic SHA-256 cache key from the target identifier (URLs, canonical book titles, or local file hashes/mtimes), model name, and summary style preset. `srz` probes `srz.db` directly (`cache_key_to_id` $\to$ `history`) before initializing network clients or the LLM inference client. On a cache hit, the stored summary and preserved chain-of-thought reasoning are returned in under a millisecond. If `--open` was supplied, existing HTML/Markdown reader views on disk are verified or generated on demand. Offline chat session management commands (`--chats`, `--show-chat`, `--delete-chat`) are similarly intercepted and served directly from storage before any LLM connectivity check. During these fast paths, network connections and unnecessary database locks are avoided entirely.
+#### Instant Repeat Lookups & Offline Commands
+Every summary request builds a unique fingerprint from what you asked to read (the URL, book title, or file), the AI model name, and the summary style. `srz` checks its local database (`srz.db`) before opening any network connection or contacting an AI server. If you already summarized that exact item, `srz` shows your saved summary—along with any saved reasoning notes—in under a millisecond. If you added `--open`, it also opens or creates the matching HTML/Markdown reader file. Past chat commands (`--chats`, `--show-chat`, `--delete-chat`) work offline the exact same way.
 
-#### Quarantined Content Ingestion
-On a cache miss, the router dispatches the target to its specialized source pipeline. Network and filesystem reads enforce strict resource ceilings (10 MB for web payloads and stdin, 20 MB for local files). Scraped web pages are cached in `cache_pages` (with news items adhering to a 2-hour TTL), stripped of navigation menus, ads, and boilerplate via Mozilla's Readability algorithm (`dom_smoothie`), while book lookups concurrently fan out across Open Library and Wikipedia/search endpoints to extract lead and plot synopses. All untrusted source text is then quarantined inside `<source_document>` XML boundary tags with case-insensitive delimiter escaping before reaching the prompt builder.
+#### Safe Content Fetching & Cleanup
+When summarizing something new, `srz` opens only the matching source reader and enforces strict size caps (10 MB for webpages and piped input; 20 MB for local files) so unusually huge inputs won't freeze your computer. Web articles are cached locally for 7 days (or 2 hours for fast-changing news), stripped of navigation menus, ads, and sidebars, and book searches check Open Library and Wikipedia for plot or topic overviews. Before sending anything to the AI model, fetched text is placed inside `<source_document>` safety markers (with any fake closing tags inside the text escaped) so instructions hidden inside a webpage can't confuse the model.
 
-#### Zero-Copy Streaming Inference
-With the prompt assembled and sized according to the server's active context window, `srz` initiates an HTTP POST request with Server-Sent Events enabled (`stream: true`). Incoming byte chunks are parsed zero-copy using borrowed string slices (`Cow<str>`). Model reasoning tokens (`reasoning_content` deltas or in-band `<think>` blocks) update a live single-line progress spinner on `stderr` with space-padded elapsed duration and the active Title-Cased reasoning step when available (e.g. `💭 Thinking ( 1.5s): Analyze the Request...` or `💭 Thinking ( 1.5s)...`) and settle into a clean completion line (`💭 Thought for 5.2s`), while content tokens are either rendered incrementally via `StreamMarkdownRenderer` when `--stream` is passed or buffered behind a clean spinner until completion. Full raw trace streaming to `stderr` can be opted into via `--show-thinking`, `--thinking`, or `--verbose`.
+#### Live Streaming Responses
+Once the prompt is sized to fit your AI server's memory window, `srz` asks for a streaming response so words arrive as they are generated instead of waiting until the very end. While the model thinks, a compact live timer shows elapsed time and the current step on screen (for example, `💭 Thinking ( 1.5s): Analyze the Request...` settling into `💭 Thought for 5.2s`), or prints the full reasoning trace if you pass `--show-thinking`. Passing `--stream` prints formatted text live as it is written; otherwise a quiet spinner runs until the full summary is ready.
 
-#### Unified Persistence & Opt-In View Generation
-Once inference completes, `srz` persists the outcome into the unified `srz.db` database. Within a single ACID write transaction, reading telemetry, metrics, summary text, and chain-of-thought reasoning traces are written as a serialized `LibraryItem` in `history`, indexed by deterministic `cache_key` inside `cache_key_to_id`. Standalone HTML5 and Markdown reader views (`views/{slug}-{hash8}.html` and `.md`) are generated strictly on an opt-in basis via `--open` or explicit output flags (`--output`), avoiding disk file clutter.
+#### Automatic History & Optional Reader Files
+When the AI finishes, `srz` saves the summary, word counts, and reasoning notes together inside one local database (`srz.db`) so a crash or interruption won't leave half-written data behind. Standalone HTML and Markdown reader files (`views/{slug}-{hash8}.html` and `.md`) are only created when you ask for them via `--open` or `--output`, keeping your cache directory clutter-free.
 
-#### Clean Unix Stream Separation
-At the presentation boundary, `srz` strictly separates data streams from UI diagnostics. When standard output is piped or `--plain` / `--json` is active, `stdout` receives pure Markdown or JSON free of ANSI escape sequences, banners, or file links, while diagnostics are routed to `stderr`. On interactive terminals, the metadata header, styled Markdown body, clickable `file://` view links, and context hints are composed into a single buffer and piped into `$PAGER` (`less -RFX`) whenever the output exceeds the terminal viewport height.
+#### Clean Output for Humans and Scripts
+`srz` keeps the actual summary text separate from status spinners, file links, and helpful tips. When you pipe output into another tool or pass `--plain` or `--json`, standard output gets pure Markdown or JSON with no extra colors or terminal codes mixed in. When reading interactively in a terminal, long summaries open automatically in your scrollable viewer (`less -RFX`) with the title, summary, links, and hints together.
 
 ---
 
 ## 3. Ingestion Router & Auto-Detection Subsystem
 
-Rather than requiring dedicated subcommands such as `srz web`, `srz file`, or `srz book`, `srz <TARGET>` inspects input structure, URL schemes, filesystem presence, and phrasing heuristics to dispatch targets automatically.
+Instead of making you remember separate subcommands like `srz web`, `srz file`, or `srz book`, `srz <TARGET>` looks at what you typed—whether it's a web link, a local file path, a news query, or a book title—and picks the right reader automatically.
 
 ### Target Classification Decision Flow
 
@@ -216,41 +216,41 @@ flowchart TD
     TypoCheck -- No Match --> BookFlow["ResolvedAction::Book<br/>(Open Library &amp; Wikipedia)"]
 ```
 
-### Input Classification & Precedence
+### How Inputs Are Matched (in Priority Order)
 
-#### Standard Input, Web URLs & Syndication Feeds
-The router evaluates targets in order of structural specificity. An argument equal to `"-"` immediately routes to `ResolvedAction::Stdin` for Unix pipeline composability (such as `git diff | srz -`). Strings beginning with `http://` or `https://` are inspected by `is_feed_url` for syndication path suffixes (`.rss`, `.atom`, `/rss`, `/feed`, `/atom`, `/feed.xml`, `/rss.xml`, `/atom.xml`, `/index.xml`, `/feed.json`, or `/rss/`) or feed query parameters (`?format=rss`, `?format=atom`, `?output=rss`, `?feed=rss`). Matching feed URLs route directly to the universal feed parser (`ResolvedAction::News`), whereas standard links proceed to the web workflow (`ResolvedAction::Web`).
+#### Piped Text, Web Links & News Feeds
+`srz` checks the most specific input types first. Passing `"-"` reads text piped in from another command (such as `git diff | srz -`). Web addresses starting with `http://` or `https://` are checked for common RSS/Atom/JSON feed endings (like `.rss`, `.atom`, `/feed`, `/rss.xml`, or `?format=rss`): feed URLs go straight to the news digest reader, while all other links go to the web/video reader.
 
-#### Local Documents & Natural News Queries
-Non-URL inputs are tested against `is_file_like` and `Path::is_file()`. Any existing file on disk, path prefix (`./`, `../`, `/`, `~`), or recognized document extension (`.pdf`, `.epub`, `.md`, `.markdown`, `.txt`, `.text`, `.html`, `.htm`, `.json`) routes to `ResolvedAction::File`. If the input is not a local path, `is_news_query` checks for topical news phrasing—such as strings starting with `news` or `headlines`, or matching `"current/latest ... updates/stories"`—and strips conversational filler via `clean_news_query` before querying Google News RSS.
+#### Local Documents & News Searches
+Anything that isn't a web URL is checked against files on your computer. Any existing file on disk, path prefix (`./`, `../`, `/`, `~`), or document extension (`.pdf`, `.epub`, `.md`, `.markdown`, `.txt`, `.text`, `.html`, `.htm`, `.json`) is read straight from your drive. If it isn't a file path, `srz` checks whether it sounds like a news request—such as starting with `news` or `headlines`, or asking for `"latest ... updates/stories"`—strips conversational filler, and searches Google News.
 
-#### Command Typo Guardrail & Book Fallback
-Before treating remaining freeform text as a book title, `suggest_command` computes the Damerau-Levenshtein edit distance between single-word inputs and known CLI subcommands and aliases (`TOP_LEVEL_COMMANDS`). If a close match is found (for example, `srz doctur`), execution aborts with a helpful suggestion rather than launching an unintended book search. All other freeform strings fall through to `ResolvedAction::Book`.
+#### Typo Checks & Book Lookups
+Before assuming leftover text is a book title, `srz` compares single words against built-in command names (`TOP_LEVEL_COMMANDS`). If you mistyped a command (like `srz doctur`), it stops and suggests the right spelling (`srz doctor`) instead of searching for a book by that name. Any remaining text is treated as a book title.
 
-### Protocol Sub-Routing & Context Disambiguation
+### Smart URL Handling & Follow-Up Context
 
-#### URL Content Sub-Routing
-Within the web workflow, `fetch_url_content` performs secondary protocol inspection. YouTube URLs (`youtube.com/watch`, `youtu.be/`, `/shorts/`) are intercepted by `extract_youtube_video_id` and routed to the Innertube timed-text client, which downloads XML/JSON3 subtitle tracks without fetching video streams. Remote links ending in `.pdf` stream directly into the pure-Rust PDF extractor, and all remaining web pages are fetched via `reqwest` and cleaned with `dom_smoothie`.
+#### YouTube, Remote PDFs & Webpages
+Within web links, `srz` routes special links automatically. YouTube links (`youtube.com/watch`, `youtu.be/`, `/shorts/`) pull subtitles and chapters directly without downloading video files. Links ending in `.pdf` extract readable text from the PDF, and ordinary webpages are fetched and stripped of ads and menus.
 
-#### Grounded Q&A Disambiguation (`srz ask`)
-The `srz ask` command accepts either a target paired with a question or a standalone question. `is_probable_question` identifies questions by trailing question marks or interrogative prefixes (`what`, `how`, `why`, `explain`, etc.). When a user provides only a question, the target defaults to `None` and automatically grounds the query against the most recent summary in `srz.db`. If the underlying source page cache has expired, `srz ask` automatically re-fetches the live URL or local document before ranking relevant passages.
+#### Follow-Up Q&A (`srz ask`)
+`srz ask` works with a target plus a question (`srz ask article.pdf "what changed?"`), or with just a question on its own (`srz ask "what changed?"`). When you leave out the target, `srz` automatically looks up your most recent summary in `srz.db`, and if the cached copy of that page or file has expired, it refreshes the source before searching for passages to answer your question.
 
-#### Multi-Model Router & Proxy Probing
-When `probe_server_capabilities` queries `GET /props` on `llama.cpp` routers or proxy gateways, the server often responds with `role: "router"` or `n_ctx: 0`. `srz` detects this topology automatically and issues a follow-up request to `GET /props?model=<MODEL>` to retrieve accurate, model-specific context window (`n_ctx`) allocations.
+#### Multi-Model Routers & Proxies
+If you use a local router or proxy that serves multiple AI models (`llama.cpp` routers often report a placeholder `n_ctx: 0`), `srz` notices automatically and sends a second check specifically for your selected model so it still gets the right context window size.
 
-#### Book Resolution Pipeline & Fast Discovery
-When summarizing a book (`srz <TITLE>`), `srz` accelerates uncached runs across five coordinated optimizations:
-1. **Startup Concurrency**: LLM capabilities probing (`/props` or `/api/show`) runs concurrently via `tokio::join!` with candidate discovery, eliminating startup serialization.
-2. **Wikipedia-First Short-Circuit**: `search_raw_candidates` prioritizes official Wikipedia OpenSearch and Full-text JSON APIs (~100–150ms). When a confident match ($\text{score} \ge 85$) is returned, execution short-circuits immediately, completely bypassing unauthenticated DuckDuckGo HTML scraping and saving up to 4 seconds of latency. DuckDuckGo is retained strictly as a fallback when Wikipedia yields no confident matches.
-3. **HTML Pre-Truncation & Reflist Stripping**: When downloading Wikipedia reference pages, raw HTML is truncated prior to the references, bibliography, and navigation footers before running Readability DOM parsing or Markdown conversion, reducing memory allocations by ~70% and accelerating page conversion.
-4. **Non-Fiction Extraction & Distillation Avoidance**: `extract_wikipedia_synopsis` recognizes both fiction narrative headings (`## Plot`, `## Synopsis`) and non-fiction structure headings (`## Overview`, `## Content`, `## Contents`, `## Key themes`, `## Core concepts`). Terminal reference lists and bibliographies are stripped from fallback content with `clean_text`, ensuring even full non-fiction articles fit directly within `single_pass_threshold` and avoid multi-chunk Map-Reduce distillation.
-5. **Open Library Editorial Description Fallback**: If web scraping fails or yields no candidates, `srz` retrieves the official Open Library work description (`/works/OL...` JSON endpoint, validated by `is_valid_work_key`) as a grounded fallback context before resorting to parametric LLM memory.
+#### Faster Book Lookups
+When you ask `srz` about a book (`srz "The Hobbit"`), five built-in shortcuts keep uncached searches quick:
+1. **Run startup checks in parallel**: Checks your AI server's settings at the same time it searches online for the book, instead of waiting for one before starting the other.
+2. **Wikipedia first**: Queries Wikipedia's fast APIs (~100–150ms) before falling back to slower web scraping—skipping backup searches completely whenever a strong match is found.
+3. **Skip web-page clutter early**: Cuts off references, bibliographies, and page footers before converting HTML, reducing memory use by roughly 70%.
+4. **Keep the core story and themes**: Pulls `## Plot` / `## Synopsis` sections for fiction or `## Overview` / `## Key themes` / `## Core concepts` for non-fiction, trimming bibliographies so the full overview fits in one fast AI pass.
+5. **Open Library description fallback**: If reference articles can't be fetched, falls back to Open Library's official book description before relying on the AI's general memory.
 
 ---
 
 ## 4. Storage & Cache Architecture
 
-`srz` adheres strictly to XDG Base Directory specifications, unifying all persistent data and caching into a single hardened pure-Rust `redb` file in `XDG_DATA_HOME` with private `0700` directory and `0600` file permissions:
+`srz` follows your operating system's standard data and cache folder conventions, storing your library, chat history, and temporary caches in a single private database file (`srz.db`) locked with owner-only permissions (`0700` on folders, `0600` on files):
 
 ```mermaid
 graph TD
@@ -286,42 +286,43 @@ graph TD
 | **Total Cache Budget** | **500 MB** (configurable) | Bounded LRU eviction | Evicts oldest cached records across cache tables in `redb` and `views/` on disk by timestamp. |
 | **Auto-Prune Schedule** | **Opportunistic (24h)** | Deferred past fast-exit commands | Throttled via `.last_prune` with sub-millisecond overhead. |
 
-### Storage Engine Design
+### Storage Design
 
-#### Unified Single-File Pure-Rust redb Architecture
-Instead of depending on external C/C++ database libraries or heavy analytical engines, `srz` unifies all persistent library records, chat sessions, sequence counters (`meta`), and transient cache tables into a single pure-Rust `redb` file (`srz.db`) with 8 typed tables. `redb` provides embedded key-value storage with zero C FFI overhead, atomic ACID transactions, table-level isolation, and safe concurrent readers. Summaries and reasoning traces serialized into `history` serve as the single source of truth for reading analytics, search, and cache hits resolved via `cache_key_to_id`.
+#### Everything in One Self-Contained File (`srz.db`)
+Instead of relying on external database programs or scattering files across dozens of folders, `srz` stores your entire summary library, chat history, and temporary caches inside one self-contained database file (`srz.db`) with 8 organized tables. Changes are saved safely all-or-nothing, so even an unexpected power loss or Ctrl-C won't corrupt your history.
 
-#### Short-Lived News Caching (2-Hour TTL)
-Fast-moving news feeds and syndication channels require timely updates. To prevent readers from receiving stale briefings, news pages retrieved via `get_news_page` and news briefings cached with `get_news_summary` automatically use a 2-hour TTL (`news_ttl`), whereas standard web articles, YouTube transcripts, and cached remote PDFs use the 7-day `pages_ttl`.
+#### Fresh News Caching (2 Hours)
+News updates quickly, so cached news pages and digests expire automatically after 2 hours (`news_ttl`). Regular webpages, YouTube transcripts, and PDFs stay cached for 7 days (`pages_ttl`) so repeat reads and follow-up Q&A are instant.
 
-#### Bounded LRU Pruning
-Cache eviction operates directly on `redb` table iterators, scanning timestamps and deleting expired or budget-exceeding records within atomic write transactions:
-When total cached bytes exceed the storage budget, the oldest entries past the budget are deleted in a single atomic transaction without CPU or memory overhead.
+#### Automatic Size Cleanup
+When temporary cache entries grow past your storage limit (500 MB by default), `srz` automatically clears the oldest temporary cached pages by timestamp in one quick pass—without deleting your saved summary library.
 
-#### Opt-In View Generation
-Because modern terminal rendering is styled and formatted cleanly via `ui::markdown`, automatic generation of standalone `.html` and `.md` view files on every run is disabled. View files in `views/` are generated strictly when requested via `--open` or explicit output flags (`--output`), eliminating disk clutter while preserving one-click browser viewing when desired.
+#### Clean Folders by Default (`--open`)
+Because `srz` already formats summaries cleanly right in your terminal, standalone `.html` and `.md` reader files are not created on disk unless you ask for them with `--open` or `--output`, avoiding unnecessary folder clutter.
 
-#### Collision-Safe Reader Views
-Standalone HTML5 and Markdown reader files in `views/` are named using `slugify_unique(title, key)`, which appends an 8-character SHA-256 digest of the source URL or file path (`{slug}-{hash8}.html`). This guarantees zero filename collisions when summarizing different pages that share generic titles like "Documentation" or "Home". Each HTML view embeds the model's reasoning trace inside a collapsible `<details class="thought-drawer">` element.
+#### Collision-Safe Reader Filenames
+When you do export or open HTML/Markdown reader files in `views/`, `srz` adds a short unique fingerprint from the page's address or file path (`{slug}-{hash8}.html`). Two different websites both titled "Documentation" or "Home" will never overwrite each other, and HTML views tuck the AI's reasoning trace cleanly inside a collapsible section.
 
-#### Pure-Rust ACID Isolation & Multi-Process Safety
-`redb` enforces multi-reader single-writer ACID transaction semantics with zero external lock daemons. Within the same CLI process, components share the underlying database safely through standard Rust ownership and `Mutex` guards.
+#### Safe Concurrent Use
+Multiple reads can safely browse your saved history at the same time while writes stay neatly ordered, without needing any background database server running.
 
 ---
 
-## 5. Offline Library Search & BM25 Q&A Grounding
+## 5. Searching Your Library & Asking Questions
 
-### Offline Library Search (`srz find`)
+### Searching Saved Summaries (`srz find`)
 
-When executing `srz find <QUERY>`, `Database::search` evaluates saved records offline across `TABLE_HISTORY` in `srz.db` without requiring an external search engine or SQL index:
+When you search with `srz find <QUERY>`, `srz` searches your saved library (`srz.db`) right on your computer without needing internet access or an external search index:
 
-1. **Stop-Word Filtering**: Queries are tokenized via `tokenize_search_terms`, removing high-frequency English stop words to isolate discriminative keywords.
-2. **ASCII Fast-Path & UTF-8 Fallback**: ASCII terms match with zero allocations via `find_ascii_case_insensitive`, while Unicode terms fall back to UTF-8 safe lowercase character-index scanning.
-3. **10× Title Weight Boost**: Each matched query term in a document title scores `10.0` vs `1.0` in the summary body (`score = 10.0 * title_matches + summary_matches`), breaking score ties by most recent entry `id` and extracting UTF-8 safe preview snippets around matched terms (`extract_snippet`).
+1. **Skips Common Filler Words**: Common words like "the", "and", or "in" are filtered out so your real topic words drive the search.
+2. **Fast Case-Insensitive Matching**: Checks saved titles and summaries quickly for both standard English text and international characters.
+3. **Title Matches Count 10× More**: Each keyword match in a title scores `10` points versus `1` point in the summary body (`score = 10.0 * title_matches + summary_matches`), showing the most recent match first on ties along with a short preview snippet.
 
-### Grounded Document Retrieval (`srz ask`)
+### Finding Relevant Passages for Q&A (`srz ask`)
 
-When querying long documents via `srz ask`, `engine::compressor::compute_bm25_scores` ranks in-memory document chunks using the Robertson-Sparck Jones BM25 formula:
+When you ask a question about a long report or webpage with `srz ask`, sending the entire 300-page document could overflow the AI's memory or drown out the answer. Instead, `srz` splits the document into short passages and scores which paragraphs are most relevant to your question's unique keywords (giving extra weight to rare topic words and preferring whole-word matches rather than tiny noisy fragments). The top-scoring passages that fit within `ask_doc_budget` are then put back in their original reading order so the AI answers using exact quotes and context.
+
+For readers curious about the underlying ranking formula (`compute_bm25_scores`), `srz` uses standard Robertson-Sparck Jones BM25 scoring:
 
 $$
 \text{Score}(D, Q) = \sum_{t \in Q} \max(\text{IDF}(t), 0.1) \cdot \frac{f(t, D) \cdot (k_1 + 1)}{f(t, D) + k_1 \cdot \left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}
@@ -331,56 +332,50 @@ $$
 \text{IDF}(t) = \ln\left( \frac{N - n(t) + 0.5}{n(t) + 0.5} + 1.0 \right)
 $$
 
-| Symbol | Parameter | Value / Role |
+| Symbol | Parameter | Role |
 | :--- | :--- | :--- |
-| $f(t, D)$ | Term Frequency | Exact word-boundary occurrences of query term $t$ in chunk $D$ (`is_word_boundary`). |
-| $k_1$ | Saturation | `1.2`: Controls non-linear scaling of repeated term matches. |
-| $b$ | Length Normalization | `0.75`: Penalizes verbose chunks relative to average chunk token length (`avgdl`). |
-| $N$, $n(t)$ | Document Counts | $N$ is candidate chunk count; $n(t)$ is the number of chunks containing term $t$. |
-
-Query terms are stop-word filtered and deduplicated first so rare domain concepts carry full weight, while top-scoring chunks within `DynamicBudget::ask_doc_budget` are reassembled in original reading order.
+| $f(t, D)$ | Term Frequency | Whole-word matches of query word $t$ in passage $D$. |
+| $k_1$ | Saturation | `1.2`: Keeps repeated mentions from overpowering passages that cover several distinct keywords. |
+| $b$ | Length Normalization | `0.75`: Gently favors focused passages over rambling walls of text. |
+| $N$, $n(t)$ | Passage Counts | $N$ is total passages; $n(t)$ is how many passages contain word $t$. |
 
 ---
 
-## 6. Hardware-Aware Inference & Dynamic Budgeting
+## 6. Hardware Awareness & Smart Context Sizing
 
-### Hardware Profiling & Gemma 4 Steering
+### Automatic Hardware Check & Gemma 4 Profile
 
-`srz` inspects host RAM and CPU architecture across macOS (`sysctl`), Linux (`/proc/meminfo`), and Windows (WMI) without unsafe C FFI bindings, classifying machines into memory tiers to recommend optimal models and context sizes.
+`srz` safely checks how much memory (RAM) and what processor your computer has on macOS, Linux, and Windows, then groups your machine into a hardware tier so `srz recommend` and `srz doctor` can suggest models that run comfortably on your device.
 
-Across modern laptops and workstations, `srz` steers users toward **Google Gemma 4 at 8-bit quantization (`Q8_0`)** as its reference profile. Gemma 4 delivers high parameter density and strong instruction adherence across long context windows with low battery draw. Running at `Q8_0` preserves near-FP16 semantic fidelity and avoids the nuance degradation common in aggressive 4-bit quantizations while fitting comfortably within unified memory budgets. See the [Hardware Tier Reference Matrix](quickstart.md#hardware-tier-reference-matrix) for tier-by-tier recommendations.
+For everyday laptops and desktops, `srz` recommends **Google Gemma 4 at 8-bit quality (`Q8_0`)** as its baseline profile. Compared with smaller 4-bit versions (`Q4_K_M`)—which shrink download size at the cost of missing nuance or making more mistakes on long texts—`Q8_0` keeps high accuracy across long documents while still fitting nicely in everyday laptop memory. See the [Hardware Tier Reference Matrix](quickstart.md#hardware-tier-reference-matrix) for tier-by-tier recommendations.
 
-### Synthesis Strategy: Single-Pass with CPU Stratified Salience Compression
+### Summarizing in One Fast Pass
 
-Local LLMs have an asymmetric latency profile: prompt prefill runs compute-bound at high throughput, while token generation (decode) is memory-bandwidth bound. Traditional Map-Reduce and recursive tree reduction multiply decoding passes, forcing the local runner through sequential intermediate generation loops that lock up consumer GPUs and unified memory.
+Local AI models are much faster at **reading** text all at once than **writing** dozens of intermediate summaries back and forth. Older tools split long books into small pieces, wait for the AI to summarize each piece one by one, and then summarize the summaries again—taking minutes and locking up your computer. `srz` avoids multi-step loops and summarizes every document in **one fast pass**:
 
-To eliminate multi-minute latency on local machines, `srz` guarantees **Single-Pass Streaming Synthesis** across all document lengths:
+1. **Normal Documents (Sent Whole)**: Whenever a document fits within `single_pass_threshold`, `srz` sends the entire text straight to the AI model so it sees the full story and every detail together.
+2. **Extra-Long Books & Reports (`compress_document_stratified`)**: When a document is too big for the model's context window (like a long PDF report, transcript, or 300-page EPUB book), `srz` trims it down cleanly in milliseconds on your CPU before sending:
+   - Skips any trimming if the text already fits.
+   - Reads paragraph breaks and Markdown headings (`#`, `##`, `###`, plus `[MM:SS]`/`[HH:MM:SS]` YouTube chapter titles) while ignoring `#` comments inside code snippets, and breaks huge unbroken blocks on line and word boundaries.
+   - Always keeps the opening introduction (up to **25%** of space) and closing conclusion (**15%**), preserves an outline skeleton of `#`, `##`, and `###` headings across the whole document (up to **30%**, prioritizing main headings first), and fills the remaining budget with the most informative middle paragraphs matching the document's core topics, separated by `...` in reading order.
+   - Double-checks the final length using your active AI model's word-counting profile (`TokenizerKind`) so the trimmed text is guaranteed to fit cleanly.
 
-1. **Direct Single-Pass**: When a document fits within `single_pass_threshold`, `srz` feeds the complete text directly into the model's attention window, preserving global thematic coherence and full cross-chapter context.
-2. **CPU Stratified Salience Compression (`compress_document_stratified`)**: When content exceeds `single_pass_threshold` (such as long PDF reports, transcripts, or 300-page EPUB books), `srz` compresses the document deterministically in milliseconds on the CPU:
-   - Evaluates an $O(1)$ byte-length fast path (`content.len() <= max_tokens`) and token check to skip compression on inputs that already fit.
-   - Parses paragraphs and ATX Markdown headings (`#`, `##`, `###`, including `[MM:SS]`/`[HH:MM:SS]` timestamped YouTube chapter headings) while ignoring `#` comments inside fenced code blocks (```` ``` ```` / `~~~`), subdividing oversized blocks on line and word boundaries.
-   - Anchors opening and closing segments (**25%** lead / **15%** tail budget caps) and preserves a document-wide outline skeleton of `#`, `##`, and `###` headings (up to **30%** of the budget, prioritizing `#` -> `##` -> `###` with evenly spaced sampling on heading-heavy documents).
-   - Scores segments in a single $O(\text{bytes})$ pass against top document centroid terms (boosting heading and lead/tail anchor terms) via Robertson-Sparck Jones BM25 (`score_bm25_matrix`) and greedily fills the remaining budget with the highest-salience middle body paragraphs joined in document order with `\n\n...\n\n`.
-   - Enforces a strict `<= single_pass_threshold` check across every active `TokenizerKind` profile by evicting lower-priority middle selections before anchors and safely trimming on clean boundaries if needed.
+This ensures you always get live streaming output right away without long wait times or out-of-memory errors.
 
-This guarantees that every command streams live output to the terminal without recursive tree reduction loops or context overflow.
+### Smart Token Budgeting (No Manual Guesswork)
 
-### Dynamic Token Budgeting & Zero-Drift Calibration
-
-Hardcoded token limits either crash small context servers with Out-of-Memory errors or leave large context windows underutilized. `srz` queries backend capabilities at runtime (`probe_server_capabilities`), clamps `n_ctx` to `[2_048, 2_097_152]`, and enforces a strict capacity invariant in `DynamicBudget`:
+Hardcoded size limits either crash smaller local AI setups with out-of-memory errors or waste the room available on larger ones. Instead, `srz` asks your AI server how large its context window (`n_ctx`) is at startup (clamped between `2_048` and `2_097_152`), and `DynamicBudget` divides that space safely:
 
 $$
 \text{usable} = n_{\text{ctx}} - \big(\text{max\_completion} + \text{system\_margin} + \text{cushion}\big) \ge 0
 $$
 
-Specifically, `DynamicBudget::new` reserves:
-- **`max_completion`**: Defaults to `(n_ctx / 4).clamp(1024, 8192)`, or the resolved style/CLI `--max-tokens` capped at `(n_ctx / 3).clamp(512, u32::MAX)`.
-- **`system_margin`**: Fixed `500` tokens for system instructions and `<source_document>` delimiters.
-- **`cushion`**: `(n_ctx / 20).clamp(200, 1600)` (5% headroom for tokenizer variance).
-- **Q&A Budgets (`srz ask`)**: Allocates `ask_doc_budget = usable / 2` (50% of usable input) for BM25-ranked passages and `ask_hist_budget = usable * 4 / 10` (40% of usable input) for sliding chat history.
+- **Room for the AI's Reply (`max_completion`)**: Scales with your chosen summary style (`concise`, `bullets`, `detailed`) or `--max-tokens` flag (default `(n_ctx / 4).clamp(1024, 8192)`, capped at one-third of `n_ctx`).
+- **Instruction Overhead (`system_margin`)**: Reserves `500` tokens for system instructions and document wrapper tags.
+- **Safety Buffer (`cushion`)**: Sets aside 5% of `n_ctx` (`(n_ctx / 20).clamp(200, 1600)`) so minor counting differences never overflow the server.
+- **Q&A Mode (`srz ask`)**: Splits usable input room cleanly between relevant document passages (`ask_doc_budget`, 50%) and recent conversation messages (`ask_hist_budget`, 40%).
 
-To eliminate the 15–25% token count drift typical when applying generic BPE tokenizers to non-OpenAI models, `srz` uses in-process model-aware profiles (`TokenizerKind` supporting Gemma SentencePiece 256k, Llama 3 128k, `o200k_base`, and `cl100k_base`), eliminating network latency and token drift without external `/tokenize` roundtrips. When compressing large documents or selecting `srz ask` context, `srz` counts tokens using the active model's profile (`engine::compressor`) to enforce the context boundary.
+Because different AI models count words and subwords slightly differently (off by 15–25% if you only count one way), `srz` carries built-in lightweight counting profiles (`TokenizerKind` for Gemma, Llama 3, `o200k_base`, and `cl100k_base`). Everything is measured locally in memory with zero extra server roundtrips.
 
 ---
 
@@ -399,47 +394,47 @@ To eliminate the 15–25% token count drift typical when applying generic BPE to
 | **Resolution & Grounding** | Offline `CBMi` protobuf decoding, targeted Wikipedia synopsis extraction, and in-memory BM25 chunking | Zero-network Google News link resolution; fewer prompt tokens for books; discriminative Q&A retrieval. |
 | **Offline Search** | Stop-word-filtered 10× title-boosted search across `history` in `redb` | Fast offline summary search without external search engines or daemons. |
 
-### Core Performance Mechanisms
+### How `srz` Stays Fast
 
-#### Zero-Copy SSE Parsing & Line-Buffered Rendering
-The Server-Sent Events client parses streaming JSON frames zero-copy from network buffers (`Cow<str>`) and batches terminal flushes per packet to avoid string reallocations. Short inputs pass an $O(1)$ byte-length check that skips tokenization entirely. When `--stream` is active, `StreamMarkdownRenderer` buffers incoming tokens by line and tracks multi-line code fences so ANSI styles are applied only to complete syntactic lines rather than breaking mid-word.
+#### Smooth Live Streaming Without Mid-Word Glitches
+As answers arrive from your AI server, `srz` reads text fragments directly from the network buffer without unnecessary copying, and skips heavy sizing work completely on short inputs. When `--stream` is active, output waits for each complete line and tracks code blocks cleanly so terminal bolding, lists, and syntax styling never break mid-word.
 
-#### Offline Protobuf Decoding & Bounded News Ingestion
-Google News RSS feeds wrap article URLs inside base64 `CBMi` protobuf payloads. Rather than issuing two sequential HTTP roundtrips per article to resolve redirects, `srz` decodes the target URL directly offline from the protobuf wire bytes—accelerating news ingestion by 60–90%—and falls back to `batchexecute` RPC only when needed. Concurrent article scraping is bounded by a `tokio::sync::Semaphore`, caches scraped pages prior to synthesis, and falls back to clean RSS summary snippets whenever publisher links are paywalled.
+#### Faster Google News Link Resolution
+Google News feeds wrap article addresses inside encoded links that normally require multiple extra web requests just to find the real website. `srz` decodes those links offline right away—cutting feed loading time by roughly 60–90%—downloads articles concurrently within a safe cap, caches scraped pages, and falls back gracefully to the news feed's short summary when a publisher site is paywalled.
 
-#### Targeted Synopsis Extraction & Chapter-Aligned Transcripts
-During book resolution, `srz` fans out metadata and search queries concurrently across Open Library and Wikipedia. When scraping Wikipedia reference articles, `extract_wikipedia_synopsis` isolates the lead introduction and `== Plot ==` / `== Synopsis ==` sections while discarding bibliography, cast, and edition tables—reducing prompt token volume by up to 70%. Similarly, the YouTube pipeline parses chapter timestamps from video descriptions (`parse_chapters_from_description`) to group caption cues into semantic sections and automatically falls back to YouTube's `&tlang=en` auto-translation parameter when native English tracks are unavailable.
+#### Trimmed Book & Video Context
+When summarizing a book, `srz` searches Open Library and Wikipedia together and cuts out long bibliography, cast, and edition tables before sending Wikipedia text to the AI—shrinking prompt size by up to 70% while keeping the main plot, overview, and themes intact. For YouTube, it reads chapter timestamps straight from the video description and switches automatically to English auto-translation when needed.
 
-#### Discriminative BM25 Grounding & Word-Boundary Occurrence Matching
-When answering questions in `srz ask`, candidate document chunks are scored in memory using a stop-word filtered Robertson-Sparck Jones BM25 ranker. Stripping high-frequency English stop words ensures that domain-specific keywords carry maximum inverse document frequency weight when selecting grounding passages for the prompt window. Term occurrences within document chunks are evaluated using strict word-boundary matching (`is_word_boundary`), eliminating false-positive substring matches (such as matching "rust" inside "trust" or "frustrated") with zero string allocations. All Q&A parameters are encapsulated in `AskArgs` and turn contexts in `AskSessionContext` to guarantee parameter safety across interactive REPL sessions.
+#### Whole-Word Q&A Matching
+When `srz ask` picks passages to answer a question, common filler words are filtered out so specific topic words carry full weight. Keywords are matched strictly on whole-word boundaries (`is_word_boundary`) so searching for `"rust"` won't accidentally match `"trust"` or `"frustrated"`.
 
-#### Overlapped Pipeline Startup & Transport Compression
-To eliminate latency on uncached runs, `srz` activates transparent HTTP `gzip` payload compression across web scraping, feed parsing, and API roundtrips. During startup on uncached book summaries, LLM capability probing (`/props` or `/api/show`) runs concurrently with target search via `tokio::join!`, and opportunistic storage maintenance (`maybe_auto_prune`) is deferred until after output presentation.
+#### Compressed Downloads & Parallel Startup
+Web fetches, news feeds, and API calls use transparent `gzip` compression so pages download faster. On uncached book lookups, `srz` checks your AI server's capabilities at the same time it searches online, and waits to run background cache cleanup until after your summary finishes printing.
 
-#### Style-Aware Token Budgeting & CPU Context Compression
-Rather than allocating a fixed 8,192-token completion budget regardless of requested length, `srz` scales default completion reservations dynamically based on summary preset (`concise` $\to$ 1,536, `bullets` $\to$ 2,048, `detailed` $\to$ 8,192). This expands available input context on concise and bulleted runs, allowing medium-length documents and transcripts to fit in a single uncompressed inference pass. When documents exceed context capacity, CPU Stratified Salience Compression (`compress_document_stratified`) preserves structural headings alongside lead/tail anchors and top centroid BM25 middle paragraphs to fit within `single_pass_threshold` in milliseconds, ensuring all outputs stream live in a single generation pass.
+#### Style-Aware Sizing & Fast Pre-Trimming
+Rather than holding back the full 8,192-token reply budget on short summaries, `srz` scales reply space dynamically based on your preset (`concise` $\to$ 1,536, `bullets` $\to$ 2,048, `detailed` $\to$ 8,192). That leaves even more room for longer articles to fit without trimming. When a document still exceeds `single_pass_threshold`, `compress_document_stratified` preserves the outline headings alongside intro/conclusion anchors and key middle paragraphs in milliseconds so every summary finishes in one smooth pass.
 
-#### Boilerplate HTML Tag Stripping & PDF Clean Extraction
-Before parsing web pages with Mozilla Readability, raw HTML is scanned to strip `<script>`, `<style>`, `<svg>`, and `<noscript>` blocks, reducing DOM tree size substantially on hydration-heavy sites. For PDF documents, `PdfExtractor` strips trailing `References`, `Bibliography`, and inline citation markers (`[1]`, `[12, 15]`), reconstructs natural paragraph boundaries, and remote PDF extractions are cached in `cache_pages` to accelerate subsequent style adjustments and interactive chat.
+#### Clean Web & PDF Extraction
+Before extracting article text from HTML, `srz` removes scripts, stylesheets, vector icons, and fallback blocks so clunky websites parse quickly. On PDF documents, `PdfExtractor` removes trailing reference/bibliography lists and citation tags (`[1]`, `[12, 15]`), reconnects broken lines into readable paragraphs, and caches remote PDF text so switching summary styles or asking follow-up questions stays instant.
 
 ---
 
 ## 8. Security, Privacy & System Hardening
 
-### Memory Safety & Zero-Unsafe Guarantee
-The entire codebase enforces `#![forbid(unsafe_code)]` at both `src/lib.rs` and `src/main.rs`. Every parser, network stream, and database query is written in 100% safe Rust, providing compile-time mathematical guarantees against buffer overflows, use-after-free bugs, and data races.
+### Built-In Memory Safety
+Every line of `srz` is written in 100% safe Rust—`unsafe` code is banned project-wide at the compiler level (`#![forbid(unsafe_code)]` in both `src/lib.rs` and `src/main.rs`). That means whole classes of memory corruption, buffer overflows, and crash bugs are prevented at compile time.
 
-### Local Privacy & Atomic Filesystem Isolation
-`srz` operates with zero telemetry, analytics, or cloud dependencies. Cache and data directories are created with owner-only `0700` permissions, `config.toml` loading rejects symlinks and bounds file size to prevent `CWE-59` exposure, and files are written atomically using temporary files (`O_CREAT | O_EXCL` with `0600` permissions) while explicitly rejecting pre-planted symlinks to prevent directory traversal and symlink swap attacks.
+### Private Local Storage & Safe File Writes
+`srz` never sends telemetry, analytics, or usage data anywhere. Its history and cache folders are locked to your user account only (`0700` directory and `0600` file permissions). Settings files (`config.toml`), databases, and updates refuse shortcut links (`symlinks`) and write safely through temporary files before renaming, blocking tricks that attempt to overwrite unrelated system files.
 
-### Defensive Prompt Quarantining
-Because web pages and documents may contain adversarial instructions, all ingested content is isolated within `<source_document>` XML boundary tags. The prompt framing layer performs case-insensitive scanning to neutralize embedded closing tags, preventing untrusted text from escaping its quarantine container and hijacking system instructions.
+### Keeping Web Text Separate from Instructions
+Because downloaded webpages and PDFs can contain hidden prompt-injection instructions, `srz` wraps all external content inside `<source_document>` boundaries and neutralizes any look-alike closing tags inside the text so untrusted documents stay strictly treated as data to summarize.
 
-### Terminal Escape & BiDi Sanitization
-Rendering untrusted text in terminal emulators carries risks of clipboard hijacking (via OSC 52 sequences) and visual spoofing. `srz` passes all titles, metadata, and streaming LLM outputs through `sanitize_terminal_text`, stripping ANSI CSI/OSC control sequences, C1 control characters, and Unicode Bidirectional (BiDi) override codepoints.
+### Safe Terminal Display
+Untrusted webpage titles and model outputs can contain hidden terminal control sequences that corrupt your screen, fake text direction, or interact with clipboard escapes. `srz` filters all titles, metadata, spinners, and streamed text through `sanitize_terminal_text` before anything prints to your terminal.
 
-### SSRF Guardrails, Bounded Resource Ceilings & Verified Upgrades
-All outbound public web fetches — including articles, remote PDFs, RSS/Atom/JSON feeds, and HTTP redirect hops (capped at 10) — enforce `validate_public_http_url` / `validate_parsed_public_http_url` to reject non-HTTP(S) schemes, embedded userinfo, IPv6 zone IDs (`%`), and private, loopback, link-local, special-purpose IPv6, or cloud-metadata IP/host targets. Strict byte ceilings protect the host from resource exhaustion: 10 MB for web responses and stdin streams, 20 MB for local documents, and 50 MB for release archives, reinforced by connection and read timeouts on all HTTP clients. Self-updates via `srz upgrade` verify release binaries against cryptographic SHA-256 checksums before performing an atomic binary swap.
+### Network Limits & Verified Self-Updates
+Every public web request (`srz` articles, remote PDFs, feeds, and redirects up to 10 hops) checks the destination address first (`validate_public_http_url`) to block accidental or malicious connections to your local machine, home network, or cloud metadata addresses—alongside strict size caps (10 MB for webpages and piped text, 20 MB for local files, and 50 MB for update archives) and request timeouts. When updating via `srz upgrade`, downloaded packages are verified against cryptographic SHA-256 checksums before swapping binaries cleanly with automatic rollback if anything fails.
 
 ---
 
