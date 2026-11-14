@@ -146,6 +146,7 @@ jobs:
           sudo apt-get install -y pkg-config build-essential cmake
 
       - name: Build release binary
+        shell: bash
         env:
           TARGET: ${{ matrix.target }}
         run: cargo build --release --locked --target "$TARGET"
