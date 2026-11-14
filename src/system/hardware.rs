@@ -343,53 +343,82 @@ mod tests {
 
     #[test]
     fn test_profile_from_specs() {
-        let profile = HardwareProfile::from_specs(16 * 1024 * 1024 * 1024, "Apple M3".to_string());
-        assert_eq!(profile.tier, HardwareTier::Tier16GB);
-        assert_eq!(
-            profile.recommended_model,
-            "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
-        );
-        assert_eq!(profile.concise_model, "gemma-4");
-        assert_eq!(profile.recommended_size, "E4B");
-        assert_eq!(profile.recommended_quant, "Q8_0");
-        assert_eq!(profile.disk_size, "~8.6 GB");
-        assert_eq!(profile.recommended_context, 32_768);
-        assert_eq!(profile.recommended_context_display, "32k ctx");
-        assert_eq!(profile.ram_footprint, "~9.4 GB");
-        assert!(profile.recommended_launch_command.contains("-c 32768"));
-        assert!(profile.recommended_launch_command.contains("gemma-4-E4B"));
-        assert!(
-            profile
-                .ollama_launch_command
-                .contains("ollama run gemma2:9b --ctx-size 32768")
-        );
-        assert_eq!(profile.one_pass_token_ceiling(), 32_768 * 7 / 10);
-        assert_eq!(
-            profile.llama_gui_selection(),
-            "gemma-4  |  E4B  |  Q8_0  |  32k ctx"
-        );
-    }
-
-    #[test]
-    fn test_profile_64gb_specs() {
-        let profile =
-            HardwareProfile::from_specs(64 * 1024 * 1024 * 1024, "Apple M3 Max".to_string());
-        assert_eq!(profile.tier, HardwareTier::Tier64GBPlus);
-        assert_eq!(
-            profile.recommended_model,
-            "ggml-org/gemma-4-26B-A4B-it-GGUF:Q8_0"
-        );
-        assert_eq!(profile.concise_model, "gemma-4");
-        assert_eq!(profile.recommended_size, "26B-A4B");
-        assert_eq!(profile.recommended_quant, "Q8_0");
-        assert_eq!(profile.disk_size, "~28.0 GB");
-        assert_eq!(profile.recommended_context, 131_072);
-        assert_eq!(profile.recommended_context_display, "128k ctx");
-        assert!(profile.recommended_launch_command.contains("26B-A4B"));
-        assert_eq!(
-            profile.llama_gui_selection(),
-            "gemma-4  |  26B-A4B  |  Q8_0  |  128k ctx"
-        );
+        for (gb, chip, tier, model, size, disk, ctx, ctx_disp, ram, gui, check_ollama) in [
+            (
+                8,
+                "Apple M1",
+                HardwareTier::Tier8GB,
+                "ggml-org/gemma-4-E4B-it-GGUF:Q8_0",
+                "E4B",
+                "~8.6 GB",
+                8_192,
+                "8k ctx",
+                "~8.9 GB",
+                "gemma-4  |  E4B  |  Q8_0  |  8k ctx",
+                None,
+            ),
+            (
+                16,
+                "Apple M3",
+                HardwareTier::Tier16GB,
+                "ggml-org/gemma-4-E4B-it-GGUF:Q8_0",
+                "E4B",
+                "~8.6 GB",
+                32_768,
+                "32k ctx",
+                "~9.4 GB",
+                "gemma-4  |  E4B  |  Q8_0  |  32k ctx",
+                Some("ollama run gemma2:9b --ctx-size 32768"),
+            ),
+            (
+                32,
+                "Apple M3 Pro",
+                HardwareTier::Tier32GB,
+                "ggml-org/gemma-4-E4B-it-GGUF:Q8_0",
+                "E4B",
+                "~8.6 GB",
+                65_536,
+                "64k ctx",
+                "~10 GB",
+                "gemma-4  |  E4B  |  Q8_0  |  64k ctx",
+                None,
+            ),
+            (
+                64,
+                "Apple M3 Max",
+                HardwareTier::Tier64GBPlus,
+                "ggml-org/gemma-4-26B-A4B-it-GGUF:Q8_0",
+                "26B-A4B",
+                "~28.0 GB",
+                131_072,
+                "128k ctx",
+                "~30–32 GB",
+                "gemma-4  |  26B-A4B  |  Q8_0  |  128k ctx",
+                None,
+            ),
+        ] {
+            let profile = HardwareProfile::from_specs(gb * 1024 * 1024 * 1024, chip.to_string());
+            assert_eq!(profile.tier, tier);
+            assert_eq!(profile.recommended_model, model);
+            assert_eq!(profile.concise_model, "gemma-4");
+            assert_eq!(profile.recommended_size, size);
+            assert_eq!(profile.recommended_quant, "Q8_0");
+            assert_eq!(profile.disk_size, disk);
+            assert_eq!(profile.recommended_context, ctx);
+            assert_eq!(profile.recommended_context_display, ctx_disp);
+            assert_eq!(profile.ram_footprint, ram);
+            assert!(
+                profile
+                    .recommended_launch_command
+                    .contains(&format!("-c {ctx}"))
+            );
+            assert!(profile.recommended_launch_command.contains(size));
+            assert_eq!(profile.one_pass_token_ceiling(), ctx * 7 / 10);
+            assert_eq!(profile.llama_gui_selection(), gui);
+            if let Some(ollama_cmd) = check_ollama {
+                assert!(profile.ollama_launch_command.contains(ollama_cmd));
+            }
+        }
     }
 
     #[test]
