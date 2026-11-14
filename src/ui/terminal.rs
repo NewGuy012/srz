@@ -432,11 +432,105 @@ pub fn format_duration_short(d: Duration) -> String {
 
 pub use super::markdown::render_markdown;
 
+/// Returns the usable terminal line width when stdout is a TTY, leaving 1 column
+/// before the right margin to prevent terminal auto-wrap quirks.
+pub fn terminal_width() -> Option<usize> {
+    if !io::stdout().is_terminal() {
+        return None;
+    }
+    crossterm::terminal::size()
+        .ok()
+        .map(|(cols, _)| (cols as usize).saturating_sub(1).max(20))
+}
+
+fn measure_visible_and_sgr<'a>(word: &'a str, active_sgr: &mut Option<&'a str>) -> usize {
+    let bytes = word.as_bytes();
+    let mut i = 0;
+    let mut width = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\x1b' && bytes.get(i + 1) == Some(&b'[') {
+            let start = i;
+            i += 2;
+            while i < bytes.len() && !(b'@'..=b'~').contains(&bytes[i]) {
+                i += 1;
+            }
+            if i < bytes.len() {
+                if bytes[i] == b'm' {
+                    let seq = &word[start..=i];
+                    *active_sgr = (seq != "\x1b[0m" && seq != "\x1b[m").then_some(seq);
+                }
+                i += 1;
+            }
+            continue;
+        }
+        let ch = word[i..].chars().next().unwrap_or('\0');
+        width += 1;
+        i += ch.len_utf8();
+    }
+    width
+}
+
+/// Wraps text to `max_width` visible columns on whitespace boundaries, preserving ANSI SGR styling across line breaks.
+pub fn wrap_terminal_text(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    for (line_idx, line) in text.split('\n').enumerate() {
+        if line_idx > 0 {
+            out.push('\n');
+        }
+        let mut dummy_sgr = None;
+        if measure_visible_and_sgr(line, &mut dummy_sgr) <= max_width {
+            out.push_str(line);
+            continue;
+        }
+        let leading = line.bytes().take_while(|&b| b == b' ').count();
+        for _ in 0..leading {
+            out.push(' ');
+        }
+        let mut col = leading;
+        let mut line_has_word = false;
+        let mut active_sgr: Option<&str> = None;
+        for word in line[leading..].split_whitespace() {
+            let prev_sgr = active_sgr;
+            let word_width = measure_visible_and_sgr(word, &mut active_sgr);
+            let space = usize::from(line_has_word);
+            if line_has_word && col + space + word_width > max_width {
+                if prev_sgr.is_some() {
+                    out.push_str("\x1b[0m");
+                }
+                out.push('\n');
+                if let Some(sgr) = prev_sgr {
+                    out.push_str(sgr);
+                }
+                col = 0;
+            } else if line_has_word {
+                out.push(' ');
+                col += 1;
+            }
+            out.push_str(word);
+            col += word_width;
+            line_has_word = true;
+        }
+    }
+    out
+}
+
+/// Wraps `text` when a terminal width is available, borrowing zero-copy when `width` is `None`.
+pub fn wrap_for_terminal<'a>(text: Cow<'a, str>, width: Option<usize>) -> Cow<'a, str> {
+    match width {
+        Some(w) => Cow::Owned(wrap_terminal_text(text.as_ref(), w)),
+        None => text,
+    }
+}
+
 /// Incremental line-buffered markdown stream renderer for real-time terminal output.
 pub struct StreamMarkdownRenderer {
     line_buf: String,
     in_code_block: bool,
     use_color: bool,
+    wrap_width: Option<usize>,
 }
 
 impl Default for StreamMarkdownRenderer {
@@ -455,6 +549,7 @@ impl StreamMarkdownRenderer {
             line_buf: String::with_capacity(256),
             in_code_block: false,
             use_color,
+            wrap_width: terminal_width(),
         }
     }
 
@@ -498,7 +593,8 @@ impl StreamMarkdownRenderer {
         let sanitized = sanitize_terminal_text_cow(line_trimmed);
         let safe = sanitized.as_ref();
         if !self.use_color {
-            format!("{}\n", safe)
+            let text = wrap_for_terminal(Cow::Borrowed(safe), self.wrap_width);
+            format!("{}\n", text)
         } else if safe.trim_start().starts_with("```") {
             self.in_code_block = !self.in_code_block;
             format!("\x1b[32m{}\x1b[0m\n", safe)
@@ -508,10 +604,11 @@ impl StreamMarkdownRenderer {
             "\n".to_string()
         } else {
             let rendered = render_markdown(safe);
-            if rendered.ends_with('\n') {
-                rendered
+            let wrapped = wrap_for_terminal(Cow::Owned(rendered), self.wrap_width);
+            if wrapped.ends_with('\n') {
+                wrapped.into_owned()
             } else {
-                format!("{}\n", rendered)
+                format!("{}\n", wrapped)
             }
         }
     }
@@ -519,11 +616,13 @@ impl StreamMarkdownRenderer {
     fn render_partial_line(&self, raw: &str) -> String {
         let sanitized = sanitize_terminal_text_cow(raw);
         let safe = sanitized.as_ref();
-        if !self.use_color {
-            safe.to_string()
+        let rendered = if !self.use_color {
+            Cow::Borrowed(safe)
         } else {
-            render_markdown(safe)
-        }
+            Cow::Owned(render_markdown(safe))
+        };
+        let width = self.wrap_width.filter(|_| !self.in_code_block);
+        wrap_for_terminal(rendered, width).into_owned()
     }
 
     fn flush_partial_line(&mut self) {
@@ -553,6 +652,7 @@ pub fn display_summary_full(
     hint: Option<&str>,
 ) -> io::Result<()> {
     let stdout_is_tty = io::stdout().is_terminal();
+    let wrap_width = terminal_width();
     let sanitized_title = sanitize_title(title);
     let sanitized_content = sanitize_terminal_text_cow(content);
 
@@ -561,7 +661,8 @@ pub fn display_summary_full(
         if stdout_is_tty && !plain {
             Ui::header(&format!("Summary: {}", sanitized_title));
         }
-        println!("{}\n", sanitized_content);
+        let body = wrap_for_terminal(sanitized_content, wrap_width);
+        println!("{}\n", body);
         return Ok(());
     }
 
@@ -570,7 +671,8 @@ pub fn display_summary_full(
         "\n\x1b[1;36m=== Summary: {} ===\x1b[0m\n\n",
         sanitized_title
     );
-    let formatted_body = render_markdown(&sanitized_content);
+    let formatted_body =
+        wrap_for_terminal(Cow::Owned(render_markdown(&sanitized_content)), wrap_width);
     let mut full_output = format!("{}{}\n", header, formatted_body);
 
     // Append view file links if available
@@ -584,7 +686,8 @@ pub fn display_summary_full(
 
     // Append hint if available
     if let Some(h) = hint {
-        full_output.push_str(&format!("\n\x1b[2m{}\x1b[0m\n", h));
+        let wrapped_hint = wrap_for_terminal(Cow::Borrowed(h), wrap_width);
+        full_output.push_str(&format!("\n\x1b[2m{}\x1b[0m\n", wrapped_hint));
     }
 
     let (_, term_height) = crossterm::terminal::size().unwrap_or((80, 24));
@@ -866,5 +969,39 @@ mod tests {
         assert!(!stored.contains('\r'));
         assert!(!stored.contains('\n'));
         assert_eq!(stored, "Load file name");
+    }
+
+    #[test]
+    fn test_wrap_terminal_text_and_ansi_sgr() {
+        // Basic word wrapping without cutting words mid-word
+        let wrapped =
+            wrap_terminal_text("Nvidia crisis triggered massive financial uncertainty.", 24);
+        assert_eq!(
+            wrapped,
+            "Nvidia crisis triggered\nmassive financial\nuncertainty."
+        );
+
+        // ANSI codes count as zero width and active style carries across wraps
+        let styled = "\x1b[1;37mCEO Resignation and Collapse\x1b[0m follows.";
+        let wrapped_styled = wrap_terminal_text(styled, 18);
+        assert_eq!(
+            wrapped_styled,
+            "\x1b[1;37mCEO Resignation\x1b[0m\n\x1b[1;37mand Collapse\x1b[0m\nfollows."
+        );
+
+        // Indented list item and unbreakable long URL
+        let indented = "  \x1b[36m•\x1b[0m Read https://example.com/very/long/path/here now";
+        let wrapped_url = wrap_terminal_text(indented, 16);
+        assert_eq!(
+            wrapped_url,
+            "  \x1b[36m•\x1b[0m Read\nhttps://example.com/very/long/path/here\nnow"
+        );
+
+        // None width borrows without allocating
+        let input = "Unchanged paragraph";
+        assert!(matches!(
+            wrap_for_terminal(Cow::Borrowed(input), None),
+            Cow::Borrowed("Unchanged paragraph")
+        ));
     }
 }

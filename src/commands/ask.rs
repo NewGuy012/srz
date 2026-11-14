@@ -624,12 +624,13 @@ async fn ask_turn(
 
     if !output.streamed_to_stdout {
         let safe_content = crate::ui::sanitize_terminal_text_cow(&output.content);
-        if plain || !Ui::use_color() {
-            println!("{}", safe_content);
+        let text = if plain || !Ui::use_color() {
+            safe_content
         } else {
-            let rendered = render_markdown(safe_content.as_ref());
-            println!("{}", rendered);
-        }
+            std::borrow::Cow::Owned(render_markdown(safe_content.as_ref()))
+        };
+        let body = crate::ui::wrap_for_terminal(text, crate::ui::terminal_width());
+        println!("{}", body);
     }
 
     let tokenizer = llm.tokenizer_kind();
