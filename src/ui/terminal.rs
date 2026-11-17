@@ -142,7 +142,7 @@ impl ProgressBar {
     }
 }
 
-fn char_display_width(c: char) -> usize {
+pub(super) fn char_display_width(c: char) -> usize {
     if c.is_ascii() {
         return 1;
     }
@@ -514,7 +514,7 @@ fn measure_visible_and_sgr<'a>(word: &'a str, active_sgr: &mut Option<&'a str>) 
             continue;
         }
         let ch = word[i..].chars().next().unwrap_or('\0');
-        width += 1;
+        width += char_display_width(ch);
         i += ch.len_utf8();
     }
     width

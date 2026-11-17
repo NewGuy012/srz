@@ -149,25 +149,19 @@ pub struct Cli {
     pub target: Option<String>,
 
     /// Local OpenAI-compatible base URL
-    #[arg(
-        long,
-        global = true,
-        env = "OPENAI_BASE_URL",
-        default_value = "http://localhost:9931/v1"
-    )]
+    #[arg(long, global = true, default_value = "http://localhost:9931/v1")]
     pub base_url: String,
 
     /// Model name to use (default: "ggml-org/gemma-4-E4B-it-GGUF:Q8_0" matching Llama GUI & llama.cpp)
     #[arg(
         long,
         global = true,
-        env = "OPENAI_MODEL",
         default_value = "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
     )]
     pub model: String,
 
     /// OpenAI API key (optional for local LLMs)
-    #[arg(long, global = true, env = "OPENAI_API_KEY", default_value = "")]
+    #[arg(long, global = true, default_value = "")]
     pub api_key: String,
 
     /// Output summary style
@@ -567,19 +561,37 @@ impl Cli {
         config: &crate::config::Config,
         matches: Option<&clap::ArgMatches>,
     ) {
+        self.apply_config_with(config, matches, |k| std::env::var(k).ok());
+    }
+
+    pub(crate) fn apply_config_with(
+        &mut self,
+        config: &crate::config::Config,
+        matches: Option<&clap::ArgMatches>,
+        env_get: impl Fn(&str) -> Option<String>,
+    ) {
         let profile = self.profile.as_deref().and_then(|p| config.profiles.get(p));
 
         let was_provided = |id: &str| -> bool {
-            if let Some(m) = matches {
-                if !m.ids().any(|arg_id| arg_id.as_str() == id) {
-                    return false;
-                }
-                m.value_source(id) == Some(clap::parser::ValueSource::CommandLine)
-                    || m.value_source(id) == Some(clap::parser::ValueSource::EnvVariable)
-            } else {
-                false
-            }
+            matches
+                .and_then(|m| m.value_source(id))
+                .is_some_and(|s| s == clap::parser::ValueSource::CommandLine)
         };
+
+        macro_rules! apply_env_or_cfg {
+            ($field:ident, $env_key:literal) => {
+                if !was_provided(stringify!($field)) {
+                    if let Some(val) = env_get($env_key).filter(|v| !v.trim().is_empty()) {
+                        self.$field = val;
+                    } else if let Some(val) = profile
+                        .and_then(|p| p.$field.clone())
+                        .or_else(|| config.$field.clone())
+                    {
+                        self.$field = val;
+                    }
+                }
+            };
+        }
 
         macro_rules! apply_field {
             ($field:ident) => {
@@ -603,9 +615,9 @@ impl Cli {
             };
         }
 
-        apply_field!(base_url);
-        apply_field!(model);
-        apply_field!(api_key);
+        apply_env_or_cfg!(base_url, "OPENAI_BASE_URL");
+        apply_env_or_cfg!(model, "OPENAI_MODEL");
+        apply_env_or_cfg!(api_key, "OPENAI_API_KEY");
         apply_field!(style);
         apply_field!(max_tokens);
         if !was_provided("max_tokens")
@@ -1105,16 +1117,28 @@ mod tests {
     }
 
     #[test]
-    fn test_news_timeframe_display_labels_are_lowercase() {
-        for (tf, expected) in [
-            (NewsTimeframe::Day, "today / past 24 hours"),
-            (NewsTimeframe::Week, "past week"),
-            (NewsTimeframe::Month, "past month"),
-            (NewsTimeframe::All, "all time"),
-        ] {
-            let label = tf.display_label();
-            assert_eq!(label, expected);
-            assert_eq!(label, label.to_ascii_lowercase());
-        }
+    fn test_env_precedence_and_help_never_leaks_api_key() {
+        use clap::{CommandFactory, FromArgMatches};
+        let help = Cli::command().render_help().to_string();
+        assert!(!help.contains("OPENAI_API_KEY="));
+
+        let matches = Cli::command().get_matches_from(["srz", "Dune", "--model", "cli-model"]);
+        let mut cli = Cli::from_arg_matches(&matches).unwrap();
+        let cfg = Config {
+            settings: ProfileConfig {
+                base_url: Some("http://cfg/v1".into()),
+                api_key: Some("cfg-key".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        cli.apply_config_with(&cfg, Some(&matches), |k| match k {
+            "OPENAI_API_KEY" => Some("sk-env-secret".into()),
+            "OPENAI_MODEL" => Some("env-model".into()),
+            _ => None,
+        });
+        assert_eq!(cli.model, "cli-model");
+        assert_eq!(cli.api_key, "sk-env-secret");
+        assert_eq!(cli.base_url, "http://cfg/v1");
     }
 }

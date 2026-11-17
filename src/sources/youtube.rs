@@ -482,7 +482,7 @@ pub async fn fetch_innertube_player(
             "User-Agent",
             format!("com.google.android.youtube/{}", client_version),
         )
-        .json(&body)
+        .body(serde_json::to_vec(&body).context("Failed to serialize player request")?)
         .timeout(Duration::from_secs(10))
         .send()
         .await

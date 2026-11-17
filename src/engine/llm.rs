@@ -262,8 +262,11 @@ impl LlmClient {
         // 2. Try Ollama POST /api/show
         if let Some(json) = self
             .fetch_root_json("/api/show", |c, u| {
+                let payload = serde_json::to_vec(&serde_json::json!({ "name": &self.model }))
+                    .unwrap_or_default();
                 c.post(u)
-                    .json(&serde_json::json!({ "name": &self.model }))
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(payload)
                     .timeout(Duration::from_millis(1500))
             })
             .await
@@ -597,8 +600,11 @@ impl LlmClient {
         body: &ChatCompletionRequest<'_>,
         pb: &crate::ui::ProgressBar,
     ) -> Result<reqwest::Response> {
+        let payload = serde_json::to_vec(body).context("Failed to serialize LLM request")?;
         let (endpoint, response) = self
-            .send_with_fallback("/chat/completions", |c, url| c.post(url).json(body))
+            .send_with_fallback("/chat/completions", |c, url| {
+                c.post(url).body(payload.clone())
+            })
             .await;
 
         let response = match response {

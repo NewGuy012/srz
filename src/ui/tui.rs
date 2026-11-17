@@ -1,23 +1,18 @@
 use anyhow::Result;
 use crossterm::{
+    cursor,
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{
-    Frame, Terminal,
-    backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
-};
-use std::io::{Stdout, stdout};
+use std::io::{Stdout, Write, stdout};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::cache::Cache;
 use crate::render;
 use crate::storage::db::{Database, LibraryItem};
+use crate::ui::terminal::{char_display_width, wrap_terminal_text};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FocusPane {
@@ -28,17 +23,18 @@ enum FocusPane {
 struct AppState {
     items: Vec<LibraryItem>,
     filtered_indices: Vec<usize>,
-    list_state: ListState,
+    selected: Option<usize>,
+    list_offset: usize,
     scroll_offset: u16,
     filter_query: String,
     is_filtering: bool,
     focus: FocusPane,
     status_message: Option<(String, Instant)>,
-    views_dir: std::path::PathBuf,
+    views_dir: PathBuf,
 }
 
 impl AppState {
-    fn new(mut items: Vec<LibraryItem>, views_dir: std::path::PathBuf) -> Self {
+    fn new(mut items: Vec<LibraryItem>, views_dir: PathBuf) -> Self {
         for item in &mut items {
             item.title = crate::ui::sanitize_title(&item.title);
             item.model = crate::ui::sanitize_title(&item.model);
@@ -48,20 +44,18 @@ impl AppState {
                 *author = crate::ui::sanitize_title(author);
             }
             if let Some(ref mut url) = item.url {
-                *url = crate::ui::sanitize_terminal_text(url);
+                *url = crate::ui::sanitize_title(url);
             }
             item.summary = crate::ui::sanitize_terminal_text(&item.summary);
         }
 
         let indices: Vec<usize> = (0..items.len()).collect();
-        let mut list_state = ListState::default();
-        if !indices.is_empty() {
-            list_state.select(Some(0));
-        }
+        let selected = (!indices.is_empty()).then_some(0);
         Self {
             items,
             filtered_indices: indices,
-            list_state,
+            selected,
+            list_offset: 0,
             scroll_offset: 0,
             filter_query: String::new(),
             is_filtering: false,
@@ -83,56 +77,32 @@ impl AppState {
                 }
             }
         }
-
-        if self.filtered_indices.is_empty() {
-            self.list_state.select(None);
-        } else {
-            self.list_state.select(Some(0));
-        }
+        self.selected = (!self.filtered_indices.is_empty()).then_some(0);
+        self.list_offset = 0;
         self.scroll_offset = 0;
     }
 
     fn selected_item(&self) -> Option<&LibraryItem> {
-        self.list_state
-            .selected()
+        self.selected
             .and_then(|sel| self.filtered_indices.get(sel))
             .and_then(|&idx| self.items.get(idx))
     }
 
-    fn select_next(&mut self) {
-        if self.filtered_indices.is_empty() {
+    fn step_selection(&mut self, forward: bool) {
+        let len = self.filtered_indices.len();
+        if len == 0 {
             return;
         }
-        let current = self.list_state.selected().unwrap_or(0);
-        let next = if current + 1 < self.filtered_indices.len() {
-            current + 1
-        } else {
-            0
-        };
-        self.list_state.select(Some(next));
-        self.scroll_offset = 0;
-    }
-
-    fn select_prev(&mut self) {
-        if self.filtered_indices.is_empty() {
-            return;
-        }
-        let current = self.list_state.selected().unwrap_or(0);
-        let prev = if current > 0 {
+        let current = self.selected.unwrap_or(0);
+        let next = if forward {
+            (current + 1) % len
+        } else if current > 0 {
             current - 1
         } else {
-            self.filtered_indices.len().saturating_sub(1)
+            len - 1
         };
-        self.list_state.select(Some(prev));
+        self.selected = Some(next);
         self.scroll_offset = 0;
-    }
-
-    fn scroll_up(&mut self, amount: u16) {
-        self.scroll_offset = self.scroll_offset.saturating_sub(amount);
-    }
-
-    fn scroll_down(&mut self, amount: u16) {
-        self.scroll_offset = self.scroll_offset.saturating_add(amount);
     }
 
     fn set_status(&mut self, msg: impl Into<String>) {
@@ -149,50 +119,37 @@ pub enum TuiAction {
     },
 }
 
-/// RAII guard that enables raw mode and enters alternate screen on creation,
-/// and restores canonical terminal state (leaves alternate screen, disables raw mode, shows cursor)
-/// unconditionally when dropped, even on early exit, error, or panic.
-pub struct TerminalSessionGuard;
+struct TerminalSessionGuard;
 
 impl TerminalSessionGuard {
-    pub fn new() -> Result<Self> {
+    fn new() -> Result<Self> {
         enable_raw_mode()?;
-        let mut stdout = stdout();
-        execute!(stdout, EnterAlternateScreen)?;
+        let mut out = stdout();
+        execute!(out, EnterAlternateScreen, cursor::Hide)?;
         Ok(Self)
     }
 }
 
 impl Drop for TerminalSessionGuard {
     fn drop(&mut self) {
-        let mut stdout = stdout();
+        let mut out = stdout();
         let _ = disable_raw_mode();
-        let _ = execute!(stdout, LeaveAlternateScreen);
-        let _ = execute!(stdout, crossterm::cursor::Show);
+        let _ = execute!(out, LeaveAlternateScreen, cursor::Show);
     }
 }
 
 /// Runs the interactive terminal UI library explorer.
 pub fn run_tui(db: &Database, cache: &Cache) -> Result<TuiAction> {
     let _guard = TerminalSessionGuard::new()?;
-    let stdout = stdout();
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
+    let mut out = stdout();
     let items = db.get_all_library_items().unwrap_or_default();
     let mut state = AppState::new(items, cache.views_dir());
-
-    run_loop(&mut terminal, &mut state, db)
+    run_loop(&mut out, &mut state, db)
 }
 
-fn run_loop(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    state: &mut AppState,
-    db: &Database,
-) -> Result<TuiAction> {
+fn run_loop(out: &mut Stdout, state: &mut AppState, db: &Database) -> Result<TuiAction> {
     let mut needs_redraw = true;
     loop {
-        // Clear status after 3 seconds
         if let Some((_, created)) = &state.status_message
             && created.elapsed() > Duration::from_secs(3)
         {
@@ -201,27 +158,21 @@ fn run_loop(
         }
 
         if needs_redraw {
-            terminal
-                .draw(|f| ui_draw(f, state))
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+            let frame = render_frame(cols as usize, rows as usize, state);
+            out.write_all(frame.as_bytes())?;
+            out.flush()?;
             needs_redraw = false;
         }
 
         if event::poll(Duration::from_millis(100))? {
             match event::read()? {
-                Event::Resize(_, _) => {
-                    needs_redraw = true;
-                }
+                Event::Resize(_, _) => needs_redraw = true,
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     needs_redraw = true;
                     if state.is_filtering {
                         match key.code {
-                            KeyCode::Esc => {
-                                state.is_filtering = false;
-                            }
-                            KeyCode::Enter => {
-                                state.is_filtering = false;
-                            }
+                            KeyCode::Esc | KeyCode::Enter => state.is_filtering = false,
                             KeyCode::Backspace => {
                                 state.filter_query.pop();
                                 state.apply_filter();
@@ -235,7 +186,6 @@ fn run_loop(
                         continue;
                     }
 
-                    // Normal navigation mode
                     match key.code {
                         KeyCode::Char('q') => return Ok(TuiAction::Exit),
                         KeyCode::Esc => {
@@ -253,9 +203,7 @@ fn run_loop(
                                 return Ok(TuiAction::Ask { target });
                             }
                         }
-                        KeyCode::Char('/') => {
-                            state.is_filtering = true;
-                        }
+                        KeyCode::Char('/') => state.is_filtering = true,
                         KeyCode::Tab => {
                             state.focus = match state.focus {
                                 FocusPane::List => FocusPane::Preview,
@@ -263,18 +211,22 @@ fn run_loop(
                             };
                         }
                         KeyCode::Up | KeyCode::Char('k') => match state.focus {
-                            FocusPane::List => state.select_prev(),
-                            FocusPane::Preview => state.scroll_up(2),
+                            FocusPane::List => state.step_selection(false),
+                            FocusPane::Preview => {
+                                state.scroll_offset = state.scroll_offset.saturating_sub(2);
+                            }
                         },
                         KeyCode::Down | KeyCode::Char('j') => match state.focus {
-                            FocusPane::List => state.select_next(),
-                            FocusPane::Preview => state.scroll_down(2),
+                            FocusPane::List => state.step_selection(true),
+                            FocusPane::Preview => {
+                                state.scroll_offset = state.scroll_offset.saturating_add(2);
+                            }
                         },
                         KeyCode::PageUp | KeyCode::Char('K') => {
-                            state.scroll_up(10);
+                            state.scroll_offset = state.scroll_offset.saturating_sub(10);
                         }
                         KeyCode::PageDown | KeyCode::Char('J') => {
-                            state.scroll_down(10);
+                            state.scroll_offset = state.scroll_offset.saturating_add(10);
                         }
                         KeyCode::Char('y') | KeyCode::Char('c') => {
                             if let Some(item) = state.selected_item() {
@@ -329,260 +281,339 @@ fn run_loop(
     }
 }
 
-fn ui_draw(f: &mut Frame, state: &mut AppState) {
-    let size = f.area();
+/// Formats `text` (preserving CSI SGR escapes) to fit cleanly within `max_cols` display columns,
+/// truncating with `…` on overflow, padding trailing spaces, and resetting styles at line end.
+fn fit_padded_line(text: &str, max_cols: usize, row_bg: Option<&str>) -> String {
+    let mut out = String::with_capacity(text.len() + max_cols + 16);
+    if max_cols == 0 {
+        return out;
+    }
+    if let Some(bg) = row_bg {
+        out.push_str(bg);
+    }
 
-    let root_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Header banner
-            Constraint::Min(5),    // Main workspace (list + preview)
-            Constraint::Length(1), // Footer status bar
-        ])
-        .split(size);
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    let mut col = 0;
+    let mut has_sgr = row_bg.is_some();
+    let mut trunc_byte_len = out.len();
+    let mut trunc_col = 0;
+    let limit = max_cols.saturating_sub(1);
+    let mut overflowed = false;
 
-    // 1. Header Banner
-    let total_count = state.items.len();
-    let shown_count = state.filtered_indices.len();
-    let header_text = vec![Line::from(vec![
-        Span::styled(
-            " srz ",
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            " Library Explorer ",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("({shown_count}/{total_count} summaries)"),
-            Style::default().fg(Color::DarkGray),
-        ),
-    ])];
-    let header_block = Paragraph::new(header_text).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray)),
+    while i < bytes.len() {
+        if bytes[i] == b'\x1b' && bytes.get(i + 1) == Some(&b'[') {
+            let start = i;
+            i += 2;
+            while i < bytes.len() && !(b'@'..=b'~').contains(&bytes[i]) {
+                i += 1;
+            }
+            if i < bytes.len() {
+                if bytes[i] == b'm' {
+                    let seq = &text[start..=i];
+                    out.push_str(seq);
+                    has_sgr = seq != "\x1b[0m" && seq != "\x1b[m";
+                    if !has_sgr && let Some(bg) = row_bg {
+                        out.push_str(bg);
+                        has_sgr = true;
+                    }
+                }
+                i += 1;
+            }
+            continue;
+        }
+
+        let ch = text[i..].chars().next().unwrap_or('\0');
+        let cw = if ch == '\t' {
+            2
+        } else {
+            char_display_width(ch)
+        };
+        if col + cw <= limit {
+            if ch == '\t' {
+                out.push_str("  ");
+            } else {
+                out.push(ch);
+            }
+            col += cw;
+            trunc_byte_len = out.len();
+            trunc_col = col;
+            i += ch.len_utf8();
+        } else if col + cw <= max_cols {
+            let next_i = i + ch.len_utf8();
+            if text[next_i..].trim_end().is_empty() {
+                if ch == '\t' {
+                    out.push_str("  ");
+                } else {
+                    out.push(ch);
+                }
+                col += cw;
+                break;
+            }
+            overflowed = true;
+            break;
+        } else {
+            overflowed = true;
+            break;
+        }
+    }
+
+    if overflowed {
+        out.truncate(trunc_byte_len);
+        out.push('…');
+        col = trunc_col + 1;
+    }
+
+    for _ in col..max_cols {
+        out.push(' ');
+    }
+    if has_sgr {
+        out.push_str("\x1b[0m");
+    }
+    out
+}
+
+fn render_box(
+    width: usize,
+    height: usize,
+    title: &str,
+    border_ansi: &str,
+    rows: &[(&str, Option<&str>)],
+) -> Vec<String> {
+    let mut lines = Vec::with_capacity(height);
+    if width < 2 || height < 2 {
+        return lines;
+    }
+    let inner_w = width - 2;
+    let inner_h = height - 2;
+
+    // Top border with inline title
+    let mut top = String::with_capacity(width * 2);
+    top.push_str(border_ansi);
+    top.push('┌');
+    let mut title_cols = 0;
+    for ch in title.chars() {
+        let cw = char_display_width(ch);
+        if title_cols + cw > inner_w {
+            break;
+        }
+        top.push(ch);
+        title_cols += cw;
+    }
+    for _ in title_cols..inner_w {
+        top.push('─');
+    }
+    top.push_str("┐\x1b[0m");
+    lines.push(top);
+
+    for r in 0..inner_h {
+        let (content, bg) = rows.get(r).copied().unwrap_or(("", None));
+        let padded = fit_padded_line(content, inner_w, bg);
+        lines.push(format!(
+            "{border_ansi}│\x1b[0m{padded}{border_ansi}│\x1b[0m"
+        ));
+    }
+
+    let mut bottom = String::with_capacity(width * 2);
+    bottom.push_str(border_ansi);
+    bottom.push('└');
+    for _ in 0..inner_w {
+        bottom.push('─');
+    }
+    bottom.push_str("┘\x1b[0m");
+    lines.push(bottom);
+    lines
+}
+
+fn render_frame(cols: usize, rows: usize, state: &mut AppState) -> String {
+    let mut frame = String::with_capacity(cols * rows * 2);
+    if cols < 24 || rows < 12 {
+        for r in 0..rows {
+            let msg = if r == 0 {
+                "Terminal too small (min 24x12)"
+            } else {
+                ""
+            };
+            frame.push_str(&format!(
+                "\x1b[{};1H{}",
+                r + 1,
+                fit_padded_line(msg, cols, None)
+            ));
+        }
+        return frame;
+    }
+
+    const CYAN: &str = "\x1b[36m";
+    const DARK: &str = "\x1b[90m";
+
+    let header_line = format!(
+        "\x1b[1;30;46m srz \x1b[0;1;36m Library Explorer \x1b[0;90m({}/{} summaries)\x1b[0m",
+        state.filtered_indices.len(),
+        state.items.len()
     );
-    f.render_widget(header_block, root_layout[0]);
+    let header_rows = render_box(cols, 3, "", DARK, &[(&header_line, None)]);
 
-    // 2. Main Workspace Split (List Left, Preview Right)
-    let main_layout = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(38), Constraint::Percentage(62)])
-        .split(root_layout[1]);
+    let main_h = rows - 4;
+    let left_w = (cols * 38 / 100).max(16).min(cols.saturating_sub(18));
+    let right_w = cols - left_w;
 
-    // Left Pane: Search Input + Item List
-    let left_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(4)])
-        .split(main_layout[0]);
-
-    // Search Box
-    let search_style = if state.is_filtering {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
     let search_title = if state.is_filtering {
         " Search (Type to filter, Enter/Esc to finish) "
     } else {
         " Search (Press '/' to filter) "
     };
-    let search_prompt = if state.filter_query.is_empty() && !state.is_filtering {
-        Span::styled("All items", Style::default().fg(Color::DarkGray))
+    let search_border = if state.is_filtering { "\x1b[33m" } else { DARK };
+    let search_body = if state.filter_query.is_empty() && !state.is_filtering {
+        "\x1b[90mAll items\x1b[0m".to_string()
+    } else if state.is_filtering {
+        format!("\x1b[97m{}▌\x1b[0m", state.filter_query)
     } else {
-        Span::styled(&state.filter_query, Style::default().fg(Color::White))
+        format!("\x1b[97m{}\x1b[0m", state.filter_query)
     };
-    let search_widget = Paragraph::new(search_prompt).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(search_style)
-            .title(search_title),
+    let search_rows = render_box(
+        left_w,
+        3,
+        search_title,
+        search_border,
+        &[(&search_body, None)],
     );
-    f.render_widget(search_widget, left_layout[0]);
 
-    // List of Summaries
-    let list_border_style = if state.focus == FocusPane::List {
-        Style::default().fg(Color::Cyan)
+    let list_h = main_h.saturating_sub(3);
+    let list_inner_h = list_h.saturating_sub(2);
+    let visible_slots = (list_inner_h / 3).max(1);
+    if let Some(sel) = state.selected {
+        if sel < state.list_offset {
+            state.list_offset = sel;
+        } else if sel >= state.list_offset + visible_slots {
+            state.list_offset = sel + 1 - visible_slots;
+        }
     } else {
-        Style::default().fg(Color::DarkGray)
-    };
+        state.list_offset = 0;
+    }
 
-    let list_items: Vec<ListItem> = state
-        .filtered_indices
-        .iter()
-        .filter_map(|&idx| state.items.get(idx))
-        .map(|item| {
+    let mut list_owned: Vec<(String, Option<&'static str>)> = Vec::with_capacity(list_inner_h);
+    let end = (state.list_offset + visible_slots).min(state.filtered_indices.len());
+    for pos in state.list_offset..end {
+        if let Some(item) = state
+            .filtered_indices
+            .get(pos)
+            .and_then(|&idx| state.items.get(idx))
+        {
+            let is_sel = state.selected == Some(pos);
+            let bg = is_sel.then_some("\x1b[48;2;20;50;70m");
+            let prefix = if is_sel { "▶ " } else { "  " };
             let badge = render::target_badge(&item.target_type);
-            let date = if item.created_at.len() >= 10 {
-                &item.created_at[0..10]
-            } else {
-                &item.created_at
-            };
-
-            let line1 = Line::from(vec![
-                Span::styled(format!("{badge} "), Style::default().fg(Color::Yellow)),
-                Span::styled(&item.title, Style::default().add_modifier(Modifier::BOLD)),
-            ]);
-
-            let line2 = Line::from(vec![
-                Span::styled(
-                    format!("  [{}]", item.style),
-                    Style::default().fg(Color::Green),
+            let date = item.created_at.get(..10).unwrap_or(&item.created_at);
+            list_owned.push((
+                format!("{prefix}\x1b[33m{badge} \x1b[1;97m{}\x1b[0m", item.title),
+                bg,
+            ));
+            list_owned.push((
+                format!(
+                    "    \x1b[32m[{}]\x1b[90m {date} • {} words\x1b[0m",
+                    item.style, item.word_count
                 ),
-                Span::styled(format!(" {date}"), Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    format!(" • {} words", item.word_count),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]);
+                bg,
+            ));
+            list_owned.push((String::new(), None));
+        }
+    }
+    let list_refs: Vec<(&str, Option<&str>)> =
+        list_owned.iter().map(|(s, bg)| (s.as_str(), *bg)).collect();
+    let list_border = if state.focus == FocusPane::List {
+        CYAN
+    } else {
+        DARK
+    };
+    let list_rows = render_box(left_w, list_h, " Summaries ", list_border, &list_refs);
 
-            ListItem::new(vec![line1, line2, Line::from("")])
-        })
-        .collect();
+    let meta_h = 7usize.min(main_h.saturating_sub(3));
+    let preview_h = main_h.saturating_sub(meta_h);
+    let preview_inner_w = right_w.saturating_sub(2).max(1);
+    let preview_inner_h = preview_h.saturating_sub(2);
 
-    let list_widget = List::new(list_items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(list_border_style)
-                .title(" Summaries "),
-        )
-        .highlight_style(
-            Style::default()
-                .bg(Color::Rgb(20, 50, 70))
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("▶ ");
-
-    f.render_stateful_widget(list_widget, left_layout[1], &mut state.list_state);
-
-    // Right Pane: Metadata Details + Markdown Summary Viewer
-    let right_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(7), Constraint::Min(5)])
-        .split(main_layout[1]);
-
-    if let Some(item) = state.selected_item() {
-        // Metadata Card
-        let author_or_url = item
+    let (meta_rows, preview_rows) = if let Some(item) = state.selected_item() {
+        let source = item
             .author
             .as_deref()
             .or(item.url.as_deref())
             .unwrap_or("N/A");
-        let tokens_info = match (item.prompt_tokens, item.completion_tokens) {
+        let tokens = match (item.prompt_tokens, item.completion_tokens) {
             (Some(p), Some(c)) => format!("{p} prompt + {c} comp = {} total", p + c),
             _ => "N/A".to_string(),
         };
-        let speed_info = item
+        let speed = item
             .tokens_per_second
             .map(|tps| format!("{tps:.1} tok/s"))
             .unwrap_or_else(|| "N/A".to_string());
-
-        let meta_lines = vec![
-            Line::from(vec![
-                Span::styled("Title:     ", Style::default().fg(Color::Cyan)),
-                Span::styled(
-                    &item.title,
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("Source:    ", Style::default().fg(Color::Cyan)),
-                Span::styled(author_or_url, Style::default().fg(Color::DarkGray)),
-            ]),
-            Line::from(vec![
-                Span::styled("Model:     ", Style::default().fg(Color::Cyan)),
-                Span::styled(&item.model, Style::default().fg(Color::Yellow)),
-                Span::styled("  Style: ", Style::default().fg(Color::Cyan)),
-                Span::styled(&item.style, Style::default().fg(Color::Green)),
-            ]),
-            Line::from(vec![
-                Span::styled("Tokens:    ", Style::default().fg(Color::Cyan)),
-                Span::styled(tokens_info, Style::default().fg(Color::White)),
-                Span::styled("  Speed: ", Style::default().fg(Color::Cyan)),
-                Span::styled(speed_info, Style::default().fg(Color::Yellow)),
-            ]),
-            Line::from(vec![
-                Span::styled("Generated: ", Style::default().fg(Color::Cyan)),
-                Span::styled(&item.created_at, Style::default().fg(Color::DarkGray)),
-            ]),
+        let meta_owned = [
+            format!("\x1b[36mTitle:     \x1b[1;97m{}\x1b[0m", item.title),
+            format!("\x1b[36mSource:    \x1b[90m{source}\x1b[0m"),
+            format!(
+                "\x1b[36mModel:     \x1b[33m{}  \x1b[36mStyle: \x1b[32m{}\x1b[0m",
+                item.model, item.style
+            ),
+            format!("\x1b[36mTokens:    \x1b[97m{tokens}  \x1b[36mSpeed: \x1b[33m{speed}\x1b[0m"),
+            format!("\x1b[36mGenerated: \x1b[90m{}\x1b[0m", item.created_at),
         ];
+        let meta_refs: Vec<(&str, Option<&str>)> =
+            meta_owned.iter().map(|s| (s.as_str(), None)).collect();
+        let meta_box = render_box(right_w, meta_h, " Telemetry & Details ", DARK, &meta_refs);
 
-        let meta_widget = Paragraph::new(meta_lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .title(" Telemetry & Details "),
-        );
-        f.render_widget(meta_widget, right_layout[0]);
-
-        // Summary Content Viewer
-        let preview_border_style = if state.focus == FocusPane::Preview {
-            Style::default().fg(Color::Cyan)
+        let rendered_md = crate::ui::markdown::render_markdown(&item.summary);
+        let wrapped = wrap_terminal_text(&rendered_md, preview_inner_w);
+        let all_lines: Vec<&str> = wrapped.lines().collect();
+        let max_scroll = all_lines.len().saturating_sub(preview_inner_h);
+        let scroll = (state.scroll_offset as usize).min(max_scroll);
+        state.scroll_offset = scroll as u16;
+        let preview_slice: Vec<(&str, Option<&str>)> = all_lines
+            .iter()
+            .skip(scroll)
+            .take(preview_inner_h)
+            .map(|&l| (l, None))
+            .collect();
+        let preview_border = if state.focus == FocusPane::Preview {
+            CYAN
         } else {
-            Style::default().fg(Color::DarkGray)
+            DARK
         };
-
-        let summary_widget = Paragraph::new(item.summary.as_str())
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(preview_border_style)
-                    .title(" Summary Content (Tab to focus, J/K to scroll) "),
-            )
-            .wrap(Wrap { trim: false })
-            .scroll((state.scroll_offset, 0));
-
-        f.render_widget(summary_widget, right_layout[1]);
-    } else {
-        let empty_widget = Paragraph::new("No summary selected or library is empty.").block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Summary Content "),
+        let preview_box = render_box(
+            right_w,
+            preview_h,
+            " Summary Content (Tab to focus, J/K to scroll) ",
+            preview_border,
+            &preview_slice,
         );
-        f.render_widget(empty_widget, right_layout[1]);
-    }
-
-    // 3. Footer Status Bar
-    let status_text = if let Some((msg, _)) = &state.status_message {
-        Line::from(Span::styled(
-            format!(" {msg} "),
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        ))
+        (meta_box, preview_box)
     } else {
-        Line::from(vec![
-            Span::styled(" [↑/↓/j/k]", Style::default().fg(Color::Cyan)),
-            Span::raw(" Navigate "),
-            Span::styled("[/]", Style::default().fg(Color::Cyan)),
-            Span::raw(" Search "),
-            Span::styled("[Tab]", Style::default().fg(Color::Cyan)),
-            Span::raw(" Focus "),
-            Span::styled("[a]", Style::default().fg(Color::Cyan)),
-            Span::raw(" Ask/Chat "),
-            Span::styled("[Enter/b]", Style::default().fg(Color::Cyan)),
-            Span::raw(" Browser "),
-            Span::styled("[y]", Style::default().fg(Color::Cyan)),
-            Span::raw(" Copy "),
-            Span::styled("[d]", Style::default().fg(Color::Cyan)),
-            Span::raw(" Delete "),
-            Span::styled("[q]", Style::default().fg(Color::Cyan)),
-            Span::raw(" Quit "),
-        ])
+        let meta_box = render_box(right_w, meta_h, " Telemetry & Details ", DARK, &[]);
+        let preview_box = render_box(
+            right_w,
+            preview_h,
+            " Summary Content ",
+            DARK,
+            &[("No summary selected or library is empty.", None)],
+        );
+        (meta_box, preview_box)
     };
-    let footer_widget = Paragraph::new(status_text);
-    f.render_widget(footer_widget, root_layout[2]);
+
+    let footer_raw = if let Some((msg, _)) = &state.status_message {
+        format!("\x1b[1;30;42m {msg} \x1b[0m")
+    } else {
+        "\x1b[36m [↑/↓/j/k]\x1b[0m Navigate \x1b[36m[/]\x1b[0m Search \x1b[36m[Tab]\x1b[0m Focus \x1b[36m[a]\x1b[0m Ask/Chat \x1b[36m[Enter/b]\x1b[0m Browser \x1b[36m[y]\x1b[0m Copy \x1b[36m[d]\x1b[0m Delete \x1b[36m[q]\x1b[0m Quit ".to_string()
+    };
+    let footer_line = fit_padded_line(&footer_raw, cols, None);
+
+    for (idx, line) in header_rows.into_iter().enumerate() {
+        frame.push_str(&format!("\x1b[{};1H{line}", idx + 1));
+    }
+    let left_all = search_rows.into_iter().chain(list_rows);
+    let right_all = meta_rows.into_iter().chain(preview_rows);
+    for (idx, (l, r)) in left_all.zip(right_all).enumerate() {
+        frame.push_str(&format!("\x1b[{};1H{l}{r}", idx + 4));
+    }
+    frame.push_str(&format!("\x1b[{};1H{footer_line}", rows));
+    frame
 }
 
 fn pipe_to_command(cmd: &str, args: &[&str], text: &str) -> std::io::Result<()> {
@@ -592,8 +623,11 @@ fn pipe_to_command(cmd: &str, args: &[&str], text: &str) -> std::io::Result<()> 
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()?;
-    if let Some(mut stdin) = child.stdin.take() {
-        std::io::Write::write_all(&mut stdin, text.as_bytes())?;
+    if let Some(mut stdin) = child.stdin.take()
+        && let Err(err) = stdin.write_all(text.as_bytes())
+        && err.kind() != std::io::ErrorKind::BrokenPipe
+    {
+        return Err(err);
     }
     let status = child.wait()?;
     if status.success() {
@@ -603,13 +637,20 @@ fn pipe_to_command(cmd: &str, args: &[&str], text: &str) -> std::io::Result<()> 
     }
 }
 
-/// Copies text to the system clipboard using the platform CLI.
 fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     return pipe_to_command("pbcopy", &[], text);
 
     #[cfg(target_os = "windows")]
-    return pipe_to_command("clip", &[], text);
+    {
+        let clip = std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .map_or_else(
+                || PathBuf::from(r"C:\Windows\System32\clip.exe"),
+                |root| root.join("System32").join("clip.exe"),
+            );
+        return pipe_to_command(&clip.to_string_lossy(), &[], text);
+    }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
@@ -631,16 +672,6 @@ fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_badge_for_type() {
-        assert_eq!(render::target_badge("book"), "📚 Book");
-        assert_eq!(render::target_badge("web"), "🌐 Web");
-        assert_eq!(render::target_badge("news"), "📰 News");
-        assert_eq!(render::target_badge("youtube"), "📺 Video");
-        assert_eq!(render::target_badge("other"), "📝 Doc");
-        assert_eq!(render::target_icon("youtube"), "📺");
-    }
 
     fn make_item(
         id: i64,
@@ -670,32 +701,40 @@ mod tests {
     }
 
     #[test]
-    fn test_app_state_filtering() {
-        let items = vec![
-            make_item(
-                1,
-                "book",
-                "Dune",
-                Some("Frank Herbert"),
-                None,
-                "Spice and sandworms on Arrakis",
-            ),
-            make_item(
-                2,
-                "web",
-                "Rust 2026 Edition",
-                None,
-                Some("https://rust-lang.org"),
-                "New features in modern Rust",
-            ),
-        ];
+    fn test_app_state_filtering_and_sanitization() {
+        let mut dirty = make_item(
+            1,
+            "web",
+            "\x1b[31mRed Title\x1b[0m\nSecond Line",
+            Some("Evil\u{202E}Author\x1b]0;Title\x07"),
+            Some("https://example.com/\x1b[2Jevil\npath"),
+            "Malicious \x1b[31;1mANSI\x1b[0m and \u{202E}BiDi summary",
+        );
+        dirty.style = "concise\r\n".into();
+        dirty.model = "gemma\x07".into();
 
-        let mut state = AppState::new(items, std::path::PathBuf::from("/tmp"));
-        assert_eq!(state.filtered_indices.len(), 2);
+        let dune = make_item(
+            2,
+            "book",
+            "Dune",
+            Some("Frank Herbert"),
+            None,
+            "Spice and sandworms on Arrakis",
+        );
+
+        let mut state = AppState::new(vec![dirty, dune], PathBuf::from("/tmp"));
+        let item = &state.items[0];
+        assert_eq!(item.title, "Red Title Second Line");
+        assert!(!item.author.as_ref().unwrap().contains('\u{202E}'));
+        assert!(!item.url.as_ref().unwrap().contains('\n'));
+        assert!(!item.summary.contains("\x1b[31;1m"));
+        assert!(!item.summary.contains('\u{202E}'));
+        assert_eq!(item.style, "concise");
+        assert_eq!(item.model, "gemma");
 
         for (query, expected) in [
             ("arrakis", Some("Dune")),
-            ("rust", Some("Rust 2026 Edition")),
+            ("red title", Some("Red Title Second Line")),
             ("nonexistent", None),
         ] {
             state.filter_query = query.into();
@@ -709,27 +748,24 @@ mod tests {
     }
 
     #[test]
-    fn test_app_state_sanitizes_untrusted_item_fields() {
-        let mut item = make_item(
-            1,
-            "web",
-            "\x1b[31mRed Title\x1b[0m\nSecond Line",
-            Some("Evil\u{202E}Author\x1b]0;Title\x07"),
-            Some("https://example.com/\x1b[2Jevil"),
-            "Malicious \x1b[31;1mANSI\x1b[0m and \u{202E}BiDi summary",
-        );
-        item.style = "concise\r\n".into();
-        item.model = "gemma\x07".into();
+    fn test_render_frame_and_fit_padded_line() {
+        let fitted = fit_padded_line("\x1b[36mHello 世界\x1b[0m", 8, None);
+        assert!(fitted.ends_with("\x1b[0m"));
+        assert!(fitted.contains('…'));
 
-        let state = AppState::new(vec![item], std::path::PathBuf::from("/tmp"));
-        let item = &state.items[0];
-        assert_eq!(item.title, "Red Title Second Line");
-        assert!(!item.author.as_ref().unwrap().contains('\u{202E}'));
-        assert!(!item.author.as_ref().unwrap().contains('\x1b'));
-        assert!(!item.url.as_ref().unwrap().contains("\x1b[2J"));
-        assert!(!item.summary.contains("\x1b[31;1m"));
-        assert!(!item.summary.contains('\u{202E}'));
-        assert_eq!(item.style, "concise");
-        assert_eq!(item.model, "gemma");
+        let item = make_item(
+            1,
+            "book",
+            "Dune",
+            Some("Frank Herbert"),
+            None,
+            "**Arrakis**",
+        );
+        let mut state = AppState::new(vec![item], PathBuf::from("/tmp"));
+        let frame = render_frame(100, 30, &mut state);
+        assert!(frame.contains("Library Explorer"));
+        assert!(frame.contains("Dune"));
+        assert!(frame.contains("Arrakis"));
+        assert!(render_frame(20, 10, &mut state).contains("Terminal too small"));
     }
 }

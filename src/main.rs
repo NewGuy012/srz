@@ -7,8 +7,7 @@ use srz::commands::dispatch_cli;
 use srz::config::Config;
 use srz::ui::Ui;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let cmd = Cli::command();
     let matches = cmd.get_matches();
     let mut args = match Cli::from_arg_matches(&matches) {
@@ -32,5 +31,8 @@ async fn main() -> Result<()> {
         Ui::set_verbose(true);
     }
 
-    dispatch_cli(args, config, config_path).await
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(dispatch_cli(args, config, config_path))
 }
