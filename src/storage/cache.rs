@@ -624,6 +624,7 @@ mod tests {
         cache.set_book_metadata("Dune", None, &None);
 
         let db_path = tmp.path().join("srz.db");
+        assert!(db_path.is_file());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

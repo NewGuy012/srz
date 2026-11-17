@@ -931,6 +931,7 @@ impl std::ops::Deref for Config {
 /// Maximum allowable size for a configuration file in bytes (1 MB).
 pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 
+#[cfg(unix)]
 fn has_configured_api_key(cfg: &Config) -> bool {
     cfg.settings
         .api_key

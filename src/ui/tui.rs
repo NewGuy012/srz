@@ -639,12 +639,14 @@ fn pipe_to_command(cmd: &str, args: &[&str], text: &str) -> std::io::Result<()> 
 
 fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
-    return pipe_to_command("pbcopy", &[], text);
+    {
+        pipe_to_command("pbcopy", &[], text)
+    }
 
     #[cfg(target_os = "windows")]
     {
         let clip = crate::fs_util::system_root_bin("clip.exe");
-        return pipe_to_command(&clip.to_string_lossy(), &[], text);
+        pipe_to_command(&clip.to_string_lossy(), &[], text)
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
