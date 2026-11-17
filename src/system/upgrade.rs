@@ -1,27 +1,26 @@
-use crate::system::sha256::Sha256;
+use crate::system::sha256::sha256_hex;
+use crate::ui::Ui;
 use anyhow::{Context, Result, bail};
 use flate2::read::GzDecoder;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::env;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::ui::Ui;
-
-pub const DEFAULT_REPO: &str = "NewGuy012/srz";
-pub const MAX_ARCHIVE_BYTES: usize = 50 * 1024 * 1024; // 50 MB limit for release archives
-pub const MAX_BINARY_BYTES: u64 = 100 * 1024 * 1024; // 100 MB limit for decompressed binary
-pub const MAX_TAR_STREAM_BYTES: u64 = MAX_BINARY_BYTES + 20 * 1024 * 1024; // 120 MB limit for total decompressed tar stream
+const DEFAULT_REPO: &str = "NewGuy012/srz";
+const MAX_ARCHIVE_BYTES: usize = 50 * 1024 * 1024;
+const MAX_BINARY_BYTES: u64 = 100 * 1024 * 1024;
+const MAX_TAR_STREAM_BYTES: u64 = MAX_BINARY_BYTES + 20 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ArchiveFormat {
+enum ArchiveFormat {
     TarGz,
     Zip,
 }
 
 impl ArchiveFormat {
-    pub fn extension(&self) -> &'static str {
+    fn extension(self) -> &'static str {
         match self {
             Self::TarGz => "tar.gz",
             Self::Zip => "zip",
@@ -30,19 +29,17 @@ impl ArchiveFormat {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TargetInfo {
-    pub target: &'static str,
-    pub format: ArchiveFormat,
-    pub binary_name: &'static str,
+struct TargetInfo {
+    target: &'static str,
+    format: ArchiveFormat,
+    binary_name: &'static str,
 }
 
-/// Detects the target triplet and package format for the current operating system and architecture.
-pub fn detect_target() -> Result<TargetInfo, String> {
+fn detect_target() -> Result<TargetInfo, String> {
     detect_target_from(env::consts::OS, env::consts::ARCH)
 }
 
-/// Core mapping logic separated for deterministic unit testing.
-pub fn detect_target_from(os: &str, arch: &str) -> Result<TargetInfo, String> {
+fn detect_target_from(os: &str, arch: &str) -> Result<TargetInfo, String> {
     match (os, arch) {
         ("macos", "aarch64") => Ok(TargetInfo {
             target: "aarch64-apple-darwin",
@@ -74,16 +71,14 @@ pub fn detect_target_from(os: &str, arch: &str) -> Result<TargetInfo, String> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InstallOrigin {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallOrigin {
     Homebrew,
     Cargo,
     Direct,
 }
 
-/// Detects if srz is installed via a package manager to avoid breaking package tracking.
-pub fn detect_install_origin(exe_path: &Path) -> InstallOrigin {
+fn detect_install_origin(exe_path: &Path) -> InstallOrigin {
     let path_str = exe_path.to_string_lossy();
     if path_str.contains("/opt/homebrew/")
         || path_str.contains("/usr/local/Cellar/")
@@ -99,51 +94,28 @@ pub fn detect_install_origin(exe_path: &Path) -> InstallOrigin {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Version {
-    pub major: u64,
-    pub minor: u64,
-    pub patch: u64,
-    pub pre: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VersionError(pub String);
-
-impl std::fmt::Display for VersionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Invalid semver: {}", self.0)
-    }
+struct Version {
+    major: u64,
+    minor: u64,
+    patch: u64,
+    pre: Option<String>,
 }
-
-impl std::error::Error for VersionError {}
 
 impl Version {
-    pub const fn new(major: u64, minor: u64, patch: u64) -> Self {
-        Self {
-            major,
-            minor,
-            patch,
-            pre: None,
-        }
-    }
-
-    pub fn parse(v: &str) -> Result<Self, VersionError> {
+    fn parse(v: &str) -> Result<Self> {
         let trimmed = v.trim();
         let s = trimmed
             .strip_prefix('v')
             .or_else(|| trimmed.strip_prefix('V'))
             .unwrap_or(trimmed);
 
-        // Disallow path traversal, shell characters, whitespace
-        if s.contains('/') || s.contains('\\') || s.contains(';') || s.contains(' ') {
-            return Err(VersionError(format!(
-                "Illegal characters in version: {}",
-                s
-            )));
+        if s.chars()
+            .any(|c| c.is_control() || matches!(c, '/' | '\\' | ';' | ' '))
+        {
+            bail!("Illegal characters in version: {}", s);
         }
 
-        // Strip build metadata (+...)
         let (version_pre, _build) = match s.split_once('+') {
             Some((vp, b)) => {
                 if b.is_empty()
@@ -151,14 +123,13 @@ impl Version {
                         .chars()
                         .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
                 {
-                    return Err(VersionError(format!("Invalid build metadata: {}", b)));
+                    bail!("Invalid build metadata: {}", b);
                 }
                 (vp, Some(b))
             }
             None => (s, None),
         };
 
-        // Split core version from pre-release
         let (core, pre) = match version_pre.split_once('-') {
             Some((c, p)) => {
                 if p.is_empty()
@@ -166,10 +137,7 @@ impl Version {
                         .chars()
                         .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
                 {
-                    return Err(VersionError(format!(
-                        "Invalid prerelease identifier: {}",
-                        p
-                    )));
+                    bail!("Invalid prerelease identifier: {}", p);
                 }
                 (c, Some(p.to_string()))
             }
@@ -178,14 +146,11 @@ impl Version {
 
         let parts: Vec<&str> = core.split('.').collect();
         let [maj, min, pat] = parts.as_slice() else {
-            return Err(VersionError(format!(
-                "Expected major.minor.patch, got: {}",
-                core
-            )));
+            bail!("Expected major.minor.patch, got: {}", core);
         };
         let parse_part = |s: &str, name: &str| {
             s.parse::<u64>()
-                .map_err(|_| VersionError(format!("Invalid {} version: {}", name, s)))
+                .with_context(|| format!("Invalid {} version: {}", name, s))
         };
 
         Ok(Self {
@@ -204,14 +169,6 @@ impl std::fmt::Display for Version {
             write!(f, "-{}", pre)?;
         }
         Ok(())
-    }
-}
-
-impl std::str::FromStr for Version {
-    type Err = VersionError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::parse(s)
     }
 }
 
@@ -234,30 +191,22 @@ impl Ord for Version {
     }
 }
 
-/// Strips optional leading 'v' and parses a semantic version.
-pub fn parse_clean_version(v: &str) -> Result<Version, VersionError> {
-    let clean = v.trim().trim_start_matches('v').trim_matches('/');
-    Version::parse(clean)
-}
-
-/// Extracts the hex digest from a standard sha256sum line (e.g. "a1b2...  srz.tar.gz").
-pub fn parse_sha256_checksum(content: &str) -> Option<&str> {
+fn parse_sha256_checksum(content: &str) -> Option<&str> {
     content
         .lines()
         .find(|line| !line.trim().is_empty())
         .and_then(|line| line.split_whitespace().next())
+        .filter(|hex| hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
-/// Formats primary versioned asset name and fallback alias.
-pub fn format_asset_names(tag: &str, target: &str, format: ArchiveFormat) -> (String, String) {
+fn format_asset_names(tag: &str, target: &str, format: ArchiveFormat) -> (String, String) {
     let ext = format.extension();
     let versioned = format!("srz-{}-{}.{}", tag, target, ext);
     let latest_alias = format!("srz-{}.{}", target, ext);
     (versioned, latest_alias)
 }
 
-/// Extracts the named binary from a gzipped tarball with bounded decompression.
-pub fn extract_binary_from_tar_gz(bytes: &[u8], binary_name: &str) -> Result<Vec<u8>> {
+fn extract_binary_from_tar_gz(bytes: &[u8], binary_name: &str) -> Result<Vec<u8>> {
     let mut gz = GzDecoder::new(Cursor::new(bytes)).take(MAX_TAR_STREAM_BYTES + 1);
     let mut header = [0u8; 512];
 
@@ -358,11 +307,10 @@ pub fn extract_binary_from_tar_gz(bytes: &[u8], binary_name: &str) -> Result<Vec
     bail!("Binary '{}' not found in release archive", binary_name)
 }
 
-/// Extracts the named binary from a zip archive with bounded decompression.
-pub fn extract_binary_from_zip(bytes: &[u8], binary_name: &str) -> Result<Vec<u8>> {
+fn extract_binary_from_zip(bytes: &[u8], binary_name: &str) -> Result<Vec<u8>> {
     let reader = crate::system::zip::ZipReader::new(bytes).context("Failed to read zip archive")?;
     for entry in reader.entries() {
-        if entry.name.rsplit(['/', '\\']).next() == Some(binary_name) {
+        if entry.is_regular_file && entry.name.rsplit(['/', '\\']).next() == Some(binary_name) {
             let data = reader.decompress_entry(entry, MAX_BINARY_BYTES as usize)?;
             if data.is_empty() {
                 bail!(
@@ -376,9 +324,9 @@ pub fn extract_binary_from_zip(bytes: &[u8], binary_name: &str) -> Result<Vec<u8
     bail!("Binary '{}' not found in release zip archive", binary_name)
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum UpgradeStatus {
+enum UpgradeStatus {
     AlreadyUpToDate,
     UpdateAvailable,
     Upgraded,
@@ -386,18 +334,17 @@ pub enum UpgradeStatus {
     CargoManaged,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct UpgradeResult {
-    pub current_version: String,
-    pub target_version: String,
-    pub target_platform: String,
-    pub status: UpgradeStatus,
-    pub message: String,
+#[derive(Debug, Serialize)]
+struct UpgradeResult {
+    current_version: String,
+    target_version: String,
+    target_platform: String,
+    status: UpgradeStatus,
+    message: String,
 }
 
 impl UpgradeResult {
-    /// Emits a structured result as formatted JSON to stdout or as a user-friendly UI message to stderr.
-    pub fn emit(
+    fn emit(
         status: UpgradeStatus,
         target_version: impl Into<String>,
         target_platform: impl Into<String>,
@@ -452,7 +399,7 @@ fn build_upgrade_client(
     builder.build()
 }
 
-pub async fn resolve_latest_version(client: &reqwest::Client, repo: &str) -> Result<String> {
+async fn resolve_latest_version(client: &reqwest::Client, repo: &str) -> Result<String> {
     let redirect_url = format!("https://github.com/{}/releases/latest", repo);
     let no_redirect = build_upgrade_client(
         None,
@@ -468,7 +415,7 @@ pub async fn resolve_latest_version(client: &reqwest::Client, repo: &str) -> Res
         && let Some(pos) = loc_str.rfind("/tag/")
     {
         let clean_tag = loc_str[pos + 5..].trim_matches('/');
-        if let Ok(ver) = parse_clean_version(clean_tag) {
+        if let Ok(ver) = Version::parse(clean_tag) {
             return Ok(format!("v{}", ver));
         }
     }
@@ -493,8 +440,7 @@ pub async fn resolve_latest_version(client: &reqwest::Client, repo: &str) -> Res
     let tag = release_json["tag_name"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing 'tag_name' in GitHub release response"))?;
-    let ver =
-        parse_clean_version(tag).context("Failed to parse GitHub release tag_name as semver")?;
+    let ver = Version::parse(tag).context("Failed to parse GitHub release tag_name as semver")?;
 
     Ok(format!("v{}", ver))
 }
@@ -553,7 +499,7 @@ async fn download_and_verify_archive(
                 .await
                 .unwrap_or_default();
             if let Some(expected_hash) = parse_sha256_checksum(&sha_text) {
-                let computed_hash = Sha256::digest_hex(&archive_bytes);
+                let computed_hash = sha256_hex(&archive_bytes);
 
                 if !expected_hash.eq_ignore_ascii_case(&computed_hash) {
                     sha_pb.finish_and_clear();
@@ -598,8 +544,7 @@ async fn download_and_verify_archive(
     Ok(archive_bytes)
 }
 
-/// Safely replaces an executable binary with a staged new binary file.
-pub fn replace_binary(new_binary: &Path, target_exe: &Path) -> std::io::Result<()> {
+fn replace_binary(new_binary: &Path, target_exe: &Path) -> std::io::Result<()> {
     crate::system::fs_util::reject_symlink(target_exe, "replace binary at symlink")?;
 
     if std::fs::rename(new_binary, target_exe).is_ok() {
@@ -622,7 +567,6 @@ pub fn replace_binary(new_binary: &Path, target_exe: &Path) -> std::io::Result<(
     Ok(())
 }
 
-/// Main entry point for executing `srz upgrade`.
 pub async fn run_upgrade(
     check: bool,
     force: bool,
@@ -630,13 +574,12 @@ pub async fn run_upgrade(
     json: bool,
 ) -> Result<()> {
     let current_version_str = env!("CARGO_PKG_VERSION");
-    let current_version = parse_clean_version(current_version_str)
-        .context("Failed to parse current CARGO_PKG_VERSION")?;
+    let current_version =
+        Version::parse(current_version_str).context("Failed to parse current CARGO_PKG_VERSION")?;
 
     let current_exe =
         env::current_exe().context("Failed to determine path to current executable")?;
 
-    // 1. Check install origin
     let origin = detect_install_origin(&current_exe);
     if origin == InstallOrigin::Homebrew {
         let msg = "srz was installed via Homebrew. Please run `brew upgrade srz` instead.";
@@ -650,7 +593,6 @@ pub async fn run_upgrade(
         return Ok(());
     }
 
-    // 2. Detect platform target
     let target_info = match detect_target() {
         Ok(info) => info,
         Err(err) => {
@@ -668,7 +610,6 @@ pub async fn run_upgrade(
         }
     };
 
-    // 3. Setup HTTP client with HTTPS-only public-host redirect validation
     let redirect_policy = reqwest::redirect::Policy::custom(|attempt| {
         if attempt.previous().len() >= 10 {
             return attempt.error("Too many redirects during upgrade");
@@ -685,7 +626,6 @@ pub async fn run_upgrade(
     )
     .context("Failed to build HTTP client")?;
 
-    // 4. Resolve target version
     let spinner = Ui::spinner("Checking for updates...");
     let target_tag = match custom_version {
         Some(v) => {
@@ -701,7 +641,7 @@ pub async fn run_upgrade(
     };
     spinner.finish_and_clear();
 
-    let target_version = parse_clean_version(&target_tag).with_context(|| {
+    let target_version = Version::parse(&target_tag).with_context(|| {
         format!(
             "Failed to parse release tag '{}' as a semver version",
             target_tag
@@ -712,7 +652,6 @@ pub async fn run_upgrade(
     let is_newer = target_version > current_version;
     let is_target_equal = target_version == current_version;
 
-    // Handle --check
     if check {
         let (status, msg) = if is_newer {
             (
@@ -747,7 +686,6 @@ pub async fn run_upgrade(
         return Ok(());
     }
 
-    // Up to date check
     if !is_newer && !force && custom_version.is_none() {
         let msg = format!("srz is already up to date (v{}).", current_version);
         UpgradeResult::emit(
@@ -775,7 +713,6 @@ pub async fn run_upgrade(
     let (versioned_name, latest_alias) =
         format_asset_names(&target_tag, target_info.target, target_info.format);
 
-    // 5. Download & verify
     let archive_bytes = download_and_verify_archive(
         &client,
         DEFAULT_REPO,
@@ -786,7 +723,6 @@ pub async fn run_upgrade(
     )
     .await?;
 
-    // 6. Decompress binary
     let extract_pb = Ui::spinner("Extracting new binary...");
     let binary_bytes = match target_info.format {
         ArchiveFormat::TarGz => {
@@ -796,38 +732,32 @@ pub async fn run_upgrade(
     };
     Ui::finish_spinner(&extract_pb, "Extracted new executable.");
 
-    // 7. Write to temp file with atomic creation and private executable permissions
     let temp_dir = current_exe
         .parent()
         .map(PathBuf::from)
         .unwrap_or_else(env::temp_dir);
 
-    let temp_path = crate::system::fs_util::create_temp_file_path(
+    // Sweep stale backup files left by previous locked swaps (e.g. on Windows).
+    if let Ok(entries) = std::fs::read_dir(&temp_dir) {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str()
+                && name.starts_with(".srz-old-")
+                && name.ends_with(".tmp")
+            {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    let temp_path = crate::system::fs_util::write_staged_temp_file(
         &temp_dir,
         ".srz-upgrade",
         &format!("-{}", target_info.binary_name),
-    );
+        &binary_bytes,
+        0o755,
+    )
+    .with_context(|| format!("Failed to stage temporary binary in {:?}", temp_dir))?;
 
-    let mut open_opts = std::fs::OpenOptions::new();
-    open_opts.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        open_opts.mode(0o755);
-    }
-
-    let mut temp_file = open_opts
-        .open(&temp_path)
-        .with_context(|| format!("Failed to create temporary binary at {:?}", temp_path))?;
-    if let Err(err) = std::io::Write::write_all(&mut temp_file, &binary_bytes)
-        .and_then(|_| std::io::Write::flush(&mut temp_file))
-    {
-        let _ = std::fs::remove_file(&temp_path);
-        return Err(err)
-            .with_context(|| format!("Failed to write temporary binary at {:?}", temp_path));
-    }
-
-    // 8. Swap binary
     let swap_pb = Ui::spinner(format!("Installing to {}...", current_exe.display()));
     if let Err(err) = replace_binary(&temp_path, &current_exe) {
         let _ = std::fs::remove_file(&temp_path);
@@ -837,7 +767,6 @@ pub async fn run_upgrade(
     let _ = std::fs::remove_file(&temp_path);
     Ui::finish_spinner(&swap_pb, "Binary replaced successfully.");
 
-    // 9. Post-upgrade verification
     let mut verified_version = target_tag.clone();
     if let Ok(out) = Command::new(&current_exe).arg("--version").output()
         && out.status.success()
@@ -1013,16 +942,17 @@ mod tests {
             (format!("{test_hash} *srz-v0.1.0.tar.gz"), Some(test_hash)),
             (test_hash.to_string(), Some(test_hash)),
             ("   \n\n  ".to_string(), None),
+            (
+                "<!DOCTYPE html><html>not-a-checksum</html>".to_string(),
+                None,
+            ),
         ] {
             assert_eq!(parse_sha256_checksum(&input), expected);
         }
 
-        let computed =
-            Sha256::digest_hex(b"Arbitrary release archive test data for SHA256 hashing.");
+        let computed = sha256_hex(b"Arbitrary release archive test data for SHA256 hashing.");
         let sha256_file = format!("{computed}  srz.tar.gz");
-        let parsed = parse_sha256_checksum(&sha256_file).expect("Parsed hash");
-        assert_eq!(parsed, computed);
-        assert!(parsed.eq_ignore_ascii_case(&computed.to_uppercase()));
+        assert_eq!(parse_sha256_checksum(&sha256_file), Some(computed.as_str()));
     }
 
     #[test]
@@ -1074,15 +1004,14 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_clean_version_canonicalization_and_rejection() {
+    fn test_version_parse_canonicalization_and_rejection() {
         for (input, major, minor, patch) in [
             ("v0.1.0", 0, 1, 0),
             ("0.2.5", 0, 2, 5),
             ("  v1.3.4-alpha.1 \n", 1, 3, 4),
-            ("v0.7.1", 0, 7, 1),
             (" 0.7.1 ", 0, 7, 1),
         ] {
-            let v = parse_clean_version(input).unwrap();
+            let v = Version::parse(input).unwrap();
             assert_eq!((v.major, v.minor, v.patch), (major, minor, patch));
         }
 
@@ -1093,7 +1022,7 @@ mod tests {
             "v0.7.1/payload",
             "; rm -rf /",
         ] {
-            assert!(parse_clean_version(invalid).is_err());
+            assert!(Version::parse(invalid).is_err());
         }
     }
 

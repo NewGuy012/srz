@@ -643,12 +643,7 @@ fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
 
     #[cfg(target_os = "windows")]
     {
-        let clip = std::env::var_os("SystemRoot")
-            .map(PathBuf::from)
-            .map_or_else(
-                || PathBuf::from(r"C:\Windows\System32\clip.exe"),
-                |root| root.join("System32").join("clip.exe"),
-            );
+        let clip = crate::fs_util::system_root_bin("clip.exe");
         return pipe_to_command(&clip.to_string_lossy(), &[], text);
     }
 

@@ -261,16 +261,6 @@ pub fn is_http_url(s: &str) -> bool {
     s.starts_with("http://") || s.starts_with("https://")
 }
 
-/// Formats a byte slice into a lowercase hexadecimal string in a single allocation.
-pub fn format_hex(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut hex = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        let _ = write!(hex, "{:02x}", b);
-    }
-    hex
-}
-
 #[rustfmt::skip]
 const STOP_WORDS: &[&str] = &[
     "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are",
@@ -711,12 +701,6 @@ mod tests {
         ] {
             assert_eq!(is_http_url(url), expected);
         }
-    }
-
-    #[test]
-    fn test_format_hex() {
-        assert_eq!(format_hex(&[]), "");
-        assert_eq!(format_hex(&[0x00, 0x0f, 0x10, 0xff]), "000f10ff");
     }
 
     #[test]

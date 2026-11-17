@@ -2,6 +2,8 @@ use anyhow::{Context, Result, bail};
 use flate2::read::DeflateDecoder;
 use std::io::Read;
 
+const MAX_ZIP_ENTRIES: usize = 16_384;
+
 /// Representation of an entry in a ZIP central directory.
 #[derive(Debug, Clone)]
 pub struct ZipEntry<'a> {
@@ -10,6 +12,7 @@ pub struct ZipEntry<'a> {
     pub compressed_size: usize,
     pub uncompressed_size: usize,
     pub local_header_offset: usize,
+    pub is_regular_file: bool,
 }
 
 /// Lightweight zero-copy ZIP reader.
@@ -56,12 +59,17 @@ impl<'a> ZipReader<'a> {
         while pos.checked_add(46).is_some_and(|end| end <= cd_end)
             && data[pos..pos + 4] == [0x50, 0x4b, 0x01, 0x02]
         {
+            if entries.len() >= MAX_ZIP_ENTRIES {
+                bail!("ZIP archive exceeds entry limit of {}", MAX_ZIP_ENTRIES);
+            }
+            let creator_os = data[pos + 5];
             let compression_method = le16(&data[pos + 10..]) as u16;
             let compressed_size = le32(&data[pos + 20..]);
             let uncompressed_size = le32(&data[pos + 24..]);
             let name_len = le16(&data[pos + 28..]);
             let extra_len = le16(&data[pos + 30..]);
             let comment_len = le16(&data[pos + 32..]);
+            let ext_attr = le32(&data[pos + 38..]) as u32;
             let local_header_offset = le32(&data[pos + 42..]);
 
             let name_start = pos + 46;
@@ -81,12 +89,20 @@ impl<'a> ZipReader<'a> {
                 bail!("Corrupt ZIP: central directory entry out of bounds");
             }
 
+            let is_dir = name.ends_with(['/', '\\'])
+                || (matches!(creator_os, 0 | 10 | 14) && (ext_attr & 0x10) != 0);
+            let unix_type = matches!(creator_os, 3 | 19)
+                .then_some((ext_attr >> 16) & 0o170000)
+                .filter(|&m| m != 0);
+            let is_regular_file = !is_dir && unix_type.is_none_or(|m| m == 0o100000);
+
             entries.push(ZipEntry {
                 name,
                 compression_method,
                 compressed_size,
                 uncompressed_size,
                 local_header_offset,
+                is_regular_file,
             });
 
             pos = next_pos;
@@ -95,12 +111,10 @@ impl<'a> ZipReader<'a> {
         Ok(Self { data, entries })
     }
 
-    /// Returns the parsed central directory entries.
     pub fn entries(&self) -> &[ZipEntry<'a>] {
         &self.entries
     }
 
-    /// Iterates over all file names in the ZIP archive.
     pub fn file_names(&self) -> impl Iterator<Item = &str> {
         self.entries.iter().map(|e| e.name)
     }
@@ -115,8 +129,11 @@ impl<'a> ZipReader<'a> {
         self.decompress_entry(entry, max_bytes)
     }
 
-    /// Decompresses an entry with strict bounding to prevent zip bombs.
+    /// Decompresses a regular-file entry with strict bounding to prevent zip bombs.
     pub fn decompress_entry(&self, entry: &ZipEntry<'a>, max_bytes: usize) -> Result<Vec<u8>> {
+        if !entry.is_regular_file {
+            bail!("Refusing to extract non-regular ZIP entry '{}'", entry.name);
+        }
         let lh_offset = entry.local_header_offset;
         let lh_fixed_end = lh_offset
             .checked_add(30)
@@ -173,7 +190,6 @@ impl<'a> ZipReader<'a> {
     }
 }
 
-/// Helper function to create valid ZIP archives in tests without external dependencies.
 #[cfg(test)]
 pub(crate) fn create_test_zip(files: &[(&str, &[u8])]) -> Vec<u8> {
     let mut out = Vec::new();
@@ -184,37 +200,24 @@ pub(crate) fn create_test_zip(files: &[(&str, &[u8])]) -> Vec<u8> {
         let name_bytes = name.as_bytes();
         let content_len = content.len() as u32;
 
-        // Local file header: PK\x03\x04
-        out.extend_from_slice(&[0x50, 0x4b, 0x03, 0x04]);
-        out.extend_from_slice(&[20, 0]); // version needed (2.0)
-        out.extend_from_slice(&[0, 0]); // flags
-        out.extend_from_slice(&[0, 0]); // compression = 0 (stored)
-        out.extend_from_slice(&[0, 0, 0, 0]); // mtime/mdate
-        out.extend_from_slice(&[0, 0, 0, 0]); // crc-32
-        out.extend_from_slice(&content_len.to_le_bytes()); // compressed size
-        out.extend_from_slice(&content_len.to_le_bytes()); // uncompressed size
+        out.extend_from_slice(&[
+            0x50, 0x4b, 0x03, 0x04, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
+        out.extend_from_slice(&content_len.to_le_bytes());
+        out.extend_from_slice(&content_len.to_le_bytes());
         out.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
-        out.extend_from_slice(&[0, 0]); // extra field length
+        out.extend_from_slice(&[0, 0]);
         out.extend_from_slice(name_bytes);
         out.extend_from_slice(content);
 
-        // Central directory file header: PK\x01\x02
-        cd.extend_from_slice(&[0x50, 0x4b, 0x01, 0x02]);
-        cd.extend_from_slice(&[20, 0]); // version made by
-        cd.extend_from_slice(&[20, 0]); // version needed
-        cd.extend_from_slice(&[0, 0]); // flags
-        cd.extend_from_slice(&[0, 0]); // compression = 0
-        cd.extend_from_slice(&[0, 0, 0, 0]); // mtime/mdate
-        cd.extend_from_slice(&[0, 0, 0, 0]); // crc-32
+        cd.extend_from_slice(&[
+            0x50, 0x4b, 0x01, 0x02, 20, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
         cd.extend_from_slice(&content_len.to_le_bytes());
         cd.extend_from_slice(&content_len.to_le_bytes());
         cd.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
-        cd.extend_from_slice(&[0, 0]); // extra field length
-        cd.extend_from_slice(&[0, 0]); // comment length
-        cd.extend_from_slice(&[0, 0]); // disk number start
-        cd.extend_from_slice(&[0, 0]); // internal attributes
-        cd.extend_from_slice(&[0, 0, 0, 0]); // external attributes
-        cd.extend_from_slice(&lh_offset.to_le_bytes()); // local header offset
+        cd.extend_from_slice(&[0; 12]);
+        cd.extend_from_slice(&lh_offset.to_le_bytes());
         cd.extend_from_slice(name_bytes);
     }
 
@@ -222,17 +225,12 @@ pub(crate) fn create_test_zip(files: &[(&str, &[u8])]) -> Vec<u8> {
     let cd_size = cd.len() as u32;
     let count = files.len() as u16;
     out.extend_from_slice(&cd);
-
-    // End of central directory record: PK\x05\x06
-    out.extend_from_slice(&[0x50, 0x4b, 0x05, 0x06]);
-    out.extend_from_slice(&[0, 0]); // disk number
-    out.extend_from_slice(&[0, 0]); // disk with start of cd
-    out.extend_from_slice(&count.to_le_bytes()); // entries on this disk
-    out.extend_from_slice(&count.to_le_bytes()); // total entries
-    out.extend_from_slice(&cd_size.to_le_bytes()); // cd size
-    out.extend_from_slice(&cd_offset.to_le_bytes()); // cd offset
-    out.extend_from_slice(&[0, 0]); // comment length
-
+    out.extend_from_slice(&[0x50, 0x4b, 0x05, 0x06, 0, 0, 0, 0]);
+    out.extend_from_slice(&count.to_le_bytes());
+    out.extend_from_slice(&count.to_le_bytes());
+    out.extend_from_slice(&cd_size.to_le_bytes());
+    out.extend_from_slice(&cd_offset.to_le_bytes());
+    out.extend_from_slice(&[0, 0]);
     out
 }
 
@@ -338,5 +336,19 @@ mod tests {
         zip_bytes2[cd_offset + 20..cd_offset + 24].copy_from_slice(&u32::MAX.to_le_bytes());
         let reader2 = ZipReader::new(&zip_bytes2).unwrap();
         assert!(reader2.read_file("a.txt", 1024).is_err());
+
+        // Unix symlink external_attributes (creator OS 3, mode 0o120777) must be rejected
+        let mut sym_zip = create_test_zip(&[("srz.exe", b"/etc/passwd")]);
+        let sym_eocd = sym_zip
+            .windows(4)
+            .rposition(|w| w == [0x50, 0x4b, 0x05, 0x06])
+            .unwrap();
+        let sym_cd =
+            u32::from_le_bytes(sym_zip[sym_eocd + 16..sym_eocd + 20].try_into().unwrap()) as usize;
+        sym_zip[sym_cd + 5] = 3;
+        sym_zip[sym_cd + 38..sym_cd + 42].copy_from_slice(&((0o120777u32) << 16).to_le_bytes());
+        let sym_reader = ZipReader::new(&sym_zip).unwrap();
+        assert!(!sym_reader.entries()[0].is_regular_file);
+        assert!(sym_reader.read_file("srz.exe", 1024).is_err());
     }
 }

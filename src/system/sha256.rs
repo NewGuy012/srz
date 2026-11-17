@@ -1,5 +1,3 @@
-use crate::system::text_util::format_hex;
-
 const K: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -15,201 +13,102 @@ const INITIAL_H: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ];
 
-/// A streaming SHA-256 hasher implementing FIPS 180-4 in 100% safe Rust.
-#[derive(Clone, Debug)]
-pub struct Sha256 {
-    state: [u32; 8],
-    buffer: [u8; 64],
-    buffer_len: usize,
-    total_len: u64,
-}
+fn process_block(state: &mut [u32; 8], block: &[u8; 64]) {
+    let mut w = [0u32; 64];
+    for (t, word) in w.iter_mut().take(16).enumerate() {
+        *word = u32::from_be_bytes([
+            block[t * 4],
+            block[t * 4 + 1],
+            block[t * 4 + 2],
+            block[t * 4 + 3],
+        ]);
+    }
+    for t in 16..64 {
+        let s0 = w[t - 15].rotate_right(7) ^ w[t - 15].rotate_right(18) ^ (w[t - 15] >> 3);
+        let s1 = w[t - 2].rotate_right(17) ^ w[t - 2].rotate_right(19) ^ (w[t - 2] >> 10);
+        w[t] = w[t - 16]
+            .wrapping_add(s0)
+            .wrapping_add(w[t - 7])
+            .wrapping_add(s1);
+    }
 
-impl Default for Sha256 {
-    fn default() -> Self {
-        Self::new()
+    let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = *state;
+    for t in 0..64 {
+        let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+        let ch = (e & f) ^ ((!e) & g);
+        let temp1 = h
+            .wrapping_add(s1)
+            .wrapping_add(ch)
+            .wrapping_add(K[t])
+            .wrapping_add(w[t]);
+        let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+        let maj = (a & b) ^ (a & c) ^ (b & c);
+        let temp2 = s0.wrapping_add(maj);
+
+        h = g;
+        g = f;
+        f = e;
+        e = d.wrapping_add(temp1);
+        d = c;
+        c = b;
+        b = a;
+        a = temp1.wrapping_add(temp2);
+    }
+
+    for (dst, add) in state.iter_mut().zip([a, b, c, d, e, f, g, h]) {
+        *dst = dst.wrapping_add(add);
     }
 }
 
-impl Sha256 {
-    pub const fn new() -> Self {
-        Self {
-            state: INITIAL_H,
-            buffer: [0u8; 64],
-            buffer_len: 0,
-            total_len: 0,
-        }
+/// Computes the lowercase hex FIPS 180-4 SHA-256 digest of `data`.
+pub fn sha256_hex(data: &[u8]) -> String {
+    use std::fmt::Write;
+
+    let mut state = INITIAL_H;
+    let (chunks, rem) = data.as_chunks::<64>();
+    for block in chunks {
+        process_block(&mut state, block);
     }
 
-    pub fn update(&mut self, data: &[u8]) {
-        let mut input = data;
-        self.total_len += input.len() as u64;
-
-        if self.buffer_len > 0 {
-            let to_fill = 64 - self.buffer_len;
-            if input.len() < to_fill {
-                self.buffer[self.buffer_len..self.buffer_len + input.len()].copy_from_slice(input);
-                self.buffer_len += input.len();
-                return;
-            }
-
-            self.buffer[self.buffer_len..64].copy_from_slice(&input[..to_fill]);
-            let block = self.buffer;
-            self.process_block(&block);
-            self.buffer_len = 0;
-            input = &input[to_fill..];
-        }
-
-        while input.len() >= 64 {
-            let mut block = [0u8; 64];
-            block.copy_from_slice(&input[..64]);
-            self.process_block(&block);
-            input = &input[64..];
-        }
-
-        if !input.is_empty() {
-            self.buffer[..input.len()].copy_from_slice(input);
-            self.buffer_len = input.len();
-        }
+    let mut tail = [0u8; 64];
+    tail[..rem.len()].copy_from_slice(rem);
+    tail[rem.len()] = 0x80;
+    if rem.len() >= 56 {
+        process_block(&mut state, &tail);
+        tail.fill(0);
     }
+    let bit_len = (data.len() as u64).wrapping_mul(8);
+    tail[56..64].copy_from_slice(&bit_len.to_be_bytes());
+    process_block(&mut state, &tail);
 
-    pub fn finalize(mut self) -> [u8; 32] {
-        let bit_len = self.total_len * 8;
-
-        // Append 0x80 byte
-        self.buffer[self.buffer_len] = 0x80;
-        self.buffer_len += 1;
-
-        // If not enough room for 8-byte length, pad and process
-        if self.buffer_len > 56 {
-            for b in &mut self.buffer[self.buffer_len..64] {
-                *b = 0;
-            }
-            let block = self.buffer;
-            self.process_block(&block);
-            self.buffer_len = 0;
-        }
-
-        // Pad with zeros up to byte 56
-        for b in &mut self.buffer[self.buffer_len..56] {
-            *b = 0;
-        }
-
-        // Append 64-bit length in big-endian
-        self.buffer[56..64].copy_from_slice(&bit_len.to_be_bytes());
-        let block = self.buffer;
-        self.process_block(&block);
-
-        let mut out = [0u8; 32];
-        for (i, val) in self.state.iter().enumerate() {
-            out[i * 4..(i + 1) * 4].copy_from_slice(&val.to_be_bytes());
-        }
-        out
+    let mut out = String::with_capacity(64);
+    for word in state {
+        let _ = write!(out, "{word:08x}");
     }
-
-    pub fn finalize_hex(self) -> String {
-        format_hex(&self.finalize())
-    }
-
-    pub fn digest(data: &[u8]) -> [u8; 32] {
-        let mut hasher = Self::new();
-        hasher.update(data);
-        hasher.finalize()
-    }
-
-    pub fn digest_hex(data: &[u8]) -> String {
-        format_hex(&Self::digest(data))
-    }
-
-    fn process_block(&mut self, block: &[u8; 64]) {
-        let mut w = [0u32; 64];
-        for t in 0..16 {
-            w[t] = u32::from_be_bytes([
-                block[t * 4],
-                block[t * 4 + 1],
-                block[t * 4 + 2],
-                block[t * 4 + 3],
-            ]);
-        }
-
-        for t in 16..64 {
-            let s0 = w[t - 15].rotate_right(7) ^ w[t - 15].rotate_right(18) ^ (w[t - 15] >> 3);
-            let s1 = w[t - 2].rotate_right(17) ^ w[t - 2].rotate_right(19) ^ (w[t - 2] >> 10);
-            w[t] = w[t - 16]
-                .wrapping_add(s0)
-                .wrapping_add(w[t - 7])
-                .wrapping_add(s1);
-        }
-
-        let mut a = self.state[0];
-        let mut b = self.state[1];
-        let mut c = self.state[2];
-        let mut d = self.state[3];
-        let mut e = self.state[4];
-        let mut f = self.state[5];
-        let mut g = self.state[6];
-        let mut h = self.state[7];
-
-        for t in 0..64 {
-            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-            let ch = (e & f) ^ ((!e) & g);
-            let temp1 = h
-                .wrapping_add(s1)
-                .wrapping_add(ch)
-                .wrapping_add(K[t])
-                .wrapping_add(w[t]);
-            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-            let maj = (a & b) ^ (a & c) ^ (b & c);
-            let temp2 = s0.wrapping_add(maj);
-
-            h = g;
-            g = f;
-            f = e;
-            e = d.wrapping_add(temp1);
-            d = c;
-            c = b;
-            b = a;
-            a = temp1.wrapping_add(temp2);
-        }
-
-        self.state[0] = self.state[0].wrapping_add(a);
-        self.state[1] = self.state[1].wrapping_add(b);
-        self.state[2] = self.state[2].wrapping_add(c);
-        self.state[3] = self.state[3].wrapping_add(d);
-        self.state[4] = self.state[4].wrapping_add(e);
-        self.state[5] = self.state[5].wrapping_add(f);
-        self.state[6] = self.state[6].wrapping_add(g);
-        self.state[7] = self.state[7].wrapping_add(h);
-    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::sha256_hex;
 
     #[test]
     fn test_sha256_nist_vectors() {
-        assert_eq!(
-            Sha256::digest_hex(b""),
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        );
-        assert_eq!(
-            Sha256::digest_hex(b"abc"),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
-        assert_eq!(
-            Sha256::digest_hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
-            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
-        );
-    }
-
-    #[test]
-    fn test_sha256_streaming() {
-        let mut hasher = Sha256::new();
-        hasher.update(b"abcdbcdecdefdefgefgh");
-        hasher.update(b"fghighijhijkijkljklmklmnlmnomnopnopq");
-        assert_eq!(
-            hasher.finalize_hex(),
-            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
-        );
+        for (input, expected) in [
+            (
+                &b""[..],
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            ),
+            (
+                &b"abc"[..],
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            ),
+            (
+                &b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"[..],
+                "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+            ),
+        ] {
+            assert_eq!(sha256_hex(input), expected);
+        }
     }
 }

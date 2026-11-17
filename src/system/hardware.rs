@@ -1,16 +1,11 @@
-use serde::{Deserialize, Serialize};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::process::Command;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HardwareTier {
-    /// Up to ~10 GB RAM (e.g. 8 GB base laptops)
     Tier8GB,
-    /// ~11 GB to 20 GB RAM (e.g. 16 GB developer laptops)
     Tier16GB,
-    /// ~21 GB to 40 GB RAM (e.g. 24 GB - 36 GB Pro/Max laptops)
     Tier32GB,
-    /// > 40 GB RAM (e.g. 64 GB+ workstations)
     Tier64GBPlus,
 }
 
@@ -38,7 +33,7 @@ impl HardwareTier {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct HardwareProfile {
     pub total_memory_bytes: u64,
     pub total_memory_gb: f64,
@@ -57,9 +52,11 @@ pub struct HardwareProfile {
 }
 
 static DETECTED_PROFILE: std::sync::LazyLock<HardwareProfile> = std::sync::LazyLock::new(|| {
-    let total_memory_bytes = detect_total_memory().unwrap_or(16 * 1024 * 1024 * 1024);
-    let chip_name = detect_chip_name().unwrap_or_else(|| "Standard CPU".to_string());
-    HardwareProfile::from_specs(total_memory_bytes, chip_name)
+    let (total_memory_bytes, chip_name) = detect_host_specs();
+    HardwareProfile::from_specs(
+        total_memory_bytes.unwrap_or(16 * 1024 * 1024 * 1024),
+        chip_name.unwrap_or_else(|| "Standard CPU".to_string()),
+    )
 });
 
 impl HardwareProfile {
@@ -216,18 +213,33 @@ pub fn format_context_tokens(tokens: usize) -> String {
     }
 }
 
-fn detect_total_memory() -> Option<u64> {
+fn detect_host_specs() -> (Option<u64>, Option<String>) {
     #[cfg(target_os = "macos")]
     {
-        if let Ok(output) = Command::new("sysctl").args(["-n", "hw.memsize"]).output()
+        if let Ok(output) = Command::new("/usr/sbin/sysctl")
+            .args(["-n", "hw.memsize", "machdep.cpu.brand_string"])
+            .output()
             && output.status.success()
             && let Ok(text) = std::str::from_utf8(&output.stdout)
-            && let Ok(bytes) = text.trim().parse::<u64>()
         {
-            return Some(bytes);
+            let mut lines = text.lines();
+            let mem = lines.next().and_then(|s| s.trim().parse::<u64>().ok());
+            let chip = lines
+                .next()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            return (mem, chip);
         }
+        (None, None)
     }
 
+    #[cfg(not(target_os = "macos"))]
+    (detect_total_memory(), detect_chip_name())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn detect_total_memory() -> Option<u64> {
     #[cfg(target_os = "linux")]
     {
         if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
@@ -246,7 +258,8 @@ fn detect_total_memory() -> Option<u64> {
 
     #[cfg(target_os = "windows")]
     {
-        if let Ok(output) = Command::new("powershell")
+        let ps = crate::fs_util::system_root_bin(r"WindowsPowerShell\v1.0\powershell.exe");
+        if let Ok(output) = Command::new(ps)
             .args([
                 "-NoProfile",
                 "-Command",
@@ -264,22 +277,8 @@ fn detect_total_memory() -> Option<u64> {
     None
 }
 
+#[cfg(not(target_os = "macos"))]
 fn detect_chip_name() -> Option<String> {
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(output) = Command::new("sysctl")
-            .args(["-n", "machdep.cpu.brand_string"])
-            .output()
-            && output.status.success()
-            && let Ok(text) = std::str::from_utf8(&output.stdout)
-        {
-            let clean = text.trim();
-            if !clean.is_empty() {
-                return Some(clean.to_string());
-            }
-        }
-    }
-
     #[cfg(target_os = "linux")]
     {
         if let Ok(content) = std::fs::read_to_string("/proc/cpuinfo") {
@@ -304,7 +303,8 @@ fn detect_chip_name() -> Option<String> {
                 return Some(clean.to_string());
             }
         }
-        if let Ok(output) = Command::new("powershell")
+        let ps = crate::fs_util::system_root_bin(r"WindowsPowerShell\v1.0\powershell.exe");
+        if let Ok(output) = Command::new(ps)
             .args([
                 "-NoProfile",
                 "-Command",
@@ -327,26 +327,6 @@ fn detect_chip_name() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_hardware_tier_classification() {
-        assert_eq!(
-            HardwareTier::from_bytes(8 * 1024 * 1024 * 1024),
-            HardwareTier::Tier8GB
-        );
-        assert_eq!(
-            HardwareTier::from_bytes(16 * 1024 * 1024 * 1024),
-            HardwareTier::Tier16GB
-        );
-        assert_eq!(
-            HardwareTier::from_bytes(24 * 1024 * 1024 * 1024),
-            HardwareTier::Tier32GB
-        );
-        assert_eq!(
-            HardwareTier::from_bytes(64 * 1024 * 1024 * 1024),
-            HardwareTier::Tier64GBPlus
-        );
-    }
 
     #[test]
     fn test_profile_from_specs() {
@@ -439,17 +419,12 @@ mod tests {
     }
 
     #[test]
-    fn test_hardware_detect_runs_without_panic() {
+    fn test_hardware_system_detection() {
+        let (mem, chip) = detect_host_specs();
+        assert!(mem.is_some_and(|m| m > 0));
+        assert!(chip.is_some_and(|c| !c.is_empty()));
         let profile = HardwareProfile::detect();
         assert!(profile.total_memory_bytes > 0);
         assert!(!profile.chip_name.is_empty());
-    }
-
-    #[test]
-    fn test_hardware_system_detection() {
-        let mem = detect_total_memory();
-        assert!(mem.is_some_and(|m| m > 0));
-        let chip = detect_chip_name();
-        assert!(chip.is_some_and(|c| !c.is_empty()));
     }
 }

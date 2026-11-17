@@ -400,7 +400,7 @@ impl Cache {
             return None;
         }
         let db = self.get_or_init_db()?;
-        let hash = crate::system::sha256::Sha256::digest_hex(url.as_bytes());
+        let hash = crate::system::sha256::sha256_hex(url.as_bytes());
         db.get_cached_json(TABLE_CACHE_PAGES, &hash, ttl)
     }
 
@@ -409,7 +409,7 @@ impl Cache {
             return;
         }
         if let Some(db) = self.get_or_init_db() {
-            let hash = crate::system::sha256::Sha256::digest_hex(url.as_bytes());
+            let hash = crate::system::sha256::sha256_hex(url.as_bytes());
             let _ = db.set_cached_json(TABLE_CACHE_PAGES, &hash, page);
         }
     }

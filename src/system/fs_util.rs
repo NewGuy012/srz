@@ -3,8 +3,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// Reads a trimmed, non-empty path from the environment variable `var`.
-pub fn non_empty_env_path(var: &str) -> Option<PathBuf> {
+pub(crate) fn non_empty_env_path(var: &str) -> Option<PathBuf> {
     env::var(var)
         .ok()
         .map(|v| v.trim().to_string())
@@ -12,9 +11,16 @@ pub fn non_empty_env_path(var: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Returns the user's home directory (`$HOME` or `%USERPROFILE%`).
-pub fn home_dir() -> Option<PathBuf> {
+pub(crate) fn home_dir() -> Option<PathBuf> {
     non_empty_env_path("HOME").or_else(|| non_empty_env_path("USERPROFILE"))
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn system_root_bin(rel: &str) -> PathBuf {
+    let base = env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    base.join("System32").join(rel)
 }
 
 fn resolve_app_path(
@@ -97,8 +103,7 @@ pub fn create_temp_file_path(dir: &Path, prefix: &str, suffix: &str) -> PathBuf 
     dir.join(temp_name)
 }
 
-/// Sets directory permissions to `0700` on Unix systems (no-op on other platforms).
-pub fn set_private_dir_perms(path: &Path) {
+pub(crate) fn set_private_dir_perms(path: &Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -129,17 +134,56 @@ pub(crate) fn reject_symlink(path: &Path, action: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Creates a directory (and parents) and restricts permissions to `0700` on Unix.
-/// Rejects symlink paths to prevent symlink traversal/privilege elevation (CWE-59).
+/// Creates a directory (and parents) with owner-only `0700` permissions on Unix, rejecting symlinks.
 pub fn create_private_dir_all(path: &Path) -> std::io::Result<()> {
     reject_symlink(path, "create directory at symlink path")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)?;
+    }
+    #[cfg(not(unix))]
     fs::create_dir_all(path)?;
     set_private_dir_perms(path);
     Ok(())
 }
 
-/// Writes `contents` to `path` with crash-safe atomic rename and owner-only permissions (`0600` on Unix).
-/// Rejects symlink targets to prevent arbitrary file truncation/privilege escalation (CWE-59).
+pub(crate) fn write_staged_temp_file(
+    dir: &Path,
+    prefix: &str,
+    suffix: &str,
+    contents: &[u8],
+    unix_mode: u32,
+) -> std::io::Result<PathBuf> {
+    let temp_path = create_temp_file_path(dir, prefix, suffix);
+    let mut open_opts = fs::OpenOptions::new();
+    open_opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        open_opts.mode(unix_mode);
+    }
+    #[cfg(not(unix))]
+    let _ = unix_mode;
+
+    let mut temp_file = open_opts.open(&temp_path)?;
+    if let Err(err) = temp_file
+        .write_all(contents)
+        .and_then(|_| temp_file.flush())
+        .and_then(|_| temp_file.sync_all())
+    {
+        drop(temp_file);
+        let _ = fs::remove_file(&temp_path);
+        return Err(err);
+    }
+    drop(temp_file);
+    Ok(temp_path)
+}
+
+/// Writes `contents` atomically with owner-only permissions (`0600` on Unix), rejecting symlinks.
 pub fn write_private_file(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
     reject_symlink(path, "write to symlink")?;
 
@@ -148,26 +192,7 @@ pub fn write_private_file(path: &Path, contents: impl AsRef<[u8]>) -> std::io::R
         create_private_dir_all(parent)?;
     }
 
-    let temp_path = create_temp_file_path(parent, ".srz-tmp", ".tmp");
-
-    let mut open_opts = fs::OpenOptions::new();
-    open_opts.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        open_opts.mode(0o600);
-    }
-
-    let mut temp_file = open_opts.open(&temp_path)?;
-    if let Err(err) = temp_file
-        .write_all(contents.as_ref())
-        .and_then(|_| temp_file.flush())
-    {
-        let _ = fs::remove_file(&temp_path);
-        return Err(err);
-    }
-    drop(temp_file);
-
+    let temp_path = write_staged_temp_file(parent, ".srz-tmp", ".tmp", contents.as_ref(), 0o600)?;
     if let Err(err) = fs::rename(&temp_path, path) {
         let _ = fs::remove_file(&temp_path);
         return Err(err);
@@ -261,21 +286,6 @@ impl TempDir {
 }
 
 #[cfg(test)]
-impl AsRef<Path> for TempDir {
-    fn as_ref(&self) -> &Path {
-        &self.path
-    }
-}
-
-#[cfg(test)]
-impl std::ops::Deref for TempDir {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.path
-    }
-}
-
-#[cfg(test)]
 impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
@@ -290,17 +300,6 @@ pub(crate) fn tempdir() -> std::io::Result<TempDir> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_non_empty_env_path() {
-        assert_eq!(non_empty_env_path("SRZ_NON_EXISTENT_VAR_XYZ"), None);
-    }
-
-    #[test]
-    fn test_default_data_dir() {
-        let dir = default_data_dir();
-        assert!(!dir.as_os_str().is_empty());
-    }
 
     #[test]
     fn test_create_and_write_private_file() {

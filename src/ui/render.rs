@@ -56,7 +56,7 @@ pub fn open_in_browser(path: &Path) -> std::io::Result<()> {
     let mut cmd = std::process::Command::new("open");
     #[cfg(target_os = "windows")]
     let mut cmd = {
-        let mut c = std::process::Command::new("rundll32.exe");
+        let mut c = std::process::Command::new(fs_util::system_root_bin("rundll32.exe"));
         c.arg("url.dll,FileProtocolHandler");
         c
     };
@@ -103,7 +103,7 @@ pub fn slugify_unique(title: &str, unique_key: Option<&str>) -> String {
     if let Some(key) = unique_key
         && !key.is_empty()
     {
-        let hash = crate::system::sha256::Sha256::digest_hex(key.as_bytes());
+        let hash = crate::system::sha256::sha256_hex(key.as_bytes());
         let short_hash = &hash[..8];
         if base_slug.is_empty() || base_slug == "summary" {
             short_hash.to_string()
