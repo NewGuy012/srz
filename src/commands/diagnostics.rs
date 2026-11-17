@@ -8,7 +8,7 @@ use std::path::Path;
 
 /// Lists available models reported by the local LLM endpoint (`GET /models`).
 pub async fn handle_models(args: &Cli, as_json: bool) -> Result<()> {
-    let llm = crate::commands::init_llm_or_exit(args);
+    let llm = crate::commands::init_llm(args)?;
 
     let pb = Ui::spinner("Querying LLM server for available models...");
     let models_result = llm.list_models().await;
@@ -51,9 +51,8 @@ pub async fn handle_models(args: &Cli, as_json: bool) -> Result<()> {
             Ok(())
         }
         Err(err) => {
-            Ui::error(&format!("Could not fetch models: {:#}", err));
             Ui::info("Tip: Run `srz doctor` to diagnose server connectivity and ports.");
-            std::process::exit(1);
+            Err(err.context("Could not fetch models"))
         }
     }
 }

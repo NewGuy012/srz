@@ -185,10 +185,10 @@ pub fn handle_find(db: &Database, query: &str, cache: &Cache, as_json: bool) -> 
             icon,
             safe_title,
             author_str,
-            res.created_at
+            crate::ui::sanitize_title(&res.created_at)
         );
         if let Some(score) = res.score {
-            println!("     Score: {:.2} (BM25) | \"{}\"", score, safe_snippet);
+            println!("     Score: {:.2} | \"{}\"", score, safe_snippet);
         } else {
             println!("     \"{}\"", safe_snippet);
         }
@@ -230,22 +230,22 @@ pub fn handle_index(db: &Database, cache: &Cache, open_browser: bool) -> Result<
 /// Handles the `srz export` command.
 pub fn handle_export(
     db: &Database,
-    format: crate::config::cli::ExportFormat,
+    format: crate::config::ExportFormat,
     output: &std::path::Path,
 ) -> Result<()> {
     match format {
-        crate::config::cli::ExportFormat::Markdown => {
+        crate::config::ExportFormat::Markdown => {
             let count = db.export_markdown_vault(output)?;
             Ui::success(&format!(
                 "Exported {} markdown summary files to {:?}",
                 count, output
             ));
         }
-        crate::config::cli::ExportFormat::Json => {
+        crate::config::ExportFormat::Json => {
             db.export_json(output)?;
             Ui::success(&format!("Exported library JSON to {:?}", output));
         }
-        crate::config::cli::ExportFormat::Csv => {
+        crate::config::ExportFormat::Csv => {
             db.export_csv(output)?;
             Ui::success(&format!("Exported library CSV to {:?}", output));
         }

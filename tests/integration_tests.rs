@@ -1,11 +1,10 @@
 use clap::{CommandFactory, FromArgMatches, Parser};
-use srz::cli::{
-    CacheCommand, Cli, ConfigSubcommand, ExportFormat, NewsTimeframe, PagingMode, ResolvedAction,
-    Shell, SummaryStyle, clean_news_query, is_feed_url, is_file_like, is_news_query,
-    is_probable_question, suggest_command,
+use srz::config::{
+    CacheCommand, Cli, Config, ConfigSubcommand, ExportFormat, NewsTimeframe, PagingMode,
+    ProfileConfig, ResolvedAction, Shell, SummaryStyle, clean_news_query, is_feed_url,
+    is_file_like, is_news_query, is_probable_question, suggest_command,
 };
-use srz::config::{Config, ProfileConfig};
-use srz::llm::StreamMode;
+use srz::engine::llm::StreamMode;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -375,9 +374,12 @@ fn test_cli_global_flags_and_stream_mode() {
     );
     assert!(Cli::parse_from(["srz", "Dune", "--plain"]).plain);
     assert!(Cli::parse_from(["srz", "Dune", "--no-cache"]).no_cache);
+    let max_tok_cli = Cli::parse_from(["srz", "Dune", "--max-tokens", "4096"]);
+    assert_eq!(max_tok_cli.max_tokens, Some(4096));
+    assert_eq!(max_tok_cli.effective_max_tokens(), 4096);
     assert_eq!(
-        Cli::parse_from(["srz", "Dune", "--max-tokens", "4096"]).max_tokens,
-        4096
+        Cli::parse_from(["srz", "Dune", "--style", "detailed"]).effective_max_tokens(),
+        SummaryStyle::Detailed.default_max_tokens()
     );
     assert!(Cli::parse_from(["srz", "history", "--json"]).json);
     assert!(Cli::parse_from(["srz", "Dune", "--json"]).json);
@@ -505,7 +507,7 @@ fn test_cli_detection_and_typo_helpers() {
         ("librery", "library"),
         ("exprot", "export"),
     ] {
-        assert_eq!(suggest_command(typo), Some(expected), "{typo}");
+        assert_eq!(suggest_command(typo).as_deref(), Some(expected), "{typo}");
     }
     for title in [
         "Dune",
@@ -528,7 +530,7 @@ fn test_config_toml_deserialization_and_cli_merge() {
     let parse_with_config = |argv: &[&str], config: &Config| {
         let matches = Cli::command().get_matches_from(argv);
         let mut args = Cli::from_arg_matches(&matches).unwrap();
-        args.apply_config(config, Some(&matches));
+        args.apply_config(config, Some(&matches)).unwrap();
         args
     };
 
@@ -607,7 +609,8 @@ context_window = 65536
     assert_eq!(applied.base_url, "http://ollama:11434/v1");
     assert_eq!(applied.model, "custom-model:latest");
     assert_eq!(applied.style, SummaryStyle::Detailed);
-    assert_eq!(applied.max_tokens, 2048);
+    assert_eq!(applied.max_tokens, Some(2048));
+    assert_eq!(applied.effective_max_tokens(), 2048);
     assert!(applied.stream);
 
     // CLI flags take precedence over root config; profile overrides root; CLI overrides profile
@@ -642,13 +645,21 @@ context_window = 65536
     let template = Config::template_for_hardware(&p16);
     assert!(template.contains("model = \"ggml-org/gemma-4-E4B-it-GGUF:Q8_0\""));
     assert!(template.contains("context_window = 32768"));
+
+    let bad_profile_matches = Cli::command().get_matches_from(["srz", "Dune", "--profile", "nope"]);
+    let mut bad_profile_args = Cli::from_arg_matches(&bad_profile_matches).unwrap();
+    assert!(
+        bad_profile_args
+            .apply_config(&config, Some(&bad_profile_matches))
+            .is_err()
+    );
 }
 
 #[test]
 fn test_cross_module_clients_and_assets_pdf() {
-    let scraper = srz::scraper::WebScraper::new().unwrap();
-    let _searcher = srz::search::BookSearcher::with_client(scraper.client().clone());
-    let _news = srz::news::GoogleNewsClient::with_client(scraper.client().clone());
+    let scraper = srz::sources::scraper::WebScraper::new().unwrap();
+    let _searcher = srz::sources::search::BookSearcher::with_client(scraper.client().clone());
+    let _news = srz::sources::news::GoogleNewsClient::with_client(scraper.client().clone());
     assert!(scraper.client().get("https://example.com").build().is_ok());
 
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/document.pdf");

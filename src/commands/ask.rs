@@ -48,13 +48,13 @@ async fn resolve_cached_page_or_fetch(
     (fallback_title, fallback_content)
 }
 
-/// Resolves the grounding document context (title and full text content).
+/// Resolves the grounding `(title, content, target_type, target_url)` for `srz ask`.
 async fn resolve_document_context(
     target: Option<&str>,
     scraper: &WebScraper,
     cache: &Cache,
     db_opt: Option<&Database>,
-) -> Result<(String, String)> {
+) -> Result<(String, String, String, Option<String>)> {
     if let Some(target_str) = target {
         let trimmed = target_str.trim();
 
@@ -62,16 +62,23 @@ async fn resolve_document_context(
         if crate::system::text_util::is_http_url(trimmed) {
             let page = crate::commands::fetch_url_content(trimmed, scraper, cache, false).await?;
             let title = page.title.unwrap_or_else(|| trimmed.to_string());
-            return Ok((title, page.content));
+            let target_type = crate::commands::target_type_for_url(trimmed).to_string();
+            return Ok((title, page.content, target_type, Some(trimmed.to_string())));
         }
 
         // 2. Local File
         let path = Path::new(trimmed);
         if path.exists() {
             let (doc, _) = crate::commands::summarize::load_file_with_cache(path, scraper, cache)?;
+            let canonical = std::fs::canonicalize(path)
+                .unwrap_or_else(|_| path.to_path_buf())
+                .display()
+                .to_string();
             return Ok((
                 doc.title.unwrap_or_else(|| trimmed.to_string()),
                 doc.content,
+                "file".to_string(),
+                Some(canonical),
             ));
         } else if crate::cli::is_file_like(trimmed) {
             anyhow::bail!("File not found: {:?}", path);
@@ -96,7 +103,7 @@ async fn resolve_document_context(
                     fallback_summary,
                 )
                 .await;
-                return Ok((title, content));
+                return Ok((title, content, target_type, hit.url));
             }
         }
 
@@ -107,7 +114,12 @@ async fn resolve_document_context(
             let page =
                 crate::commands::fetch_or_cache_page(&best.url, scraper, cache, "", "", "").await?;
             let title = page.title.unwrap_or_else(|| best.title.clone());
-            return Ok((title, page.content));
+            return Ok((
+                title,
+                page.content,
+                "book".to_string(),
+                Some(best.url.clone()),
+            ));
         }
 
         anyhow::bail!("Could not resolve target document: '{}'", target_str);
@@ -123,16 +135,18 @@ async fn resolve_document_context(
             latest.title
         ));
 
+        let latest_url = latest.meta.url.clone();
+        let latest_type = latest.meta.target_type.clone();
         let (title, content) = resolve_cached_page_or_fetch(
             scraper,
             cache,
-            &latest.meta.target_type,
-            latest.meta.url.as_deref(),
+            &latest_type,
+            latest_url.as_deref(),
             latest.meta.title,
             latest.summary,
         )
         .await;
-        Ok((title, content))
+        Ok((title, content, latest_type, latest_url))
     }
 }
 
@@ -323,14 +337,21 @@ pub async fn handle_ask(
             }
         }
 
-        let (resolved_title, resolved_content) = resolve_document_context(
+        let (resolved_title, resolved_content, _, _) = resolve_document_context(
             session.target_url.as_deref().or(Some(&session.title)),
             scraper,
             cache,
             db.as_ref(),
         )
         .await
-        .unwrap_or_else(|_| (session.title.clone(), session.title.clone()));
+        .unwrap_or_else(|_| {
+            (
+                session.title.clone(),
+                session.title.clone(),
+                session.target_type.clone(),
+                session.target_url.clone(),
+            )
+        });
 
         (
             resolved_title,
@@ -339,21 +360,7 @@ pub async fn handle_ask(
             session.target_url,
         )
     } else {
-        let (t, c) =
-            resolve_document_context(target.as_deref(), scraper, cache, db.as_ref()).await?;
-        let t_type = if target
-            .as_deref()
-            .is_some_and(crate::system::text_util::is_http_url)
-        {
-            "web".to_string()
-        } else {
-            "doc".to_string()
-        };
-        let t_url = target
-            .as_deref()
-            .filter(|s| crate::system::text_util::is_http_url(s))
-            .map(|s| s.to_string());
-        (t, c, t_type, t_url)
+        resolve_document_context(target.as_deref(), scraper, cache, db.as_ref()).await?
     };
 
     let safe_title = crate::ui::sanitize_title(&title);
@@ -368,61 +375,48 @@ pub async fn handle_ask(
     // Create session if not already resuming and DB is available
     if chat_id.is_none()
         && let Some(ref db_ref) = db
-        && let Ok(id) =
-            db_ref.create_chat_session(&title, &target_type, target_url.as_deref(), llm.model())
     {
-        chat_id = Some(id);
+        match db_ref.create_chat_session(&title, &target_type, target_url.as_deref(), llm.model()) {
+            Ok(id) => chat_id = Some(id),
+            Err(err) => Ui::warn(&format!("Failed to create chat session: {:#}", err)),
+        }
     }
+
+    let mut session_ctx = AskSessionContext {
+        title: &title,
+        safe_title: &safe_title,
+        content: &content,
+        doc_budget: budget.ask_doc_budget,
+        chat_id,
+        db: db.as_ref(),
+        stream: args.stream,
+        plain: args.plain,
+        single_turn_paging: Some(args.paging),
+    };
 
     if !is_interactive {
-        // Single question mode
         let q = question.unwrap();
-        let grounded_context = format_grounded_context_with_budget_and_tokenizer(
-            &title,
-            &content,
-            Some(&q),
-            budget.ask_doc_budget,
-            tokenizer,
-        );
-        let mut prompt_buf = String::new();
-        let messages = build_chat_messages(&grounded_context, &history, &q, &mut prompt_buf);
-
-        let answer_header = format!("Answer: {}", safe_title);
-        let mode = if args.stream {
-            StreamMode::Stdout {
-                header_title: &answer_header,
-            }
-        } else {
-            StreamMode::Buffered
-        };
-
-        let output = llm
-            .complete_chat(&messages, "Thinking...", "Answer ready", mode)
-            .await?;
-
-        if !output.streamed_to_stdout {
-            display_summary_full(
-                &answer_header,
-                &output.content,
-                args.paging,
-                args.plain,
-                None,
-                None,
-            )?;
+        record_and_ask_turn(
+            &session_ctx,
+            &mut history,
+            &mut history_turn_tokens,
+            &q,
+            llm,
+        )
+        .await?;
+        if let Some(cid) = chat_id
+            && !args.plain
+            && !args.json
+        {
+            println!(
+                "\n\x1b[2mSaved to session #{}. Continue conversation with: srz ask --resume {}\x1b[0m",
+                cid, cid
+            );
         }
-
-        if let (Some(cid), Some(db_ref)) = (chat_id, &db) {
-            let _ = db_ref.add_chat_turn(cid, &q, &output.content);
-            if !args.plain && !args.json {
-                println!(
-                    "\n\x1b[2mSaved to session #{}. Continue conversation with: srz ask --resume {}\x1b[0m",
-                    cid, cid
-                );
-            }
-        }
-
         return Ok(());
     }
+
+    session_ctx.single_turn_paging = None;
 
     // Interactive REPL chat session
     if let (Some(cid), true) = (chat_id, resume.is_some()) {
@@ -436,16 +430,6 @@ pub async fn handle_ask(
         println!("\n\x1b[1;36m=== Interactive Q&A: {} ===\x1b[0m", safe_title);
     }
     println!("\x1b[2mType your question, or 'exit' / 'quit' to end the session.\x1b[0m\n");
-
-    let session_ctx = AskSessionContext {
-        title: &title,
-        content: &content,
-        doc_budget: budget.ask_doc_budget,
-        chat_id,
-        db: db.as_ref(),
-        stream: args.stream,
-        plain: args.plain,
-    };
 
     // If an initial question was passed alongside --interactive, answer it first
     if let Some(initial_q) = question {
@@ -461,18 +445,20 @@ pub async fn handle_ask(
         .await?;
     }
 
+    const MAX_ASK_INPUT_BYTES: usize = 64 * 1024;
     let stdin = io::stdin();
     loop {
         print!("\x1b[1;36msrz [ask]>\x1b[0m ");
         let _ = io::stdout().flush();
 
-        let mut line = String::new();
-        match stdin.read_line(&mut line) {
-            Ok(0) => {
+        let mut stdin_lock = stdin.lock();
+        match crate::commands::read_line_bounded(&mut stdin_lock, MAX_ASK_INPUT_BYTES) {
+            Ok(line) if line.is_empty() => {
                 println!();
                 break;
             }
-            Ok(_) => {
+            Ok(line) => {
+                drop(stdin_lock);
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
                     continue;
@@ -564,13 +550,12 @@ fn build_chat_messages<'a>(
 }
 
 async fn ask_turn(
+    ctx: &AskSessionContext<'_>,
     grounded_context: &str,
     history: &[(String, String)],
     turn_tokens: &[usize],
     question: &str,
     llm: &LlmClient,
-    stream: bool,
-    plain: bool,
 ) -> Result<(String, usize)> {
     let budget = llm.budget();
     // Dynamically calculate history slice to stay within budget.ask_hist_budget
@@ -591,10 +576,14 @@ async fn ask_turn(
     let mut prompt_buf = String::new();
     let messages = build_chat_messages(grounded_context, history_slice, question, &mut prompt_buf);
 
-    let mode = if stream {
-        StreamMode::Stdout {
-            header_title: "Answer",
-        }
+    let answer_header = format!("Answer: {}", ctx.safe_title);
+    let header_title = if ctx.single_turn_paging.is_some() {
+        answer_header.as_str()
+    } else {
+        "Answer"
+    };
+    let mode = if ctx.stream {
+        StreamMode::Stdout { header_title }
     } else {
         StreamMode::Buffered
     };
@@ -604,14 +593,25 @@ async fn ask_turn(
         .await?;
 
     if !output.streamed_to_stdout {
-        let safe_content = crate::ui::sanitize_terminal_text_cow(&output.content);
-        let text = if plain || !Ui::use_color() {
-            safe_content
+        if let Some(paging) = ctx.single_turn_paging {
+            display_summary_full(
+                &answer_header,
+                &output.content,
+                paging,
+                ctx.plain,
+                None,
+                None,
+            )?;
         } else {
-            std::borrow::Cow::Owned(render_markdown(safe_content.as_ref()))
-        };
-        let body = crate::ui::wrap_for_terminal(text, crate::ui::terminal_width());
-        println!("{}", body);
+            let safe_content = crate::ui::sanitize_terminal_text_cow(&output.content);
+            let text = if ctx.plain || !Ui::use_color() {
+                safe_content
+            } else {
+                std::borrow::Cow::Owned(render_markdown(safe_content.as_ref()))
+            };
+            let body = crate::ui::wrap_for_terminal(text, crate::ui::terminal_width());
+            println!("{}\n", body);
+        }
     }
 
     let tokenizer = llm.tokenizer_kind();
@@ -623,12 +623,14 @@ async fn ask_turn(
 
 struct AskSessionContext<'a> {
     title: &'a str,
+    safe_title: &'a str,
     content: &'a str,
     doc_budget: usize,
     chat_id: Option<i64>,
     db: Option<&'a Database>,
     stream: bool,
     plain: bool,
+    single_turn_paging: Option<crate::config::PagingMode>,
 }
 
 async fn record_and_ask_turn(
@@ -646,21 +648,21 @@ async fn record_and_ask_turn(
         llm.tokenizer_kind(),
     );
     let (ans, turn_toks) = ask_turn(
+        ctx,
         &grounded_context,
         history,
         history_turn_tokens,
         query,
         llm,
-        ctx.stream,
-        ctx.plain,
     )
     .await?;
-    if let (Some(cid), Some(db_ref)) = (ctx.chat_id, ctx.db) {
-        let _ = db_ref.add_chat_turn(cid, query, &ans);
+    if let (Some(cid), Some(db_ref)) = (ctx.chat_id, ctx.db)
+        && let Err(err) = db_ref.add_chat_turn(cid, query, &ans)
+    {
+        Ui::warn(&format!("Failed to save chat turn: {:#}", err));
     }
     history.push((query.to_string(), ans));
     history_turn_tokens.push(turn_toks);
-    println!();
     Ok(())
 }
 

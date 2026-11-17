@@ -1,4 +1,4 @@
-use crate::config::cli::PagingMode;
+use crate::config::PagingMode;
 use std::borrow::Cow;
 use std::env;
 use std::future::Future;
@@ -752,7 +752,7 @@ pub fn display_summary_full(
 
     // Append hint if available
     if let Some(h) = hint {
-        let wrapped_hint = wrap_for_terminal(Cow::Borrowed(h), wrap_width);
+        let wrapped_hint = wrap_for_terminal(sanitize_terminal_text_cow(h), wrap_width);
         full_output.push_str(&format!("\n\x1b[2m{}\x1b[0m\n", wrapped_hint));
     }
 
@@ -779,23 +779,25 @@ pub fn display_summary_full(
     Ok(())
 }
 
+fn parse_pager_command(pager_cmd: &str) -> (&str, Vec<&str>) {
+    let mut parts = pager_cmd.split_whitespace();
+    let Some(bin) = parts.next() else {
+        return ("less", vec!["-R", "-F", "-X"]);
+    };
+    if bin.is_empty() || bin.starts_with('-') || bin.chars().any(char::is_control) {
+        return ("less", vec!["-R", "-F", "-X"]);
+    }
+    let mut args: Vec<&str> = parts.collect();
+    if bin == "less" && args.is_empty() {
+        args = vec!["-R", "-F", "-X"];
+    }
+    (bin, args)
+}
+
 /// Pipes content through the system pager ($PAGER or less -RFX).
 fn run_pager(content: &str) -> io::Result<()> {
     let pager_cmd = env::var("PAGER").unwrap_or_else(|_| "less".to_string());
-    let mut parts = pager_cmd.split_whitespace();
-    let bin = parts.next().unwrap_or("less");
-    let safe_bin = if bin.is_empty() || bin.starts_with('-') || bin.chars().any(|c| c.is_control())
-    {
-        "less"
-    } else {
-        bin
-    };
-    let mut args: Vec<&str> = parts.collect();
-
-    // If using default `less`, add flags to display colors and quit if fits on one screen
-    if safe_bin == "less" && args.is_empty() {
-        args = vec!["-R", "-F", "-X"];
-    }
+    let (safe_bin, args) = parse_pager_command(&pager_cmd);
 
     let mut child = Command::new(safe_bin)
         .args(&args)
@@ -1080,5 +1082,11 @@ mod tests {
             wrap_for_terminal(Cow::Borrowed(input), None),
             Cow::Borrowed("Unchanged paragraph")
         ));
+
+        assert_eq!(
+            parse_pager_command("--evil foo"),
+            ("less", vec!["-R", "-F", "-X"])
+        );
+        assert_eq!(parse_pager_command("most -s"), ("most", vec!["-s"]));
     }
 }

@@ -20,6 +20,7 @@ pub struct SummaryOutcome {
     pub summary: String,
     pub reasoning: Option<String>,
     pub word_count: usize,
+    #[serde(skip_serializing)]
     pub streamed_to_stdout: bool,
     pub prompt_tokens: Option<u32>,
     pub completion_tokens: Option<u32>,
@@ -27,6 +28,7 @@ pub struct SummaryOutcome {
     pub tokens_per_second: Option<f64>,
     pub cached: bool,
     pub hint: Option<String>,
+    #[serde(skip_serializing)]
     pub cache_key: Option<String>,
 }
 
@@ -495,7 +497,6 @@ pub async fn prepare_book_query(
     author: Option<&str>,
     scraper: &WebScraper,
     cache: &Cache,
-    _args: &Cli,
 ) -> Result<PreparedBookQuery> {
     let searcher = BookSearcher::with_client(scraper.client().clone());
     let (resolved_title, resolved_author, work_key, candidates) =
@@ -519,7 +520,8 @@ pub async fn summarize_prepared_book(
     cache: &Cache,
     args: &Cli,
 ) -> Result<SummaryOutcome> {
-    let book_display = match prep.author.as_deref() {
+    let saved_author = prep.author.clone().or_else(|| prep.resolved_author.clone());
+    let book_display = match saved_author.as_deref() {
         Some(auth) => format!("\"{}\" by {}", prep.title, auth),
         None => format!("\"{}\"", prep.title),
     };
@@ -533,7 +535,7 @@ pub async fn summarize_prepared_book(
     Ok(SummaryOutcome::from_llm(
         "book",
         book_display,
-        prep.author,
+        saved_author,
         source_url,
         word_count,
         output,
@@ -590,10 +592,7 @@ async fn resolve_book_and_candidates_concurrently(
             "Loaded {} search candidate(s) from local cache.",
             cached_candidates.len()
         ));
-        let work_key = cache
-            .get_book_metadata(query_title, None)
-            .and_then(|m| m.and_then(|meta| meta.work_key));
-        return Ok((query_title.to_string(), None, work_key, cached_candidates));
+        return Ok((query_title.to_string(), None, None, cached_candidates));
     }
 
     // Fan-out Open Library metadata resolution AND candidate search concurrently
@@ -718,8 +717,8 @@ fn disambiguate_candidates_if_needed(
     eprint!("\nSelect reference [1-{}, Enter for 1]: ", display_limit);
     let _ = io::stderr().flush();
 
-    let mut input = String::new();
-    if io::stdin().read_line(&mut input).is_ok()
+    let mut stdin_lock = io::stdin().lock();
+    if let Ok(input) = crate::commands::read_line_bounded(&mut stdin_lock, 256)
         && let Ok(choice) = input.trim().parse::<usize>()
         && (1..=display_limit).contains(&choice)
     {
@@ -934,7 +933,10 @@ pub fn present_summary_outcome(outcome: SummaryOutcome, args: &Cli, cache: &Cach
                     print_view_file_links(files);
                 }
                 if let Some(hint) = hint_ref {
-                    eprintln!("\n\x1b[2m{}\x1b[0m", hint);
+                    eprintln!(
+                        "\n\x1b[2m{}\x1b[0m",
+                        crate::ui::sanitize_terminal_text_cow(hint)
+                    );
                 }
             }
         } else {
@@ -957,7 +959,7 @@ pub fn present_summary_outcome(outcome: SummaryOutcome, args: &Cli, cache: &Cach
                     print_view_file_links(files);
                 }
                 if let Some(hint) = hint_ref {
-                    eprintln!("\n{}", hint);
+                    eprintln!("\n{}", crate::ui::sanitize_terminal_text_cow(hint));
                 }
             }
         }

@@ -9,8 +9,11 @@ pub fn is_safe_markdown_url(url: &str) -> bool {
     if trimmed.is_empty() || trimmed.chars().any(char::is_control) {
         return false;
     }
-    if trimmed.starts_with(['#', '/']) {
+    if trimmed.starts_with('#') {
         return true;
+    }
+    if trimmed.starts_with('/') {
+        return !trimmed.starts_with("//") && !trimmed.starts_with("/\\");
     }
     if let Some((scheme, _)) = trimmed.split_once(':')
         && !scheme.contains(['/', '?', '#'])

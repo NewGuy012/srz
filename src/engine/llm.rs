@@ -132,7 +132,12 @@ impl LlmClient {
     }
 
     pub fn from_cli(args: &crate::cli::Cli) -> Result<Self> {
-        let mut client = Self::new(&args.base_url, &args.model, &args.api_key, args.max_tokens)?;
+        let mut client = Self::new(
+            &args.base_url,
+            &args.model,
+            &args.api_key,
+            args.effective_max_tokens(),
+        )?;
         client.context_window_override = args.context_window;
         client.show_thinking = args.show_thinking || args.verbose;
         Ok(client)

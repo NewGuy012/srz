@@ -8,20 +8,14 @@ pub mod storage;
 pub mod system;
 pub mod ui;
 
-// Aliases for crate root
-pub use config::cli;
-pub use engine::budget;
-pub use engine::chunker;
-pub use engine::llm;
-pub use sources::document;
-pub use sources::news;
-pub use sources::scraper;
-pub use sources::search;
-pub use sources::youtube;
-pub use storage::cache;
-pub use storage::db;
-pub use system::fs_util;
-pub use system::hardware;
-pub use system::text_util;
-pub use system::upgrade;
-pub use ui::render;
+// Internal aliases for crate modules
+pub(crate) use config as cli;
+pub(crate) use engine::chunker;
+pub(crate) use engine::llm;
+pub(crate) use sources::news;
+pub(crate) use sources::scraper;
+pub(crate) use sources::search;
+pub(crate) use storage::cache;
+pub(crate) use storage::db;
+pub(crate) use system::fs_util;
+pub(crate) use ui::render;

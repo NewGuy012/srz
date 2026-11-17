@@ -665,6 +665,8 @@ mod tests {
         assert!(!is_safe_markdown_url(""));
         assert!(!is_safe_markdown_url("   "));
         assert!(!is_safe_markdown_url("http://example.com/\0evil"));
+        assert!(!is_safe_markdown_url("//evil.example/phish"));
+        assert!(!is_safe_markdown_url("/\\evil.example/smb"));
     }
 
     #[test]

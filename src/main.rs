@@ -2,12 +2,11 @@
 
 use anyhow::Result;
 use clap::{CommandFactory, FromArgMatches};
-use srz::cli::Cli;
-use srz::commands::dispatch_cli;
-use srz::config::Config;
+use srz::commands::{dispatch_async, dispatch_sync, print_execution_error};
+use srz::config::{Cli, Config};
 use srz::ui::Ui;
 
-fn main() -> Result<()> {
+fn run() -> Result<()> {
     let cmd = Cli::command();
     let matches = cmd.get_matches();
     let mut args = match Cli::from_arg_matches(&matches) {
@@ -16,13 +15,10 @@ fn main() -> Result<()> {
     };
 
     let (config, config_path) = match &args.config {
-        Some(p) => {
-            let cfg = Config::load_from_path(p)?;
-            (cfg, Some(p.clone()))
-        }
-        None => Config::load_default(),
+        Some(p) => (Config::load_from_path(p)?, Some(p.clone())),
+        None => Config::load_default()?,
     };
-    args.apply_config(&config, Some(&matches));
+    args.apply_config(&config, Some(&matches))?;
 
     if args.quiet || args.json {
         Ui::set_quiet(true);
@@ -31,8 +27,19 @@ fn main() -> Result<()> {
         Ui::set_verbose(true);
     }
 
+    if dispatch_sync(&args, &config, config_path.as_deref())? {
+        return Ok(());
+    }
+
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
-        .block_on(dispatch_cli(args, config, config_path))
+        .block_on(dispatch_async(args, config, config_path))
+}
+
+fn main() {
+    if let Err(err) = run() {
+        print_execution_error("Command failed", &err);
+        std::process::exit(1);
+    }
 }

@@ -1,4 +1,4 @@
-use crate::config::cli::SummaryStyle;
+use crate::config::SummaryStyle;
 use crate::engine::ServerCapabilities;
 use crate::fs_util;
 use crate::scraper::ScrapedPage;
