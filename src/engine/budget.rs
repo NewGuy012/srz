@@ -8,17 +8,6 @@ pub struct ServerCapabilities {
     pub backend_kind: String,
 }
 
-impl Default for ServerCapabilities {
-    fn default() -> Self {
-        Self {
-            endpoint: String::new(),
-            model_id: String::new(),
-            n_ctx: 16_384,
-            backend_kind: "default".to_string(),
-        }
-    }
-}
-
 /// Minimum context window size in tokens.
 pub const MIN_CONTEXT_WINDOW: usize = 2_048;
 

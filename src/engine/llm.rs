@@ -19,6 +19,38 @@ use std::borrow::Cow;
 use std::io::{self, Write};
 use std::time::Duration;
 
+fn is_loopback_host(host: Option<&str>) -> bool {
+    let Some(h) = host else {
+        return false;
+    };
+    let unbracketed = h.trim_start_matches('[').trim_end_matches(']');
+    unbracketed.eq_ignore_ascii_case("localhost")
+        || unbracketed
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+#[derive(serde::Deserialize)]
+struct LlamaProps {
+    default_generation_settings: Option<LlamaGenSettings>,
+}
+
+#[derive(serde::Deserialize)]
+struct LlamaGenSettings {
+    n_ctx: Option<usize>,
+}
+
+#[derive(serde::Deserialize)]
+struct OllamaShow {
+    parameters: Option<String>,
+    model_info: Option<OllamaModelInfo>,
+}
+
+#[derive(serde::Deserialize)]
+struct OllamaModelInfo {
+    context_length: Option<usize>,
+}
+
 #[derive(Clone)]
 pub struct LlmClient {
     client: reqwest::Client,
@@ -33,9 +65,32 @@ pub struct LlmClient {
 
 impl LlmClient {
     pub fn new(base_url: &str, model: &str, api_key: &str, max_tokens: u32) -> Result<Self> {
+        let trimmed_base = base_url.trim();
+        let parsed = reqwest::Url::parse(trimmed_base)
+            .with_context(|| format!("Invalid LLM base URL: {}", trimmed_base))?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            anyhow::bail!(
+                "Unsupported LLM URL scheme '{}': only http and https are permitted",
+                parsed.scheme()
+            );
+        }
+        if !parsed.username().is_empty() || parsed.password().is_some() {
+            anyhow::bail!("LLM base URL must not contain embedded credentials");
+        }
+
+        let clean_key = api_key.trim();
+        if parsed.scheme() == "http"
+            && !clean_key.is_empty()
+            && !is_loopback_host(parsed.host_str())
+        {
+            anyhow::bail!(
+                "Refusing to send API key over unencrypted http:// to '{}'; use https://",
+                parsed.host_str().unwrap_or("remote host")
+            );
+        }
+
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        let clean_key = api_key.trim();
         if !clean_key.is_empty() {
             let val = HeaderValue::from_str(&format!("Bearer {}", clean_key)).with_context(
                 || "Configured API key contains invalid characters for an HTTP header",
@@ -43,22 +98,23 @@ impl LlmClient {
             headers.insert(AUTHORIZATION, val);
         }
 
+        // Disable HTTP redirects on API calls so Bearer credentials are never forwarded across origins.
         let client = reqwest::Client::builder()
             .default_headers(headers)
+            .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(300))
             .build()
             .context("Failed to build LLM HTTP client")?;
 
-        let normalized_base = base_url.trim_end_matches('/').to_string();
-        let fallback_base_url = if let Ok(parsed) = reqwest::Url::parse(&normalized_base) {
-            if parsed.host_str() == Some("localhost") {
-                let mut fallback = parsed.clone();
-                let _ = fallback.set_host(Some("127.0.0.1"));
-                Some(fallback.to_string().trim_end_matches('/').to_string())
-            } else {
-                None
-            }
+        let normalized_base = trimmed_base.trim_end_matches('/').to_string();
+        let fallback_base_url = if parsed
+            .host_str()
+            .is_some_and(|h| h.eq_ignore_ascii_case("localhost"))
+        {
+            let mut fallback = parsed.clone();
+            let _ = fallback.set_host(Some("127.0.0.1"));
+            Some(fallback.to_string().trim_end_matches('/').to_string())
         } else {
             None
         };
@@ -76,25 +132,10 @@ impl LlmClient {
     }
 
     pub fn from_cli(args: &crate::cli::Cli) -> Result<Self> {
-        Ok(
-            Self::new(&args.base_url, &args.model, &args.api_key, args.max_tokens)?
-                .with_context_window(args.context_window)
-                .with_show_thinking(args.show_thinking || args.verbose),
-        )
-    }
-
-    pub fn with_show_thinking(mut self, show: bool) -> Self {
-        self.show_thinking = show;
-        self
-    }
-
-    pub fn with_context_window(mut self, cw: Option<usize>) -> Self {
-        self.context_window_override = cw;
-        self
-    }
-
-    pub fn capabilities(&self) -> Option<&ServerCapabilities> {
-        self.capabilities.as_ref()
+        let mut client = Self::new(&args.base_url, &args.model, &args.api_key, args.max_tokens)?;
+        client.context_window_override = args.context_window;
+        client.show_thinking = args.show_thinking || args.verbose;
+        Ok(client)
     }
 
     /// Derives dynamic token budgeting parameters from the server's detected context window.
@@ -163,8 +204,9 @@ impl LlmClient {
             .await
     }
 
-    async fn fetch_root_json<B>(&self, path: &str, build_req: B) -> Option<serde_json::Value>
+    async fn fetch_root<T, B>(&self, path: &str, build_req: B) -> Option<T>
     where
+        T: serde::de::DeserializeOwned,
         B: Fn(&reqwest::Client, String) -> reqwest::RequestBuilder,
     {
         let resp = self.send_root_request(path, build_req).await.ok()?;
@@ -174,7 +216,7 @@ impl LlmClient {
         let bytes = crate::scraper::read_response_bytes_limited(resp, MAX_HTTP_RESPONSE_BYTES)
             .await
             .ok()?;
-        serde_json::from_slice::<serde_json::Value>(&bytes).ok()
+        serde_json::from_slice::<T>(&bytes).ok()
     }
 
     /// Extracts operational capabilities from the backend server (context window).
@@ -186,8 +228,11 @@ impl LlmClient {
             backend_kind: "default".to_string(),
         };
 
-        // Skip network probing for remote endpoints to eliminate multi-second timeouts
-        if !self.base_url.contains("localhost") && !self.base_url.contains("127.0.0.1") {
+        // Skip network probing for non-loopback endpoints to avoid latency and unintended traffic.
+        let is_local = reqwest::Url::parse(&self.base_url)
+            .ok()
+            .is_some_and(|u| is_loopback_host(u.host_str()));
+        if !is_local {
             caps.backend_kind = "remote".to_string();
             return caps;
         }
@@ -198,58 +243,44 @@ impl LlmClient {
         }
 
         // 1. Try llama.cpp GET /props
-        let mut props_json: Option<serde_json::Value> = None;
-        if !self.model.is_empty() {
+        let props: Option<LlamaProps> = if !self.model.is_empty() {
             let model_path = format!(
                 "/props?model={}",
                 crate::system::text_util::url_encode(&self.model)
             );
             let (model_res, root_res) = tokio::join!(
-                self.fetch_root_json(&model_path, |c, u| {
+                self.fetch_root::<LlamaProps, _>(&model_path, |c, u| {
                     c.get(u).timeout(Duration::from_millis(1500))
                 }),
-                self.fetch_root_json("/props", |c, u| {
+                self.fetch_root::<LlamaProps, _>("/props", |c, u| {
                     c.get(u).timeout(Duration::from_millis(1500))
                 }),
             );
-            if let Some(json) = model_res {
-                let n_ctx = json
-                    .pointer("/default_generation_settings/n_ctx")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                if n_ctx > 0 {
-                    props_json = Some(json);
-                }
+            if model_res
+                .as_ref()
+                .and_then(|p| p.default_generation_settings.as_ref()?.n_ctx)
+                .is_some_and(|n| n > 0)
+            {
+                model_res
+            } else {
+                root_res
             }
-            if props_json.is_none() {
-                props_json = root_res;
-            }
-        } else if let Some(json) = self
-            .fetch_root_json("/props", |c, u| {
+        } else {
+            self.fetch_root::<LlamaProps, _>("/props", |c, u| {
                 c.get(u).timeout(Duration::from_millis(1500))
             })
             .await
-        {
-            props_json = Some(json);
-        }
+        };
 
-        if let Some(json) = props_json {
+        if let Some(props_val) = props {
             caps.backend_kind = "llama.cpp".to_string();
-            if let Some(n_ctx) = json
-                .pointer("/default_generation_settings/n_ctx")
-                .and_then(|v| v.as_u64())
+            if let Some(n_ctx) = props_val
+                .default_generation_settings
+                .and_then(|s| s.n_ctx)
                 .filter(|&v| v > 0)
             {
-                caps.n_ctx = clamp_context_window(n_ctx as usize);
-            }
-
-            // Fallback check against /v1/models if context window could not be resolved from props
-            let ctx_from_props = json
-                .pointer("/default_generation_settings/n_ctx")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            if ctx_from_props == 0
-                && let Ok(models) = self.list_models().await
+                caps.n_ctx = clamp_context_window(n_ctx);
+            } else if let Ok(models) = self.list_models().await
                 && let Some(matching) = models.iter().find(|m| m.matches_model_id(&self.model))
                 && let Some(ctx) = matching.context_window()
             {
@@ -260,8 +291,8 @@ impl LlmClient {
         }
 
         // 2. Try Ollama POST /api/show
-        if let Some(json) = self
-            .fetch_root_json("/api/show", |c, u| {
+        if let Some(show) = self
+            .fetch_root::<OllamaShow, _>("/api/show", |c, u| {
                 let payload = serde_json::to_vec(&serde_json::json!({ "name": &self.model }))
                     .unwrap_or_default();
                 c.post(u)
@@ -272,23 +303,15 @@ impl LlmClient {
             .await
         {
             caps.backend_kind = "ollama".to_string();
-            // Prioritize runtime num_ctx from parameters first (since model_info reflects architecture ceiling, not allocated runner window)
-            let mut resolved_ctx = None;
-            if let Some(params_str) = json.get("parameters").and_then(|v| v.as_str()) {
-                for line in params_str.lines() {
-                    if let Some(rest) = line.strip_prefix("num_ctx")
-                        && let Ok(parsed) = rest.trim().parse::<usize>()
-                    {
-                        resolved_ctx = Some(parsed);
-                        break;
-                    }
-                }
-            }
+            // Prioritize runtime num_ctx from parameters over model_info ceiling.
+            let mut resolved_ctx = show.parameters.as_deref().and_then(|params_str| {
+                params_str.lines().find_map(|line| {
+                    line.strip_prefix("num_ctx")
+                        .and_then(|rest| rest.trim().parse::<usize>().ok())
+                })
+            });
             if resolved_ctx.is_none() {
-                resolved_ctx = json
-                    .pointer("/model_info/context_length")
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v as usize);
+                resolved_ctx = show.model_info.and_then(|m| m.context_length);
             }
             if let Some(ctx) = resolved_ctx {
                 caps.n_ctx = clamp_context_window(ctx);
@@ -389,27 +412,31 @@ impl LlmClient {
             return None;
         }
 
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        let extracted: Cow<'_, str> = if let Ok(val) =
+            serde_json::from_str::<serde_json::Value>(trimmed)
+        {
             const MESSAGE_POINTERS: &[&str] = &["/error/message", "/error", "/message", "/detail"];
-            for ptr in MESSAGE_POINTERS {
-                if let Some(msg) = val.pointer(ptr).and_then(|v| v.as_str()) {
-                    let msg = msg.trim();
-                    if !msg.is_empty() {
-                        return Some(msg.to_string());
-                    }
-                }
+            if let Some(msg) = MESSAGE_POINTERS
+                .iter()
+                .find_map(|ptr| val.pointer(ptr).and_then(|v| v.as_str()).map(str::trim))
+                .filter(|s| !s.is_empty())
+            {
+                Cow::Owned(msg.to_string())
+            } else if let Some(code) = val.pointer("/error/code").and_then(|v| v.as_str()) {
+                Cow::Owned(format!("Error code: {}", code))
+            } else {
+                Cow::Borrowed(trimmed)
             }
-            if let Some(code) = val.pointer("/error/code").and_then(|v| v.as_str()) {
-                return Some(format!("Error code: {}", code));
-            }
-        }
+        } else if trimmed.starts_with('<') {
+            return None;
+        } else {
+            Cow::Borrowed(trimmed)
+        };
 
-        // Avoid dumping raw HTML error pages (e.g. 502 Bad Gateway from a reverse proxy)
-        if trimmed.starts_with('<') {
+        let clean = crate::ui::sanitize_terminal_text_cow(extracted.trim());
+        if clean.is_empty() {
             return None;
         }
-
-        let clean = crate::ui::sanitize_terminal_text_cow(trimmed);
         if clean.len() > 300 {
             let cut = clean.floor_char_boundary(300);
             Some(format!("{}...", &clean[..cut]))
@@ -458,25 +485,9 @@ impl LlmClient {
                 || crate::system::text_util::find_ascii_case_insensitive(raw_body, phrase).is_some()
         });
 
-        if mentions_model && has_not_found_phrase {
-            return true;
-        }
-
-        if status == reqwest::StatusCode::NOT_FOUND && (has_not_found_phrase || mentions_model) {
-            return true;
-        }
-
-        if status == reqwest::StatusCode::BAD_REQUEST
-            && (crate::system::text_util::find_ascii_case_insensitive(parsed, "not found")
-                .is_some()
-                || crate::system::text_util::find_ascii_case_insensitive(raw_body, "not found")
-                    .is_some())
-            && mentions_model
-        {
-            return true;
-        }
-
-        false
+        (mentions_model && has_not_found_phrase)
+            || (status == reqwest::StatusCode::NOT_FOUND
+                && (has_not_found_phrase || mentions_model))
     }
 
     /// Formats an HTTP error response into an obvious, user-friendly error message.
@@ -680,14 +691,21 @@ impl LlmClient {
                 return Err(e).context("Failed to parse LLM JSON response");
             }
         };
+        let choice = match completion.choices.first() {
+            Some(c) => c,
+            None => {
+                pb.finish_and_clear();
+                anyhow::bail!("LLM returned empty choices");
+            }
+        };
         Ui::finish_spinner(pb, done_label);
 
-        let choice = completion
-            .choices
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("LLM returned empty choices"))?;
         let truncated = choice.finish_reason.as_deref() == Some("length");
         let warning = Self::build_truncation_warning(truncated, completion.usage.as_ref());
+        let (content, reasoning) = SseStreamState::split_non_streaming(
+            &choice.message.content,
+            choice.message.reasoning_content.as_deref(),
+        );
 
         let elapsed = start_time.elapsed();
         let duration_ms = elapsed.as_millis() as u64;
@@ -695,8 +713,8 @@ impl LlmClient {
         let completion_tokens = completion.usage.as_ref().and_then(|u| u.completion_tokens);
 
         Ok(LlmOutput {
-            content: choice.message.content.trim().to_string(),
-            reasoning: None,
+            content,
+            reasoning,
             truncated,
             warning,
             hint: None,
@@ -717,18 +735,18 @@ impl LlmClient {
         mode: StreamMode<'_>,
     ) -> Result<LlmOutput> {
         let start_time = std::time::Instant::now();
-        let is_silent = matches!(mode, StreamMode::Silent) || spinner_label.trim().is_empty();
-        let pb = if is_silent {
+        let pb = if spinner_label.trim().is_empty() {
             crate::ui::ProgressBar::hidden()
         } else {
             Ui::spinner(spinner_label)
         };
 
+        let max_completion = self.budget().max_completion;
         let body = ChatCompletionRequest {
             model: &self.model,
             messages,
             temperature: 0.3,
-            max_tokens: self.max_tokens,
+            max_tokens: max_completion,
             stream: true,
             stream_options: Some(StreamOptions {
                 include_usage: true,
@@ -752,8 +770,11 @@ impl LlmClient {
 
         let mut line_buf: Vec<u8> = Vec::with_capacity(512);
         let mut state = SseStreamState::new(start_time, self.show_thinking);
+        let mut stream_done = false;
 
-        while let Some(chunk) = response.chunk().await.context("Error reading LLM stream")? {
+        while !stream_done
+            && let Some(chunk) = response.chunk().await.context("Error reading LLM stream")?
+        {
             if line_buf.len().saturating_add(chunk.len()) > MAX_SSE_LINE_BYTES {
                 pb.finish_and_clear();
                 anyhow::bail!("LLM SSE stream exceeded maximum line buffer limit (1 MB)");
@@ -761,7 +782,6 @@ impl LlmClient {
             line_buf.extend_from_slice(&chunk);
 
             let mut cursor = 0;
-            let mut stream_done = false;
             state.needs_stdout_flush = false;
 
             while let Some(rel_pos) = line_buf[cursor..].iter().position(|&b| b == b'\n') {
@@ -784,12 +804,12 @@ impl LlmClient {
             if state.needs_stdout_flush {
                 let _ = io::stdout().flush();
             }
-            if stream_done {
-                break;
-            }
         }
 
-        state.finish_thinking_ui(&pb, spinner_label, mode);
+        if !stream_done && !line_buf.is_empty() {
+            let _ = state.process_line(&line_buf, &pb, spinner_label, mode);
+        }
+        state.finish_stream(&pb, spinner_label, mode);
 
         if let Some(ref mut renderer) = state.stream_renderer {
             renderer.flush();
@@ -802,7 +822,7 @@ impl LlmClient {
         } else {
             pb.finish_and_clear();
         }
-        if !done_label.trim().is_empty() && !matches!(mode, StreamMode::Silent) {
+        if !done_label.trim().is_empty() {
             Ui::success_with_elapsed(done_label, start_time.elapsed());
         }
 
@@ -1293,5 +1313,27 @@ mod tests {
         );
         assert!(formatted_ctx.contains("LLM context window exceeded (HTTP 400 Bad Request)"));
         assert!(formatted_ctx.contains("--context-window"));
+    }
+
+    #[test]
+    fn test_llm_client_url_security_and_error_sanitization() {
+        assert!(LlmClient::new("file:///etc/passwd", "m", "", 1024).is_err());
+        assert!(LlmClient::new("https://user:pass@api.example.com/v1", "m", "", 1024).is_err());
+        // Refuse sending Bearer API keys over cleartext HTTP to non-loopback hosts.
+        assert!(LlmClient::new("http://api.example.com/v1", "m", "sk-secret", 1024).is_err());
+        // Local loopback hosts and HTTPS remotes remain allowed with API keys.
+        assert!(LlmClient::new("http://localhost:9931/v1", "m", "sk-secret", 1024).is_ok());
+        assert!(LlmClient::new("http://[::1]:9931/v1", "m", "sk-secret", 1024).is_ok());
+        assert!(LlmClient::new("https://api.example.com/v1", "m", "sk-secret", 1024).is_ok());
+        assert!(LlmClient::new("http://192.168.1.50:11434/v1", "m", "", 1024).is_ok());
+
+        let long_ansi = format!(
+            r#"{{"error":{{"message":"\u001b[2J{}"}}}}"#,
+            "X".repeat(400)
+        );
+        let sanitized = LlmClient::parse_error_body(&long_ansi).unwrap();
+        assert!(!sanitized.contains('\x1b'));
+        assert!(sanitized.ends_with("..."));
+        assert!(sanitized.len() <= 303);
     }
 }

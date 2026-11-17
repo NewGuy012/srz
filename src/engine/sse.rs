@@ -76,17 +76,17 @@ pub(crate) struct ChatChoice {
 #[derive(Deserialize)]
 pub(crate) struct ResponseMessage {
     pub(crate) content: String,
+    #[serde(default)]
+    pub(crate) reasoning_content: Option<String>,
 }
 
-/// Controls whether tokens are streamed live to stdout or buffered silently behind a spinner.
+/// Controls whether tokens are streamed live to stdout or buffered behind a spinner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StreamMode<'a> {
     /// Stream visible content tokens directly to stdout as they arrive.
     Stdout { header_title: &'a str },
     /// Buffer tokens silently behind a spinner until complete (default).
     Buffered,
-    /// Execute completion completely silently with no spinner, no thinking logs, and no success checkmarks.
-    Silent,
 }
 
 /// Output returned by an LLM summarization call.
@@ -103,16 +103,22 @@ pub struct LlmOutput {
     pub tokens_per_second: Option<f64>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ThinkingState {
+    Detecting,
+    Thinking { in_tag: bool },
+    Finished,
+}
+
 pub(crate) struct SseStreamState {
     pub(crate) content_buf: String,
     pub(crate) reasoning_buf: String,
     pub(crate) thinking_tokens: usize,
     pub(crate) output_tokens: usize,
     pub(crate) started_visible: bool,
-    pub(crate) is_thinking: bool,
+    pub(crate) thinking: ThinkingState,
     pub(crate) streamed_thinking: bool,
-    pub(crate) finished_thinking_ui: bool,
-    pub(crate) in_think_tag: bool,
+    pub(crate) pending_tag: String,
     pub(crate) truncated: bool,
     pub(crate) last_usage: Option<TokenUsage>,
     pub(crate) needs_stdout_flush: bool,
@@ -130,10 +136,9 @@ impl SseStreamState {
             thinking_tokens: 0,
             output_tokens: 0,
             started_visible: false,
-            is_thinking: false,
+            thinking: ThinkingState::Detecting,
             streamed_thinking: false,
-            finished_thinking_ui: false,
-            in_think_tag: false,
+            pending_tag: String::new(),
             truncated: false,
             last_usage: None,
             needs_stdout_flush: false,
@@ -143,6 +148,10 @@ impl SseStreamState {
             show_thinking_stream,
         }
     }
+
+    pub(crate) fn is_thinking(&self) -> bool {
+        matches!(self.thinking, ThinkingState::Thinking { .. })
+    }
 }
 
 impl Default for SseStreamState {
@@ -151,8 +160,39 @@ impl Default for SseStreamState {
     }
 }
 
+/// Returns longest length `k < needle.len()` such that `haystack` ends with `&needle[..k]`.
+fn trailing_tag_prefix(haystack: &str, needle: &str) -> usize {
+    let max_k = haystack.len().min(needle.len().saturating_sub(1));
+    (1..=max_k)
+        .rev()
+        .find(|&k| haystack.ends_with(&needle[..k]))
+        .unwrap_or(0)
+}
+
 impl SseStreamState {
-    /// Processes a single SSE line. Returns `true` if the `[DONE]` sentinel was reached or limit hit.
+    /// Extracts `(content, reasoning)` for non-streaming responses via the same `<think>` tag state machine.
+    pub(crate) fn split_non_streaming(
+        content: &str,
+        reasoning_content: Option<&str>,
+    ) -> (String, Option<String>) {
+        let mut state = Self::default();
+        let pb = crate::ui::ProgressBar::hidden();
+        state.process_delta_parts(
+            reasoning_content,
+            Some(content),
+            &pb,
+            "",
+            StreamMode::Buffered,
+        );
+        state.finish_stream(&pb, "", StreamMode::Buffered);
+        let trimmed_len = state.content_buf.trim_end().len();
+        state.content_buf.truncate(trimmed_len);
+        let reasoning = (!state.reasoning_buf.trim().is_empty())
+            .then(|| state.reasoning_buf.trim().to_string());
+        (state.content_buf, reasoning)
+    }
+
+    /// Processes a single SSE line. Returns `true` if `[DONE]` was reached or a buffer cap was hit.
     pub(crate) fn process_line(
         &mut self,
         line_bytes: &[u8],
@@ -186,49 +226,141 @@ impl SseStreamState {
             self.truncated = true;
         }
 
-        if let Some(reasoning) = &choice.delta.reasoning_content
+        self.process_delta_parts(
+            choice.delta.reasoning_content.as_deref(),
+            choice.delta.content.as_deref(),
+            pb,
+            spinner_label,
+            mode,
+        )
+    }
+
+    fn process_delta_parts(
+        &mut self,
+        reasoning_delta: Option<&str>,
+        content_delta: Option<&str>,
+        pb: &crate::ui::ProgressBar,
+        spinner_label: &str,
+        mode: StreamMode<'_>,
+    ) -> bool {
+        if let Some(reasoning) = reasoning_delta
             && !reasoning.is_empty()
             && !self.started_visible
-            && self.append_reasoning_delta(reasoning, pb, mode)
+            && self.append_reasoning_delta(reasoning, false, pb)
         {
             return true;
         }
 
-        if let Some(delta_text) = &choice.delta.content
+        if let Some(delta_text) = content_delta
             && !delta_text.is_empty()
+            && self.process_content_delta(delta_text, pb, spinner_label, mode)
         {
-            if !self.started_visible
-                && let Some(reasoning_slice) = delta_text
-                    .find("<think>")
-                    .map(|idx| {
-                        self.in_think_tag = true;
-                        &delta_text[idx + 7..]
-                    })
-                    .or_else(|| self.in_think_tag.then_some(delta_text))
-            {
-                if let Some(think_end) = reasoning_slice.find("</think>") {
-                    if self.append_reasoning_delta(&reasoning_slice[..think_end], pb, mode) {
-                        return true;
-                    }
-                    self.in_think_tag = false;
-                    let visible_part = &reasoning_slice[think_end + 8..];
-                    if !visible_part.is_empty()
-                        && self.try_append_content_delta(visible_part, pb, spinner_label, mode)
-                    {
-                        return true;
-                    }
-                } else if self.append_reasoning_delta(reasoning_slice, pb, mode) {
-                    return true;
-                }
-                return false;
-            }
-
-            if self.try_append_content_delta(delta_text, pb, spinner_label, mode) {
-                return true;
-            }
+            return true;
         }
 
         false
+    }
+
+    fn process_content_delta(
+        &mut self,
+        delta_text: &str,
+        pb: &crate::ui::ProgressBar,
+        spinner_label: &str,
+        mode: StreamMode<'_>,
+    ) -> bool {
+        if self.pending_tag.is_empty()
+            && self.started_visible
+            && matches!(self.thinking, ThinkingState::Finished)
+        {
+            return self.try_append_content_delta(delta_text, pb, spinner_label, mode);
+        }
+
+        let working: Cow<'_, str> = if self.pending_tag.is_empty() {
+            Cow::Borrowed(delta_text)
+        } else {
+            let mut combined = std::mem::take(&mut self.pending_tag);
+            combined.push_str(delta_text);
+            Cow::Owned(combined)
+        };
+
+        let mut offset = 0;
+        while offset < working.len() {
+            let rest = &working[offset..];
+            if matches!(self.thinking, ThinkingState::Thinking { in_tag: true }) {
+                if let Some(end_idx) = rest.find("</think>") {
+                    if !rest[..end_idx].is_empty()
+                        && self.append_reasoning_delta(&rest[..end_idx], true, pb)
+                    {
+                        return true;
+                    }
+                    self.thinking = ThinkingState::Thinking { in_tag: false };
+                    offset += end_idx + 8;
+                    continue;
+                }
+                let hold = trailing_tag_prefix(rest, "</think>");
+                let emit = &rest[..rest.len() - hold];
+                if hold > 0 {
+                    self.pending_tag.push_str(&rest[rest.len() - hold..]);
+                }
+                if !emit.is_empty() && self.append_reasoning_delta(emit, true, pb) {
+                    return true;
+                }
+                break;
+            }
+
+            if !self.started_visible
+                && matches!(
+                    self.thinking,
+                    ThinkingState::Detecting | ThinkingState::Thinking { in_tag: false }
+                )
+            {
+                if let Some(tag_idx) = rest.find("<think>") {
+                    let before = &rest[..tag_idx];
+                    if !before.trim().is_empty()
+                        && self.try_append_content_delta(before, pb, spinner_label, mode)
+                    {
+                        return true;
+                    }
+                    self.thinking = ThinkingState::Thinking { in_tag: true };
+                    offset += tag_idx + 7;
+                    continue;
+                }
+                let hold = trailing_tag_prefix(rest, "<think>");
+                let emit = &rest[..rest.len() - hold];
+                if hold > 0 {
+                    self.pending_tag.push_str(&rest[rest.len() - hold..]);
+                }
+                if !emit.is_empty() && self.try_append_content_delta(emit, pb, spinner_label, mode)
+                {
+                    return true;
+                }
+                break;
+            }
+
+            if self.try_append_content_delta(rest, pb, spinner_label, mode) {
+                return true;
+            }
+            break;
+        }
+
+        false
+    }
+
+    pub(crate) fn finish_stream(
+        &mut self,
+        pb: &crate::ui::ProgressBar,
+        spinner_label: &str,
+        mode: StreamMode<'_>,
+    ) {
+        if !self.pending_tag.is_empty() {
+            let leftover = std::mem::take(&mut self.pending_tag);
+            if matches!(self.thinking, ThinkingState::Thinking { in_tag: true }) {
+                let _ = self.append_reasoning_delta(&leftover, true, pb);
+            } else {
+                let _ = self.try_append_content_delta(&leftover, pb, spinner_label, mode);
+            }
+        }
+        self.finish_thinking_ui(pb, spinner_label, mode);
     }
 
     fn try_append_content_delta(
@@ -249,15 +381,17 @@ impl SseStreamState {
     fn append_reasoning_delta(
         &mut self,
         text: &str,
+        in_tag: bool,
         pb: &crate::ui::ProgressBar,
-        mode: StreamMode<'_>,
     ) -> bool {
         if self.reasoning_buf.len().saturating_add(text.len()) > MAX_CONTENT_BUFFER_BYTES {
             self.truncated = true;
             return true;
         }
         self.thinking_tokens += 1;
-        self.is_thinking = true;
+        if in_tag || self.thinking == ThinkingState::Detecting {
+            self.thinking = ThinkingState::Thinking { in_tag };
+        }
         let now = std::time::Instant::now();
         let is_first_thinking = self.thinking_start.is_none();
         if is_first_thinking {
@@ -265,11 +399,7 @@ impl SseStreamState {
         }
         self.reasoning_buf.push_str(text);
 
-        if matches!(mode, StreamMode::Silent) {
-            return false;
-        }
-
-        if !Ui::is_quiet() {
+        if (!pb.is_hidden() || self.show_thinking_stream) && !Ui::is_quiet() {
             if self.show_thinking_stream {
                 if !self.streamed_thinking {
                     self.streamed_thinking = true;
@@ -306,13 +436,13 @@ impl SseStreamState {
         spinner_label: &str,
         mode: StreamMode<'_>,
     ) {
-        if self.finished_thinking_ui || !self.is_thinking {
+        if !self.is_thinking() {
+            self.thinking = ThinkingState::Finished;
             return;
         }
-        self.finished_thinking_ui = true;
-        self.is_thinking = false;
+        self.thinking = ThinkingState::Finished;
 
-        if matches!(mode, StreamMode::Silent) || pb.is_hidden() || Ui::is_quiet() {
+        if pb.is_hidden() || Ui::is_quiet() {
             return;
         }
 
@@ -333,11 +463,12 @@ impl SseStreamState {
             let total_duration_str = format_thinking_duration(total_elapsed_s);
             let thought_line = format!("💭 Thought for {}", total_duration_str);
 
-            if matches!(mode, StreamMode::Buffered) {
-                pb.println(thought_line);
-            } else if matches!(mode, StreamMode::Stdout { .. }) {
-                pb.finish_and_clear();
-                eprintln!("{}", thought_line);
+            match mode {
+                StreamMode::Buffered => pb.println(thought_line),
+                StreamMode::Stdout { .. } => {
+                    pb.finish_and_clear();
+                    eprintln!("{}", thought_line);
+                }
             }
         }
 
@@ -374,7 +505,6 @@ impl SseStreamState {
         self.content_buf.push_str(text_to_emit);
 
         match mode {
-            StreamMode::Silent => {}
             StreamMode::Stdout { header_title } => {
                 if is_first {
                     pb.finish_and_clear();
@@ -585,7 +715,7 @@ mod tests {
         let reason_chunk = br#"data: {"choices":[{"delta":{"reasoning_content":"Step 1"}}]}"#;
         assert!(!state.process_line(reason_chunk, &pb, "Testing", StreamMode::Buffered));
         assert_eq!(state.thinking_tokens, 1);
-        assert!(state.is_thinking);
+        assert!(state.is_thinking());
         assert_eq!(state.reasoning_buf, "Step 1");
         assert_eq!(state.content_buf, "");
 
@@ -757,8 +887,8 @@ mod tests {
             StreamMode::Buffered
         ));
         assert_eq!(state.thinking_tokens, 1);
-        assert!(state.is_thinking);
-        assert!(!state.finished_thinking_ui);
+        assert!(state.is_thinking());
+        assert_ne!(state.thinking, ThinkingState::Finished);
 
         // Step 2: Content generation starts: finishes thinking UI, keeps pb alive and transitions to loading status
         let content_chunk =
@@ -769,8 +899,8 @@ mod tests {
             "Synthesizing news briefing...",
             StreamMode::Buffered
         ));
-        assert!(state.finished_thinking_ui);
-        assert!(!state.is_thinking);
+        assert_eq!(state.thinking, ThinkingState::Finished);
+        assert!(!state.is_thinking());
         assert!(
             !pb.is_finished(),
             "ProgressBar must remain active during buffered content generation"
@@ -800,44 +930,55 @@ mod tests {
             br#"data: {"choices":[{"delta":{"reasoning_content":"Checking parameters"}}]}"#;
         assert!(!state_compact.process_line(reason_chunk, &pb, "Working", StreamMode::Buffered));
         assert_eq!(state_compact.thinking_tokens, 1);
-        assert!(state_compact.is_thinking);
+        assert!(state_compact.is_thinking());
         assert!(!state_compact.streamed_thinking);
 
         // When content arrives, finish_thinking_ui runs and settles thinking
         let content_chunk = br#"data: {"choices":[{"delta":{"content":"Summary result"}}]}"#;
         assert!(!state_compact.process_line(content_chunk, &pb, "Working", StreamMode::Buffered));
-        assert!(!state_compact.is_thinking);
-        assert!(state_compact.finished_thinking_ui);
+        assert!(!state_compact.is_thinking());
+        assert_eq!(state_compact.thinking, ThinkingState::Finished);
         assert_eq!(state_compact.content_buf, "Summary result");
 
         // Verbose / show_thinking_stream mode
         let mut state_verbose = SseStreamState::new(std::time::Instant::now(), true);
         assert!(!state_verbose.process_line(reason_chunk, &pb, "Working", StreamMode::Buffered));
         assert_eq!(state_verbose.thinking_tokens, 1);
-        assert!(state_verbose.is_thinking);
+        assert!(state_verbose.is_thinking());
         assert!(state_verbose.streamed_thinking);
     }
 
     #[test]
-    fn test_sse_stream_state_silent_mode() {
+    fn test_sse_stream_state_split_think_tags_and_non_streaming() {
         let pb = crate::ui::ProgressBar::hidden();
-        let mut state = SseStreamState::new(std::time::Instant::now(), false);
+        let mut state = SseStreamState::default();
 
-        let reason_chunk =
-            br#"data: {"choices":[{"delta":{"reasoning_content":"Silent reasoning"}}]}"#;
-        assert!(!state.process_line(reason_chunk, &pb, "", StreamMode::Silent));
-        assert_eq!(state.thinking_tokens, 1);
-        assert!(state.is_thinking);
-        assert!(!state.streamed_thinking);
-        assert!(state.reasoning_buf.contains("Silent reasoning"));
+        for chunk in ["<thi", "nk>Step 1", " & done</th", "ink>Visible ", "answer"] {
+            let line = format!(r#"data: {{"choices":[{{"delta":{{"content":"{chunk}"}}}}]}}"#);
+            assert!(!state.process_line(line.as_bytes(), &pb, "", StreamMode::Buffered));
+        }
+        state.finish_stream(&pb, "", StreamMode::Buffered);
 
-        let content_chunk =
-            br#"data: {"choices":[{"delta":{"content":"Silent completion output"}}]}"#;
-        assert!(!state.process_line(content_chunk, &pb, "", StreamMode::Silent));
-        assert_eq!(state.output_tokens, 1);
-        assert!(!state.is_thinking);
-        assert!(state.finished_thinking_ui);
-        assert_eq!(state.content_buf, "Silent completion output");
+        assert_eq!(state.reasoning_buf, "Step 1 & done");
+        assert_eq!(state.content_buf, "Visible answer");
+        assert_eq!(state.thinking, ThinkingState::Finished);
+
+        // Unclosed partial `<think>` prefix at EOF must still flush cleanly.
+        let mut eof_state = SseStreamState::default();
+        assert!(!eof_state.process_line(
+            br#"data: {"choices":[{"delta":{"content":"x <"}}]}"#,
+            &pb,
+            "",
+            StreamMode::Buffered
+        ));
+        eof_state.finish_stream(&pb, "", StreamMode::Buffered);
+        assert_eq!(eof_state.content_buf, "x <");
+
+        // Non-streaming path uses the same `<think>` + `reasoning_content` extraction.
+        let (content, reasoning) =
+            SseStreamState::split_non_streaming("<think>Plan steps</think>\nFinal answer.", None);
+        assert_eq!(content, "Final answer.");
+        assert_eq!(reasoning.as_deref(), Some("Plan steps"));
     }
 
     #[test]
@@ -853,7 +994,7 @@ mod tests {
             let mut state = SseStreamState::new(std::time::Instant::now(), false);
             let payload =
                 format!(r#"data: {{"choices":[{{"delta":{{"{field}":"{prefix}{huge}"}}}}]}}"#);
-            assert!(state.process_line(payload.as_bytes(), &pb, "", StreamMode::Silent));
+            assert!(state.process_line(payload.as_bytes(), &pb, "", StreamMode::Buffered));
             assert!(state.truncated);
             let buf_len = if check_content {
                 state.content_buf.len()

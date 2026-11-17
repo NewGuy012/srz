@@ -9,21 +9,12 @@ pub fn format_author_line(author: Option<&str>) -> Cow<'_, str> {
     }
 }
 
-fn matches_closing_tag(tag_slice: &str, tag_name: &str) -> bool {
-    let inner = tag_slice
-        .strip_prefix('<')
-        .and_then(|s| s.strip_suffix('>'))
-        .unwrap_or("")
-        .trim();
-    if let Some(after_slash) = inner.strip_prefix('/') {
-        after_slash.trim().eq_ignore_ascii_case(tag_name)
-    } else {
-        false
-    }
+fn is_tag_name_boundary(b: u8) -> bool {
+    !(b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b':')
 }
 
 /// Escapes any occurrence of `closing_tag` inside `content` to prevent XML delimiter injection,
-/// matching case-insensitively and regardless of whitespace inside tags (e.g. `</SOURCE_DOCUMENT >`, `< / source_document >`),
+/// matching case-insensitively across whitespace, trailing attributes/`/`, and unclosed EOF forms,
 /// returning `Cow::Borrowed(content)` with zero allocations when no matching closing tag is present.
 pub fn escape_closing_tag<'a>(
     content: &'a str,
@@ -45,18 +36,32 @@ pub fn escape_closing_tag<'a>(
 
     while let Some(start_rel) = content[cursor..].find('<') {
         let start = cursor + start_rel;
-        if let Some(end_rel) = content[start..].find('>') {
-            let end = start + end_rel + 1;
-            let tag_candidate = &content[start..end];
-            if !tag_candidate[1..tag_candidate.len() - 1].contains('<')
-                && matches_closing_tag(tag_candidate, tag_name)
-            {
-                out.push_str(&content[last_idx..start]);
-                out.push_str(escaped_tag);
-                last_idx = end;
-                cursor = end;
-                continue;
-            }
+        let after_lt = content[start + 1..].trim_start();
+        let Some(after_slash) = after_lt.strip_prefix('/') else {
+            cursor = start + 1;
+            continue;
+        };
+        let after_ws = after_slash.trim_start();
+        if after_ws
+            .get(..tag_name.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(tag_name))
+            && after_ws
+                .as_bytes()
+                .get(tag_name.len())
+                .is_none_or(|&b| is_tag_name_boundary(b))
+        {
+            let rest_after_name = &after_ws[tag_name.len()..];
+            let name_end = (rest_after_name.as_ptr() as usize) - (content.as_ptr() as usize);
+            let close_offset = rest_after_name
+                .find(['>', '<'])
+                .filter(|&p| rest_after_name.as_bytes()[p] == b'>')
+                .map(|p| name_end + p + 1)
+                .unwrap_or(name_end);
+            out.push_str(&content[last_idx..start]);
+            out.push_str(escaped_tag);
+            last_idx = close_offset;
+            cursor = close_offset;
+            continue;
         }
         cursor = start + 1;
     }
@@ -144,20 +149,49 @@ mod tests {
 
     #[test]
     fn test_escape_closing_tag_case_insensitive_and_whitespace_variations() {
-        for input in [
-            "Sample </source_document> evil",
-            "Sample </SOURCE_DOCUMENT> evil",
-            "Sample </Source_Document> evil",
-            "Sample </source_document > evil",
-            "Sample < / source_document > evil",
+        for (input, expected) in [
+            (
+                "Sample </source_document> evil",
+                "Sample &lt;/source_document&gt; evil",
+            ),
+            (
+                "Sample </SOURCE_DOCUMENT> evil",
+                "Sample &lt;/source_document&gt; evil",
+            ),
+            (
+                "Sample </Source_Document> evil",
+                "Sample &lt;/source_document&gt; evil",
+            ),
+            (
+                "Sample </source_document > evil",
+                "Sample &lt;/source_document&gt; evil",
+            ),
+            (
+                "Sample < / source_document > evil",
+                "Sample &lt;/source_document&gt; evil",
+            ),
+            (
+                "Sample </source_document/> evil",
+                "Sample &lt;/source_document&gt; evil",
+            ),
+            (
+                "Sample </source_document attr='1'> evil",
+                "Sample &lt;/source_document&gt; evil",
+            ),
+            ("EOF </source_document", "EOF &lt;/source_document&gt;"),
         ] {
             assert_eq!(
                 escape_closing_tag(input, "</source_document>", "&lt;/source_document&gt;"),
-                "Sample &lt;/source_document&gt; evil"
+                expected,
+                "input={input:?}"
             );
         }
 
-        for safe in ["Sample </other_tag> safe", "Normal safe document context"] {
+        for safe in [
+            "Sample </other_tag> safe",
+            "Sample </source_document_2> safe",
+            "Normal safe document context",
+        ] {
             assert!(matches!(
                 escape_closing_tag(safe, "</source_document>", "&lt;/source_document&gt;"),
                 Cow::Borrowed(_)

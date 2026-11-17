@@ -58,14 +58,6 @@ impl TokenizerKind {
 
 pub struct TextChunker;
 
-fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
-    idx = idx.min(s.len());
-    while idx > 0 && !s.is_char_boundary(idx) {
-        idx -= 1;
-    }
-    idx
-}
-
 fn max_base_tokens(kind: TokenizerKind, max_tokens: usize) -> usize {
     let scale = match kind {
         TokenizerKind::Cl100k | TokenizerKind::O200k => 100,
@@ -82,7 +74,7 @@ impl TextChunker {
         if max_tokens == 0 {
             return Cow::Borrowed("[Context trimmed for token budget]");
         }
-        if text.len() <= max_tokens || estimate_tokens(text) <= max_tokens {
+        if text.len().saturating_mul(3) <= max_tokens || estimate_tokens(text) <= max_tokens {
             return Cow::Borrowed(text);
         }
         let max_words = ((max_tokens * 3) / 4).max(1);
@@ -93,7 +85,7 @@ impl TextChunker {
         {
             return trimmed;
         }
-        let cut = floor_char_boundary(text, max_bytes.max(1));
+        let cut = text.floor_char_boundary(max_bytes.max(1));
         Cow::Owned(format!(
             "{}\n\n[Context trimmed for token budget]",
             text[..cut].trim_end()
@@ -107,7 +99,7 @@ impl TextChunker {
         max_tokens: usize,
         kind: TokenizerKind,
     ) -> Cow<'a, str> {
-        if kind.count_tokens(text) <= max_tokens {
+        if text.len().saturating_mul(3) <= max_tokens || kind.count_tokens(text) <= max_tokens {
             return Cow::Borrowed(text);
         }
         let base_budget = max_base_tokens(kind, max_tokens);
@@ -128,59 +120,45 @@ impl TextChunker {
         }
 
         if end == 0 {
-            end = floor_char_boundary(text, max_bytes);
+            end = text.floor_char_boundary(max_bytes);
         }
         while end > 0 && kind.count_tokens(&text[..end]) > max_tokens {
             end = text[..end]
                 .rfind(char::is_whitespace)
                 .filter(|&w| w > 0)
-                .unwrap_or_else(|| floor_char_boundary(text, end - 1));
+                .unwrap_or_else(|| text.floor_char_boundary(end - 1));
         }
         Cow::Borrowed(text[..end].trim_end())
     }
 
-    /// Splits text into chunks of roughly `max_tokens` with `overlap_tokens` overlap using the specified tokenizer kind,
-    /// returning each chunk alongside its pre-computed token count to avoid re-tokenization.
+    /// Splits text into chunks of roughly `max_tokens` with `overlap_tokens` overlap using `kind`,
+    /// returning each chunk alongside its pre-computed token count.
     pub fn chunk_by_tokens_with_counts_and_kind<'a>(
         text: &'a str,
         max_tokens: usize,
         overlap_tokens: usize,
         kind: TokenizerKind,
     ) -> Vec<(Cow<'a, str>, usize)> {
-        if text.len() <= max_tokens {
+        if text.len().saturating_mul(3) <= max_tokens {
             return vec![(Cow::Borrowed(text), kind.count_tokens(text))];
         }
-        Self::chunk_with_metric_with_counts(text, max_tokens, overlap_tokens, |s| {
-            kind.count_tokens(s)
-        })
-    }
-
-    fn chunk_with_metric_with_counts<'a, F>(
-        text: &'a str,
-        max_limit: usize,
-        overlap_limit: usize,
-        mut count_fn: F,
-    ) -> Vec<(Cow<'a, str>, usize)>
-    where
-        F: FnMut(&str) -> usize,
-    {
         let mut raw_paragraphs: Vec<(&'a str, usize)> = Vec::new();
         let mut total_count = 0;
 
         for p in text.split("\n\n") {
             let trimmed = p.trim();
             if !trimmed.is_empty() {
-                let count = count_fn(trimmed);
+                let count = kind.count_tokens(trimmed);
                 total_count += count;
                 raw_paragraphs.push((trimmed, count));
             }
         }
 
-        if raw_paragraphs.is_empty() || total_count <= max_limit {
+        if raw_paragraphs.is_empty() || total_count <= max_tokens {
             return vec![(Cow::Borrowed(text), total_count)];
         }
 
-        let segments = Self::decompose_text_segments(raw_paragraphs, max_limit, &mut count_fn);
+        let segments = Self::decompose_text_segments(raw_paragraphs, max_tokens, kind);
         if segments.is_empty() {
             return vec![(Cow::Borrowed(text), 0)];
         }
@@ -190,14 +168,14 @@ impl TextChunker {
         let mut current_count = 0;
 
         for &(seg, s_count) in &segments {
-            if current_count + s_count > max_limit && !current_chunk_segments.is_empty() {
+            if current_count + s_count > max_tokens && !current_chunk_segments.is_empty() {
                 let chunk = Self::build_chunk(text, &current_chunk_segments);
                 chunks.push((chunk, current_count));
 
                 let mut retained = Vec::new();
                 let mut retained_count = 0;
                 for &(prev_s, c) in current_chunk_segments.iter().rev() {
-                    if retained_count + c <= overlap_limit {
+                    if retained_count + c <= overlap_tokens {
                         retained.push((prev_s, c));
                         retained_count += c;
                     } else {
@@ -222,14 +200,11 @@ impl TextChunker {
         chunks
     }
 
-    fn decompose_text_segments<'a, F>(
-        raw_paragraphs: Vec<(&'a str, usize)>,
+    fn decompose_text_segments(
+        raw_paragraphs: Vec<(&str, usize)>,
         max_limit: usize,
-        count_fn: &mut F,
-    ) -> Vec<(&'a str, usize)>
-    where
-        F: FnMut(&str) -> usize,
-    {
+        kind: TokenizerKind,
+    ) -> Vec<(&str, usize)> {
         let is_single_block = raw_paragraphs.len() <= 1;
         // Allow up to 1.8x of max_limit to preserve intact paragraph boundaries when multiple paragraphs exist
         let para_threshold = if is_single_block {
@@ -243,20 +218,18 @@ impl TextChunker {
             if count <= para_threshold && !is_single_block {
                 segments.push((para, count));
             } else {
-                Self::decompose_paragraph(para, max_limit, count_fn, &mut segments);
+                Self::decompose_paragraph(para, max_limit, kind, &mut segments);
             }
         }
         segments
     }
 
-    fn decompose_paragraph<'a, F>(
+    fn decompose_paragraph<'a>(
         para: &'a str,
         max_limit: usize,
-        count_fn: &mut F,
+        kind: TokenizerKind,
         out: &mut Vec<(&'a str, usize)>,
-    ) where
-        F: FnMut(&str) -> usize,
-    {
+    ) {
         let mut has_lines = false;
         for line in para.lines() {
             let trimmed = line.trim();
@@ -264,96 +237,57 @@ impl TextChunker {
                 continue;
             }
             has_lines = true;
-            let count = count_fn(trimmed);
+            let count = kind.count_tokens(trimmed);
             if count <= max_limit {
                 out.push((trimmed, count));
             } else {
-                Self::decompose_line(trimmed, max_limit, count_fn, out);
+                Self::decompose_line(trimmed, max_limit, kind, out);
             }
         }
         if !has_lines {
-            Self::decompose_line(para, max_limit, count_fn, out);
+            Self::decompose_line(para, max_limit, kind, out);
         }
     }
 
-    fn split_at_best_boundary<'a, F>(
-        remaining: &mut &'a str,
-        candidates: &[usize],
-        max_limit: usize,
-        count_fn: &mut F,
-        out: &mut Vec<(&'a str, usize)>,
-    ) -> bool
-    where
-        F: FnMut(&str) -> usize,
-    {
-        if candidates.is_empty() {
-            return false;
-        }
-        let idx = candidates.partition_point(|&pos| count_fn(&remaining[..pos]) <= max_limit);
-        if idx > 0 {
-            let pos = candidates[idx - 1];
-            let (head, tail) = remaining.split_at(pos);
-            let head_trimmed = head.trim();
-            if !head_trimmed.is_empty() {
-                out.push((head_trimmed, count_fn(head_trimmed)));
-            }
-            *remaining = tail.trim_start();
-            true
-        } else {
-            false
-        }
-    }
-
-    fn decompose_line<'a, F>(
+    fn decompose_line<'a>(
         mut remaining: &'a str,
         max_limit: usize,
-        count_fn: &mut F,
+        kind: TokenizerKind,
         out: &mut Vec<(&'a str, usize)>,
-    ) where
-        F: FnMut(&str) -> usize,
-    {
+    ) {
         while !remaining.is_empty() {
-            let r_count = count_fn(remaining);
+            let r_count = kind.count_tokens(remaining);
             if r_count <= max_limit {
                 out.push((remaining, r_count));
                 break;
             }
 
-            let sentences: Vec<usize> = remaining
-                .char_indices()
-                .filter_map(|(i, c)| {
-                    (matches!(c, '.' | '?' | '!' | ';')
-                        && remaining[i + c.len_utf8()..].starts_with(char::is_whitespace))
-                    .then_some(i + c.len_utf8())
-                })
-                .collect();
-            if Self::split_at_best_boundary(&mut remaining, &sentences, max_limit, count_fn, out) {
-                continue;
-            }
+            let window = Self::truncate_to_budget(remaining, max_limit, kind);
+            let split_at = if window.is_empty() {
+                remaining
+                    .chars()
+                    .next()
+                    .map_or(remaining.len(), char::len_utf8)
+            } else {
+                window
+                    .char_indices()
+                    .rev()
+                    .find_map(|(i, c)| {
+                        let end = i + c.len_utf8();
+                        (matches!(c, '.' | '?' | '!' | ';')
+                            && remaining[end..].starts_with(char::is_whitespace)
+                            && end >= window.len() / 2)
+                            .then_some(end)
+                    })
+                    .unwrap_or(window.len())
+            };
 
-            let spaces: Vec<usize> = remaining
-                .char_indices()
-                .filter_map(|(i, c)| c.is_whitespace().then_some(i))
-                .collect();
-            if Self::split_at_best_boundary(&mut remaining, &spaces, max_limit, count_fn, out) {
-                continue;
+            let (head, tail) = remaining.split_at(split_at);
+            let head_trimmed = head.trim();
+            if !head_trimmed.is_empty() {
+                out.push((head_trimmed, kind.count_tokens(head_trimmed)));
             }
-
-            let chars: Vec<usize> = remaining.char_indices().map(|(i, _)| i).collect();
-            let idx = chars.partition_point(|&pos| count_fn(&remaining[..pos]) <= max_limit);
-            let cut = chars
-                .get(idx.saturating_sub(1))
-                .copied()
-                .filter(|&c| c > 0)
-                .unwrap_or_else(|| {
-                    remaining
-                        .chars()
-                        .next()
-                        .map_or(remaining.len(), char::len_utf8)
-                });
-            let (head, tail) = remaining.split_at(cut);
-            out.push((head, count_fn(head)));
-            remaining = tail;
+            remaining = tail.trim_start();
         }
     }
 

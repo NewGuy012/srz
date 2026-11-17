@@ -126,7 +126,9 @@ pub fn select_relevant_context_bm25<'a>(
     max_tokens: usize,
     tokenizer_kind: TokenizerKind,
 ) -> Cow<'a, str> {
-    if content.len() <= (max_tokens.saturating_mul(3) / 4) {
+    if content.len().saturating_mul(3) <= max_tokens
+        || tokenizer_kind.count_tokens(content) <= max_tokens
+    {
         return Cow::Borrowed(content);
     }
 
@@ -159,20 +161,21 @@ pub fn select_relevant_context_bm25<'a>(
         }
     }
 
-    let chunk_size = (max_tokens / 8).clamp(500, 2000);
-    let chunk_overlap = (chunk_size / 12).clamp(50, 150);
+    let max_chunk_cap = (max_tokens / 2).clamp(16, 2000);
+    let chunk_size = (max_tokens / 8).clamp(64, 2000).min(max_chunk_cap);
+    let chunk_overlap = (chunk_size / 12).clamp(8, 150).min(chunk_size / 3);
     let chunks_with_counts = TextChunker::chunk_by_tokens_with_counts_and_kind(
         content,
         chunk_size,
         chunk_overlap,
         tokenizer_kind,
     );
-    if chunks_with_counts.len() <= 1 {
+    let total_tokens: usize = chunks_with_counts.iter().map(|(_, t)| *t).sum();
+    if chunks_with_counts.len() <= 1 || total_tokens <= max_tokens {
         return Cow::Borrowed(content);
     }
 
     let n_docs = chunks_with_counts.len();
-    let total_tokens: usize = chunks_with_counts.iter().map(|(_, t)| *t).sum();
     let avgdl = (total_tokens as f64) / (n_docs as f64).max(1.0);
 
     let seg_texts: Vec<&str> = chunks_with_counts.iter().map(|(c, _)| c.as_ref()).collect();
@@ -200,21 +203,31 @@ pub fn select_relevant_context_bm25<'a>(
 
     let mut selected_indices = Vec::new();
     let mut token_sum = 0;
-    for (idx, _, tokens) in scored {
+    for &(idx, _, tokens) in &scored {
         if token_sum + tokens <= max_tokens {
             selected_indices.push(idx);
             token_sum += tokens;
         }
     }
+    if selected_indices.is_empty()
+        && let Some(&(best_idx, _, _)) = scored.first()
+    {
+        return Cow::Owned(
+            TextChunker::truncate_to_budget(
+                chunks_with_counts[best_idx].0.as_ref(),
+                max_tokens,
+                tokenizer_kind,
+            )
+            .into_owned(),
+        );
+    }
     selected_indices.sort_unstable();
 
-    let mut out = String::new();
     let selected_text: Vec<&str> = selected_indices
         .into_iter()
         .map(|idx| chunks_with_counts[idx].0.as_ref())
         .collect();
-    out.push_str(&selected_text.join("\n\n...\n\n"));
-    Cow::Owned(out)
+    Cow::Owned(selected_text.join("\n\n...\n\n"))
 }
 
 struct Segment<'a> {
@@ -1091,6 +1104,15 @@ Transcript body line.";
         for kind in [TokenizerKind::Cl100k, TokenizerKind::Llama3] {
             let selected = select_relevant_context_bm25(&combined, Some(question), 600, kind);
             assert!(selected.contains("Quantum cryptography utilizes photon entanglement"));
+
+            // Small budgets (< 500 tokens) must still select relevant context instead of empty output.
+            let tight = select_relevant_context_bm25(&combined, Some(question), 200, kind);
+            assert!(tight.contains("Quantum cryptography"));
         }
+
+        // Under-budget documents must return untouched (no spurious `\n\n...\n\n` breaks).
+        let under_budget =
+            select_relevant_context_bm25(&combined, Some(question), 10_000, TokenizerKind::Cl100k);
+        assert!(matches!(under_budget, Cow::Borrowed(_)));
     }
 }
