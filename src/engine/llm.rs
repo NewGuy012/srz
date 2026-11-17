@@ -426,20 +426,20 @@ impl LlmClient {
         requested_model: &str,
     ) -> bool {
         let parsed = parsed_msg.unwrap_or_default();
-        let mentions_model =
-            crate::system::text_util::contains_ascii_case_insensitive(parsed, "model")
-                || crate::system::text_util::contains_ascii_case_insensitive(raw_body, "model")
-                || (!requested_model.is_empty()
-                    && (crate::system::text_util::find_ascii_case_insensitive(
-                        parsed,
+        let mentions_model = crate::system::text_util::find_ascii_case_insensitive(parsed, "model")
+            .is_some()
+            || crate::system::text_util::find_ascii_case_insensitive(raw_body, "model").is_some()
+            || (!requested_model.is_empty()
+                && (crate::system::text_util::find_ascii_case_insensitive(
+                    parsed,
+                    requested_model,
+                )
+                .is_some()
+                    || crate::system::text_util::find_ascii_case_insensitive(
+                        raw_body,
                         requested_model,
                     )
-                    .is_some()
-                        || crate::system::text_util::find_ascii_case_insensitive(
-                            raw_body,
-                            requested_model,
-                        )
-                        .is_some()));
+                    .is_some()));
 
         const NOT_FOUND_PHRASES: &[&str] = &[
             "not found",
@@ -454,8 +454,8 @@ impl LlmClient {
         ];
 
         let has_not_found_phrase = NOT_FOUND_PHRASES.iter().any(|&phrase| {
-            crate::system::text_util::contains_ascii_case_insensitive(parsed, phrase)
-                || crate::system::text_util::contains_ascii_case_insensitive(raw_body, phrase)
+            crate::system::text_util::find_ascii_case_insensitive(parsed, phrase).is_some()
+                || crate::system::text_util::find_ascii_case_insensitive(raw_body, phrase).is_some()
         });
 
         if mentions_model && has_not_found_phrase {
@@ -467,8 +467,10 @@ impl LlmClient {
         }
 
         if status == reqwest::StatusCode::BAD_REQUEST
-            && (crate::system::text_util::contains_ascii_case_insensitive(parsed, "not found")
-                || crate::system::text_util::contains_ascii_case_insensitive(raw_body, "not found"))
+            && (crate::system::text_util::find_ascii_case_insensitive(parsed, "not found")
+                .is_some()
+                || crate::system::text_util::find_ascii_case_insensitive(raw_body, "not found")
+                    .is_some())
             && mentions_model
         {
             return true;

@@ -1,9 +1,9 @@
 use crate::cli::NewsTimeframe;
 use crate::scraper::{ScrapedPage, WebScraper};
 use crate::system::text_util::{
-    XmlEvent, XmlScanner, decode_html_entities, extract_attr_value, xml_attr, xml_local_name,
+    XmlEvent, XmlScanner, decode_html_entities, xml_attr, xml_local_name,
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -84,24 +84,12 @@ impl GoogleNewsClient {
             )
         };
 
-        let resp = self
-            .client
-            .get(&endpoint)
-            .send()
-            .await
-            .with_context(|| format!("Failed to fetch syndication feed from {}", endpoint))?;
-
-        if !resp.status().is_success() {
-            anyhow::bail!(
-                "Syndication feed returned HTTP status {}: {}",
-                resp.status(),
-                endpoint
-            );
-        }
-
-        let xml =
-            crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES)
-                .await?;
+        let xml = crate::scraper::fetch_text_limited(
+            self.client.get(&endpoint),
+            crate::scraper::MAX_SCRAPE_BYTES,
+            &format!("syndication feed from {}", endpoint),
+        )
+        .await?;
         let capped_limit = limit.clamp(1, MAX_NEWS_LIMIT.saturating_mul(2).saturating_add(2));
         let items = parse_rss_items(&xml, capped_limit);
 
@@ -120,26 +108,14 @@ impl GoogleNewsClient {
         // 2. Fetch intermediate Google News article page to extract ephemeral signature & timestamp.
         // Must use /rss/articles/ because /articles/ triggers Google bot protection (HTTP 429 CAPTCHA).
         let page_url = format!("https://news.google.com/rss/articles/{}", base64_id);
-        let resp = self
-            .client
-            .get(&page_url)
-            .timeout(Duration::from_secs(4))
-            .send()
-            .await
-            .ok()?;
-        let html = crate::scraper::read_response_text_limited(resp, 64 * 1024)
-            .await
-            .ok()?;
-
-        let sig = extract_attr_value(&html, "data-n-a-sg=")?;
-        if sig.is_empty()
-            || sig.len() > 512
-            || sig.chars().any(|c| c.is_control() || c == '"' || c == '\\')
-        {
-            return None;
-        }
-        let ts_str = extract_attr_value(&html, "data-n-a-ts=")?;
-        let ts: i64 = ts_str.parse().ok()?;
+        let html = crate::scraper::fetch_text_limited(
+            self.client.get(&page_url).timeout(Duration::from_secs(4)),
+            64 * 1024,
+            "Google News article page",
+        )
+        .await
+        .ok()?;
+        let (sig, ts) = extract_gnews_sig_ts(&html)?;
 
         // 3. Submit batchexecute RPC request to resolve destination URL safely via structured JSON
         let payload_str = format!(
@@ -154,22 +130,20 @@ impl GoogleNewsClient {
             crate::system::text_util::url_encode(&envelope.to_string())
         );
 
-        let rpc_resp = self
-            .client
-            .post("https://news.google.com/_/DotsSplashUi/data/batchexecute")
-            .header(
-                reqwest::header::CONTENT_TYPE,
-                "application/x-www-form-urlencoded;charset=UTF-8",
-            )
-            .body(form_body)
-            .timeout(Duration::from_secs(4))
-            .send()
-            .await
-            .ok()?;
-
-        let rpc_text = crate::scraper::read_response_text_limited(rpc_resp, 128 * 1024)
-            .await
-            .ok()?;
+        let rpc_text = crate::scraper::fetch_text_limited(
+            self.client
+                .post("https://news.google.com/_/DotsSplashUi/data/batchexecute")
+                .header(
+                    reqwest::header::CONTENT_TYPE,
+                    "application/x-www-form-urlencoded;charset=UTF-8",
+                )
+                .body(form_body)
+                .timeout(Duration::from_secs(4)),
+            128 * 1024,
+            "Google News batchexecute",
+        )
+        .await
+        .ok()?;
         parse_batchexecute_destination_url(&rpc_text)
     }
 
@@ -380,67 +354,61 @@ fn snippet_digest_source(item: &NewsArticleItem, min_words: usize) -> Option<New
         .then(|| make_digest_source(item, item.google_link.clone(), snip.clone(), wc, None))
 }
 
-/// Cleans CDATA wrappers and decodes HTML entities from an XML element's inner text.
-fn clean_xml_text(raw: &str) -> String {
-    let trimmed = raw.trim();
-    if let Some(cdata_start) = trimmed.find("<![CDATA[") {
-        let after_start = &trimmed[cdata_start + "<![CDATA[".len()..];
-        if let Some(cdata_end) = after_start.find("]]>") {
-            return after_start[..cdata_end].trim().to_string();
+fn extract_gnews_sig_ts(html: &str) -> Option<(String, i64)> {
+    let mut sig = None;
+    let mut ts = None;
+    let mut scanner = XmlScanner::new(html);
+    while let Some(ev) = scanner.next_event() {
+        if let XmlEvent::Start { attrs, .. } = ev {
+            if sig.is_none()
+                && let Some(val) = xml_attr(attrs, "data-n-a-sg")
+            {
+                let s = val.trim();
+                if s.is_empty()
+                    || s.len() > 512
+                    || s.chars().any(|c| c.is_control() || c == '"' || c == '\\')
+                {
+                    return None;
+                }
+                sig = Some(s.to_string());
+            }
+            if ts.is_none()
+                && let Some(val) = xml_attr(attrs, "data-n-a-ts")
+            {
+                ts = val.trim().parse::<i64>().ok();
+            }
+            if let (Some(s), Some(t)) = (&sig, ts) {
+                return Some((s.clone(), t));
+            }
         }
     }
-    decode_html_entities(trimmed).into_owned()
+    None
 }
 
-fn day_of_week(y: i32, m: i32, d: i32) -> &'static str {
-    const T: [i32; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
-    const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    let adj_y = y - i32::from(m < 3);
-    let idx = (adj_y + adj_y / 4 - adj_y / 100 + adj_y / 400 + T[(m - 1) as usize] + d)
-        .rem_euclid(7) as usize;
-    DAYS[idx]
-}
-
-fn format_iso8601_to_rfc2822(s: &str) -> Option<String> {
-    let s = s.trim();
-    if s.len() < 19 {
-        return None;
-    }
-    let year: i32 = s[0..4].parse().ok()?;
-    let month: usize = s[5..7].parse().ok()?;
-    let day: i32 = s[8..10].parse().ok()?;
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    let dow = day_of_week(year, month as i32, day);
-    Some(format!(
-        "{}, {:02} {} {} {} +0000",
-        dow,
-        day,
-        MONTHS[month - 1],
-        year,
-        &s[11..19]
-    ))
-}
-
-fn normalize_feed_date(raw: &str) -> Option<String> {
+/// Strips inline HTML markup that feeds commonly embed inside `<description>` CDATA sections.
+fn clean_feed_snippet(raw: &str) -> String {
     let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
+    if !(trimmed.contains('<') && trimmed.contains('>')) {
+        return trimmed.to_string();
     }
-    if let Some(formatted) = format_iso8601_to_rfc2822(trimmed) {
-        return Some(formatted);
+    let mut out = String::with_capacity(trimmed.len());
+    let mut scanner = XmlScanner::new(trimmed);
+    while let Some(ev) = scanner.next_event() {
+        let piece = match ev {
+            XmlEvent::Text(t) => decode_html_entities(t),
+            XmlEvent::CData(c) => decode_html_entities(c),
+            _ => continue,
+        };
+        let s = piece.trim();
+        if s.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(s);
     }
-    if let Some(stripped) = trimmed
-        .strip_suffix(" GMT")
-        .or_else(|| trimmed.strip_suffix(" UTC"))
-    {
-        return Some(format!("{stripped} +0000"));
-    }
-    Some(trimmed.to_string())
+    out
 }
 
 /// Parses RSS 0.9/1.0/2.0 or Atom feed items into a list of [`NewsArticleItem`].
@@ -482,9 +450,9 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
                 } else if in_entry {
                     match local.as_str() {
                         "title" if !is_empty => {
-                            let raw = scanner.read_raw_until_end(name);
+                            let text = scanner.read_text(name);
                             if cur_title.is_empty() {
-                                cur_title = clean_xml_text(raw);
+                                cur_title = text.trim().to_string();
                             }
                         }
                         "link" => {
@@ -497,7 +465,7 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
                                 }
                             }
                             if !is_empty {
-                                let text = scanner.read_raw_until_end(name);
+                                let text = scanner.read_text(name);
                                 let trimmed = text.trim();
                                 if cur_link.is_empty()
                                     && crate::system::text_util::is_http_url(trimmed)
@@ -507,45 +475,39 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
                             }
                         }
                         "guid" | "id" if !is_empty => {
-                            let raw = scanner.read_raw_until_end(name);
+                            let text = scanner.read_text(name);
                             if cur_id.is_empty() {
-                                cur_id = clean_xml_text(raw);
+                                cur_id = text.trim().to_string();
                             }
                         }
                         "pubdate" | "published" | "updated" if !is_empty => {
-                            let raw = scanner.read_raw_until_end(name);
-                            if cur_pub_date.is_none() {
-                                cur_pub_date = normalize_feed_date(raw);
+                            let text = scanner.read_text(name);
+                            let trimmed = text.trim();
+                            if cur_pub_date.is_none() && !trimmed.is_empty() {
+                                cur_pub_date = Some(trimmed.to_string());
                             }
                         }
                         "source" if !is_empty => {
-                            let raw = scanner.read_raw_until_end(name);
+                            let text = scanner.read_text(name);
                             if cur_source.is_none() {
-                                let cleaned = clean_xml_text(raw);
+                                let cleaned = text.trim();
                                 if !cleaned.is_empty() {
-                                    cur_source = Some(cleaned);
+                                    cur_source = Some(cleaned.to_string());
                                 }
                             }
                         }
                         "author" | "name" if !is_empty => {
-                            let raw = scanner.read_raw_until_end(name);
+                            let text = scanner.read_text(name);
                             if cur_author.is_none() {
-                                let inner = if let Some(start) = raw.find("<name>")
-                                    && let Some(end) = raw[start + 6..].find("</name>")
-                                {
-                                    &raw[start + 6..start + 6 + end]
-                                } else {
-                                    raw
-                                };
-                                let cleaned = clean_xml_text(inner);
+                                let cleaned = text.trim();
                                 if !cleaned.is_empty() {
-                                    cur_author = Some(cleaned);
+                                    cur_author = Some(cleaned.to_string());
                                 }
                             }
                         }
                         "description" | "summary" | "content" | "encoded" if !is_empty => {
-                            let raw = scanner.read_raw_until_end(name);
-                            let cleaned = clean_xml_text(raw);
+                            let text = scanner.read_text(name);
+                            let cleaned = clean_feed_snippet(&text);
                             if !cleaned.is_empty()
                                 && cur_snippet
                                     .as_ref()
@@ -557,8 +519,11 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
                         _ => {}
                     }
                 } else if local == "title" && feed_source.is_none() && !is_empty {
-                    let raw = scanner.read_raw_until_end(name);
-                    feed_source = Some(clean_xml_text(raw));
+                    let text = scanner.read_text(name);
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        feed_source = Some(trimmed.to_string());
+                    }
                 }
             }
             XmlEvent::End { name } => {
@@ -782,7 +747,7 @@ mod tests {
         );
         assert_eq!(
             items[0].pub_date.as_deref(),
-            Some("Fri, 23 Oct 2026 10:00:00 +0000")
+            Some("Fri, 23 Oct 2026 10:00:00 GMT")
         );
         assert_eq!(items[0].source_name.as_deref(), Some("PensBurgh"));
 
@@ -818,59 +783,44 @@ mod tests {
         assert_eq!(items[0].title, "Atom Entry Title");
         assert_eq!(items[0].google_link, "https://example.com/atom-1");
         assert_eq!(items[0].source_name.as_deref(), Some("John Doe"));
-        assert_eq!(
-            items[0].pub_date.as_deref(),
-            Some("Fri, 23 Oct 2026 18:30:02 +0000")
-        );
+        assert_eq!(items[0].pub_date.as_deref(), Some("2026-10-23T18:30:02Z"));
     }
 
     #[test]
-    fn test_parse_rss_items_limit() {
-        let xml = r#"<rss version="2.0"><channel>
+    fn test_parse_rss_edge_cases_and_cdata_snippets() {
+        let limit_xml = r#"<rss version="2.0"><channel>
             <item><title>Item 1</title><link>https://example.com/1</link></item>
             <item><title>Item 2</title><link>https://example.com/2</link></item>
             <item><title>Item 3</title><link>https://example.com/3</link></item>
         </channel></rss>"#;
+        let limited = parse_rss_items(limit_xml, 2);
+        assert_eq!(limited.len(), 2);
+        assert_eq!(limited[1].title, "Item 2");
 
-        let items = parse_rss_items(xml, 2);
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0].title, "Item 1");
-        assert_eq!(items[1].title, "Item 2");
-    }
-
-    #[test]
-    fn test_parse_rss_items_cdata_and_entities() {
         let xml = r#"<rss><channel>
             <item>
                 <title><![CDATA[Rust &amp; WebAssembly in 2026]]></title>
-                <link>https://example.com/cdata-link</link>
+                <guid>https://example.com/guid-link</guid>
+                <pubDate>2026年10月23日 09:00</pubDate>
                 <source url="https://example.com"><![CDATA[Tech Daily]]></source>
+                <description><![CDATA[<p>Breaking <b>story</b> &amp; 3 < 5 summary.</p>]]></description>
             </item>
             <item>
                 <title>Special &quot;Quotes&quot; &amp; &apos;Apostrophes&apos;</title>
                 <link>https://example.com/quotes</link>
             </item>
         </channel></rss>"#;
-
         let items = parse_rss_items(xml, 5);
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].title, "Rust &amp; WebAssembly in 2026");
-        assert_eq!(items[0].source_name.as_deref(), Some("Tech Daily"));
-        assert_eq!(items[1].title, "Special \"Quotes\" & 'Apostrophes'");
-    }
-
-    #[test]
-    fn test_parse_rss_items_guid_fallback() {
-        let xml = r#"<rss><channel>
-            <item>
-                <title>No Link Tag</title>
-                <guid>https://example.com/guid-link</guid>
-            </item>
-        </channel></rss>"#;
-
-        let items = parse_rss_items(xml, 5);
-        assert_eq!(items.len(), 1);
         assert_eq!(items[0].google_link, "https://example.com/guid-link");
+        assert_eq!(items[0].source_name.as_deref(), Some("Tech Daily"));
+        assert_eq!(items[0].pub_date.as_deref(), Some("2026年10月23日 09:00"));
+        assert_eq!(
+            items[0].snippet.as_deref(),
+            Some("Breaking story & 3 < 5 summary.")
+        );
+        assert_eq!(items[1].title, "Special \"Quotes\" & 'Apostrophes'");
     }
 
     #[test]
@@ -882,8 +832,10 @@ mod tests {
         );
 
         let html = r#"<div data-n-a-sg="ABC123xyz" data-n-a-ts="1714200000"></div>"#;
-        assert_eq!(extract_attr_value(html, "data-n-a-sg="), Some("ABC123xyz"));
-        assert_eq!(extract_attr_value(html, "data-n-a-ts="), Some("1714200000"));
+        assert_eq!(
+            extract_gnews_sig_ts(html),
+            Some(("ABC123xyz".to_string(), 1714200000))
+        );
 
         let rpc_text = ")]}'\n\n[[\"wrb.fr\",\"Fbv4je\",\"[\\\"garturlreq\\\",\\\"https://www.sitepoint.com/javascript-news/\\\"]\"]]";
         assert_eq!(

@@ -18,36 +18,72 @@ fn starts_with_tag(slice: &[u8], prefix: &[u8]) -> bool {
             .is_none_or(|&b| b.is_ascii_whitespace() || b == b'>' || b == b'/')
 }
 
-/// Quickly strips `<script>...</script>`, `<style>...</style>`, `<svg>...</svg>`,
-/// and `<noscript>...</noscript>` tags from raw HTML to prevent massive DOM bloat in Readability.
+/// Returns the offset of the closing `>` for the opening tag starting at `bytes[0] == b'<'`,
+/// respecting single/double quotes and aborting on unquoted `<` to stay linear-time.
+fn find_open_tag_end(bytes: &[u8]) -> Option<usize> {
+    let mut i = 1;
+    let mut quote = 0u8;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if quote != 0 {
+            if b == quote {
+                quote = 0;
+            }
+        } else if b == b'"' || b == b'\'' {
+            quote = b;
+        } else if b == b'>' {
+            return Some(i);
+        } else if b == b'<' {
+            return None;
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Strips `<script>`, `<style>`, `<svg>`, and `<noscript>` blocks from raw HTML before Readability.
 pub fn strip_boilerplate_html_tags(html: &str) -> Cow<'_, str> {
-    const TAGS: &[(&str, &[u8], &[u8])] = &[
-        ("<script", b"<script", b"</script>"),
-        ("<style", b"<style", b"</style>"),
-        ("<svg", b"<svg", b"</svg>"),
-        ("<noscript", b"<noscript", b"</noscript>"),
+    const TAGS: [(&[u8], &[u8]); 4] = [
+        (b"<script", b"</script>"),
+        (b"<style", b"</style>"),
+        (b"<svg", b"</svg>"),
+        (b"<noscript", b"</noscript>"),
     ];
-    if !TAGS
-        .iter()
-        .any(|(open, _, _)| crate::system::text_util::contains_ascii_case_insensitive(html, open))
-    {
+    if !TAGS.iter().any(|(open, _)| {
+        crate::system::text_util::find_subslice_ignore_case(html.as_bytes(), open).is_some()
+    }) {
         return Cow::Borrowed(html);
     }
 
     let mut out = String::with_capacity(html.len());
     let bytes = html.as_bytes();
     let mut cursor = 0;
+    let mut missing_closing_mask = 0u8;
 
     while cursor < bytes.len() {
         if bytes[cursor] == b'<'
-            && let Some((_, _, closing)) = TAGS
+            && let Some((idx, (open_b, closing))) = TAGS
                 .iter()
-                .find(|(_, open_b, _)| starts_with_tag(&bytes[cursor..], open_b))
-            && let Some(close_offset) =
-                crate::system::text_util::find_subslice_ignore_case(&bytes[cursor..], closing)
+                .enumerate()
+                .find(|(_, (open_b, _))| starts_with_tag(&bytes[cursor..], open_b))
         {
-            cursor += close_offset + closing.len();
-            continue;
+            if open_b == b"<svg"
+                && let Some(tag_end) = find_open_tag_end(&bytes[cursor..])
+                && tag_end > open_b.len()
+                && bytes[cursor + tag_end - 1] == b'/'
+            {
+                cursor += tag_end + 1;
+                continue;
+            }
+            if (missing_closing_mask & (1 << idx)) == 0 {
+                if let Some(close_offset) =
+                    crate::system::text_util::find_subslice_ignore_case(&bytes[cursor..], closing)
+                {
+                    cursor += close_offset + closing.len();
+                    continue;
+                }
+                missing_closing_mask |= 1 << idx;
+            }
         }
         let next_tag = bytes[cursor + 1..]
             .iter()
@@ -216,10 +252,43 @@ pub async fn read_response_text_limited(
     max_bytes: usize,
 ) -> Result<String> {
     let bytes = read_response_bytes_limited(response, max_bytes).await?;
-    match String::from_utf8(bytes) {
-        Ok(s) => Ok(s),
-        Err(e) => Ok(String::from_utf8_lossy(e.as_bytes()).into_owned()),
+    Ok(match String::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+    })
+}
+
+/// Sends an HTTP request, validates a 2xx status, and reads up to `max_bytes` bytes.
+pub async fn fetch_bytes_limited(
+    request: reqwest::RequestBuilder,
+    max_bytes: usize,
+    label: &str,
+) -> Result<Vec<u8>> {
+    let response = request
+        .send()
+        .await
+        .with_context(|| format!("Failed to fetch {}", label))?;
+    if !response.status().is_success() {
+        anyhow::bail!(
+            "Failed to fetch {} (HTTP status: {})",
+            label,
+            response.status()
+        );
     }
+    read_response_bytes_limited(response, max_bytes).await
+}
+
+/// Sends an HTTP request, validates a 2xx status, and reads up to `max_bytes` UTF-8 text.
+pub async fn fetch_text_limited(
+    request: reqwest::RequestBuilder,
+    max_bytes: usize,
+    label: &str,
+) -> Result<String> {
+    let bytes = fetch_bytes_limited(request, max_bytes, label).await?;
+    Ok(match String::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+    })
 }
 
 /// Returns true if the given IPv4 address belongs to a private, loopback, link-local,
@@ -241,19 +310,15 @@ pub fn is_private_ipv4(ipv4: std::net::Ipv4Addr) -> bool {
 }
 
 /// Returns true if the given IPv6 address belongs to a loopback, unique-local, link-local,
-/// multicast, transitional, documentation, or IPv4-mapped private address.
+/// deprecated site-local, multicast, transitional, documentation, or IPv4-mapped/translated private address.
 pub fn is_private_ipv6(ipv6: std::net::Ipv6Addr) -> bool {
     let s = ipv6.segments();
     if ipv6.is_loopback() || ipv6.is_unspecified() || ipv6.is_multicast() {
         return true;
     }
-    // IPv4-compatible (::/96) and IPv4-mapped (::ffff:0:0/96)
-    if s[0] == 0
-        && s[1] == 0
-        && s[2] == 0
-        && s[3] == 0
-        && s[4] == 0
-        && (s[5] == 0 || s[5] == 0xffff)
+    // IPv4-compatible (::/96), IPv4-mapped (::ffff:0:0/96), and SIIT IPv4-translated (::ffff:0:0:0/96)
+    if s[0..4] == [0, 0, 0, 0]
+        && ((s[4] == 0 && (s[5] == 0 || s[5] == 0xffff)) || (s[4] == 0xffff && s[5] == 0))
     {
         let ip4 = std::net::Ipv4Addr::new(
             (s[6] >> 8) as u8,
@@ -278,8 +343,16 @@ pub fn is_private_ipv6(ipv6: std::net::Ipv6Addr) -> bool {
         return true;
     }
     let o = ipv6.octets();
-    // Unique local (fc00::/7) and link-local unicast (fe80::/10)
-    (o[0] & 0xfe) == 0xfc || (o[0] == 0xfe && (o[1] & 0xc0) == 0x80)
+    // Unique local (fc00::/7), link-local (fe80::/10), and deprecated site-local (fec0::/10)
+    (o[0] & 0xfe) == 0xfc || (o[0] == 0xfe && (o[1] & 0x80) == 0x80)
+}
+
+/// Returns true if an IPv4 or IPv6 address is private, loopback, or otherwise non-routable.
+pub fn is_private_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => is_private_ipv4(v4),
+        std::net::IpAddr::V6(v6) => is_private_ipv6(v6),
+    }
 }
 
 /// Checks if a host name or IP address resolves to a local or private network destination.
@@ -298,13 +371,57 @@ pub fn is_private_or_local_host(host: &str) -> bool {
     {
         return true;
     }
-    if let Ok(ipv4) = unbracketed.parse::<std::net::Ipv4Addr>() {
-        return is_private_ipv4(ipv4);
+    unbracketed
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(is_private_ip)
+}
+
+fn filter_public_addrs(
+    host: &str,
+    addrs: impl IntoIterator<Item = std::net::SocketAddr>,
+) -> std::result::Result<Vec<std::net::SocketAddr>, std::io::Error> {
+    let resolved: Vec<std::net::SocketAddr> = addrs.into_iter().collect();
+    if resolved.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("DNS resolution returned no addresses for '{}'", host),
+        ));
     }
-    if let Ok(ipv6) = unbracketed.parse::<std::net::Ipv6Addr>() {
-        return is_private_ipv6(ipv6);
+    if let Some(private) = resolved.iter().find(|addr| is_private_ip(addr.ip())) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "Blocked DNS resolution of '{}' to private or local IP {} (SSRF protection)",
+                host,
+                private.ip()
+            ),
+        ));
     }
-    false
+    Ok(resolved)
+}
+
+/// DNS resolver that enforces SSRF IP validation on resolved addresses to block DNS rebinding.
+struct PublicDnsResolver;
+
+impl reqwest::dns::Resolve for PublicDnsResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let host = name.as_str();
+            if is_private_or_local_host(host) {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!(
+                        "Blocked request to private or local address '{}' (SSRF protection)",
+                        host
+                    ),
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
+            let addrs = tokio::net::lookup_host((host, 0)).await?;
+            let public = filter_public_addrs(host, addrs)?;
+            Ok(Box::new(public.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
 }
 
 /// Validates a parsed URL for SSRF safety (HTTP/HTTPS only, no userinfo, no private/local hosts).
@@ -381,6 +498,7 @@ impl WebScraper {
             .default_headers(headers)
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(20))
+            .dns_resolver(std::sync::Arc::new(PublicDnsResolver))
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
                 if attempt.previous().len() >= 10 {
                     return attempt.error("Too many redirects (max 10)");
@@ -396,10 +514,6 @@ impl WebScraper {
         Ok(Self { client })
     }
 
-    pub fn with_client(client: reqwest::Client) -> Self {
-        Self { client }
-    }
-
     pub fn client(&self) -> &reqwest::Client {
         &self.client
     }
@@ -407,22 +521,12 @@ impl WebScraper {
     /// Fetches and normalizes the text from the given URL with a strict maximum response limit (10 MB).
     pub async fn scrape(&self, url: &str) -> Result<ScrapedPage> {
         validate_public_http_url(url)?;
-
-        let response = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .with_context(|| format!("Failed to fetch URL: {}", url))?;
-
-        if !response.status().is_success() {
-            anyhow::bail!(
-                "Failed to fetch webpage (HTTP status: {})",
-                response.status()
-            );
-        }
-
-        let html = read_response_text_limited(response, MAX_SCRAPE_BYTES).await?;
+        let html = fetch_text_limited(
+            self.client.get(url),
+            MAX_SCRAPE_BYTES,
+            &format!("URL: {}", url),
+        )
+        .await?;
         self.normalize(url, &html)
     }
 
@@ -485,11 +589,13 @@ pub fn extract_title_from_html(html: &str) -> Option<String> {
         let tag_start = html[..pos].rfind('<').unwrap_or(pos);
         let tag_end = html[pos..].find('>').map(|p| pos + p).unwrap_or(html.len());
         let tag = &html[tag_start..tag_end];
-        if let Some(trimmed) = crate::system::text_util::extract_attr_value(tag, "content=")
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
+        if let Some((_, attrs)) = tag.split_once(|c: char| c.is_ascii_whitespace())
+            && let Some(content) = crate::system::text_util::xml_attr(attrs, "content")
         {
-            return Some(crate::system::text_util::decode_html_entities(trimmed).into_owned());
+            let trimmed = content.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
         }
     }
 
@@ -838,7 +944,7 @@ mod tests {
 
     #[test]
     fn test_strip_boilerplate_html_tags() {
-        let html = r#"<html><head><script type="application/json">{"data": 123}</script><style>body { color: red; }</style><title>Test</title></head><body><svg><path d="M0 0"/></svg><noscript>Enable JS</noscript><p>Actual article content here.</p></body></html>"#;
+        let html = r#"<html><head><script type="application/json">{"data": 123}</script><style>body { color: red; }</style><title>Test</title></head><body><svg width="24" height="24"/><p>Actual article content here.</p><svg><path d="M0 0"/></svg><noscript>Enable JS</noscript></body></html>"#;
         let stripped = strip_boilerplate_html_tags(html);
         assert!(!stripped.contains("application/json"));
         assert!(!stripped.contains("color: red"));
@@ -846,6 +952,9 @@ mod tests {
         assert!(!stripped.contains("Enable JS"));
         assert!(stripped.contains("<title>Test</title>"));
         assert!(stripped.contains("<p>Actual article content here.</p>"));
+
+        let unclosed = format!("{}<p>ok</p>", "<script>".repeat(5_000));
+        assert!(strip_boilerplate_html_tags(&unclosed).contains("<p>ok</p>"));
     }
 
     #[test]
@@ -865,54 +974,49 @@ mod tests {
     }
 
     #[test]
-    fn test_clean_markdown_line_strips_link_urls() {
-        let line = "Rust is a [systems programming language](https://en.wikipedia.org/wiki/Systems_programming_language) created by [Graydon Hoare](https://en.wikipedia.org/wiki/Graydon_Hoare).";
-        let cleaned = clean_markdown_line(line);
+    fn test_clean_markdown_line() {
         assert_eq!(
-            cleaned,
+            clean_markdown_line(
+                "Rust is a [systems programming language](https://en.wikipedia.org/wiki/Systems_programming_language) created by [Graydon Hoare](https://en.wikipedia.org/wiki/Graydon_Hoare)."
+            ),
             "Rust is a systems programming language created by Graydon Hoare."
         );
-    }
-
-    #[test]
-    fn test_clean_markdown_line_nested_parentheses_url() {
-        let line =
-            "Learn about [Rust](https://en.wikipedia.org/wiki/Rust_(programming_language)) today.";
-        let cleaned = clean_markdown_line(line);
-        assert_eq!(cleaned, "Learn about Rust today.");
-    }
-
-    #[test]
-    fn test_clean_markdown_line_strips_citations_and_edit_tags() {
-        let line =
-            "Rust was announced in 2010[12][13] by Mozilla Research[14], winning awards [15].";
-        let cleaned = clean_markdown_line(line);
         assert_eq!(
-            cleaned,
+            clean_markdown_line(
+                "Learn about [Rust](https://en.wikipedia.org/wiki/Rust_(programming_language)) today."
+            ),
+            "Learn about Rust today."
+        );
+        assert_eq!(
+            clean_markdown_line(
+                "Rust was announced in 2010[12][13] by Mozilla Research[14], winning awards [15]."
+            ),
             "Rust was announced in 2010 by Mozilla Research, winning awards."
         );
-
-        let line2 = "It is considered safe[citation needed] and efficient [note 1].";
-        let cleaned2 = clean_markdown_line(line2);
-        assert_eq!(cleaned2, "It is considered safe and efficient.");
-    }
-
-    #[test]
-    fn test_clean_markdown_line_preserves_inline_code_and_brackets() {
-        let line = "Access element with `arr[0]` or check [a-z] regex.";
-        let cleaned = clean_markdown_line(line);
         assert_eq!(
-            cleaned,
+            clean_markdown_line("It is considered safe[citation needed] and efficient [note 1]."),
+            "It is considered safe and efficient."
+        );
+        assert_eq!(
+            clean_markdown_line("Access element with `arr[0]` or check [a-z] regex."),
             "Access element with `arr[0]` or check [a-z] regex."
         );
     }
 
     #[test]
-    fn test_clean_text_preserves_code_blocks() {
+    fn test_clean_text_preserves_code_blocks_and_truncates_references() {
         let md = "Some intro text.\n\n```rust\nfn main() {\n    let arr = [1, 2, 3];\n    println!(\"{}\", arr[0]);\n}\n```\n\nOutro text.";
         let (cleaned, _) = clean_text(md, true, 2);
         assert!(cleaned.contains("let arr = [1, 2, 3];"));
         assert!(cleaned.contains("println!(\"{}\", arr[0]);"));
+
+        let doc =
+            "Core article content.\n\nMore details.\n\n## References [edit]\n\n1. Citation link";
+        let (trimmed, _) = clean_text(doc, true, 2);
+        assert!(trimmed.contains("Core article content."));
+        assert!(trimmed.contains("More details."));
+        assert!(!trimmed.contains("References"));
+        assert!(!trimmed.contains("Citation link"));
     }
 
     #[test]
@@ -935,17 +1039,6 @@ mod tests {
     }
 
     #[test]
-    fn test_clean_text_truncates_at_reference_heading() {
-        let doc =
-            "Core article content.\n\nMore details.\n\n## References [edit]\n\n1. Citation link";
-        let (cleaned, _) = clean_text(doc, true, 2);
-        assert!(cleaned.contains("Core article content."));
-        assert!(cleaned.contains("More details."));
-        assert!(!cleaned.contains("References"));
-        assert!(!cleaned.contains("Citation link"));
-    }
-
-    #[test]
     fn test_ssrf_validation_blocks_private_and_local_targets() {
         for blocked in [
             "http://localhost/",
@@ -963,8 +1056,10 @@ mod tests {
             "http://[::1]/",
             "http://[fe80::1]/",
             "http://[fe80::1%25eth0]/",
+            "http://[fec0::1]/",
             "http://[::ffff:127.0.0.1]/",
             "http://[::ffff:169.254.169.254]/",
+            "http://[::ffff:0:127.0.0.1]/",
             "http://[64:ff9b::7f00:1]/",
             "http://[2002:7f00:1::]/",
             "http://[2001::1]/",
@@ -992,5 +1087,11 @@ mod tests {
                 "expected allowed: {allowed}"
             );
         }
+
+        let public_addr: std::net::SocketAddr = "93.184.216.34:443".parse().unwrap();
+        let private_addr: std::net::SocketAddr = "127.0.0.1:443".parse().unwrap();
+        assert!(filter_public_addrs("example.com", [public_addr]).is_ok());
+        assert!(filter_public_addrs("rebind.example", [public_addr, private_addr]).is_err());
+        assert!(filter_public_addrs("empty.example", []).is_err());
     }
 }

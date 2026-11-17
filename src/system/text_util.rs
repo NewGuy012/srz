@@ -229,11 +229,6 @@ pub fn find_subslice_ignore_case(haystack: &[u8], needle: &[u8]) -> Option<usize
         .position(|w| w.eq_ignore_ascii_case(needle))
 }
 
-/// Zero-allocation case-insensitive ASCII substring check (`needle` must already be lowercase ASCII).
-pub fn contains_ascii_case_insensitive(haystack: &str, lowercase_needle: &str) -> bool {
-    lowercase_needle.is_empty() || find_ascii_case_insensitive(haystack, lowercase_needle).is_some()
-}
-
 /// Case-insensitive substring check with zero-allocation ASCII fast-path and Unicode fallback.
 pub fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
     if needle.is_empty() {
@@ -256,9 +251,15 @@ pub fn ends_with_ascii_case_insensitive(haystack: &str, lowercase_suffix: &str) 
     h_bytes[h_bytes.len() - s_bytes.len()..].eq_ignore_ascii_case(s_bytes)
 }
 
-/// Returns `true` if the string starts with `"http://"` or `"https://"`.
+/// Returns `true` if the string starts with `"http://"` or `"https://"` (case-insensitive).
 pub fn is_http_url(s: &str) -> bool {
-    s.starts_with("http://") || s.starts_with("https://")
+    let bytes = s.as_bytes();
+    bytes
+        .get(..7)
+        .is_some_and(|p| p.eq_ignore_ascii_case(b"http://"))
+        || bytes
+            .get(..8)
+            .is_some_and(|p| p.eq_ignore_ascii_case(b"https://"))
 }
 
 #[rustfmt::skip]
@@ -469,8 +470,8 @@ impl<'a> XmlScanner<'a> {
                     self.pos += 2 + end + 1;
                     return Some(XmlEvent::End { name });
                 }
-                self.pos += 1;
-                return Some(XmlEvent::Text("<"));
+                self.pos = self.src.len();
+                return Some(XmlEvent::Text(rest));
             }
 
             let valid_tag_start = rest
@@ -485,21 +486,33 @@ impl<'a> XmlScanner<'a> {
             let bytes = rest.as_bytes();
             let mut i = 1;
             let mut quote = 0u8;
+            let mut saw_gt = false;
             while i < bytes.len() {
                 let b = bytes[i];
                 if quote != 0 {
+                    if b == b'>' {
+                        saw_gt = true;
+                    }
                     if b == quote {
                         quote = 0;
                     }
                 } else if b == b'"' || b == b'\'' {
                     quote = b;
-                } else if b == b'>' {
+                } else if b == b'>' || b == b'<' {
                     break;
                 }
                 i += 1;
             }
 
             if i >= bytes.len() {
+                if !saw_gt {
+                    self.pos = self.src.len();
+                    return Some(XmlEvent::Text(rest));
+                }
+                self.pos += 1;
+                return Some(XmlEvent::Text("<"));
+            }
+            if bytes[i] != b'>' {
                 self.pos += 1;
                 return Some(XmlEvent::Text("<"));
             }
@@ -526,32 +539,6 @@ impl<'a> XmlScanner<'a> {
             });
         }
         None
-    }
-
-    /// Reads the raw slice inside `tag_name` until its matching closing tag (accounting for nesting).
-    pub fn read_raw_until_end(&mut self, tag_name: &str) -> &'a str {
-        let start = self.pos;
-        let mut depth = 1usize;
-        loop {
-            let before = self.pos;
-            match self.next_event() {
-                Some(XmlEvent::Start {
-                    name,
-                    is_empty: false,
-                    ..
-                }) if name.eq_ignore_ascii_case(tag_name) => {
-                    depth += 1;
-                }
-                Some(XmlEvent::End { name }) if name.eq_ignore_ascii_case(tag_name) => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return &self.src[start..before];
-                    }
-                }
-                None => return &self.src[start..],
-                _ => {}
-            }
-        }
     }
 
     /// Reads and entity-decodes text (preserving CDATA sections verbatim) inside `tag_name` until `</tag_name>`.
@@ -623,19 +610,6 @@ pub fn slugify_unique(title: &str, unique_key: Option<&str>) -> String {
     } else {
         base_slug
     }
-}
-
-/// Extracts the value of a quoted attribute given its `attr=` prefix.
-pub fn extract_attr_value<'a>(html: &'a str, attr_prefix: &str) -> Option<&'a str> {
-    let start_pos = html.find(attr_prefix)?;
-    let remainder = &html[start_pos + attr_prefix.len()..];
-    let quote = remainder.chars().next()?;
-    if quote != '"' && quote != '\'' {
-        return None;
-    }
-    let rest = &remainder[1..];
-    let end_pos = rest.find(quote)?;
-    Some(&rest[..end_pos])
 }
 
 #[cfg(test)]
@@ -721,8 +695,6 @@ mod tests {
         ] {
             assert_eq!(find_ascii_case_insensitive(haystack, needle), expected);
         }
-        assert!(contains_ascii_case_insensitive("Hello World", "world"));
-        assert!(!contains_ascii_case_insensitive("Hello World", "xyz"));
         for (text, suffix, expected) in [
             ("test.RSS", ".rss", true),
             ("test.rss", ".RSS", true),
@@ -738,9 +710,12 @@ mod tests {
         for (url, expected) in [
             ("http://example.com", true),
             ("https://example.com/feed", true),
+            ("HTTP://EXAMPLE.COM", true),
+            ("HTTPS://Example.Com/path", true),
             ("ftp://example.com", false),
             ("example.com", false),
             ("/path/to/file", false),
+            ("€€", false),
         ] {
             assert_eq!(is_http_url(url), expected);
         }
@@ -764,7 +739,7 @@ mod tests {
 
     #[test]
     fn test_xml_scanner_and_attrs() {
-        let xml = r#"<?xml version="1.0"?><!-- comment --><root xmlns:dc="http://purl.org"><dc:title>A &amp; B</dc:title><item id='i1' label="x > y"/><p>a < b</p></root>"#;
+        let xml = r#"<?xml version="1.0"?><!-- comment --><root xmlns:dc="http://purl.org"><dc:title>A &amp; B</dc:title><item id='i1' label="x > y"/><p>a<b</p></root>"#;
         let mut scanner = XmlScanner::new(xml);
 
         assert_eq!(
@@ -797,11 +772,12 @@ mod tests {
         assert!(is_empty);
         assert_eq!(xml_attr(attrs, "id").as_deref(), Some("i1"));
         assert_eq!(xml_attr(attrs, "label").as_deref(), Some("x > y"));
-        assert_eq!(
-            extract_attr_value(xml, "xmlns:dc="),
-            Some("http://purl.org")
-        );
-        assert_eq!(extract_attr_value(xml, "id="), Some("i1"));
-        assert_eq!(extract_attr_value(xml, "missing="), None);
+        assert_eq!(xml_attr(attrs, "missing"), None);
+
+        // Unclosed `<` / `</` runs must remain linear time.
+        let mut pathological = "<a ".repeat(20_000);
+        pathological.push_str(&"</".repeat(20_000));
+        let mut pathological_scanner = XmlScanner::new(&pathological);
+        while pathological_scanner.next_event().is_some() {}
     }
 }

@@ -693,16 +693,15 @@ pub fn is_feed_url(url: &str) -> bool {
     ];
     if FEED_SUFFIXES.iter().any(|&suffix| {
         crate::system::text_util::ends_with_ascii_case_insensitive(trimmed_path, suffix)
-    }) || crate::system::text_util::contains_ascii_case_insensitive(trimmed_path, "/rss/")
+    }) || crate::system::text_util::find_ascii_case_insensitive(trimmed_path, "/rss/").is_some()
     {
         return true;
     }
     if let Some(q) = query_part {
         const QUERY_PATTERNS: &[&str] = &["format=rss", "format=atom", "output=rss", "feed=rss"];
-        if QUERY_PATTERNS
-            .iter()
-            .any(|&pattern| crate::system::text_util::contains_ascii_case_insensitive(q, pattern))
-        {
+        if QUERY_PATTERNS.iter().any(|&pattern| {
+            crate::system::text_util::find_ascii_case_insensitive(q, pattern).is_some()
+        }) {
             return true;
         }
     }

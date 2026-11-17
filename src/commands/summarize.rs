@@ -198,22 +198,10 @@ pub async fn fetch_url_content(
     } else if is_pdf {
         fetch_or_cache_page_with(url, cache, cache_msg, spinner_msg, done_msg, async {
             crate::scraper::validate_public_http_url(url)?;
-            let resp = scraper
-                .client()
-                .get(url)
-                .send()
-                .await
-                .with_context(|| format!("Failed to download PDF from {}", url))?;
-            if !resp.status().is_success() {
-                anyhow::bail!(
-                    "Failed to download PDF from {} (HTTP status: {})",
-                    url,
-                    resp.status()
-                );
-            }
-            let bytes = crate::scraper::read_response_bytes_limited(
-                resp,
+            let bytes = crate::scraper::fetch_bytes_limited(
+                scraper.client().get(url),
                 crate::sources::document::MAX_FILE_BYTES as usize,
+                &format!("PDF from {}", url),
             )
             .await?;
             crate::sources::document::PdfExtractor::extract_from_bytes(&bytes, None)
@@ -247,18 +235,16 @@ pub fn load_file_with_cache(
     path: &std::path::Path,
     scraper: &WebScraper,
     cache: &Cache,
-) -> Result<(crate::sources::document::LocalDocument, Option<String>)> {
+) -> Result<(crate::scraper::ScrapedPage, Option<String>)> {
     let file_key = file_cache_key(path);
     let doc = if let Some(ref k) = file_key
         && let Some(cached_page) = cache.get_page(k)
     {
-        crate::sources::document::LocalDocument::from_page(cached_page, || {
-            path.display().to_string()
-        })
+        cached_page
     } else {
         let loaded = crate::sources::DocumentLoader::load_file(path, scraper)?;
         if let Some(ref k) = file_key {
-            cache.set_page(k, &loaded.to_scraped_page(path));
+            cache.set_page(k, &loaded);
         }
         loaded
     };
@@ -274,6 +260,7 @@ pub async fn handle_file(
 ) -> Result<SummaryOutcome> {
     let path_str = path.display().to_string();
     let (doc, file_key) = load_file_with_cache(path, scraper, cache)?;
+    let title = doc.title.unwrap_or_else(|| path.display().to_string());
 
     Ui::info(&format!(
         "Loaded {} words from file '{}'",
@@ -281,10 +268,10 @@ pub async fn handle_file(
         path.display()
     ));
 
-    let mode = args.stream_mode(&doc.title);
+    let mode = args.stream_mode(&title);
     let output = llm
         .summarize_document_counted(
-            &doc.title,
+            &title,
             Some(&path_str),
             &doc.content,
             Some(doc.word_count),
@@ -295,7 +282,7 @@ pub async fn handle_file(
 
     Ok(SummaryOutcome::from_llm(
         "file",
-        doc.title,
+        title,
         None,
         Some(path_str),
         doc.word_count,
@@ -785,14 +772,7 @@ async fn resolve_book_reference_context(
                         ));
                         (synopsis, wc)
                     } else {
-                        let (cleaned, wc) = crate::scraper::clean_text(&page.content, true, 1);
-                        if res.url.contains("wikipedia.org/wiki/") {
-                            Ui::info(&format!(
-                                "Trimmed reference content: {} words (streamlined from {} full-page words)",
-                                wc, page.word_count
-                            ));
-                        }
-                        (cleaned, wc)
+                        (page.content, page.word_count)
                     };
 
                     Ui::info(&format!("Grounded reference text: {} words", words_to_use));

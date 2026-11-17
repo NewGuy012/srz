@@ -39,7 +39,7 @@ async fn resolve_cached_page_or_fetch(
                 && let Ok((doc, _)) =
                     crate::commands::summarize::load_file_with_cache(path, scraper, cache)
             {
-                return (doc.title, doc.content);
+                return (doc.title.unwrap_or_else(|| u.to_string()), doc.content);
             }
         }
     }
@@ -69,7 +69,10 @@ async fn resolve_document_context(
         let path = Path::new(trimmed);
         if path.exists() {
             let (doc, _) = crate::commands::summarize::load_file_with_cache(path, scraper, cache)?;
-            return Ok((doc.title, doc.content));
+            return Ok((
+                doc.title.unwrap_or_else(|| trimmed.to_string()),
+                doc.content,
+            ));
         } else if crate::cli::is_file_like(trimmed) {
             anyhow::bail!("File not found: {:?}", path);
         }

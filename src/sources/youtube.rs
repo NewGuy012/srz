@@ -475,25 +475,20 @@ pub async fn fetch_innertube_player(
         "videoId": video_id
     });
 
-    let resp = client
-        .post(endpoint)
-        .header("Content-Type", "application/json")
-        .header(
-            "User-Agent",
-            format!("com.google.android.youtube/{}", client_version),
-        )
-        .body(serde_json::to_vec(&body).context("Failed to serialize player request")?)
-        .timeout(Duration::from_secs(10))
-        .send()
-        .await
-        .context("Failed to send player request")?;
-
-    if !resp.status().is_success() {
-        anyhow::bail!("Player API returned status {}", resp.status());
-    }
-
-    let text =
-        crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES).await?;
+    let text = crate::scraper::fetch_text_limited(
+        client
+            .post(endpoint)
+            .header("Content-Type", "application/json")
+            .header(
+                "User-Agent",
+                format!("com.google.android.youtube/{}", client_version),
+            )
+            .body(serde_json::to_vec(&body).context("Failed to serialize player request")?)
+            .timeout(Duration::from_secs(10)),
+        crate::scraper::MAX_SCRAPE_BYTES,
+        "YouTube Player API",
+    )
+    .await?;
     let player: InnertubePlayerResponse =
         serde_json::from_str(&text).context("Failed to parse player JSON")?;
 
@@ -584,22 +579,17 @@ async fn fetch_single_caption_url(
     user_agent: &str,
     chapters: Option<&[VideoChapter]>,
 ) -> Option<String> {
-    let resp = client
-        .get(url)
-        .header("User-Agent", user_agent)
-        .header("Accept-Language", "en-US,en;q=0.9")
-        .timeout(Duration::from_secs(10))
-        .send()
-        .await
-        .ok()?;
-
-    if !resp.status().is_success() {
-        return None;
-    }
-
-    let body = crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES)
-        .await
-        .ok()?;
+    let body = crate::scraper::fetch_text_limited(
+        client
+            .get(url)
+            .header("User-Agent", user_agent)
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .timeout(Duration::from_secs(10)),
+        crate::scraper::MAX_SCRAPE_BYTES,
+        "YouTube captions",
+    )
+    .await
+    .ok()?;
 
     if body.trim().is_empty() {
         return None;
@@ -644,16 +634,16 @@ pub async fn fetch_youtube_transcript(client: &Client, video_id: &str) -> Result
 
     // 2. Fallback to watch page HTML if essential tracks or title could not be resolved via Innertube
     if (tracks.is_none() || title.is_none())
-        && let Ok(resp) = client
-            .get(&watch_url)
-            .header("User-Agent", crate::scraper::DEFAULT_USER_AGENT)
-            .header("Accept-Language", "en-US,en;q=0.9")
-            .timeout(Duration::from_secs(10))
-            .send()
-            .await
-        && resp.status().is_success()
-        && let Ok(html) =
-            crate::scraper::read_response_text_limited(resp, crate::scraper::MAX_SCRAPE_BYTES).await
+        && let Ok(html) = crate::scraper::fetch_text_limited(
+            client
+                .get(&watch_url)
+                .header("User-Agent", crate::scraper::DEFAULT_USER_AGENT)
+                .header("Accept-Language", "en-US,en;q=0.9")
+                .timeout(Duration::from_secs(10)),
+            crate::scraper::MAX_SCRAPE_BYTES,
+            "YouTube watch page",
+        )
+        .await
     {
         if title.is_none() {
             title = extract_video_title(&html);

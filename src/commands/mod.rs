@@ -457,7 +457,7 @@ pub fn print_execution_error(action_label: &str, err: &anyhow::Error) {
     let has_any = |needles: &[&str]| {
         needles
             .iter()
-            .any(|n| crate::system::text_util::contains_ascii_case_insensitive(&err_msg, n))
+            .any(|n| crate::system::text_util::find_ascii_case_insensitive(&err_msg, n).is_some())
     };
     let is_connection_error = has_any(&[
         "failed to communicate with llm endpoint",

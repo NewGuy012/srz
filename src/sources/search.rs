@@ -1,4 +1,7 @@
-use crate::system::text_util::{contains_ascii_case_insensitive, url_decode, url_encode};
+use crate::system::text_util::{
+    XmlEvent, XmlScanner, decode_html_entities, find_ascii_case_insensitive, strip_html_tags,
+    url_decode, url_encode, xml_attr,
+};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -45,12 +48,15 @@ impl BookSearcher {
         Self { client }
     }
 
-    async fn get_with_timeout(&self, url: &str, timeout_secs: u64) -> Option<reqwest::Response> {
-        let fetch_fut = self.client.get(url).send();
-        match tokio::time::timeout(Duration::from_secs(timeout_secs), fetch_fut).await {
-            Ok(Ok(r)) if r.status().is_success() => Some(r),
-            _ => None,
-        }
+    async fn fetch_bytes(&self, url: &str, timeout_secs: u64, max_bytes: usize) -> Result<Vec<u8>> {
+        crate::scraper::fetch_bytes_limited(
+            self.client
+                .get(url)
+                .timeout(Duration::from_secs(timeout_secs)),
+            max_bytes,
+            url,
+        )
+        .await
     }
 
     /// Queries Open Library API to resolve canonical book title, author, and first publication year.
@@ -69,10 +75,7 @@ impl BookSearcher {
             endpoint.push_str(&url_encode(auth));
         }
 
-        let resp = self.get_with_timeout(&endpoint, 3).await?;
-        let bytes = crate::scraper::read_response_bytes_limited(resp, 5 * 1024 * 1024)
-            .await
-            .ok()?;
+        let bytes = self.fetch_bytes(&endpoint, 3, 5 * 1024 * 1024).await.ok()?;
         let json: Value = serde_json::from_slice(&bytes).ok()?;
         let docs = json.get("docs")?.as_array()?;
 
@@ -123,10 +126,7 @@ impl BookSearcher {
         }
         let endpoint = format!("https://openlibrary.org/{}.json", clean_key);
 
-        let resp = self.get_with_timeout(&endpoint, 3).await?;
-        let bytes = crate::scraper::read_response_bytes_limited(resp, 2 * 1024 * 1024)
-            .await
-            .ok()?;
+        let bytes = self.fetch_bytes(&endpoint, 3, 2 * 1024 * 1024).await.ok()?;
         parse_work_description(&bytes)
     }
 
@@ -182,11 +182,7 @@ impl BookSearcher {
             url_encode(title)
         );
 
-        let Some(resp) = self.get_with_timeout(&endpoint, 4).await else {
-            return Ok(Vec::new());
-        };
-
-        let bytes = crate::scraper::read_response_bytes_limited(resp, 5 * 1024 * 1024).await?;
+        let bytes = self.fetch_bytes(&endpoint, 4, 5 * 1024 * 1024).await?;
         let json: Value = serde_json::from_slice(&bytes)?;
         let mut results = Vec::new();
 
@@ -232,11 +228,7 @@ impl BookSearcher {
             url_encode(&query)
         );
 
-        let Some(resp) = self.get_with_timeout(&endpoint, 4).await else {
-            return Ok(Vec::new());
-        };
-
-        let bytes = crate::scraper::read_response_bytes_limited(resp, 5 * 1024 * 1024).await?;
+        let bytes = self.fetch_bytes(&endpoint, 4, 5 * 1024 * 1024).await?;
         let json: Value = serde_json::from_slice(&bytes)?;
         let mut results = Vec::new();
 
@@ -247,9 +239,8 @@ impl BookSearcher {
                         .get("snippet")
                         .and_then(|s| s.as_str())
                         .map(|raw_snippet| {
-                            let stripped = crate::system::text_util::strip_html_tags(raw_snippet);
-                            crate::system::text_util::decode_html_entities(stripped.trim())
-                                .into_owned()
+                            let stripped = strip_html_tags(raw_snippet);
+                            decode_html_entities(stripped.trim()).into_owned()
                         });
 
                     let url_title = page_title.replace(' ', "_");
@@ -279,91 +270,93 @@ impl BookSearcher {
         };
 
         let endpoint = format!("https://html.duckduckgo.com/html/?q={}", url_encode(&query));
-
-        let Some(resp) = self.get_with_timeout(&endpoint, 3).await else {
+        let Ok(bytes) = self
+            .fetch_bytes(&endpoint, 3, crate::scraper::MAX_SCRAPE_BYTES)
+            .await
+        else {
             return Ok(Vec::new());
         };
+        let html = String::from_utf8_lossy(&bytes);
+        Ok(parse_ddg_html_results(&html))
+    }
+}
 
-        let html = match crate::scraper::read_response_text_limited(
-            resp,
-            crate::scraper::MAX_SCRAPE_BYTES,
-        )
-        .await
-        {
-            Ok(h) => h,
-            Err(_) => return Ok(Vec::new()),
+fn parse_ddg_html_results(html: &str) -> Vec<SearchResult> {
+    let mut results = Vec::new();
+    let mut cursor = 0;
+
+    while let Some(pos) = html[cursor..].find("result__body") {
+        let start = cursor + pos;
+        let next = html[start + 12..]
+            .find("result__body")
+            .map(|p| start + 12 + p)
+            .unwrap_or(html.len());
+        let block = &html[start..next];
+        cursor = next;
+
+        let Some(title_pos) = block.find("result__title") else {
+            continue;
         };
-        let mut results = Vec::new();
-        let mut cursor = 0;
+        let mut href: Option<String> = None;
+        let mut title = String::new();
+        let mut snippet: Option<String> = None;
 
-        while let Some(pos) = html[cursor..].find("result__body") {
-            let start = cursor + pos;
-            let next = html[start + 12..]
-                .find("result__body")
-                .map(|p| start + 12 + p)
-                .unwrap_or(html.len());
-            let block = &html[start..next];
-            cursor = next;
-
-            let Some(title_pos) = block.find("result__title") else {
+        let mut scanner = XmlScanner::new(&block[title_pos..]);
+        while let Some(ev) = scanner.next_event() {
+            let XmlEvent::Start {
+                name,
+                attrs,
+                is_empty,
+            } = ev
+            else {
                 continue;
             };
-            let title_rest = &block[title_pos..];
-            let href = crate::system::text_util::extract_attr_value(title_rest, "href=");
-
-            let Some(raw_href) = href else {
-                continue;
-            };
-            let actual_url = extract_ddg_url(raw_href);
-            if crate::scraper::validate_public_http_url(&actual_url).is_err() {
-                continue;
+            if href.is_none()
+                && name.eq_ignore_ascii_case("a")
+                && let Some(raw_href) = xml_attr(attrs, "href")
+            {
+                href = Some(raw_href.into_owned());
+                if !is_empty {
+                    title = scanner
+                        .read_text(name)
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                }
+            } else if snippet.is_none()
+                && xml_attr(attrs, "class")
+                    .is_some_and(|c| c.split_ascii_whitespace().any(|t| t == "result__snippet"))
+                && !is_empty
+            {
+                let cleaned = scanner
+                    .read_text(name)
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if !cleaned.is_empty() {
+                    snippet = Some(cleaned);
+                }
             }
-
-            let title = if let Some(a_start) = title_rest.find('>') {
-                let after_a = &title_rest[a_start + 1..];
-                if let Some(a_end) = after_a.find("</a>") {
-                    let stripped = crate::system::text_util::strip_html_tags(&after_a[..a_end]);
-                    crate::system::text_util::decode_html_entities(stripped.trim()).into_owned()
-                } else {
-                    String::new()
-                }
-            } else {
-                String::new()
-            };
-
-            let snippet = if let Some(snip_pos) = block.find("result__snippet") {
-                let snip_rest = &block[snip_pos..];
-                if let Some(tag_end) = snip_rest.find('>') {
-                    let content = &snip_rest[tag_end + 1..];
-                    if let Some(close_tag) = content.find('<') {
-                        let inner = content[..close_tag].trim();
-                        if !inner.is_empty() {
-                            Some(crate::system::text_util::decode_html_entities(inner).into_owned())
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            results.push(SearchResult::new(
-                title.trim(),
-                actual_url.into_owned(),
-                snippet,
-            ));
-            if results.len() >= 3 {
+            if href.is_some() && snippet.is_some() {
                 break;
             }
         }
 
-        Ok(results)
+        let Some(raw_href) = href else {
+            continue;
+        };
+        let actual_url = extract_ddg_url(&raw_href);
+        if crate::scraper::validate_public_http_url(&actual_url).is_err() {
+            continue;
+        }
+
+        results.push(SearchResult::new(title, actual_url.into_owned(), snippet));
+        if results.len() >= 3 {
+            break;
+        }
     }
+
+    results
 }
 
 /// Extracts target destination URL from DuckDuckGo redirect link, returning a zero-copy
@@ -513,12 +506,12 @@ impl PreparedQuery {
             let snippet_str = candidate.snippet.as_deref().unwrap_or("");
 
             if norm_cand.contains(norm_author.as_str())
-                || contains_ascii_case_insensitive(snippet_str, norm_author)
+                || find_ascii_case_insensitive(snippet_str, norm_author).is_some()
             {
                 score += 50;
             } else if last_name.len() > 2
                 && (norm_cand.contains(last_name)
-                    || contains_ascii_case_insensitive(snippet_str, last_name))
+                    || find_ascii_case_insensitive(snippet_str, last_name).is_some())
             {
                 score += 30;
             }
@@ -866,5 +859,15 @@ The dichotomy between two modes of thought, heuristics and biases, and prospect 
                 "expected {extracted} to be rejected"
             );
         }
+
+        let html = r##"<div class="result__body"><h2 class="result__title"><a class="result__a" href="/l/?uddg=https%3A%2F%2Fexample.com%2Fdune"><b>Dune</b> (novel)</a></h2><a class="result__snippet" href="#"><b>Dune</b> is a <b>science fiction</b> novel &amp; classic.</a></div>"##;
+        let parsed = parse_ddg_html_results(html);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].title, "Dune (novel)");
+        assert_eq!(parsed[0].url, "https://example.com/dune");
+        assert_eq!(
+            parsed[0].snippet.as_deref(),
+            Some("Dune is a science fiction novel & classic.")
+        );
     }
 }
