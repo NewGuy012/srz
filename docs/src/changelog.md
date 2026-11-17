@@ -22,6 +22,19 @@ All notable changes to `srz` are documented in this file.
 
 ---
 
+## [Unreleased]
+
+### Summary
+
+> Removes `ratatui` in favor of a pure `crossterm` TUI, slims crate features and Tokio runtime startup (`dispatch_sync` + lazy `current_thread`), consolidates config/storage/source modules, derives CLI shell completions dynamically from `clap`, and adds defense-in-depth SSRF, decompression-bomb, O(N) parser, LLM endpoint, and terminal security hardening.
+
+### Changes
+- **Supply-Chain Slimming & Lazy Single-Thread Runtime**: Removed `ratatui` by rewriting `srz browse` directly with `crossterm`; trimmed optional features on `toml` (`parse`, `serde`), `crossterm`, `clap`, and `tokio`; added `dispatch_sync` so offline subcommands (`config`, `cache`, `history`, `stats`, `find`, `recommend`, `index`, `export`, `completions`, `ask --chats`) and cache-hit summaries finish synchronously without initializing Tokio, using a lazy `current_thread` runtime otherwise.
+- **CLI, Config & Architecture Consolidation**: Unified `src/config/{mod,cli}.rs` into `src/config.rs`; derived `bash`/`zsh`/`fish`/`powershell`/`elvish` shell completions dynamically from `Cli::command()` and `ValueEnum::value_variants()`; flattened `redb` `LibraryItem`/`ChatSession` storage and simplified `Cache::open_database`/`get_summary` helpers; unified local/web `ScrapedPage` document loading; switched `--max-tokens` to inherit the active `--style` preset cleanly; added `> 0` / blank-query / unknown-`--profile` validation; bounded interactive stdin reads via `read_line_bounded`; preserved source metadata in `ask --resume`; and propagated `Result` cleanly to `src/main.rs` without `std::process::exit` in library code.
+- **Security & Algorithmic Hardening**: Added `PublicDnsResolver` DNS-rebinding SSRF protection alongside SIIT (`::ffff:0:0:0/96`) and site-local (`fec0::/10`) IPv6 checks; hardened `LlmClient` base URLs (no embedded credentials, no non-loopback HTTP requests carrying `api_key`, redirects disabled) and buffered split `<think>` tags across SSE chunks; pre-flight verified PDF `FlateDecode` budgets and bounded raw EPUB decompression and ZIP central-directory entries (`16,384` cap, symlink rejection); eliminated O(N²) scans in `XmlScanner`, HTML boilerplate stripping, and `TextChunker::decompose_line`; hid `OPENAI_*` env values from `clap` `--help` and warned on group/world-readable Unix configs storing `api_key`; rejected UNC `//`/`/\` Markdown URLs and stale `$PAGER` fallback flags; pre-created `0o600` `srz.db` inside `0o700` directories; and enforced `sync_all` atomic staging swaps.
+
+---
+
 ## v0.7.13
 
 ### Summary

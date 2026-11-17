@@ -69,8 +69,8 @@ Local targets receive similarly intelligent routing. If `<TARGET>` matches an ex
 | `--api-key <KEY>` | | OpenAI API key (optional for local LLMs). |
 | `--profile <NAME>` | | Load a named configuration profile from `config.toml`. |
 | `--config <PATH>` | | Custom configuration file path (defaults to `$SRZ_CONFIG` / `$SRZ_CONFIG_PATH` / `~/.config/srz/config.toml`). |
-| `--context-window <N>` | | Override server context window size in tokens (clamped to `2,048`–`2,097,152`; auto-detected if omitted). |
-| `--max-tokens <N>` | | Maximum tokens to generate (thinking + summary; style defaults: `concise` `1536`, `bullets` `2048`, `detailed` `8192`; CLI fallback `8192`). |
+| `--context-window <N>` | | Override server context window size in tokens (must be `> 0`; clamped to `2,048`–`2,097,152`; auto-detected if omitted). |
+| `--max-tokens <N>` | | Maximum tokens to generate (must be `> 0`; defaults to the active `--style` preset: `concise` `1536`, `bullets` `2048`, `detailed` `8192`). |
 | `--open` | `-b` | Automatically open the rendered HTML summary in your default web browser. |
 | `--output <FILE>` | `-o` | Save the generated output directly to a file (`.html` or `.md`). |
 | `--plain` | | Output raw Markdown without terminal formatting, ANSI colors, or paging. |
@@ -91,7 +91,7 @@ srz browse [FLAGS]
 # Aliases: srz tui, srz library
 ```
 
-Launches an interactive, full-screen Ratatui terminal dashboard for exploring past reads and managing summaries.
+Launches a lightweight interactive, full-screen `crossterm` terminal dashboard for exploring past reads and managing summaries.
 
 ### Keybindings
 
@@ -137,7 +137,7 @@ Performs question-answering grounded directly on document context, protected wit
 ### Session Management Flags
 
 * `--chats`: List saved persistent chat sessions stored in local storage.
-* `--resume <ID>`: Resume a previous conversation session by ID.
+* `--resume <ID>`: Resume a previous conversation session by ID while preserving the original source `target_type` and `target_url`.
 * `--show-chat <ID>`: Print complete transcript of a past chat session.
 * `--delete-chat <ID>`: Delete a saved chat session.
 
@@ -172,7 +172,7 @@ Aggregates and synthesizes top news stories from Google News RSS topics or direc
 srz find <QUERY>
 ```
 
-Executes an offline, stop-word-filtered relevance search across all saved summaries in `srz.db` without internet access.
+Executes an offline, stop-word-filtered relevance search across all saved summaries in `srz.db` without internet access (requires a non-empty query).
 
 * **10× Title Weight Boost**: Matched query terms in document titles score `10.0` each compared to `1.0` for matches in summary bodies, breaking score ties by most recent entry ID.
 * **ASCII Fast Path & Unicode Fallback**: Evaluates ASCII terms with zero-allocation case-insensitive scanning and falls back to UTF-8 safe lowercase matching for Unicode queries.

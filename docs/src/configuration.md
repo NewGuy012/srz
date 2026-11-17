@@ -29,8 +29,8 @@ api_key = ""
 # Default summary style: concise (default), detailed, bullets
 style = "concise"
 
-# Maximum completion tokens (thinking + summary tokens)
-max_tokens = 8192
+# Optional override for maximum completion tokens (defaults to active style preset)
+# max_tokens = 2048
 
 # Auto-open generated HTML view in your browser (default: false)
 open = false
@@ -100,9 +100,9 @@ srz "https://news.ycombinator.com" --profile fast
 
 ## Precedence & Resolution Order
 
-Runtime configuration follows a predictable layered resolution model (`Cli::apply_config`). Explicit command-line arguments and environment variables supplied to `clap` take top priority, ahead of `config.toml`. Within `config.toml`, named profile settings (`--profile <NAME>`) override root-level settings. If no configuration is provided at any layer, `srz` falls back to style-aware limits and safe local-first engine defaults:
+Runtime configuration follows a predictable layered resolution model (`Cli::apply_config`). Explicit command-line arguments take top priority, followed by environment variables (`OPENAI_*`, intentionally omitted from `clap` help output so secrets never print in `--help`), ahead of `config.toml`. Within `config.toml`, named profile settings (`--profile <NAME>`, which errors cleanly if unknown) override root-level settings, and `Config::load_default` surfaces malformed file/parse errors explicitly. When `max_tokens` is unset across CLI/profile/root layers, `effective_max_tokens()` defaults directly to the active `--style` preset:
 
-1. **Explicit CLI flags** (e.g. `--model`, `--base-url`, `--style`, `--stream`, `--show-thinking`, `--context-window`).
+1. **Explicit CLI flags** (e.g. `--model`, `--base-url`, `--style`, `--max-tokens`, `--stream`, `--show-thinking`, `--context-window`).
 2. **Environment variables** (`OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_API_KEY`).
 3. **Profile settings** selected via `--profile <NAME>` in `config.toml`.
 4. **Root settings** defined in `config.toml`.
@@ -124,7 +124,7 @@ The `[cache]` table controls how `srz` manages disk storage across `srz.db` and 
 | `views_ttl_days` | integer | `14` | Retention for opt-in standalone HTML and Markdown view files in `views/` (generated via `--open`). |
 | `auto_prune` | boolean | `true` | Enables opportunistic background cache cleanup (throttled to once every 24 hours via `~/.cache/srz/.last_prune`). |
 
-> 🔒 **Privacy & Isolation**: All databases and view files are created with owner-only Unix permissions (`0700` directories, `0600` files), and `config.toml` rejects symlinks and oversized files (`CWE-59`). To completely bypass caching for a single command, pass `--no-cache`. View file export (`.html`/`.md`) is strictly opt-in via `--open` or explicit output flags (`--output`).
+> 🔒 **Privacy & Isolation**: All databases and view files are created with owner-only Unix permissions (`0700` directories, `0600` files), `config.toml` rejects symlinks and oversized files (`CWE-59`), and Unix loads emit a permission warning if a config storing a non-empty `api_key` is readable by group or world (`mode & 0o077 != 0`). To completely bypass caching for a single command, pass `--no-cache`. View file export (`.html`/`.md`) is strictly opt-in via `--open` or explicit output flags (`--output`).
 
 ---
 

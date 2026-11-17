@@ -261,7 +261,7 @@ Structs allow you to package related values together into named types, creating 
 ### 3.2 Enums with Payloads (Tagged Unions): Making Invalid States Unrepresentable
 - 💡 **Simple Analogy:** A Swiss Army knife where each fold-out tool holds its own specific accessories. The screwdriver slot carries screwdriver bits; the scissors slot carries replacement springs. You can never accidentally put a screwdriver bit into the scissors.
 - 💡 **The "Click" Moment: Make Invalid States Unrepresentable:** In OOP, you might build an `Action` class with `url`, `title`, and `limit` fields—all nullable (`None`/`null`). You have to remember: *"If action is WEB, make sure `url` isn't null, but ignore `limit`."* In Rust, each enum variant holds *only* the specific data it needs. An invalid state cannot even exist in memory.
-- 🔍 **Real Code in `srz` ([src/config/cli.rs](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs#L389-L440)):**
+- 🔍 **Real Code in `srz` ([src/config.rs](https://github.com/NewGuy012/srz/blob/master/src/config.rs)):**
   ```rust
   #[derive(Debug, PartialEq, Eq)]
   pub enum ResolvedAction<'a> {
@@ -350,7 +350,7 @@ Structs allow you to package related values together into named types, creating 
 - 📖 **The Rust Book Reference:** [Chapter 18.3: Pattern Syntax (Extra Conditionals with Match Guards)](https://doc.rust-lang.org/book/ch18-03-pattern-syntax.html#extra-conditionals-with-match-guards)
 
 > 🧪 **Try It Yourself (Break It on Purpose):**
-> 1. In [`src/commands/mod.rs#L388`](https://github.com/NewGuy012/srz/blob/master/src/commands/mod.rs#L388), look at the main `match action` block. Adding a new variant to `ResolvedAction` in [`src/config/cli.rs`](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs#L389-L440) without handling it produces compiler error `E0004` (*non-exhaustive patterns*).
+> 1. In [`src/commands/mod.rs`](https://github.com/NewGuy012/srz/blob/master/src/commands/mod.rs), look at the main `match action` block. Adding a new variant to `ResolvedAction` in [`src/config.rs`](https://github.com/NewGuy012/srz/blob/master/src/config.rs) without handling it produces compiler error `E0004` (*non-exhaustive patterns*).
 > 2. Notice why the fast-path `match` at `#L231` ends with `_ => {}`: removing `_ => {}` wouldn't compile unless every remaining `ResolvedAction` variant were listed explicitly. Run the CLI routing suite to see how all action resolutions are tested:
 >    ```bash
 >    cargo test --test integration_tests test_cli_action_resolution_and_validation
@@ -619,9 +619,9 @@ In application code (like CLIs and servers), writing dozens of custom error enum
 <a id="82-functional-iterator-pipelines--combinators"></a>
 ### 8.2 Functional Iterator Pipelines & Combinators
 - 💡 **The "Click" Moment:** Iterators in Rust are lazy zero-cost abstractions. Chaining `.split_whitespace()`, `.filter()`, and `.collect()` compiles down into a single tight loop without allocating intermediate filtered vectors at every step.
-- 🔍 **Real Code in `srz` ([src/config/cli.rs](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs#L753-L762) & [src/system/zip.rs](https://github.com/NewGuy012/srz/blob/master/src/system/zip.rs#L94-L97)):**
+- 🔍 **Real Code in `srz` ([src/config.rs](https://github.com/NewGuy012/srz/blob/master/src/config.rs) & [src/system/zip.rs](https://github.com/NewGuy012/srz/blob/master/src/system/zip.rs#L94-L97)):**
   ```rust
-  // In src/config/cli.rs (`clean_news_query`): Filter conversational stop words lazily
+  // In src/config.rs (`clean_news_query`): Filter conversational stop words lazily
   let words: Vec<&str> = s
       .split_whitespace()
       .filter(|w| !STOP_WORDS.iter().any(|stop| w.eq_ignore_ascii_case(stop)))
@@ -811,7 +811,7 @@ Rust tasks spawned onto Tokio run cooperatively. An application can comfortably 
 ### 12.1 Declarative Derive Macros (`clap` & `serde`)
 - 💡 **Simple Analogy:** Drawing a simple floor plan on paper, and having an automated robot 3D-print the entire furnished house overnight with all wiring and plumbing included.
 - 💡 **The "Click" Moment: Zero-Cost Compile-Time Code Generation:** In Python or Ruby, command-line arguments and serialization require runtime inspection (reflection) which slows down boot time. In Rust, `#[derive(...)]` tells the compiler to write hundreds of lines of parsing, validation, and documentation code *at compile time*. The doc-comments (`/// Concise summary...`) become the actual `--help` manual!
-- 🔍 **Real Code in `srz` ([src/config/cli.rs](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs#L8-L17)):**
+- 🔍 **Real Code in `srz` ([src/config.rs](https://github.com/NewGuy012/srz/blob/master/src/config.rs)):**
   ```rust
   #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
   #[serde(rename_all = "lowercase")]
@@ -1110,8 +1110,8 @@ Rust tasks spawned onto Tokio run cooperatively. An application can comfortably 
 - 💡 **The "Click" Moment: Type-Level Security & Storage Contracts:**
   1. **Typed Embedded Transactions (`redb`)**: In [`src/storage/db.rs`](https://github.com/NewGuy012/srz/blob/master/src/storage/db.rs#L15-L23), every table is declared as a `const TableDefinition<K, V>`. Opening `TABLE_HISTORY` (`u64` → `&[u8]`) with a `&str` key simply fails to compile—turning schema drift bugs into compile errors—while `begin_write()` / `.commit()` guarantee crash-safe ACID updates and `redb::backends::InMemoryBackend` lets unit tests run at full speed with zero temporary files.
   2. **SSRF Validation on URLs & IPv6 Variants**: In [`src/sources/scraper.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/scraper.rs#L270-L373), `validate_parsed_public_http_url` inspects HTTP/HTTPS schemes, rejects embedded credentials, blocks `.localhost` / `.local` / `.internal` / `.lan` hosts and zone IDs (`%`), and checks both `Ipv4Addr` and tricky `Ipv6Addr` transition ranges (`::ffff:0:0/96` IPv4-mapped, NAT64, Discard-Only, Teredo, ULA `fc00::/7`, link-local `fe80::/10`).
-  3. **Symlink & Size-Cap File Loading**: Before opening `config.toml` or `srz.db`, [`Config::load_from_path`](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs#L965-L1001) and [`Database::open_at`](https://github.com/NewGuy012/srz/blob/master/src/storage/db.rs#L351-L355) inspect `fs::symlink_metadata` / `path.is_symlink()`, reject symlinks and non-regular files, and bound config reads with `.take(MAX_CONFIG_BYTES + 1)` (1 MiB cap).
-- 🔍 **Real Code in `srz` ([src/storage/db.rs](https://github.com/NewGuy012/srz/blob/master/src/storage/db.rs#L15-L23) & [src/config/cli.rs](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs#L965-L997)):**
+  3. **Symlink & Size-Cap File Loading**: Before opening `config.toml` or `srz.db`, [`Config::load_from_path`](https://github.com/NewGuy012/srz/blob/master/src/config.rs) and [`Database::open_at`](https://github.com/NewGuy012/srz/blob/master/src/storage/db.rs) inspect `fs::symlink_metadata` / `path.is_symlink()`, reject symlinks and non-regular files, and bound config reads with `.take(MAX_CONFIG_BYTES + 1)` (1 MiB cap).
+- 🔍 **Real Code in `srz` ([src/storage/db.rs](https://github.com/NewGuy012/srz/blob/master/src/storage/db.rs) & [src/config.rs](https://github.com/NewGuy012/srz/blob/master/src/config.rs)):**
   ```rust
   // 1. Compile-time typed redb tables (src/storage/db.rs)
   const TABLE_HISTORY: TableDefinition<u64, &[u8]> = TableDefinition::new("history");
@@ -1120,7 +1120,7 @@ Rust tasks spawned onto Tokio run cooperatively. An application can comfortably 
   pub(super) const TABLE_CACHE_CAPS: TableDefinition<&str, &[u8]> =
       TableDefinition::new("cache_caps");
 
-  // 2. Symlink + 1 MiB read-cap enforcement (src/config/cli.rs)
+  // 2. Symlink + 1 MiB read-cap enforcement (src/config.rs)
   let sym_meta = fs::symlink_metadata(path)
       .with_context(|| format!("Failed to read config file metadata at {:?}", path))?;
   if sym_meta.file_type().is_symlink() {
@@ -1133,8 +1133,8 @@ Rust tasks spawned onto Tokio run cooperatively. An application can comfortably 
   ```
 - 🧪 **Verify Locally:** Run the config bounds, database symlink, and SSRF tests:
   ```bash
-  cargo test --lib config::cli::tests::test_load_from_path_bounds_and_file_type
-  cargo test --lib storage::db::tests::test_database_refuses_symlink
+  cargo test --lib config::tests::test_load_from_path_bounds_and_file_type
+  cargo test --lib storage::db::tests::test_database_file_open_reopen_and_symlink_rejection
   ```
 - 📖 **The Rust Book Reference:** [Chapter 19.3: Advanced Types](https://doc.rust-lang.org/book/ch19-03-advanced-types.html) and [Chapter 18.3: Matching Ranges & Destructuring](https://doc.rust-lang.org/book/ch18-03-pattern-syntax.html)
 
@@ -1220,10 +1220,10 @@ flowchart TD
 ### 13.2 End-to-End Data Flow
 
 1. **System & Profiling Layer (`src/system/`)**: Detects physical host memory and CPU architecture via safe native kernel sysctls/WMI and procfs, classifying machines into hardware tiers and recommending optimal high-fidelity Gemma 4 quantization presets (`Q8_0`), alongside zero-dependency SHA-256 hashing (`sha256.rs`), DEFLATE ZIP reading (`zip.rs`), and streaming XML parsing (`XmlScanner`).
-2. **CLI Layer (`src/main.rs`, `src/config/`, `src/commands/`)**: Parses arguments with `clap`, merges defaults from `config.toml`, probes sub-millisecond cache fast-paths, and resolves user intentions into strongly typed `ResolvedAction` variants using exhaustive `match`—dispatching summaries, grounded Q&A (`srz ask`), model recommendations (`srz recommend`), health checks (`srz doctor`), or self-upgrades (`srz upgrade`).
-3. **Sources Layer (`src/sources/`)**: Fetches data from webpages, YouTube timed-text caption tracks (XML/JSON3), PDF documents, EPUB ebooks (`.epub` via `text_util::XmlScanner` and `crate::system::zip`), local text/JSON files, Unix stdin streams, Open Library & Wikipedia book candidates, and live Google News / RSS / Atom / JSON feeds. Uses `dom_smoothie` (Mozilla Readability) and streaming `text_util::XmlScanner` event parsing, enforcing strict SSRF URL checks and byte limits.
+2. **CLI Layer (`src/main.rs`, `src/config.rs`, `src/commands/`)**: Parses arguments with `clap`, merges defaults from `config.toml`, runs synchronous subcommands and sub-millisecond cache fast-paths (`dispatch_sync`) before lazily constructing a `current_thread` Tokio runtime, and resolves user intentions into strongly typed `ResolvedAction` variants using exhaustive `match`.
+3. **Sources Layer (`src/sources/`)**: Fetches data from webpages, YouTube timed-text caption tracks (XML/JSON3), PDF documents, EPUB ebooks (`.epub` via `text_util::XmlScanner` and `crate::system::zip`), local text/JSON files, Unix stdin streams, Open Library & Wikipedia book candidates, and live Google News / RSS / Atom / JSON feeds. Uses `dom_smoothie` (Mozilla Readability) and streaming `text_util::XmlScanner` event parsing, enforcing strict URL + DNS-rebinding SSRF checks and decompression/byte limits.
 4. **Engine Layer (`src/engine/`)**: Discovers OpenAI/llama.cpp/Ollama server capabilities (`n_ctx`), eliminates tokenizer drift via model-aware `TokenizerKind` profiles, compresses oversized texts via heading-skeleton + centroid BM25 salience and lead/tail anchoring, ranks Q&A passages via BM25, and dynamically sizes context budgets and completion headroom (`DynamicBudget`).
-5. **Storage Layer (`src/storage/`)**: Caches server capabilities (`cache_caps`), scraped pages (`cache_pages`), and search metadata (`cache_search`), and persists reading history (`history` + `cache_key_to_id`) and chat sessions (`chat_sessions`, `chat_messages`) inside pure-Rust `redb` (`srz.db`) using borrowed records (`NewSummaryRecord<'a>`) and stop-word-filtered title-weighted `srz find` search, while keeping rendered HTML/MD files opt-in under `views/`.
+5. **Storage Layer (`src/storage/`)**: Caches server capabilities (`cache_caps`), scraped pages (`cache_pages`), and search metadata (`cache_search`), and persists reading history (`history` + `cache_key_to_id`) and chat sessions (`chat_sessions` with embedded turn messages) inside pure-Rust `redb` (`srz.db`, pre-created `0600`) using borrowed records (`NewSummaryRecord<'a>`) and stop-word-filtered title-weighted `srz find` search, while keeping rendered HTML/MD files opt-in under `views/`.
 6. **UI Layer (`src/ui/`)**: Renders styled Markdown/HTML via shared CommonMark/GFM parser `ui::markdown`, streams dual-channel reasoning `<think>` tokens to `stderr` and summary text to `stdout`, routes tall outputs to the system `$PAGER`, emits subtle 1-line context advisor footers for constrained hardware, and hosts full-screen interactive browsing safely restored on exit via RAII `TerminalSessionGuard`.
 
 ---
@@ -1236,7 +1236,7 @@ flowchart TD
 | **Move vs. Borrow (`&`)** | [`src/main.rs#L19-L26`](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L19-L26) | **Reading over a shoulder**: Borrowing with `&` avoids transferring ownership and triggering error `E0382`. | [Ch 4.2: References & Borrowing](https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html) |
 | **Defensive Streaming** | [`src/sources/scraper.rs#L219-L254`](https://github.com/NewGuy012/srz/blob/master/src/sources/scraper.rs#L219-L254) | **Fuel pump auto-shutoff**: Streaming chunks with hard byte limits protects against Out-of-Memory DOS attacks. | [Ch 4.1: Ownership](https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html) |
 | **`Cow<'a, str>`** | [`src/commands/summarize.rs#L964-L974`](https://github.com/NewGuy012/srz/blob/master/src/commands/summarize.rs#L964-L974) | **Reading with sticky notes**: Zero-copy borrowing by default, lazily allocating `String` only when edits occur. | [Ch 4.3: Slices](https://doc.rust-lang.org/book/ch04-03-slices.html) |
-| **Enums with Payloads** | [`src/config/cli.rs#L389-L440`](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs#L389-L440) | **Swiss Army Knife**: Makes invalid states unrepresentable; each variant holds only the fields it requires. | [Ch 6.1: Defining an Enum](https://doc.rust-lang.org/book/ch06-01-defining-an-enum.html) |
+| **Enums with Payloads** | [`src/config.rs`](https://github.com/NewGuy012/srz/blob/master/src/config.rs) | **Swiss Army Knife**: Makes invalid states unrepresentable; each variant holds only the fields it requires. | [Ch 6.1: Defining an Enum](https://doc.rust-lang.org/book/ch06-01-defining-an-enum.html) |
 | **Exhaustive `match`** | [`src/commands/mod.rs#L241-L265`](https://github.com/NewGuy012/srz/blob/master/src/commands/mod.rs#L241-L265) | **Postal sorting bins**: The compiler flags missing variants if new commands are introduced. | [Ch 6.2: Pattern Matching](https://doc.rust-lang.org/book/ch06-02-match.html) |
 | **Modern Let-Chains** | [`src/commands/summarize.rs#L1046-L1070`](https://github.com/NewGuy012/srz/blob/master/src/commands/summarize.rs#L1046-L1070) | **Airport boarding gate**: Combines bool checks and `let Some(...)` extraction into a single readable line. | [Ch 6.3: `if let`](https://doc.rust-lang.org/book/ch06-03-if-let.html) |
 | **Match Guards** | [`src/commands/mod.rs#L231-L240`](https://github.com/NewGuy012/srz/blob/master/src/commands/mod.rs#L231-L240) | **Express checkout**: Pattern arm condition (`if ...`) that routes offline flags without launching network clients. | [Ch 18.3: Match Guards](https://doc.rust-lang.org/book/ch18-03-pattern-syntax.html#extra-conditionals-with-match-guards) |
@@ -1249,10 +1249,10 @@ flowchart TD
 | **Crash-Safe Terminal (RAII)** | [`src/ui/tui.rs#L155-L186`](https://github.com/NewGuy012/srz/blob/master/src/ui/tui.rs#L155-L186) | **Hotel keycard light switch**: Restores normal terminal modes upon function exit, even after panics via `TerminalSessionGuard`. | [Ch 15.3: Drop Trait](https://doc.rust-lang.org/book/ch15-03-drop.html) |
 | **Closure Loan Pattern** | [`src/commands/mod.rs#L58-L65`](https://github.com/NewGuy012/srz/blob/master/src/commands/mod.rs#L58-L65), [`src/commands/mod.rs#L249-L275`](https://github.com/NewGuy012/srz/blob/master/src/commands/mod.rs#L249-L275) | **Bank vault attendant**: Enforces strict lexical database access boundaries with generic return types `<T: Default>`. | [Ch 15.3: Drop Trait](https://doc.rust-lang.org/book/ch15-03-drop.html) |
 | **`LazyLock<T>`** | [`src/system/hardware.rs#L59-L63`](https://github.com/NewGuy012/srz/blob/master/src/system/hardware.rs#L59-L63) | **Motion-sensor light**: Safe, one-time, thread-safe hardware specs detection cached across calls with zero ongoing lock cost. | [Ch 16.3: Concurrency](https://doc.rust-lang.org/book/ch16-03-shared-state.html) |
-| **`#[tokio::main]`** | [`src/main.rs#L10-L17`](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L10-L17) | **Restaurant waiter**: Non-blocking work-stealing thread pool for high-throughput network I/O. | [Ch 17: Async/Await](https://doc.rust-lang.org/book/ch17-00-async-await.html) |
+| **Lazy `current_thread` Tokio** | [`src/main.rs`](https://github.com/NewGuy012/srz/blob/master/src/main.rs) | **Restaurant waiter on call**: Runs offline commands synchronously and builds a single-thread async executor only when needed. | [Ch 17: Async/Await](https://doc.rust-lang.org/book/ch17-00-async-await.html) |
 | **`#[cfg(unix)]`** | [`src/system/fs_util.rs#L113-L121`](https://github.com/NewGuy012/srz/blob/master/src/system/fs_util.rs#L113-L121) | **Packing for the weather**: Zero-overhead platform-specific file permissions compiled without runtime checks. | [Ch 14.1: Profiles](https://doc.rust-lang.org/book/ch14-01-release-profiles.html) |
 | **`#![forbid(unsafe_code)]`** | [`src/main.rs#L1`](https://github.com/NewGuy012/srz/blob/master/src/main.rs#L1), [`src/lib.rs#L1`](https://github.com/NewGuy012/srz/blob/master/src/lib.rs#L1) | **Sealed cockpit door**: Mathematical compile-time guarantee of zero memory corruption or segfaults. | [Ch 19.1: Unsafe Rust](https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html) |
-| **Derive Macros** | [`src/config/cli.rs#L8-L17`](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs#L8-L17) | **3D architectural printer**: Generates hundreds of lines of type validation and `--help` CLI text at compile time. | [Ch 19.5: Macros](https://doc.rust-lang.org/book/ch19-06-macros.html#how-to-write-a-custom-derive-macro) |
+| **Derive Macros** | [`src/config.rs`](https://github.com/NewGuy012/srz/blob/master/src/config.rs) | **3D architectural printer**: Generates hundreds of lines of type validation and `--help` CLI text at compile time. | [Ch 19.5: Macros](https://doc.rust-lang.org/book/ch19-06-macros.html#how-to-write-a-custom-derive-macro) |
 | **Safe Hardware Profiling** | [`src/system/hardware.rs#L247-L293`](https://github.com/NewGuy012/srz/blob/master/src/system/hardware.rs#L247-L293) | **Dashboard gauges**: Reads RAM/CPU metrics via native kernel sysctls and procfs with zero `unsafe`. | [Ch 19.1: Unsafe Rust](https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html) |
 | **Dynamic Budgeting** | [`src/engine/budget.rs#L30-L69`](https://github.com/NewGuy012/srz/blob/master/src/engine/budget.rs#L30-L69) | **Vessel weight balancing**: Invariant math sizing prompt thresholds and reserve headroom to eliminate OOMs. | [Ch 5.3: Method Syntax](https://doc.rust-lang.org/book/ch05-03-method-syntax.html) |
 | **Model Cache Invalidation** | [`src/storage/cache.rs#L574-L591`](https://github.com/NewGuy012/srz/blob/master/src/storage/cache.rs#L574-L591) | **Card catalog update**: Embedded storage invalidates cached context size when server switches models. | [Ch 16.3: Shared-State](https://doc.rust-lang.org/book/ch16-03-shared-state.html) |
@@ -1260,7 +1260,7 @@ flowchart TD
 | **Bounded Binary & ZIP Parsing (`impl Iterator`)** | [`src/system/zip.rs#L95-L150`](https://github.com/NewGuy012/srz/blob/master/src/system/zip.rs#L95-L150) | **Baggage weight limit**: Decodes central directory slices lazily and bounds DEFLATE reads against zip bombs. | [Ch 10.2: `impl Trait`](https://doc.rust-lang.org/book/ch10-02-traits.html#returning-types-that-implement-traits) |
 | **State-Machine Markdown & XSS Filter** | [`src/ui/markdown.rs#L7-L62`](https://github.com/NewGuy012/srz/blob/master/src/ui/markdown.rs#L7-L62) | **Dual-output checkpoint**: Renders HTML or ANSI from one parser while blocking `javascript:`/`data:` link schemes. | [Ch 8.2: Strings](https://doc.rust-lang.org/book/ch08-02-strings.html) |
 | **Typed Embedded ACID Storage (`redb`)** | [`src/storage/db.rs#L15-L23`](https://github.com/NewGuy012/srz/blob/master/src/storage/db.rs#L15-L23), [`#L326-L390`](https://github.com/NewGuy012/srz/blob/master/src/storage/db.rs#L326-L390) | **Compile-time vault ledger**: `TableDefinition<K, V>` prevents key/value schema mismatches before execution. | [Ch 19.3: Advanced Types](https://doc.rust-lang.org/book/ch19-03-advanced-types.html) |
-| **SSRF & Symlink Defense** | [`src/sources/scraper.rs#L270-L373`](https://github.com/NewGuy012/srz/blob/master/src/sources/scraper.rs#L270-L373), [`src/config/cli.rs#L965-L1001`](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs#L965-L1001) | **Border & identity check**: Blocks loopback/private/ULA/mapped IPv6 hosts and refuses symlinked files or >1 MiB configs. | [Ch 18.3: Pattern Syntax](https://doc.rust-lang.org/book/ch18-03-pattern-syntax.html) |
+| **SSRF & Symlink Defense** | [`src/sources/scraper.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/scraper.rs), [`src/config.rs`](https://github.com/NewGuy012/srz/blob/master/src/config.rs) | **Border & identity check**: Blocks DNS rebinding and loopback/private/ULA/SIIT IPv6 hosts and refuses symlinked files or >1 MiB configs. | [Ch 18.3: Pattern Syntax](https://doc.rust-lang.org/book/ch18-03-pattern-syntax.html) |
 
 ---
 
@@ -1376,7 +1376,7 @@ serde_json = "1.0"
 > - To keep `mini-srz` under 150 lines, this starter binary omits production hardening like SSRF URL checks (`validate_parsed_public_http_url`) and bounded response streaming (`read_response_bytes_limited`). See Section [15.12](#1512-progressive-next-milestones-for-mini-srz) for step-by-step upgrades.
 >
 > 💡 **Why These Three Crates Simplify Everything:**
-> - **`clap`**: Replaces 60+ lines of manual `std::env::args()` loops with an annotated struct. (See `srz`'s CLI in [`src/config/cli.rs`](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs#L145-L154)).
+> - **`clap`**: Replaces 60+ lines of manual `std::env::args()` loops with an annotated struct. (See `srz`'s CLI in [`src/config.rs`](https://github.com/NewGuy012/srz/blob/master/src/config.rs)).
 > - **`scraper`**: In `mini-srz`, eliminates custom regex and state machines for HTML parsing by querying the DOM with standard CSS selectors (`h1, h2, h3, p, li`). *(Note: In production `srz`, this dependency was removed in favor of `dom_smoothie` Readability and zero-dependency streaming `text_util::XmlScanner` parsing — along with `ui::markdown` instead of `pulldown-cmark` — to eliminate 20+ transitive dependencies; see Sections 12.7 and 15.13).*
 > - **`anyhow`**: Replaces verbose `Box<dyn std::error::Error>` trait objects with a clean `Result<T>` and rich contextual failure messages. (See `srz`'s error handling in [`src/sources/scraper.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/scraper.rs#L1)).
 >

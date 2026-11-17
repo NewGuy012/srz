@@ -22,7 +22,7 @@ flowchart TD
         Router -->|"Book Title"| BookFlow["Book Pipeline"]
         Router -->|"News Query, RSS or Atom"| NewsFlow["Universal Feed Parser (XmlScanner)"]
         Router -->|"ask [TARGET] [Q]"| AskFlow["Grounded Q&A Handler"]
-        Router -->|"browse / tui"| TuiFlow["Ratatui TUI Library Explorer"]
+        Router -->|"browse / tui"| TuiFlow["Crossterm TUI Library Explorer"]
         Router -->|"Utility Subcommands"| UtilFlow["Utility Handlers"]
     end
 
@@ -74,53 +74,53 @@ The codebase is organized into seven domain modules under `src/`, separating com
 ```text
 src/
 ├── commands/     # CLI subcommand workflows (summarize, ask, library, diagnostics, completions)
-├── config/       # CLI parsing, auto-detection heuristics, and config file profiles
+├── config.rs     # CLI parsing, auto-detection heuristics, bounds validation, and config profiles
 ├── engine/       # SSE streaming client, dynamic token budgeting, and chunkers
 ├── sources/      # Content ingestion: web scraper, book search, YouTube, and feeds
 ├── storage/      # Embedded redb cache, library database, and pruning
 ├── system/       # Hardware profiling, SHA-256, ZIP/text/XML utilities, atomic filesystem, and updater
-├── ui/           # Shared Markdown parser, terminal formatting/spinners, HTML reader, and TUI
-├── lib.rs        # Library crate root and public module exports
-└── main.rs       # Binary entry point and CLI orchestration
+├── ui/           # Shared Markdown parser, terminal formatting/spinners, HTML reader, and crossterm TUI
+├── lib.rs        # Library crate root and public module interface
+└── main.rs       # Binary entry point, lazy Tokio startup, and top-level error reporting
 ```
 
-Most of `srz`'s reusable building blocks live inside `src/` (made available through `src/lib.rs`), while `src/main.rs` handles reading your settings and launching whichever action you requested.
+Most of `srz`'s reusable building blocks live inside `src/` (made available through `src/lib.rs`), while `src/main.rs` handles reading your settings, running synchronous offline/cache-hit commands via `dispatch_sync`, and lazily creating a `current_thread` Tokio runtime only when async network or TUI work is required.
 
 ### Module Responsibilities
 
 | Subsystem | File | Module | Primary Responsibility |
 | :--- | :--- | :--- | :--- |
-| **Entry Points** | [`src/main.rs`](https://github.com/NewGuy012/srz/blob/master/src/main.rs) | `main` | Application lifecycle, config resolution, signal routing, and CLI dispatch. |
-| | [`src/lib.rs`](https://github.com/NewGuy012/srz/blob/master/src/lib.rs) | `lib` | Root library interface and backward-compatible module re-exports. |
-| **Commands** | [`src/commands/mod.rs`](https://github.com/NewGuy012/srz/blob/master/src/commands/mod.rs) | `commands` | Command routing, CLI dispatch (`dispatch_cli`), shell completion generation, database loan manager (`with_db`), cache commands, and dashboard updates. |
+| **Entry Points** | [`src/main.rs`](https://github.com/NewGuy012/srz/blob/master/src/main.rs) | `main` | Application lifecycle, config resolution, synchronous fast-path dispatch, lazy `current_thread` Tokio runtime, and unified CLI error exit. |
+| | [`src/lib.rs`](https://github.com/NewGuy012/srz/blob/master/src/lib.rs) | `lib` | Root library interface and internal `pub(crate)` module aliases. |
+| **Commands** | [`src/commands/mod.rs`](https://github.com/NewGuy012/srz/blob/master/src/commands/mod.rs) | `commands` | Command routing (`dispatch_sync` / `dispatch_async`), `Cli::command()`-derived shell completions, bounded stdin line reads (`read_line_bounded`), database loan manager (`with_db`), and cache/config handlers. |
 | | [`src/commands/summarize.rs`](https://github.com/NewGuy012/srz/blob/master/src/commands/summarize.rs) | `commands::summarize` | Summarization workflows for web, YouTube, documents, stdin, and books. |
-| | [`src/commands/ask.rs`](https://github.com/NewGuy012/srz/blob/master/src/commands/ask.rs) | `commands::ask` | Grounded Q&A, shared BM25 context retrieval, automatic re-fetching on cache expiration, standard I/O REPL, and chat persistence. |
+| | [`src/commands/ask.rs`](https://github.com/NewGuy012/srz/blob/master/src/commands/ask.rs) | `commands::ask` | Grounded Q&A, shared BM25 context retrieval, automatic re-fetching on cache expiration, bounded REPL I/O, and chat persistence preserving source metadata. |
 | | [`src/commands/library.rs`](https://github.com/NewGuy012/srz/blob/master/src/commands/library.rs) | `commands::library` | Handlers for `history`, `stats`, `find` (title-weighted offline search), and `export`. |
-| | [`src/commands/diagnostics.rs`](https://github.com/NewGuy012/srz/blob/master/src/commands/diagnostics.rs) | `commands::diagnostics` | Backend verification (`doctor`), model enumeration, and config inspection. |
-| **Configuration** | [`src/config/cli.rs`](https://github.com/NewGuy012/srz/blob/master/src/config/cli.rs) | `config::cli` | `clap` CLI parser, style presets, flags, target auto-detection heuristics, `config.toml` profiles, symlink-safe config loading, and template generation. |
+| | [`src/commands/diagnostics.rs`](https://github.com/NewGuy012/srz/blob/master/src/commands/diagnostics.rs) | `commands::diagnostics` | Backend verification (`doctor`), model enumeration, and hardware recommendations. |
+| **Configuration** | [`src/config.rs`](https://github.com/NewGuy012/srz/blob/master/src/config.rs) | `config` | `clap` CLI parser, style-based `effective_max_tokens()`, input bounds & profile validation, target auto-detection heuristics, symlink/permission-checked config loading, and template generation. |
 | **Engine** | [`src/engine/compressor.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/compressor.rs) | `engine::compressor` | CPU Heading-Skeleton + Centroid BM25 Stratified Salience Compression and Robertson-Sparck Jones BM25 context retrieval for `srz ask`. |
-| | [`src/engine/llm.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/llm.rs) | `engine::llm` | High-level LLM client, single-pass streaming orchestration, book summarization, and news digest synthesis. |
-| | [`src/engine/sse.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/sse.rs) | `engine::sse` | Zero-copy SSE parser, streaming state machine, live thinking token/elapsed spinner formatting, and generation rate tracking. |
-| | [`src/engine/prompts.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/prompts.rs) | `engine::prompts` | Prompt templating, XML boundary escaping, and untrusted prompt wrapping. |
+| | [`src/engine/llm.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/llm.rs) | `engine::llm` | High-level LLM client enforcing base-URL scheme, credential, cleartext `api_key`, and non-redirect (`Policy::none()`) guards, wiring `max_completion`, and streaming/non-streaming orchestration. |
+| | [`src/engine/sse.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/sse.rs) | `engine::sse` | Zero-copy SSE parser, `ThinkingState` machine buffering split `<think>` tags across chunks, `reasoning_content` support, and generation rate tracking. |
+| | [`src/engine/prompts.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/prompts.rs) | `engine::prompts` | Prompt templating, XML boundary escaping (including attribute/EOF-prefix forms), and untrusted prompt wrapping. |
 | | [`src/engine/budget.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/budget.rs) | `engine::budget` | Dynamic token budgeting (`DynamicBudget`), server capability discovery (`/props`, `/api/show`), context window discovery, and context clamping. |
-| | [`src/engine/chunker.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/chunker.rs) | `engine::chunker` | In-process model-aware token estimation (`TokenizerKind`), $O(1)$ fast paths, and hierarchical binary-search chunking. |
-| **Sources** | [`src/sources/document.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/document.rs) | `sources::document` | Consolidated document loader, pure-Rust single-pass PDF text layer extraction, pure-Rust zero-dependency EPUB chapter & metadata extraction, format dispatch, and file size bounding (`MAX_FILE_BYTES`). |
-| | [`src/sources/scraper.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/scraper.rs) | `sources::scraper` | HTTP client (10 MB cap), SSRF mitigation blocking private/loopback/metadata/transition IPv6 targets, Mozilla Readability DOM parsing (`dom_smoothie`), and streaming HTML-to-Markdown conversion (`XmlScanner`). |
-| | [`src/sources/youtube.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/youtube.rs) | `sources::youtube` | Video ID parsing, Innertube client, XML/JSON3 caption streaming, chapter cue grouping (`parse_chapters_from_description`), and auto-translate (`&tlang=en`) fallback. |
-| | [`src/sources/search.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/search.rs) | `sources::search` | Concurrent fan-out Open Library metadata & search candidates with strict `work_key` path traversal validation, candidate ranking, and targeted Wikipedia synopsis extraction (`extract_wikipedia_synopsis`). |
-| | [`src/sources/news.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/news.rs) | `sources::news` | Syndication feeds (RSS/Atom/JSON via `XmlScanner`), SSRF validation on direct feed URLs, offline `CBMi` protobuf decoding, pre-scrape caching, RPC fallback, and RSS snippet fallback on paywalled links. |
+| | [`src/engine/chunker.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/chunker.rs) | `engine::chunker` | In-process model-aware token estimation (`TokenizerKind`), $O(1)$ fast paths, `str::floor_char_boundary`, and $O(N)$ line chunking (`truncate_to_budget`). |
+| **Sources** | [`src/sources/document.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/document.rs) | `sources::document` | Unified `ScrapedPage` document loader (`MAX_FILE_BYTES`), pure-Rust PDF extractor with `FlateDecode` stream pre-flight verification (`verify_pdf_stream_budgets`), and bounded EPUB extractor (`MAX_EPUB_TOTAL_BYTES`, `16,384` manifest cap). |
+| | [`src/sources/scraper.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/scraper.rs) | `sources::scraper` | HTTP client (10 MB cap), DNS-layer `PublicDnsResolver` + URL SSRF checks (blocking private/loopback/metadata/SIIT/site-local IPs), Mozilla Readability DOM parsing (`dom_smoothie`), and $O(N)$ HTML boilerplate stripping & conversion (`XmlScanner`). |
+| | [`src/sources/youtube.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/youtube.rs) | `sources::youtube` | Video ID parsing, Innertube client, size-bounded XML/JSON3 caption streaming, chapter cue grouping (`parse_chapters_from_description`), and auto-translate (`&tlang=en`) fallback. |
+| | [`src/sources/search.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/search.rs) | `sources::search` | Concurrent fan-out Open Library metadata & search candidates (`work_key` validation), DuckDuckGo HTML extraction via `XmlScanner`, and targeted Wikipedia synopsis extraction. |
+| | [`src/sources/news.rs`](https://github.com/NewGuy012/srz/blob/master/src/sources/news.rs) | `sources::news` | Syndication feeds (RSS/Atom/JSON via `XmlScanner`), SSRF validation on direct feed URLs, offline `CBMi` protobuf decoding, pre-scrape caching, status-checked RPC fallback, and RSS snippet fallback. |
 | **Storage** | [`src/storage/cache.rs`](https://github.com/NewGuy012/srz/blob/master/src/storage/cache.rs) | `storage::cache` | Unified `redb` cache (`srz.db`), 2h news TTL, 7d page/capability TTL, opt-in views, and LRU pruning. |
-| | [`src/storage/db.rs`](https://github.com/NewGuy012/srz/blob/master/src/storage/db.rs) | `storage::db` | Embedded pure-Rust `redb` database (`srz.db`), 8 typed tables, generic TTL JSON cache helpers, stop-word-filtered title-weighted `history` search, bounded pagination, ACID transactions, and chat tables. |
-| **UI & Render** | [`src/ui/markdown.rs`](https://github.com/NewGuy012/srz/blob/master/src/ui/markdown.rs) | `ui::markdown` | Zero-dependency shared CommonMark + GFM parser, XSS-safe link filter (`is_safe_markdown_url`), and ANSI terminal / HTML5 renderer. |
-| | [`src/ui/terminal.rs`](https://github.com/NewGuy012/srz/blob/master/src/ui/terminal.rs) | `ui::terminal` | Zero-dependency background thread progress spinners, terminal escape sanitization, ANSI terminal Markdown rendering (`ui::markdown`), line-buffered stream rendering, and pager integration. |
-| | [`src/ui/tui.rs`](https://github.com/NewGuy012/srz/blob/master/src/ui/tui.rs) | `ui::tui` | Full-screen interactive terminal explorer (`ratatui`) with RAII `TerminalSessionGuard` cleanup, live search, and system clipboard integration. |
+| | [`src/storage/db.rs`](https://github.com/NewGuy012/srz/blob/master/src/storage/db.rs) | `storage::db` | Embedded pure-Rust `redb` database (`srz.db`, pre-created `0600`), 7 typed tables (including composite `cache_key_to_id` and embedded `ChatSession` messages), generic TTL JSON cache helpers, stop-word-filtered search, and ACID transactions. |
+| **UI & Render** | [`src/ui/markdown.rs`](https://github.com/NewGuy012/srz/blob/master/src/ui/markdown.rs) | `ui::markdown` | Zero-dependency shared CommonMark + GFM parser, XSS & UNC (`//`, `/\`) safe link filter (`is_safe_markdown_url`), and ANSI terminal / HTML5 renderer. |
+| | [`src/ui/terminal.rs`](https://github.com/NewGuy012/srz/blob/master/src/ui/terminal.rs) | `ui::terminal` | Background thread progress spinners, terminal escape sanitization, ANSI terminal Markdown rendering (`ui::markdown`), bounded stream rendering, and safe `$PAGER` argument parsing. |
+| | [`src/ui/tui.rs`](https://github.com/NewGuy012/srz/blob/master/src/ui/tui.rs) | `ui::tui` | Pure `crossterm` full-screen interactive terminal explorer with RAII `TerminalSessionGuard` cleanup, live search, and system clipboard integration. |
 | | [`src/ui/render.rs`](https://github.com/NewGuy012/srz/blob/master/src/ui/render.rs) | `ui::render` | HTML reader generator (`ui::markdown`) with collapsible thought drawers. |
-| **System** | [`src/system/hardware.rs`](https://github.com/NewGuy012/srz/blob/master/src/system/hardware.rs) | `system::hardware` | Host RAM/CPU detection (cached via `LazyLock`, native kernel `sysctl`/`/proc/meminfo`) and Gemma 4 model advisories. |
-| | [`src/system/sha256.rs`](https://github.com/NewGuy012/srz/blob/master/src/system/sha256.rs) | `system::sha256` | Zero-dependency pure-Rust FIPS 180-4 SHA-256 implementation for cache keys and release checksums. |
-| | [`src/system/text_util.rs`](https://github.com/NewGuy012/srz/blob/master/src/system/text_util.rs) | `system::text_util` | Streaming pull-based `XmlScanner`, quoted attribute extraction, flattened Damerau-Levenshtein distance, zero-copy ASCII tokenizers, fast HTML decoding, and string utilities. |
-| | [`src/system/fs_util.rs`](https://github.com/NewGuy012/srz/blob/master/src/system/fs_util.rs) | `system::fs_util` | Platform filesystem helpers, `0700`/`0600` permissions, consolidated safe unique tempfile creation, and atomic file writes. |
-| | [`src/system/zip.rs`](https://github.com/NewGuy012/srz/blob/master/src/system/zip.rs) | `system::zip` | Lightweight safe ZIP archive extractor & deflate decompressor (`flate2`). |
-| | [`src/system/upgrade.rs`](https://github.com/NewGuy012/srz/blob/master/src/system/upgrade.rs) | `system::upgrade` | In-place self-updater with release queries, SHA-256 verification, zero-dependency streaming USTAR tar decoder, and atomic swap with automatic rollback. |
+| **System** | [`src/system/hardware.rs`](https://github.com/NewGuy012/srz/blob/master/src/system/hardware.rs) | `system::hardware` | Host RAM/CPU detection (cached via `LazyLock`, single native macOS `sysctl` / Linux `procfs`) and Gemma 4 model advisories. |
+| | [`src/system/sha256.rs`](https://github.com/NewGuy012/srz/blob/master/src/system/sha256.rs) | `system::sha256` | Zero-dependency stateless pure-Rust FIPS 180-4 SHA-256 (`sha256_hex`) for cache keys and release checksums. |
+| | [`src/system/text_util.rs`](https://github.com/NewGuy012/srz/blob/master/src/system/text_util.rs) | `system::text_util` | Streaming $O(N)$ `XmlScanner`, quoted attribute extraction, flattened Damerau-Levenshtein distance, zero-copy ASCII tokenizers, slugification, fast HTML decoding, and string utilities. |
+| | [`src/system/fs_util.rs`](https://github.com/NewGuy012/srz/blob/master/src/system/fs_util.rs) | `system::fs_util` | Platform filesystem helpers, `create_private_dir_all` (`0700`)/`0600` permissions, safe unique tempfile creation, and `write_staged_temp_file` (`sync_all` atomic swap). |
+| | [`src/system/zip.rs`](https://github.com/NewGuy012/srz/blob/master/src/system/zip.rs) | `system::zip` | Lightweight safe ZIP archive extractor (`16,384` entry cap, symlink rejection) & deflate decompressor (`flate2`). |
+| | [`src/system/upgrade.rs`](https://github.com/NewGuy012/srz/blob/master/src/system/upgrade.rs) | `system::upgrade` | In-place self-updater with release queries, SHA-256 verification, zero-dependency streaming USTAR tar decoder, `.srz-old-*.tmp` cleanup, and atomic swap with rollback. |
 
 ---
 
@@ -256,10 +256,10 @@ When you ask `srz` about a book (`srz "The Hobbit"`), five built-in shortcuts ke
 graph TD
     subgraph DataRoot["~/.local/share/srz/ (XDG_DATA_HOME, 0700)"]
         subgraph UnifiedDB["Unified redb Database (srz.db, 0600)"]
-            D["srz.db (8 Typed Tables, ACID Transactions)"]
+            D["srz.db (7 Typed Tables, ACID Transactions)"]
             D --> T1["history (LibraryItem: metadata, words, tokens, summary & reasoning)"]
             D --> T2["cache_key_to_id (SHA-256 summary cache key -> history ID, 90d TTL)"]
-            D --> T3["chat_sessions & chat_messages (multi-turn Q&A history)"]
+            D --> T3["chat_sessions (ChatSession with embedded multi-turn messages)"]
             D --> T4["cache_pages (web, YouTube, PDF: 7d TTL; news: 2h TTL)"]
             D --> T5["cache_search (Open Library metadata & candidates, 14d TTL)"]
             D --> T6["cache_caps (server n_ctx & model descriptor, 7d TTL)"]
@@ -289,7 +289,7 @@ graph TD
 ### Storage Design
 
 #### Everything in One Self-Contained File (`srz.db`)
-Instead of relying on external database programs or scattering files across dozens of folders, `srz` stores your entire summary library, chat history, and temporary caches inside one self-contained database file (`srz.db`) with 8 organized tables. Changes are saved safely all-or-nothing, so even an unexpected power loss or Ctrl-C won't corrupt your history.
+Instead of relying on external database programs or scattering files across dozens of folders, `srz` stores your entire summary library, chat history, and temporary caches inside one self-contained database file (`srz.db`, pre-created with `0600` permissions) with 7 organized tables. Changes are saved safely all-or-nothing, so even an unexpected power loss or Ctrl-C won't corrupt your history.
 
 #### Fresh News Caching (2 Hours)
 News updates quickly, so cached news pages and digests expire automatically after 2 hours (`news_ttl`). Regular webpages, YouTube transcripts, and PDFs stay cached for 7 days (`pages_ttl`) so repeat reads and follow-up Q&A are instant.
@@ -434,7 +434,7 @@ Because downloaded webpages and PDFs can contain hidden prompt-injection instruc
 Untrusted webpage titles and model outputs can contain hidden terminal control sequences that corrupt your screen, fake text direction, or interact with clipboard escapes. `srz` filters all titles, metadata, spinners, and streamed text through `sanitize_terminal_text` before anything prints to your terminal.
 
 ### Network Limits & Verified Self-Updates
-Every public web request (`srz` articles, remote PDFs, feeds, DuckDuckGo search result URLs, and redirects up to 10 hops) checks the destination address first (`validate_public_http_url`) to block accidental or malicious connections to your local machine, home network, or cloud metadata addresses—alongside strict size caps (10 MB for webpages and piped text, 20 MB for local files, and 50 MB for update archives) and request timeouts. When updating via `srz upgrade`, redirect hops are enforced as HTTPS-only public hosts (`validate_upgrade_redirect_url`) and downloaded packages are verified against cryptographic SHA-256 checksums before swapping binaries cleanly with automatic rollback if anything fails.
+Every public web request (`srz` articles, remote PDFs, feeds, DuckDuckGo search result URLs, and redirects up to 10 hops) checks both destination URLs (`validate_public_http_url`) and resolved socket addresses (`PublicDnsResolver` on every TCP dial) to defeat DNS rebinding as well as direct requests to loopback, private, link-local, CGNAT, cloud metadata, or IPv6 transition/site-local (`::ffff:0:0:0/96`, `fec0::/10`, NAT64, Teredo, 6to4) ranges—alongside strict size caps (10 MB for webpages and piped text, 20 MB for local files, and 50 MB for update archives) and request timeouts. `LlmClient` additionally disallows embedded URL credentials, refuses sending an `api_key` over cleartext HTTP to non-loopback hosts, and disables HTTP redirects (`Policy::none()`). When updating via `srz upgrade`, redirect hops are enforced as HTTPS-only public hosts (`validate_upgrade_redirect_url`) and downloaded packages are verified against cryptographic SHA-256 checksums before swapping binaries cleanly with automatic rollback if anything fails.
 
 ---
 
