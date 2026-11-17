@@ -205,7 +205,7 @@ pub fn handle_find(db: &Database, query: &str, cache: &Cache, as_json: bool) -> 
 /// Generates or updates the HTML library dashboard in `views_dir`.
 pub fn update_index_dashboard(db: &Database, cache: &Cache) -> Result<PathBuf> {
     let stats = db.get_stats()?;
-    let entries = db.get_all_for_index()?;
+    let entries = db.get_history(usize::MAX)?;
     let index_path = render::ensure_index_file(&cache.views_dir(), &stats, &entries)?;
     Ok(index_path)
 }

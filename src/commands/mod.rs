@@ -43,9 +43,9 @@ pub async fn init_llm_with_capabilities_or_exit(
     llm.init_with_capabilities(cache).await
 }
 
-/// Safely opens the database, issuing a UI warning on failure.
-pub fn open_db_or_warn() -> Option<Database> {
-    match Database::open_default() {
+/// Opens the database via `cache`, issuing a UI warning on failure.
+pub fn open_db_or_warn(cache: &Cache) -> Option<Database> {
+    match cache.open_database() {
         Ok(d) => Some(d),
         Err(err) => {
             Ui::warn(&format!("Could not open database: {:#}", err));
@@ -55,8 +55,8 @@ pub fn open_db_or_warn() -> Option<Database> {
 }
 
 /// Executes a closure with an active database connection if available.
-pub fn with_db<T: Default>(f: impl FnOnce(&Database) -> Result<T>) -> Result<T> {
-    if let Some(db) = open_db_or_warn() {
+pub fn with_db<T: Default>(cache: &Cache, f: impl FnOnce(&Database) -> Result<T>) -> Result<T> {
+    if let Some(db) = open_db_or_warn(cache) {
         f(&db)
     } else {
         Ui::error("Database unavailable.");
@@ -85,7 +85,7 @@ pub fn handle_cache(cmd: CacheCommand, cache: &Cache) -> Result<()> {
         CacheCommand::Clean { reset_db } => {
             let stats = cache.clean().context("Failed to clean cache directory")?;
             let mut db_reset = false;
-            if reset_db && let Some(database) = cache.open_database().or_else(open_db_or_warn) {
+            if reset_db && let Some(database) = open_db_or_warn(cache) {
                 database.reset().context("Failed to reset database")?;
                 db_reset = true;
             }
@@ -235,7 +235,7 @@ pub async fn dispatch_cli(
             delete_chat,
             ..
         } if list_chats || show_chat.is_some() || delete_chat.is_some() => {
-            handle_ask_management(list_chats, show_chat, delete_chat, args.json)?;
+            handle_ask_management(list_chats, show_chat, delete_chat, &cache, args.json)?;
             return Ok(());
         }
         crate::cli::ResolvedAction::Cache(cache_cmd) => {
@@ -247,13 +247,13 @@ pub async fn dispatch_cli(
             return Ok(());
         }
         crate::cli::ResolvedAction::History { limit } => {
-            return with_db(|db| handle_history(db, limit, args.json));
+            return with_db(&cache, |db| handle_history(db, limit, args.json));
         }
         crate::cli::ResolvedAction::Stats => {
-            return with_db(|db| handle_stats(db, args.json));
+            return with_db(&cache, |db| handle_stats(db, args.json));
         }
         crate::cli::ResolvedAction::Find { query } => {
-            return with_db(|db| handle_find(db, query, &cache, args.json));
+            return with_db(&cache, |db| handle_find(db, query, &cache, args.json));
         }
         crate::cli::ResolvedAction::Models => {
             handle_models(&args, args.json).await?;
@@ -268,15 +268,11 @@ pub async fn dispatch_cli(
             return Ok(());
         }
         crate::cli::ResolvedAction::Index => {
-            return with_db(|db| handle_index(db, &cache, args.open));
+            return with_db(&cache, |db| handle_index(db, &cache, args.open));
         }
         crate::cli::ResolvedAction::Browse => {
             loop {
-                let action = if let Some(db) = cache.open_database() {
-                    crate::ui::run_tui(&db, &cache)?
-                } else {
-                    with_db(|db| crate::ui::run_tui(db, &cache))?
-                };
+                let action = with_db(&cache, |db| crate::ui::run_tui(db, &cache))?;
                 match action {
                     crate::ui::TuiAction::Exit => break,
                     crate::ui::TuiAction::Ask { target } => {
@@ -303,7 +299,7 @@ pub async fn dispatch_cli(
             return Ok(());
         }
         crate::cli::ResolvedAction::Export { format, output } => {
-            return with_db(|db| handle_export(db, format, &output));
+            return with_db(&cache, |db| handle_export(db, format, &output));
         }
         crate::cli::ResolvedAction::Completions { shell } => {
             print!("{}", generate_completions_script(shell));
@@ -325,59 +321,45 @@ pub async fn dispatch_cli(
         Ui::info("Cache bypassed (`--no-cache`). Forcing fresh fetch and generation.");
     } else {
         // Sub-millisecond cache fast-path: probe cache before initializing LLM/scraper clients
-        match &action {
-            crate::cli::ResolvedAction::Web { url } => {
-                if let Some(cached) = cache.get_web_summary(url, args.style, &args.model) {
-                    Ui::info("Loaded summary from local cache (pass `--no-cache` to refresh).");
-                    let outcome = SummaryOutcome::from_cached(
-                        target_type_for_url(url),
-                        cached,
-                        None,
-                        Some(url.to_string()),
-                    );
-                    return present_summary_outcome(outcome, &args, &cache);
-                }
-            }
-            crate::cli::ResolvedAction::Book { title } => {
-                if let Some(cached) = cache.get_book_summary(title, None, args.style, &args.model) {
-                    Ui::info(
-                        "Loaded book summary from local cache (pass `--no-cache` to refresh).",
-                    );
-                    let outcome = SummaryOutcome::from_cached("book", cached, None, None);
-                    return present_summary_outcome(outcome, &args, &cache);
-                }
-            }
+        let cache_probe: Option<(&'static str, String, Option<String>, &str)> = match &action {
+            crate::cli::ResolvedAction::Web { url } => Some((
+                target_type_for_url(url),
+                url.to_string(),
+                Some(url.to_string()),
+                "Loaded summary from local cache (pass `--no-cache` to refresh).",
+            )),
+            crate::cli::ResolvedAction::Book { title } => Some((
+                "book",
+                Cache::book_cache_title(title, None),
+                None,
+                "Loaded book summary from local cache (pass `--no-cache` to refresh).",
+            )),
             crate::cli::ResolvedAction::File { path } => {
-                if let Some(k) = crate::commands::summarize::file_cache_key(path)
-                    && let Some(cached) = cache.get_file_summary(&k, args.style, &args.model)
-                {
-                    Ui::info("Loaded summary from local cache (pass `--no-cache` to refresh).");
-                    let outcome = SummaryOutcome::from_cached(
+                crate::commands::summarize::file_cache_key(path).map(|k| {
+                    (
                         "file",
-                        cached,
-                        None,
+                        k,
                         Some(path.display().to_string()),
-                    );
-                    return present_summary_outcome(outcome, &args, &cache);
-                }
+                        "Loaded summary from local cache (pass `--no-cache` to refresh).",
+                    )
+                })
             }
             crate::cli::ResolvedAction::News {
                 topic, timeframe, ..
-            } => {
-                if let Some(cached) =
-                    cache.get_news_summary(topic, *timeframe, args.style, &args.model)
-                {
-                    Ui::info(
-                        "Loaded news briefing from local cache (pass `--no-cache` to refresh).",
-                    );
-                    let search_url =
-                        crate::sources::news::GoogleNewsClient::search_url_for_topic(topic);
-                    let outcome =
-                        SummaryOutcome::from_cached("news", cached, None, Some(search_url));
-                    return present_summary_outcome(outcome, &args, &cache);
-                }
-            }
-            _ => {}
+            } => Some((
+                "news",
+                Cache::news_cache_title(topic, *timeframe),
+                Some(crate::sources::news::GoogleNewsClient::search_url_for_topic(topic)),
+                "Loaded news briefing from local cache (pass `--no-cache` to refresh).",
+            )),
+            _ => None,
+        };
+        if let Some((target_type, id, url, msg)) = cache_probe
+            && let Some(cached) = cache.get_summary(target_type, &id, args.style, &args.model)
+        {
+            Ui::info(msg);
+            let outcome = SummaryOutcome::from_cached(target_type, cached, url);
+            return present_summary_outcome(outcome, &args, &cache);
         }
     }
 
@@ -824,21 +806,24 @@ mod tests {
         let tmp = crate::fs_util::tempdir().unwrap();
         let cache = Cache::with_dir(tmp.path().to_path_buf(), true);
         let db = cache.open_database().unwrap();
-        db.record_summary(&crate::db::NewSummaryRecord {
-            target_type: "web",
-            title: "Lock Safety",
-            author: None,
-            url: Some("https://example.com"),
-            style: "concise",
-            model: "gemma-4",
-            word_count: 10,
-            prompt_tokens: None,
-            completion_tokens: None,
-            duration_ms: 0,
-            tokens_per_second: None,
-            summary: "Summary text",
-            reasoning: None,
-        })
+        db.record_summary(
+            &crate::db::NewSummaryRecord {
+                target_type: "web",
+                title: "Lock Safety",
+                author: None,
+                url: Some("https://example.com"),
+                style: "concise",
+                model: "gemma-4",
+                word_count: 10,
+                prompt_tokens: None,
+                completion_tokens: None,
+                duration_ms: 0,
+                tokens_per_second: None,
+                summary: "Summary text",
+                reasoning: None,
+            },
+            None,
+        )
         .unwrap();
         assert_eq!(db.get_stats().unwrap().total_summaries, 1);
 

@@ -66,12 +66,11 @@ impl SummaryOutcome {
     pub fn from_cached(
         target_type: &'static str,
         cached: CachedSummary,
-        author: Option<String>,
         url: Option<String>,
     ) -> Self {
         Self {
             title: cached.title,
-            author,
+            author: cached.author,
             url,
             target_type,
             summary: cached.summary,
@@ -986,9 +985,7 @@ pub fn present_summary_outcome(outcome: SummaryOutcome, args: &Cli, cache: &Cach
 
     // Record newly generated summaries in redb history & library (lazily opened)
     if !outcome.cached
-        && let Some(db) = cache
-            .open_database()
-            .or_else(crate::commands::open_db_or_warn)
+        && let Some(db) = crate::commands::open_db_or_warn(cache)
     {
         let record = crate::db::NewSummaryRecord {
             target_type: outcome.target_type,
@@ -1005,7 +1002,7 @@ pub fn present_summary_outcome(outcome: SummaryOutcome, args: &Cli, cache: &Cach
             summary: &outcome.summary,
             reasoning: outcome.reasoning.as_deref(),
         };
-        let _ = db.record_summary_with_key(&record, outcome.cache_key.as_deref());
+        let _ = db.record_summary(&record, outcome.cache_key.as_deref());
         if args.open {
             let _ = crate::commands::update_index_dashboard(&db, cache);
         }

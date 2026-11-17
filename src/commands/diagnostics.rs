@@ -1,7 +1,6 @@
 use crate::cache::Cache;
 use crate::cli::Cli;
 use crate::config::Config;
-use crate::db::Database;
 use crate::llm::LlmClient;
 use crate::ui::Ui;
 use anyhow::Result;
@@ -280,11 +279,7 @@ pub async fn handle_doctor(
 
 fn diagnose_database(cache: &Cache) -> (std::path::PathBuf, bool, i64, Option<String>) {
     let db_path = cache.db_path().to_path_buf();
-    let (db_ok, db_entries_count, db_err) = match cache
-        .open_database()
-        .map(Ok)
-        .unwrap_or_else(|| Database::open_at(&db_path))
-    {
+    let (db_ok, db_entries_count, db_err) = match cache.open_database() {
         Ok(db) => match db.get_stats() {
             Ok(stats) => (true, stats.total_summaries, None),
             Err(e) => (false, 0, Some(format!("Failed to retrieve stats: {:#}", e))),
@@ -373,7 +368,7 @@ mod tests {
     fn test_diagnose_database_reports_external_lock_conflict() {
         let tmp = crate::fs_util::tempdir().unwrap();
         let cache = Cache::with_dir(tmp.path().to_path_buf(), true);
-        let _external_hold = Database::open_at(cache.db_path()).unwrap();
+        let _external_hold = crate::db::Database::open_at(cache.db_path()).unwrap();
 
         let (_db_path, db_ok, _count, err) = diagnose_database(&cache);
         assert!(!db_ok);

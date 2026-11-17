@@ -123,9 +123,9 @@ async fn resolve_document_context(
         let (title, content) = resolve_cached_page_or_fetch(
             scraper,
             cache,
-            &latest.target_type,
-            latest.url.as_deref(),
-            latest.title,
+            &latest.meta.target_type,
+            latest.meta.url.as_deref(),
+            latest.meta.title,
             latest.summary,
         )
         .await;
@@ -160,13 +160,14 @@ pub fn handle_ask_management(
     list_chats: bool,
     show_chat: Option<i64>,
     delete_chat: Option<i64>,
+    cache: &Cache,
     as_json: bool,
 ) -> Result<bool> {
     if !list_chats && show_chat.is_none() && delete_chat.is_none() {
         return Ok(false);
     }
 
-    let db = open_db_or_warn();
+    let db = open_db_or_warn(cache);
 
     // 1. List saved chat sessions
     if list_chats {
@@ -286,7 +287,7 @@ pub async fn handle_ask(
     cache: &Cache,
     args: &Cli,
 ) -> Result<()> {
-    let db = cache.open_database().or_else(open_db_or_warn);
+    let db = open_db_or_warn(cache);
 
     // Resolve document context & active session
     let mut chat_id: Option<i64> = ask_args.resume;

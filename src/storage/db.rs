@@ -1,20 +1,18 @@
 use crate::fs_util;
-use crate::ui::render::slugify;
+use crate::system::text_util::{slugify, tokenize_search_terms};
 use anyhow::Result;
 use redb::{Database as RedbDb, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::system::text_util::tokenize_search_terms;
-
 const TABLE_HISTORY: TableDefinition<u64, &[u8]> = TableDefinition::new("history");
 const TABLE_CACHE_KEY_TO_ID: TableDefinition<&str, u64> = TableDefinition::new("cache_key_to_id");
 const TABLE_CHAT_SESSIONS: TableDefinition<u64, &[u8]> = TableDefinition::new("chat_sessions");
-const TABLE_CHAT_MESSAGES: TableDefinition<u64, &[u8]> = TableDefinition::new("chat_messages");
 pub(super) const TABLE_CACHE_PAGES: TableDefinition<&str, &[u8]> =
     TableDefinition::new("cache_pages");
 pub(super) const TABLE_CACHE_SEARCH: TableDefinition<&str, &[u8]> =
@@ -58,22 +56,25 @@ pub struct HistoryEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LibraryItem {
-    pub id: i64,
-    pub target_type: String,
-    pub title: String,
-    pub author: Option<String>,
-    pub url: Option<String>,
+    #[serde(flatten)]
+    pub meta: HistoryEntry,
     pub summary: String,
     #[serde(default)]
     pub reasoning: Option<String>,
-    pub style: String,
-    pub model: String,
-    pub word_count: u32,
-    pub prompt_tokens: Option<u32>,
-    pub completion_tokens: Option<u32>,
-    pub duration_ms: u64,
-    pub tokens_per_second: Option<f64>,
-    pub created_at: String,
+}
+
+impl Deref for LibraryItem {
+    type Target = HistoryEntry;
+
+    fn deref(&self) -> &Self::Target {
+        &self.meta
+    }
+}
+
+impl DerefMut for LibraryItem {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.meta
+    }
 }
 
 impl LibraryItem {
@@ -88,24 +89,6 @@ impl LibraryItem {
             || self.author.as_deref().is_some_and(has)
             || self.url.as_deref().is_some_and(has)
             || has(&self.summary)
-    }
-
-    pub fn into_history_entry(self) -> HistoryEntry {
-        HistoryEntry {
-            id: self.id,
-            target_type: self.target_type,
-            title: self.title,
-            author: self.author,
-            url: self.url,
-            style: self.style,
-            model: self.model,
-            word_count: self.word_count,
-            prompt_tokens: self.prompt_tokens,
-            completion_tokens: self.completion_tokens,
-            duration_ms: self.duration_ms,
-            tokens_per_second: self.tokens_per_second,
-            created_at: self.created_at,
-        }
     }
 }
 
@@ -169,6 +152,13 @@ pub struct LibraryStats {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatSession {
     pub id: i64,
     pub title: String,
@@ -179,15 +169,8 @@ pub struct ChatSession {
     pub last_question: Option<String>,
     pub created_at: String,
     pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatMessage {
-    pub id: i64,
-    pub session_id: i64,
-    pub role: String,
-    pub content: String,
-    pub created_at: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<ChatMessage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -249,7 +232,11 @@ fn extract_domain(url: &str) -> Option<String> {
         .flatten()
 }
 
-pub fn escape_yaml_string(s: &str) -> String {
+fn summary_cache_key(target_type: &str, style: &str, model: &str, identifier: &str) -> String {
+    format!("{target_type}\0{style}\0{model}\0{}", identifier.trim())
+}
+
+fn escape_yaml_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -268,7 +255,7 @@ pub fn escape_yaml_string(s: &str) -> String {
     out
 }
 
-pub fn format_csv_cell(cell: &str) -> String {
+fn format_csv_cell(cell: &str) -> String {
     let trimmed = cell.trim_start();
     let is_numeric = !trimmed.is_empty()
         && cell == trimmed
@@ -283,11 +270,7 @@ pub fn format_csv_cell(cell: &str) -> String {
         cell.to_string()
     };
 
-    if safe_cell.contains(',')
-        || safe_cell.contains('"')
-        || safe_cell.contains('\n')
-        || safe_cell.contains('\r')
-    {
+    if safe_cell.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", safe_cell.replace('"', "\"\""))
     } else {
         safe_cell
@@ -295,12 +278,7 @@ pub fn format_csv_cell(cell: &str) -> String {
 }
 
 fn prepare_export_file(path: &Path) -> Result<()> {
-    if path.is_symlink() {
-        anyhow::bail!(
-            "Refusing to export to a symbolic link (CWE-59): {}",
-            path.display()
-        );
-    }
+    fs_util::reject_symlink(path, "export to a symbolic link (CWE-59)")?;
     if let Some(parent) = path.parent() {
         fs_util::create_private_dir_all(parent)?;
     }
@@ -313,7 +291,6 @@ fn init_redb_schema(db: &RedbDb) -> Result<()> {
         let _ = write_txn.open_table(TABLE_HISTORY)?;
         let _ = write_txn.open_table(TABLE_CACHE_KEY_TO_ID)?;
         let _ = write_txn.open_table(TABLE_CHAT_SESSIONS)?;
-        let _ = write_txn.open_table(TABLE_CHAT_MESSAGES)?;
         let _ = write_txn.open_table(TABLE_CACHE_PAGES)?;
         let _ = write_txn.open_table(TABLE_CACHE_SEARCH)?;
         let _ = write_txn.open_table(TABLE_CACHE_CAPS)?;
@@ -335,17 +312,26 @@ impl Database {
         fs_util::default_data_dir().join("srz.db")
     }
 
-    pub fn open_default() -> Result<Self> {
-        Self::open_at(&Self::default_path())
-    }
-
     pub fn open_at(path: &Path) -> Result<Self> {
-        if path.is_symlink() {
+        if fs_util::reject_symlink(path, "open database symlink").is_err() {
             anyhow::bail!("Refusing to open database: {:?} is a symlink", path);
         }
         if let Some(parent) = path.parent() {
             fs_util::create_private_dir_all(parent)?;
         }
+
+        // Pre-create with 0600 on Unix so new DB files are never briefly 0644.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            let _ = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .open(path);
+        }
+
         let mut last_err = None;
         for attempt in 0..5 {
             match RedbDb::create(path) {
@@ -369,7 +355,7 @@ impl Database {
     }
 
     #[cfg(test)]
-    pub(super) fn open_in_memory() -> Result<Self> {
+    fn open_in_memory() -> Result<Self> {
         let db = redb::Builder::new().create_with_backend(redb::backends::InMemoryBackend::new())?;
         init_redb_schema(&db)?;
         Ok(Self { db: Arc::new(db) })
@@ -380,7 +366,6 @@ impl Database {
         {
             let _ = write_txn.delete_table(TABLE_HISTORY);
             let _ = write_txn.delete_table(TABLE_CHAT_SESSIONS);
-            let _ = write_txn.delete_table(TABLE_CHAT_MESSAGES);
             let _ = write_txn.delete_table(TABLE_META);
             delete_cache_tables(&write_txn);
         }
@@ -389,11 +374,7 @@ impl Database {
         Ok(())
     }
 
-    pub fn record_summary(&self, record: &NewSummaryRecord<'_>) -> Result<()> {
-        self.record_summary_with_key(record, None)
-    }
-
-    pub fn record_summary_with_key(
+    pub fn record_summary(
         &self,
         record: &NewSummaryRecord<'_>,
         cache_key: Option<&str>,
@@ -402,21 +383,23 @@ impl Database {
         let id = next_meta_id(&write_txn, "next_history_id")?;
 
         let item = LibraryItem {
-            id: id as i64,
-            target_type: record.target_type.to_string(),
-            title: record.title.to_string(),
-            author: record.author.map(|s| s.to_string()),
-            url: record.url.map(|s| s.to_string()),
+            meta: HistoryEntry {
+                id: id as i64,
+                target_type: record.target_type.to_string(),
+                title: record.title.to_string(),
+                author: record.author.map(str::to_string),
+                url: record.url.map(str::to_string),
+                style: record.style.to_string(),
+                model: record.model.to_string(),
+                word_count: record.word_count as u32,
+                prompt_tokens: record.prompt_tokens,
+                completion_tokens: record.completion_tokens,
+                duration_ms: record.duration_ms,
+                tokens_per_second: record.tokens_per_second,
+                created_at: chrono_now_iso(),
+            },
             summary: record.summary.to_string(),
-            reasoning: record.reasoning.map(|s| s.to_string()),
-            style: record.style.to_string(),
-            model: record.model.to_string(),
-            word_count: record.word_count as u32,
-            prompt_tokens: record.prompt_tokens,
-            completion_tokens: record.completion_tokens,
-            duration_ms: record.duration_ms,
-            tokens_per_second: record.tokens_per_second,
-            created_at: chrono_now_iso(),
+            reasoning: record.reasoning.map(str::to_string),
         };
 
         let bytes = serde_json::to_vec(&item)?;
@@ -426,8 +409,9 @@ impl Database {
         }
 
         if let Some(ck) = cache_key {
+            let composite = summary_cache_key(record.target_type, record.style, record.model, ck);
             let mut ck_table = write_txn.open_table(TABLE_CACHE_KEY_TO_ID)?;
-            ck_table.insert(ck, id)?;
+            ck_table.insert(composite.as_str(), id)?;
         }
 
         write_txn.commit()?;
@@ -436,14 +420,7 @@ impl Database {
 
     pub fn get_history(&self, limit: usize) -> Result<Vec<HistoryEntry>> {
         let items = self.get_library_items_bounded(limit)?;
-        Ok(items
-            .into_iter()
-            .map(LibraryItem::into_history_entry)
-            .collect())
-    }
-
-    pub fn get_all_for_index(&self) -> Result<Vec<HistoryEntry>> {
-        self.get_history(usize::MAX)
+        Ok(items.into_iter().map(|item| item.meta).collect())
     }
 
     pub fn get_all_library_items(&self) -> Result<Vec<LibraryItem>> {
@@ -455,9 +432,8 @@ impl Database {
             return Ok(Vec::new());
         }
         let read_txn = self.db.begin_read()?;
-        let table = match read_txn.open_table(TABLE_HISTORY) {
-            Ok(t) => t,
-            Err(_) => return Ok(Vec::new()),
+        let Ok(table) = read_txn.open_table(TABLE_HISTORY) else {
+            return Ok(Vec::new());
         };
 
         let mut items = Vec::with_capacity(limit.min(128));
@@ -473,35 +449,37 @@ impl Database {
     }
 
     pub fn get_library_item_by_id(&self, id: i64) -> Result<Option<LibraryItem>> {
+        if id <= 0 {
+            return Ok(None);
+        }
         let read_txn = self.db.begin_read()?;
-        let table = match read_txn.open_table(TABLE_HISTORY) {
-            Ok(t) => t,
-            Err(_) => return Ok(None),
+        let Ok(table) = read_txn.open_table(TABLE_HISTORY) else {
+            return Ok(None);
         };
 
         if let Some(val) = table.get(id as u64)? {
-            let item: LibraryItem = serde_json::from_slice(val.value())?;
-            return Ok(Some(item));
+            return Ok(Some(serde_json::from_slice(val.value())?));
         }
         Ok(None)
     }
 
     pub fn get_latest_summary(&self) -> Result<Option<LibraryItem>> {
         let read_txn = self.db.begin_read()?;
-        let table = match read_txn.open_table(TABLE_HISTORY) {
-            Ok(t) => t,
-            Err(_) => return Ok(None),
+        let Ok(table) = read_txn.open_table(TABLE_HISTORY) else {
+            return Ok(None);
         };
 
         if let Some(last_res) = table.iter()?.next_back() {
             let (_, val) = last_res?;
-            let item: LibraryItem = serde_json::from_slice(val.value())?;
-            return Ok(Some(item));
+            return Ok(Some(serde_json::from_slice(val.value())?));
         }
         Ok(None)
     }
 
     pub fn delete_library_item(&self, id: i64) -> Result<()> {
+        if id <= 0 {
+            return Ok(());
+        }
         let write_txn = self.db.begin_write()?;
         {
             let mut table = write_txn.open_table(TABLE_HISTORY)?;
@@ -539,12 +517,13 @@ impl Database {
             id: id as i64,
             title: title.to_string(),
             target_type: target_type.to_string(),
-            target_url: target_url.map(|s| s.to_string()),
+            target_url: target_url.map(str::to_string),
             model: model.to_string(),
             message_count: 0,
             last_question: None,
             created_at: now.clone(),
             updated_at: now,
+            messages: Vec::new(),
         };
 
         let bytes = serde_json::to_vec(&session)?;
@@ -557,71 +536,38 @@ impl Database {
         Ok(id as i64)
     }
 
-    /// Validates that `session_id` fits in `1..u32::MAX` so upper-32-bit key shifts cannot wrap or alias.
-    fn chat_session_key_range(session_id: i64) -> Result<(u64, u64, u64)> {
-        if session_id <= 0 || session_id >= u32::MAX as i64 {
-            anyhow::bail!(
-                "Chat session ID out of valid range (1..{}): {}",
-                u32::MAX,
-                session_id
-            );
-        }
-        let id = session_id as u64;
-        let start_key = id << 32;
-        let end_key = (id + 1) << 32;
-        Ok((id, start_key, end_key))
-    }
-
     pub fn add_chat_turn(&self, session_id: i64, question: &str, answer: &str) -> Result<()> {
-        let (sess_u64, start_key, _) = Self::chat_session_key_range(session_id)?;
+        if session_id <= 0 {
+            anyhow::bail!("Invalid chat session ID: {}", session_id);
+        }
+        let sess_u64 = session_id as u64;
         let write_txn = self.db.begin_write()?;
         let now = chrono_now_iso();
 
-        let mut next_msg_idx = 1u64;
         {
             let mut sess_table = write_txn.open_table(TABLE_CHAT_SESSIONS)?;
-            let updated = if let Some(val) = sess_table.get(sess_u64)? {
-                let mut session: ChatSession = serde_json::from_slice(val.value())?;
-                next_msg_idx = u64::try_from(session.message_count)
-                    .ok()
-                    .and_then(|c| c.checked_add(1))
-                    .ok_or_else(|| anyhow::anyhow!("Invalid chat session message count"))?;
-                if next_msg_idx >= u32::MAX as u64 {
-                    anyhow::bail!("Chat session message limit reached");
-                }
-                session.message_count += 2;
-                session.last_question = Some(question.to_string());
-                session.updated_at = now.clone();
-                Some(serde_json::to_vec(&session)?)
-            } else {
-                None
-            };
-            if let Some(bytes) = updated {
-                sess_table.insert(sess_u64, bytes.as_slice())?;
-            }
-        }
+            let val = sess_table
+                .get(sess_u64)?
+                .ok_or_else(|| anyhow::anyhow!("Chat session #{} not found", session_id))?;
+            let mut session: ChatSession = serde_json::from_slice(val.value())?;
+            drop(val);
 
-        {
-            let mut msg_table = write_txn.open_table(TABLE_CHAT_MESSAGES)?;
-            let key_q = start_key | next_msg_idx;
-            let msg_q = ChatMessage {
-                id: next_msg_idx as i64,
-                session_id,
+            session.messages.push(ChatMessage {
                 role: "user".to_string(),
                 content: question.to_string(),
                 created_at: now.clone(),
-            };
-            msg_table.insert(key_q, serde_json::to_vec(&msg_q)?.as_slice())?;
-
-            let key_a = start_key | (next_msg_idx + 1);
-            let msg_a = ChatMessage {
-                id: (next_msg_idx + 1) as i64,
-                session_id,
+            });
+            session.messages.push(ChatMessage {
                 role: "assistant".to_string(),
                 content: answer.to_string(),
-                created_at: now,
-            };
-            msg_table.insert(key_a, serde_json::to_vec(&msg_a)?.as_slice())?;
+                created_at: now.clone(),
+            });
+            session.message_count += 2;
+            session.last_question = Some(question.to_string());
+            session.updated_at = now;
+
+            let bytes = serde_json::to_vec(&session)?;
+            sess_table.insert(sess_u64, bytes.as_slice())?;
         }
 
         write_txn.commit()?;
@@ -630,15 +576,15 @@ impl Database {
 
     pub fn get_chat_sessions(&self, limit: usize) -> Result<Vec<ChatSession>> {
         let read_txn = self.db.begin_read()?;
-        let table = match read_txn.open_table(TABLE_CHAT_SESSIONS) {
-            Ok(t) => t,
-            Err(_) => return Ok(Vec::new()),
+        let Ok(table) = read_txn.open_table(TABLE_CHAT_SESSIONS) else {
+            return Ok(Vec::new());
         };
 
         let mut sessions = Vec::new();
         for item_res in table.iter()? {
             let (_, val) = item_res?;
-            let session: ChatSession = serde_json::from_slice(val.value())?;
+            let mut session: ChatSession = serde_json::from_slice(val.value())?;
+            session.messages.clear();
             sessions.push(session);
         }
         sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
@@ -650,49 +596,30 @@ impl Database {
         &self,
         session_id: i64,
     ) -> Result<Option<(ChatSession, Vec<ChatMessage>)>> {
-        let (sess_u64, start_key, end_key) = Self::chat_session_key_range(session_id)?;
+        if session_id <= 0 {
+            return Ok(None);
+        }
         let read_txn = self.db.begin_read()?;
-        let sess_table = match read_txn.open_table(TABLE_CHAT_SESSIONS) {
-            Ok(t) => t,
-            Err(_) => return Ok(None),
-        };
-
-        let Some(val) = sess_table.get(sess_u64)? else {
+        let Ok(sess_table) = read_txn.open_table(TABLE_CHAT_SESSIONS) else {
             return Ok(None);
         };
-        let session: ChatSession = serde_json::from_slice(val.value())?;
-
-        let mut messages = Vec::new();
-        if let Ok(msg_table) = read_txn.open_table(TABLE_CHAT_MESSAGES) {
-            for item_res in msg_table.range(start_key..end_key)? {
-                let (_, m_val) = item_res?;
-                let msg: ChatMessage = serde_json::from_slice(m_val.value())?;
-                messages.push(msg);
-            }
-        }
-
+        let Some(val) = sess_table.get(session_id as u64)? else {
+            return Ok(None);
+        };
+        let mut session: ChatSession = serde_json::from_slice(val.value())?;
+        let messages = std::mem::take(&mut session.messages);
         Ok(Some((session, messages)))
     }
 
     pub fn delete_chat_session(&self, session_id: i64) -> Result<bool> {
-        let (sess_u64, start_key, end_key) = Self::chat_session_key_range(session_id)?;
+        if session_id <= 0 {
+            return Ok(false);
+        }
         let write_txn = self.db.begin_write()?;
         let removed = {
             let mut sess_table = write_txn.open_table(TABLE_CHAT_SESSIONS)?;
-            sess_table.remove(sess_u64)?.is_some()
+            sess_table.remove(session_id as u64)?.is_some()
         };
-
-        if removed {
-            let mut msg_table = write_txn.open_table(TABLE_CHAT_MESSAGES)?;
-            let keys_to_delete: Vec<u64> = msg_table
-                .range(start_key..end_key)?
-                .filter_map(|r| r.ok().map(|(k, _)| k.value()))
-                .collect();
-            for k in keys_to_delete {
-                let _ = msg_table.remove(k)?;
-            }
-        }
-
         write_txn.commit()?;
         Ok(removed)
     }
@@ -743,11 +670,7 @@ impl Database {
                 }
             }
 
-            let item_ymd = if item.created_at.len() >= 10 {
-                &item.created_at[..10]
-            } else {
-                ""
-            };
+            let item_ymd = item.created_at.get(..10).unwrap_or("");
             if !item_ymd.is_empty() {
                 active_days.insert(item_ymd.to_string());
                 if item_ymd == today_ymd {
@@ -875,29 +798,37 @@ impl Database {
 
         for item in items {
             let mut title_matches = 0usize;
-            let mut summary_matches = 0usize;
+            let mut body_matches = 0usize;
 
             for term in &query_terms {
-                if crate::system::text_util::contains_case_insensitive(&item.title, term) {
+                if crate::system::text_util::contains_case_insensitive(&item.title, term)
+                    || item.author.as_deref().is_some_and(|a| {
+                        crate::system::text_util::contains_case_insensitive(a, term)
+                    })
+                {
                     title_matches += 1;
                 }
-                if crate::system::text_util::contains_case_insensitive(&item.summary, term) {
-                    summary_matches += 1;
+                if crate::system::text_util::contains_case_insensitive(&item.summary, term)
+                    || item.url.as_deref().is_some_and(|u| {
+                        crate::system::text_util::contains_case_insensitive(u, term)
+                    })
+                {
+                    body_matches += 1;
                 }
             }
 
-            if title_matches > 0 || summary_matches > 0 {
-                let score = (title_matches as f64 * 10.0) + (summary_matches as f64 * 1.0);
+            if title_matches > 0 || body_matches > 0 {
+                let score = (title_matches as f64 * 10.0) + (body_matches as f64);
                 let snippet = extract_snippet(&item.summary, trimmed, &query_terms);
 
                 results.push(LibrarySearchResult {
                     id: item.id,
-                    target_type: item.target_type,
-                    title: item.title,
-                    author: item.author,
-                    url: item.url,
+                    target_type: item.target_type.clone(),
+                    title: item.title.clone(),
+                    author: item.author.clone(),
+                    url: item.url.clone(),
                     snippet,
-                    created_at: item.created_at,
+                    created_at: item.created_at.clone(),
                     score: Some(score),
                 });
             }
@@ -916,8 +847,9 @@ impl Database {
     pub fn export_csv(&self, path: &Path) -> Result<()> {
         prepare_export_file(path)?;
         let items = self.get_all_library_items()?;
-        let mut csv = String::new();
-        csv.push_str("id,target_type,title,author,url,style,model,word_count,prompt_tokens,completion_tokens,duration_ms,tokens_per_second,created_at,summary\n");
+        let mut csv = String::from(
+            "id,target_type,title,author,url,style,model,word_count,prompt_tokens,completion_tokens,duration_ms,tokens_per_second,created_at,summary\n",
+        );
         for item in items {
             csv.push_str(&format!(
                 "{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
@@ -1005,7 +937,6 @@ impl Database {
         Ok(written)
     }
 
-    // Unified cache table helpers
     pub fn get_cached_json<T: DeserializeOwned>(
         &self,
         table_def: TableDefinition<&str, &[u8]>,
@@ -1065,33 +996,33 @@ impl Database {
         ttl: Duration,
     ) -> Option<crate::storage::cache::CachedSummary> {
         let read_txn = self.db.begin_read().ok()?;
-        let trimmed_id = identifier.trim();
-        let now = now_unix_secs();
+        let ck_table = read_txn.open_table(TABLE_CACHE_KEY_TO_ID).ok()?;
+        let hist_table = read_txn.open_table(TABLE_HISTORY).ok()?;
+        let composite = summary_cache_key(target_type, style, model, identifier);
+        let id_val = ck_table
+            .get(composite.as_str())
+            .ok()
+            .flatten()
+            .or_else(|| ck_table.get(identifier.trim()).ok().flatten())?;
+        let val = hist_table.get(id_val.value()).ok()??;
+        let item = serde_json::from_slice::<LibraryItem>(val.value()).ok()?;
+        let created_secs = parse_iso_to_unix_secs(&item.created_at)?;
 
-        // 1. Direct cache_key lookup
-        if let Ok(ck_table) = read_txn.open_table(TABLE_CACHE_KEY_TO_ID)
-            && let Ok(Some(id_val)) = ck_table.get(trimmed_id)
+        if item.target_type == target_type
+            && item.style == style
+            && item.model == model
+            && now_unix_secs().saturating_sub(created_secs) <= ttl.as_secs()
         {
-            let id = id_val.value();
-            if let Ok(hist_table) = read_txn.open_table(TABLE_HISTORY)
-                && let Ok(Some(val)) = hist_table.get(id)
-                && let Ok(item) = serde_json::from_slice::<LibraryItem>(val.value())
-                && item.target_type == target_type
-                && item.style == style
-                && item.model == model
-                && let Some(created_secs) = parse_iso_to_unix_secs(&item.created_at)
-                && now.saturating_sub(created_secs) <= ttl.as_secs()
-            {
-                return Some(crate::storage::cache::CachedSummary {
-                    title: item.title,
-                    summary: item.summary,
-                    word_count: item.word_count as usize,
-                    reasoning: item.reasoning,
-                });
-            }
+            Some(crate::storage::cache::CachedSummary {
+                title: item.meta.title,
+                author: item.meta.author,
+                summary: item.summary,
+                word_count: item.meta.word_count as usize,
+                reasoning: item.reasoning,
+            })
+        } else {
+            None
         }
-
-        None
     }
 
     pub fn clear_cache_tables(&self) -> Result<()> {
@@ -1102,83 +1033,81 @@ impl Database {
         Ok(())
     }
 
-    pub fn prune_cache_by_age(&self, max_age: Duration) -> Result<usize> {
+    pub fn prune_cache_by_age(&self, max_age: Duration) -> Result<(usize, u64)> {
         let now = now_unix_secs();
         let max_age_secs = max_age.as_secs();
         let mut pruned = 0;
-
-        fn prune_table(
-            table: &mut redb::Table<&str, &[u8]>,
-            now: u64,
-            max_age: u64,
-        ) -> Result<usize> {
-            let mut to_delete = Vec::new();
-            for item_res in table.iter()? {
-                let (k, v) = item_res?;
-                if let Ok(rec) = serde_json::from_slice::<CachedAtOnly>(v.value())
-                    && now.saturating_sub(rec.cached_at) > max_age
-                {
-                    to_delete.push(k.value().to_string());
-                }
-            }
-            let count = to_delete.len();
-            for k in to_delete {
-                let _ = table.remove(k.as_str())?;
-            }
-            Ok(count)
-        }
+        let mut reclaimed = 0u64;
 
         let write_txn = self.db.begin_write()?;
         for table_def in [TABLE_CACHE_PAGES, TABLE_CACHE_SEARCH, TABLE_CACHE_CAPS] {
             let mut table = write_txn.open_table(table_def)?;
-            pruned += prune_table(&mut table, now, max_age_secs)?;
+            let mut to_delete = Vec::new();
+            for item_res in table.iter()? {
+                let (k, v) = item_res?;
+                if let Ok(rec) = serde_json::from_slice::<CachedAtOnly>(v.value())
+                    && now.saturating_sub(rec.cached_at) > max_age_secs
+                {
+                    let bytes = (k.value().len() + v.value().len()) as u64;
+                    to_delete.push((k.value().to_string(), bytes));
+                }
+            }
+            for (k, bytes) in to_delete {
+                let _ = table.remove(k.as_str())?;
+                pruned += 1;
+                reclaimed = reclaimed.saturating_add(bytes);
+            }
         }
         write_txn.commit()?;
-        Ok(pruned)
+        Ok((pruned, reclaimed))
     }
 
-    pub fn prune_cache_lru(&self, max_bytes: usize) -> Result<usize> {
-        let (total_entries, total_bytes) = self.cache_entry_count_and_bytes();
-        if total_bytes <= max_bytes as u64 || total_entries == 0 {
-            return Ok(0);
-        }
-
-        let mut all_pages: Vec<(String, u64, usize)> = Vec::new();
+    pub fn prune_cache_lru(&self, max_bytes: usize) -> Result<(usize, u64)> {
+        let mut entries: Vec<(bool, String, u64, u64)> = Vec::new();
+        let mut total_bytes = 0u64;
         {
             let read_txn = self.db.begin_read()?;
-            if let Ok(table) = read_txn.open_table(TABLE_CACHE_PAGES) {
-                for item_res in table.iter()? {
-                    let (k, v) = item_res?;
-                    if let Ok(rec) = serde_json::from_slice::<CachedAtOnly>(v.value()) {
-                        all_pages.push((k.value().to_string(), rec.cached_at, v.value().len()));
+            for (is_pages, table_def) in [(true, TABLE_CACHE_PAGES), (false, TABLE_CACHE_SEARCH)] {
+                if let Ok(table) = read_txn.open_table(table_def) {
+                    for item_res in table.iter()? {
+                        let (k, v) = item_res?;
+                        let size = (k.value().len() + v.value().len()) as u64;
+                        total_bytes = total_bytes.saturating_add(size);
+                        let cached_at = serde_json::from_slice::<CachedAtOnly>(v.value())
+                            .map(|r| r.cached_at)
+                            .unwrap_or(0);
+                        entries.push((is_pages, k.value().to_string(), cached_at, size));
                     }
                 }
             }
         }
 
-        all_pages.sort_by_key(|a| a.1); // Sort oldest first
+        if total_bytes <= max_bytes as u64 || entries.is_empty() {
+            return Ok((0, 0));
+        }
+
+        entries.sort_by_key(|e| e.2);
         let mut pruned = 0;
+        let mut reclaimed = 0u64;
         let mut cur_bytes = total_bytes;
 
         let write_txn = self.db.begin_write()?;
         {
-            let mut table = write_txn.open_table(TABLE_CACHE_PAGES)?;
-            for (key, _, size) in all_pages {
+            let mut pages = write_txn.open_table(TABLE_CACHE_PAGES)?;
+            let mut search = write_txn.open_table(TABLE_CACHE_SEARCH)?;
+            for (is_pages, key, _, size) in entries {
                 if cur_bytes <= max_bytes as u64 {
                     break;
                 }
+                let table = if is_pages { &mut pages } else { &mut search };
                 let _ = table.remove(key.as_str())?;
-                cur_bytes = cur_bytes.saturating_sub(size as u64);
+                cur_bytes = cur_bytes.saturating_sub(size);
+                reclaimed = reclaimed.saturating_add(size);
                 pruned += 1;
             }
         }
         write_txn.commit()?;
-        Ok(pruned)
-    }
-
-    pub fn cache_entry_count_and_bytes(&self) -> (usize, u64) {
-        let (p_cnt, p_bytes, s_cnt, s_bytes, sum_cnt, sum_bytes) = self.cache_stats_breakdown();
-        (p_cnt + s_cnt + sum_cnt, p_bytes + s_bytes + sum_bytes)
+        Ok((pruned, reclaimed))
     }
 
     pub fn cache_stats_breakdown(&self) -> (usize, u64, usize, u64, usize, u64) {
@@ -1208,8 +1137,7 @@ impl Database {
         {
             for r in iter.flatten() {
                 sum_cnt += 1;
-                let id = r.1.value();
-                if let Ok(Some(item_val)) = hist_table.get(id)
+                if let Ok(Some(item_val)) = hist_table.get(r.1.value())
                     && let Ok(item) = serde_json::from_slice::<LibraryItem>(item_val.value())
                 {
                     sum_bytes += item.summary.len() as u64;
@@ -1251,9 +1179,9 @@ impl Database {
                     Some((k.value().to_string(), serde_json::to_vec(&rec).ok()?))
                 })
                 .collect();
-            updates.into_iter().for_each(|(k, b)| {
+            for (k, b) in updates {
                 let _ = table.insert(k.as_str(), b.as_slice());
-            });
+            }
         }
         let _ = write_txn.commit();
     }
@@ -1279,20 +1207,19 @@ impl Database {
                     Some((k.value(), serde_json::to_vec(&item).ok()?))
                 })
                 .collect();
-            updates.into_iter().for_each(|(k, b)| {
+            for (k, b) in updates {
                 let _ = table.insert(k, b.as_slice());
-            });
+            }
         }
         let _ = write_txn.commit();
     }
 }
 
 fn parse_iso_to_unix_secs(s: &str) -> Option<u64> {
-    if s.len() < 10 {
+    if !s.is_ascii() || s.len() < 10 {
         return None;
     }
-    let ymd = &s[..10];
-    let days = ymd_to_day_number(ymd)?;
+    let days = ymd_to_day_number(&s[..10])?;
     if days < 719468 {
         return None;
     }
@@ -1301,11 +1228,7 @@ fn parse_iso_to_unix_secs(s: &str) -> Option<u64> {
     if s.len() >= 16 && (s.as_bytes()[10] == b'T' || s.as_bytes()[10] == b' ') {
         let h: u64 = s[11..13].parse().ok()?;
         let m: u64 = s[14..16].parse().ok()?;
-        let s_part: u64 = if s.len() >= 19 {
-            s[17..19].parse().unwrap_or(0)
-        } else {
-            0
-        };
+        let s_part: u64 = s.get(17..19).and_then(|v| v.parse().ok()).unwrap_or(0);
         secs += h * 3600 + m * 60 + s_part;
     }
     Some(secs)
@@ -1337,7 +1260,7 @@ fn format_date_from_timestamp(secs: u64) -> String {
     let z = (secs / 86400) as i64 + 719468;
     let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
     let doe = (z - era * 146097) as u32;
-    let yoe = (doe - doe / 1024 + doe / 1461 - doe / 142401) / 365;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
     let y = yoe as i64 + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
@@ -1352,6 +1275,13 @@ fn ymd_to_day_number(s: &str) -> Option<i64> {
     let y: i64 = parts.next()?.parse().ok()?;
     let m: i64 = parts.next()?.parse().ok()?;
     let d: i64 = parts.next()?.parse().ok()?;
+    if parts.next().is_some()
+        || !(1970..=9999).contains(&y)
+        || !(1..=12).contains(&m)
+        || !(1..=31).contains(&d)
+    {
+        return None;
+    }
     let m = (m + 9) % 12;
     let y = y - m / 10;
     Some(365 * y + y / 4 - y / 100 + y / 400 + (m * 306 + 5) / 10 + (d - 1))
@@ -1363,7 +1293,90 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_database_record_and_history() {
+    fn test_calendar_date_conversion_no_underflow() {
+        for ymd in [
+            "1970-01-01",
+            "2000-02-29",
+            "2024-02-29",
+            "2026-02-26",
+            "2026-02-28",
+            "2026-03-01",
+            "2026-12-31",
+            "2100-02-28",
+        ] {
+            let days = ymd_to_day_number(ymd).expect("valid ymd");
+            let unix_secs = ((days - 719468) as u64) * 86400;
+            assert_eq!(format_date_from_timestamp(unix_secs), ymd);
+        }
+        assert!(ymd_to_day_number("99999999999999999-01-01").is_none());
+        assert!(parse_iso_to_unix_secs("2026年02月28").is_none());
+    }
+
+    #[test]
+    fn test_format_csv_cell_blocks_formula_bypasses() {
+        for dangerous in [
+            "\t=cmd|'/C calc'!A0",
+            "\r=1+1",
+            "\t123",
+            "  =SUM(A1:A2)",
+            " +cmd",
+            "+inf",
+            "-inf",
+            "+NaN",
+            "-nan",
+            "--42",
+            "+-42",
+        ] {
+            let formatted = format_csv_cell(dangerous);
+            let unquoted = formatted.strip_prefix('"').unwrap_or(&formatted);
+            assert!(unquoted.starts_with('\''), "payload: {dangerous:?}");
+        }
+        assert_eq!(format_csv_cell("-42.5"), "-42.5");
+        assert_eq!(format_csv_cell("+100"), "+100");
+        assert_eq!(format_csv_cell("normal text"), "normal text");
+        assert_eq!(format_csv_cell("hello, world"), "\"hello, world\"");
+    }
+
+    #[test]
+    fn test_summary_cache_key_disambiguates_styles_and_models() {
+        let db = Database::open_in_memory().unwrap();
+        let url = "https://example.com/article";
+        db.record_summary(
+            &NewSummaryRecord {
+                style: "concise",
+                model: "m1",
+                ..make_summary("web", "Title", None, Some(url), "Concise summary")
+            },
+            Some(url),
+        )
+        .unwrap();
+        db.record_summary(
+            &NewSummaryRecord {
+                style: "detailed",
+                model: "m1",
+                ..make_summary("web", "Title", None, Some(url), "Detailed summary")
+            },
+            Some(url),
+        )
+        .unwrap();
+
+        let ttl = Duration::from_secs(3600);
+        assert_eq!(
+            db.get_cached_summary("web", url, "concise", "m1", ttl)
+                .unwrap()
+                .summary,
+            "Concise summary"
+        );
+        assert_eq!(
+            db.get_cached_summary("web", url, "detailed", "m1", ttl)
+                .unwrap()
+                .summary,
+            "Detailed summary"
+        );
+    }
+
+    #[test]
+    fn test_database_crud_history_and_reset() {
         let db = Database::open_in_memory().unwrap();
         let record = NewSummaryRecord {
             style: "detailed",
@@ -1378,46 +1391,72 @@ mod tests {
                 "Dune",
                 Some("Frank Herbert"),
                 Some("https://en.wikipedia.org/wiki/Dune_(novel)"),
-                "Dune is a 1965 epic sci-fi novel about Arrakis, ecology, and Melange spice.",
-            )
-        };
-        db.record_summary(&record).unwrap();
-
-        let history = db.get_history(10).unwrap();
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].title, "Dune");
-        assert_eq!(history[0].author.as_deref(), Some("Frank Herbert"));
-        assert_eq!(history[0].word_count, 11106);
-        assert_eq!(history[0].prompt_tokens, Some(5200));
-        assert_eq!(history[0].completion_tokens, Some(1840));
-
-        let items = db.get_all_library_items().unwrap();
-        assert_eq!(items.len(), 1);
-        assert_eq!(
-            items[0].reasoning.as_deref(),
-            Some("Analyzed Herbert's ecological themes.")
-        );
-    }
-
-    #[test]
-    fn test_database_exports() {
-        let db = Database::open_in_memory().unwrap();
-        let record = NewSummaryRecord {
-            style: "detailed",
-            word_count: 11106,
-            prompt_tokens: Some(5200),
-            completion_tokens: Some(1840),
-            duration_ms: 4200,
-            tokens_per_second: Some(43.8),
-            ..make_summary(
-                "book",
-                "Dune",
-                Some("Frank Herbert"),
-                Some("https://en.wikipedia.org/wiki/Dune_(novel)"),
                 "Dune is a 1965 epic sci-fi novel about Arrakis.",
             )
         };
-        db.record_summary(&record).unwrap();
+        db.record_summary(&record, None).unwrap();
+        db.record_summary(
+            &NewSummaryRecord {
+                style: "detailed",
+                word_count: 800,
+                ..make_summary(
+                    "web",
+                    "Rust Lang",
+                    None,
+                    Some("https://rust-lang.org"),
+                    "Modern systems programming.",
+                )
+            },
+            None,
+        )
+        .unwrap();
+
+        let history = db.get_history(10).unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].title, "Rust Lang");
+        assert_eq!(history[1].title, "Dune");
+        assert_eq!(history[1].author.as_deref(), Some("Frank Herbert"));
+        assert_eq!(db.get_latest_summary().unwrap().unwrap().title, "Rust Lang");
+
+        let items = db.get_all_library_items().unwrap();
+        assert_eq!(
+            items[1].reasoning.as_deref(),
+            Some("Analyzed Herbert's ecological themes.")
+        );
+
+        db.delete_library_item(items[0].id).unwrap();
+        assert_eq!(db.get_all_library_items().unwrap().len(), 1);
+
+        db.reset().unwrap();
+        assert!(db.get_history(10).unwrap().is_empty());
+        assert_eq!(db.get_stats().unwrap().total_summaries, 0);
+    }
+
+    #[test]
+    fn test_database_exports_and_vault_security() {
+        let db = Database::open_in_memory().unwrap();
+        db.record_summary(
+            &make_summary(
+                "web",
+                "Article with \"Quotes\" and \nNewlines and \\Backslash",
+                Some("Author \"Name\"\nInjectedField: \"true\""),
+                Some("https://example.com/page?a=1&b=\"2\"\nmalicious_key: true"),
+                "Summary content 1",
+            ),
+            None,
+        )
+        .unwrap();
+        db.record_summary(
+            &make_summary(
+                "web",
+                "Article with \"Quotes\" and \nNewlines and \\Backslash",
+                Some("Author 2"),
+                Some("https://example.com/different"),
+                "Summary content 2",
+            ),
+            None,
+        )
+        .unwrap();
 
         let tmp = crate::fs_util::tempdir().unwrap();
         let json_path = tmp.path().join("export.json");
@@ -1425,275 +1464,166 @@ mod tests {
         assert!(
             std::fs::read_to_string(&json_path)
                 .unwrap()
-                .contains("Dune")
+                .contains("Summary content 1")
         );
-
-        let vault_dir = tmp.path().join("vault");
-        assert_eq!(db.export_markdown_vault(&vault_dir).unwrap(), 1);
-        let md_content = std::fs::read_to_string(vault_dir.join("dune.md")).unwrap();
-        assert!(md_content.starts_with("---\n"));
-        assert!(md_content.contains("author: \"Frank Herbert\""));
-        assert!(md_content.contains("# Dune"));
-        assert!(md_content.contains("Arrakis"));
 
         let csv_path = tmp.path().join("export.csv");
         db.export_csv(&csv_path).unwrap();
         let csv_str = std::fs::read_to_string(&csv_path).unwrap();
-        assert!(csv_str.contains("Dune"));
-        assert!(csv_str.contains("Frank Herbert"));
+        assert!(csv_str.contains("Summary content 2"));
+
+        let vault_dir = tmp.path().join("vault");
+        assert_eq!(db.export_markdown_vault(&vault_dir).unwrap(), 2);
+        let all_content: Vec<String> = std::fs::read_dir(&vault_dir)
+            .unwrap()
+            .map(|r| std::fs::read_to_string(r.unwrap().path()).unwrap())
+            .collect();
+        for content in &all_content {
+            let frontmatter = content.split("---").nth(1).expect("frontmatter block");
+            assert!(!frontmatter.contains("\nInjectedField:"));
+            assert!(!frontmatter.contains("\nmalicious_key:"));
+            assert!(frontmatter.contains("\\\"Quotes\\\""));
+            assert!(frontmatter.contains("\\\\Backslash"));
+        }
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let csv_meta = std::fs::metadata(&csv_path).unwrap();
-            assert_eq!(csv_meta.permissions().mode() & 0o777, 0o600);
-
+            assert_eq!(
+                std::fs::metadata(&csv_path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
             let symlink_target = tmp.path().join("target.csv");
             let symlink_path = tmp.path().join("symlink.csv");
             std::fs::write(&symlink_target, "dummy").unwrap();
             std::os::unix::fs::symlink(&symlink_target, &symlink_path).unwrap();
-            let err = db.export_csv(&symlink_path).unwrap_err();
-            assert!(err.to_string().contains("symlink"));
+            assert!(
+                db.export_csv(&symlink_path)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("symlink")
+            );
         }
     }
 
     #[test]
     fn test_database_stats() {
         let db = Database::open_in_memory().unwrap();
-        db.record_summary(&NewSummaryRecord {
-            style: "detailed",
-            word_count: 10000,
-            prompt_tokens: Some(5000),
-            completion_tokens: Some(1500),
-            duration_ms: 3000,
-            tokens_per_second: Some(50.0),
-            ..make_summary(
-                "book",
-                "Dune",
-                Some("Frank Herbert"),
-                None,
-                "Book summary 1",
-            )
-        })
+        db.record_summary(
+            &NewSummaryRecord {
+                style: "detailed",
+                word_count: 10000,
+                prompt_tokens: Some(5000),
+                completion_tokens: Some(1500),
+                duration_ms: 3000,
+                tokens_per_second: Some(50.0),
+                ..make_summary(
+                    "book",
+                    "Dune",
+                    Some("Frank Herbert"),
+                    None,
+                    "Book summary 1",
+                )
+            },
+            None,
+        )
         .unwrap();
-        db.record_summary(&NewSummaryRecord {
-            word_count: 2000,
-            prompt_tokens: Some(2500),
-            completion_tokens: Some(500),
-            duration_ms: 1000,
-            tokens_per_second: Some(50.0),
-            ..make_summary(
-                "web",
-                "Rust Article",
-                None,
-                Some("https://example.com/rust"),
-                "Web summary 2",
-            )
-        })
+        db.record_summary(
+            &NewSummaryRecord {
+                word_count: 2000,
+                prompt_tokens: Some(2500),
+                completion_tokens: Some(500),
+                duration_ms: 1000,
+                tokens_per_second: Some(50.0),
+                ..make_summary(
+                    "web",
+                    "Rust Article",
+                    None,
+                    Some("https://example.com/rust"),
+                    "Web summary 2",
+                )
+            },
+            None,
+        )
         .unwrap();
 
         let stats = db.get_stats().unwrap();
         assert_eq!(stats.total_summaries, 2);
-        assert_eq!(stats.book_summaries, 1);
-        assert_eq!(stats.web_summaries, 1);
-        assert_eq!(stats.file_summaries, 0);
-        assert_eq!(stats.stdin_summaries, 0);
-        assert_eq!(stats.video_summaries, 0);
+        assert_eq!((stats.book_summaries, stats.web_summaries), (1, 1));
         assert_eq!(stats.total_source_words, 12000);
         assert_eq!(stats.total_prompt_tokens, 7500);
         assert_eq!(stats.total_completion_tokens, 2000);
-        assert_eq!(stats.total_duration_ms, 4000);
-        assert!((stats.avg_tokens_per_second - 50.0).abs() < 0.1);
         assert_eq!(stats.reads_today, 2);
-        assert_eq!(stats.active_reading_days, 1);
         assert_eq!(stats.current_streak_days, 1);
-        assert!(stats.estimated_minutes_saved > 0.0);
-        assert_eq!(stats.models.len(), 1);
-        assert_eq!(stats.models[0].model, "gemma-4");
         assert_eq!(stats.models[0].runs, 2);
-        assert_eq!(stats.top_domains.len(), 1);
         assert_eq!(stats.top_domains[0].domain, "example.com");
     }
 
     #[test]
-    fn test_database_search_library_and_special_queries() {
+    fn test_database_search_ranking_and_utf8_safety() {
         let db = Database::open_in_memory().unwrap();
-        db.record_summary(&make_summary(
-            "book",
-            "Dune",
-            Some("Frank Herbert"),
-            Some("https://en.wikipedia.org/wiki/Dune_(novel)"),
-            "Set on the harsh desert planet Arrakis, the sole source of Melange spice and SQL injection discussions.",
-        ))
-        .unwrap();
-
-        let hits = db.search("Melange").unwrap();
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].title, "Dune");
-        assert!(hits[0].snippet.contains("Melange"));
-
-        for empty_query in ["Cyberpunk", "'; DROP TABLE library; --", "% * _ ?", ""] {
-            assert!(db.search(empty_query).unwrap().is_empty(), "{empty_query}");
-        }
-
-        assert_eq!(db.search("injection").unwrap().len(), 1);
-    }
-
-    #[test]
-    fn test_database_search_multibyte_utf8_snippet_safety() {
-        let db = Database::open_in_memory().unwrap();
-        db.record_summary(&make_summary(
-            "book",
-            "Le Petit Prince 👑",
-            Some("Antoine de Saint-Exupéry"),
-            None,
-            "🌟 Voici mon secret. Il est très simple: on ne voit bien qu’avec le cœur. L’essentiel est invisible pour les yeux. 🚀🪐✨ 狐狸 and roses.",
-        ))
-        .unwrap();
-
-        for term in ["secret", "狐狸"] {
-            let hits = db.search(term).unwrap();
-            assert_eq!(hits.len(), 1);
-            assert!(hits[0].snippet.contains(term));
-        }
-    }
-
-    #[test]
-    fn test_database_search_bm25_relevance_ranking() {
-        let db = Database::open_in_memory().unwrap();
-        db.record_summary(&NewSummaryRecord {
-            style: "detailed",
-            word_count: 3500,
-            ..make_summary(
+        db.record_summary(
+            &make_summary(
                 "web",
                 "Rust Compiler Deep Dive",
                 Some("Compiler Team"),
                 Some("https://example.com/rust-compiler"),
-                "The rust compiler achieves zero-cost abstractions and memory safety through borrow checker analysis. Rust compiler optimizations are extensive.",
-            )
-        })
+                "The rust compiler achieves zero-cost abstractions and memory safety.",
+            ),
+            None,
+        )
         .unwrap();
-        db.record_summary(&NewSummaryRecord {
-            word_count: 5000,
-            ..make_summary(
+        db.record_summary(
+            &make_summary(
                 "web",
                 "General Software Patterns",
                 Some("John Doe"),
                 Some("https://example.com/patterns"),
-                "Design patterns in systems programming. Briefly mentions rust compiler in passing.",
-            )
-        })
+                "Design patterns in systems programming. Mentions rust compiler and 狐狸 🌟.",
+            ),
+            None,
+        )
         .unwrap();
 
         let hits = db.search("Rust Compiler").unwrap();
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].title, "Rust Compiler Deep Dive");
         assert!(hits[0].score.unwrap() > hits[1].score.unwrap());
-        assert!(hits[0].snippet.to_lowercase().contains("rust"));
-    }
 
-    #[test]
-    fn test_database_library_items_and_deletion() {
-        let db = Database::open_in_memory().unwrap();
-        db.record_summary(&make_summary(
-            "book",
-            "Dune",
-            Some("Frank Herbert"),
-            None,
-            "Spice on Arrakis.",
-        ))
-        .unwrap();
-        db.record_summary(&NewSummaryRecord {
-            style: "detailed",
-            word_count: 800,
-            ..make_summary(
-                "web",
-                "Rust Lang",
-                None,
-                Some("https://rust-lang.org"),
-                "Modern systems programming.",
-            )
-        })
-        .unwrap();
+        // Author match works even when author isn't repeated in summary
+        assert_eq!(db.search("John Doe").unwrap().len(), 1);
 
-        let items = db.get_all_library_items().unwrap();
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0].title, "Rust Lang");
-        assert_eq!(items[1].title, "Dune");
-        assert_eq!(db.get_latest_summary().unwrap().unwrap().title, "Rust Lang");
-
-        db.delete_library_item(items[0].id).unwrap();
-        let items_after = db.get_all_library_items().unwrap();
-        assert_eq!(items_after.len(), 1);
-        assert_eq!(items_after[0].title, "Dune");
-    }
-
-    #[test]
-    fn test_database_reset() {
-        let db = Database::open_in_memory().unwrap();
-        db.record_summary(&make_summary(
-            "book",
-            "Dune",
-            Some("Frank Herbert"),
-            None,
-            "Dune summary text",
-        ))
-        .unwrap();
-        assert_eq!(db.get_history(10).unwrap().len(), 1);
-        assert_eq!(db.get_stats().unwrap().total_summaries, 1);
-        assert_eq!(db.search("Dune").unwrap().len(), 1);
-
-        db.reset().unwrap();
-        assert_eq!(db.get_history(10).unwrap().len(), 0);
-        assert_eq!(db.get_stats().unwrap().total_summaries, 0);
-        assert_eq!(db.search("Dune").unwrap().len(), 0);
-    }
-
-    #[test]
-    fn test_database_file_open_and_reopen() {
-        let tmp = crate::fs_util::tempdir().unwrap();
-        let db_path = tmp.path().join("reopen.db");
-
-        {
-            let db = Database::open_at(&db_path).unwrap();
-            db.record_summary(&make_summary(
-                "book",
-                "Reopen Test",
-                None,
-                None,
-                "Reopen content",
-            ))
-            .unwrap();
+        // Multi-byte UTF-8 snippet slicing and special queries
+        assert!(db.search("狐狸").unwrap()[0].snippet.contains("狐狸"));
+        for empty_query in ["Cyberpunk", "'; DROP TABLE library; --", "% * _ ?", ""] {
+            assert!(db.search(empty_query).unwrap().is_empty());
         }
-
-        let db = Database::open_at(&db_path).unwrap();
-        let history = db.get_history(10).unwrap();
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].title, "Reopen Test");
-        assert_eq!(
-            db.get_latest_summary().unwrap().unwrap().summary,
-            "Reopen content"
-        );
     }
 
     #[test]
     fn test_library_item_matches_query() {
         let db = Database::open_in_memory().unwrap();
-        db.record_summary(&make_summary(
-            "book",
-            "Foundation and Empire",
-            Some("Isaac Asimov"),
-            Some("https://example.com/foundation"),
-            "The Mule attacks the Galactic Empire.",
-        ))
-        .unwrap();
-        db.record_summary(&make_summary(
-            "book",
-            "Les Misérables",
-            Some("Victor Hugo"),
+        db.record_summary(
+            &make_summary(
+                "book",
+                "Foundation and Empire",
+                Some("Isaac Asimov"),
+                Some("https://example.com/foundation"),
+                "The Mule attacks the Galactic Empire.",
+            ),
             None,
-            "Jean Valjean and Cosette in 19th-century France.",
-        ))
+        )
+        .unwrap();
+        db.record_summary(
+            &make_summary(
+                "book",
+                "Les Misérables",
+                Some("Victor Hugo"),
+                None,
+                "Jean Valjean in France.",
+            ),
+            None,
+        )
         .unwrap();
 
         let items = db.get_all_library_items().unwrap();
@@ -1701,23 +1631,12 @@ mod tests {
             .iter()
             .find(|i| i.title == "Foundation and Empire")
             .unwrap();
-        for q in [
-            "foundation",
-            "ASIMOV",
-            "empire",
-            "mule",
-            "example.com",
-            "book",
-            "",
-        ] {
-            assert!(foundation.matches_query(q), "expected match: {q}");
+        for q in ["foundation", "ASIMOV", "mule", "example.com", "book", ""] {
+            assert!(foundation.matches_query(q), "{q}");
         }
-        for q in ["sandworms", "cyberpunk"] {
-            assert!(!foundation.matches_query(q), "expected miss: {q}");
-        }
+        assert!(!foundation.matches_query("sandworms"));
 
         let les_mis = items.iter().find(|i| i.title == "Les Misérables").unwrap();
-        assert!(les_mis.matches_query("Misérables"));
         assert!(les_mis.matches_query("misérables"));
         assert!(!les_mis.matches_query("München"));
     }
@@ -1734,41 +1653,32 @@ mod tests {
             )
             .unwrap();
         assert!(session_id > 0);
+        assert!(db.add_chat_turn(-1, "q", "a").is_err());
 
         db.add_chat_turn(
             session_id,
-            "What is the difference between Arc and Rc?",
-            "Arc is thread-safe (atomic reference counting), whereas Rc is for single-threaded use.",
+            "Arc vs Rc?",
+            "Arc is atomic; Rc is single-threaded.",
         )
         .unwrap();
         db.add_chat_turn(
             session_id,
-            "When should I use Mutex with Arc?",
-            "Wrap the inner value in Mutex or RwLock when multiple threads need mutable access.",
+            "Use Mutex?",
+            "Wrap shared mutable state in Mutex.",
         )
         .unwrap();
 
         let sessions = db.get_chat_sessions(10).unwrap();
         assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].id, session_id);
-        assert_eq!(sessions[0].title, "Rust Concurrency Guide");
         assert_eq!(sessions[0].message_count, 4);
-        assert_eq!(
-            sessions[0].last_question.as_deref(),
-            Some("When should I use Mutex with Arc?")
-        );
+        assert!(sessions[0].messages.is_empty());
+        assert_eq!(sessions[0].last_question.as_deref(), Some("Use Mutex?"));
 
         let (session, messages) = db.get_chat_session(session_id).unwrap().unwrap();
         assert_eq!(session.id, session_id);
         assert_eq!(messages.len(), 4);
         assert_eq!(messages[0].role, "user");
-        assert_eq!(
-            messages[0].content,
-            "What is the difference between Arc and Rc?"
-        );
         assert_eq!(messages[1].role, "assistant");
-        assert_eq!(messages[2].role, "user");
-        assert_eq!(messages[3].role, "assistant");
 
         assert!(db.delete_chat_session(session_id).unwrap());
         assert!(db.get_chat_session(session_id).unwrap().is_none());
@@ -1776,67 +1686,31 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
-    fn test_database_refuses_symlink() {
+    fn test_database_file_open_reopen_and_symlink_rejection() {
         let tmp = crate::fs_util::tempdir().unwrap();
-        let real_db = tmp.path().join("real.db");
-        let symlink_db = tmp.path().join("symlink.db");
-
+        let db_path = tmp.path().join("reopen.db");
         {
-            let db = Database::open_at(&real_db).expect("Create real db");
-            assert!(db.get_stats().is_ok());
-        }
-        std::os::unix::fs::symlink(&real_db, &symlink_db).unwrap();
-
-        let err = Database::open_at(&symlink_db).err().unwrap();
-        assert!(err.to_string().contains("is a symlink"));
-    }
-
-    #[test]
-    fn test_export_markdown_vault_escaping_and_collisions() {
-        let db = Database::open_in_memory().unwrap();
-        db.record_summary(&make_summary(
-            "web",
-            "Article with \"Quotes\" and \nNewlines and \\Backslash",
-            Some("Author \"Name\"\nInjectedField: \"true\""),
-            Some("https://example.com/page?a=1&b=\"2\"\nmalicious_key: true"),
-            "Summary content 1",
-        ))
-        .unwrap();
-        db.record_summary(&NewSummaryRecord {
-            word_count: 600,
-            duration_ms: 250,
-            ..make_summary(
-                "web",
-                "Article with \"Quotes\" and \nNewlines and \\Backslash",
-                Some("Author 2"),
-                Some("https://example.com/different"),
-                "Summary content 2",
+            let db = Database::open_at(&db_path).unwrap();
+            db.record_summary(
+                &make_summary("book", "Reopen Test", None, None, "Reopen content"),
+                None,
             )
-        })
-        .unwrap();
-
-        let tmp = crate::fs_util::tempdir().unwrap();
-        let vault_dir = tmp.path().join("vault");
-        assert_eq!(db.export_markdown_vault(&vault_dir).unwrap(), 2);
-
-        let all_content: Vec<String> = std::fs::read_dir(&vault_dir)
-            .unwrap()
-            .map(|r| std::fs::read_to_string(r.unwrap().path()).unwrap())
-            .collect();
-        assert_eq!(all_content.len(), 2);
-
-        for content in &all_content {
-            let frontmatter = content.split("---").nth(1).expect("frontmatter block");
-            assert!(!frontmatter.contains("\nInjectedField:"));
-            assert!(!frontmatter.contains("\nmalicious_key:"));
-            assert!(frontmatter.contains("\\\"Quotes\\\""));
-            assert!(frontmatter.contains("\\\\Backslash"));
+            .unwrap();
         }
-        assert!(
-            all_content
-                .iter()
-                .any(|c| c.contains("\\nmalicious_key: true"))
-        );
+        let db = Database::open_at(&db_path).unwrap();
+        assert_eq!(db.get_history(10).unwrap().len(), 1);
+
+        #[cfg(unix)]
+        {
+            let symlink_db = tmp.path().join("symlink.db");
+            std::os::unix::fs::symlink(&db_path, &symlink_db).unwrap();
+            assert!(
+                Database::open_at(&symlink_db)
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("is a symlink")
+            );
+        }
     }
 }

@@ -582,6 +582,49 @@ impl<'a> XmlScanner<'a> {
     }
 }
 
+/// Converts a title into a filesystem-safe ASCII slug.
+pub fn slugify(title: &str) -> String {
+    let mut slug = String::with_capacity(title.len());
+    let mut prev_dash = false;
+
+    for ch in title.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !prev_dash && !slug.is_empty() && ch != '\'' && ch != '"' && ch != '’' {
+            slug.push('-');
+            prev_dash = true;
+        }
+    }
+
+    let trimmed = slug.trim_matches('-');
+    if trimmed.is_empty() {
+        "summary".to_string()
+    } else if trimmed.len() > 80 {
+        trimmed[..80].trim_end_matches('-').to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Converts a title and optional unique key into a collision-resistant ASCII slug.
+pub fn slugify_unique(title: &str, unique_key: Option<&str>) -> String {
+    let base_slug = slugify(title);
+    if let Some(key) = unique_key
+        && !key.is_empty()
+    {
+        let hash = crate::system::sha256::sha256_hex(key.as_bytes());
+        let short_hash = &hash[..8];
+        if base_slug.is_empty() || base_slug == "summary" {
+            short_hash.to_string()
+        } else {
+            format!("{}-{}", base_slug, short_hash)
+        }
+    } else {
+        base_slug
+    }
+}
+
 /// Extracts the value of a quoted attribute given its `attr=` prefix.
 pub fn extract_attr_value<'a>(html: &'a str, attr_prefix: &str) -> Option<&'a str> {
     let start_pos = html.find(attr_prefix)?;

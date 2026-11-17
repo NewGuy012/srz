@@ -72,48 +72,7 @@ pub fn open_in_browser(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Converts a title into a clean, filesystem-safe ASCII slug (e.g. `"Dune" by Frank Herbert` -> `dune-by-frank-herbert`).
-pub fn slugify(title: &str) -> String {
-    let mut slug = String::with_capacity(title.len());
-    let mut prev_dash = false;
-
-    for ch in title.chars() {
-        if ch.is_ascii_alphanumeric() {
-            slug.push(ch.to_ascii_lowercase());
-            prev_dash = false;
-        } else if !prev_dash && !slug.is_empty() && ch != '\'' && ch != '"' && ch != '’' {
-            slug.push('-');
-            prev_dash = true;
-        }
-    }
-
-    let trimmed = slug.trim_matches('-');
-    if trimmed.is_empty() {
-        "summary".to_string()
-    } else if trimmed.len() > 80 {
-        trimmed[..80].trim_end_matches('-').to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-/// Converts a title and an optional unique key (such as URL or source path) into a clean, collision-resistant ASCII slug.
-pub fn slugify_unique(title: &str, unique_key: Option<&str>) -> String {
-    let base_slug = slugify(title);
-    if let Some(key) = unique_key
-        && !key.is_empty()
-    {
-        let hash = crate::system::sha256::sha256_hex(key.as_bytes());
-        let short_hash = &hash[..8];
-        if base_slug.is_empty() || base_slug == "summary" {
-            short_hash.to_string()
-        } else {
-            format!("{}-{}", base_slug, short_hash)
-        }
-    } else {
-        base_slug
-    }
-}
+pub use crate::system::text_util::{slugify, slugify_unique};
 
 const SHARED_THEME_CSS: &str = r#"    :root {
       --bg: #faf9f5;

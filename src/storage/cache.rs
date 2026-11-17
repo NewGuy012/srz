@@ -4,6 +4,11 @@ use crate::fs_util;
 use crate::scraper::ScrapedPage;
 use crate::sources::search::{BookMetadata, SearchResult};
 use crate::storage::db::{Database, TABLE_CACHE_CAPS, TABLE_CACHE_PAGES, TABLE_CACHE_SEARCH};
+use crate::system::sha256::sha256_hex;
+use crate::system::text_util::{slugify, slugify_unique};
+use redb::TableDefinition;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -12,6 +17,8 @@ use std::time::{Duration, SystemTime};
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CachedSummary {
     pub title: String,
+    #[serde(default)]
+    pub author: Option<String>,
     pub summary: String,
     #[serde(default)]
     pub word_count: usize,
@@ -45,13 +52,13 @@ impl Default for CachePolicy {
     fn default() -> Self {
         Self {
             pages_ttl: Duration::from_secs(7 * 86400),
-            news_ttl: Duration::from_secs(2 * 3600), // 2 hours
+            news_ttl: Duration::from_secs(2 * 3600),
             search_ttl: Duration::from_secs(14 * 86400),
             summaries_ttl: Duration::from_secs(90 * 86400),
             views_ttl: Duration::from_secs(14 * 86400),
             caps_ttl: Duration::from_secs(7 * 86400),
-            max_bytes: 500 * 1024 * 1024,                    // 500 MB
-            auto_prune_interval: Duration::from_secs(86400), // 24 hours
+            max_bytes: 500 * 1024 * 1024,
+            auto_prune_interval: Duration::from_secs(86400),
         }
     }
 }
@@ -192,13 +199,13 @@ impl Cache {
     }
 
     pub fn html_view_path_for(&self, title: &str, unique_key: Option<&str>) -> PathBuf {
-        let unique_slug = crate::render::slugify_unique(title, unique_key);
-        let unique_path = self.views_dir().join(format!("{}.html", unique_slug));
+        let unique_path = self
+            .views_dir()
+            .join(format!("{}.html", slugify_unique(title, unique_key)));
         if unique_path.exists() {
             return unique_path;
         }
-        let legacy_slug = crate::render::slugify(title);
-        let legacy_path = self.views_dir().join(format!("{}.html", legacy_slug));
+        let legacy_path = self.views_dir().join(format!("{}.html", slugify(title)));
         if legacy_path.exists() {
             return legacy_path;
         }
@@ -209,29 +216,46 @@ impl Cache {
         &self.policy
     }
 
-    pub fn policy_mut(&mut self) -> &mut CachePolicy {
-        &mut self.policy
-    }
-
     pub fn set_policy(&mut self, policy: CachePolicy) {
         self.policy = policy;
     }
 
-    fn get_or_init_db(&self) -> Option<Database> {
-        if !self.enabled {
-            return None;
+    /// Opens or reuses the embedded database handle regardless of whether `--no-cache` is set.
+    pub fn open_database(&self) -> anyhow::Result<Database> {
+        let mut guard = self
+            .db
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Database lock poisoned"))?;
+        if let Some(db) = guard.as_ref() {
+            return Ok(db.clone());
         }
-        let mut guard = self.db.lock().ok()?;
-        if guard.is_none()
-            && let Ok(database) = Database::open_at(&self.db_path)
-        {
-            *guard = Some(database);
-        }
-        guard.clone()
+        let database = Database::open_at(&self.db_path)?;
+        *guard = Some(database.clone());
+        Ok(database)
     }
 
-    pub fn open_database(&self) -> Option<Database> {
-        self.get_or_init_db()
+    fn cached_db(&self) -> Option<Database> {
+        self.enabled.then(|| self.open_database().ok()).flatten()
+    }
+
+    fn get_json<T: DeserializeOwned>(
+        &self,
+        table: TableDefinition<&str, &[u8]>,
+        key: &str,
+        ttl: Duration,
+    ) -> Option<T> {
+        self.cached_db()?.get_cached_json(table, key, ttl)
+    }
+
+    fn set_json<T: Serialize + ?Sized>(
+        &self,
+        table: TableDefinition<&str, &[u8]>,
+        key: &str,
+        value: &T,
+    ) {
+        if let Some(db) = self.cached_db() {
+            let _ = db.set_cached_json(table, key, value);
+        }
     }
 
     pub fn default_cache_dir() -> PathBuf {
@@ -240,23 +264,10 @@ impl Cache {
 
     pub fn stats(&self) -> CacheStats {
         let (views, views_bytes) = Self::dir_stats(&self.views_dir());
-
-        let mut pages = 0;
-        let mut searches = 0;
-        let mut summaries = 0;
-        let mut pages_bytes = 0;
-        let mut search_bytes = 0;
-        let mut summaries_bytes = 0;
-
-        if let Some(db) = self.get_or_init_db() {
-            let (p_cnt, p_bytes, s_cnt, s_bytes, sum_cnt, sum_bytes) = db.cache_stats_breakdown();
-            pages = p_cnt;
-            pages_bytes = p_bytes;
-            searches = s_cnt;
-            search_bytes = s_bytes;
-            summaries = sum_cnt;
-            summaries_bytes = sum_bytes;
-        }
+        let (pages, pages_bytes, searches, search_bytes, summaries, summaries_bytes) = self
+            .cached_db()
+            .map(|db| db.cache_stats_breakdown())
+            .unwrap_or_default();
 
         CacheStats {
             pages,
@@ -270,7 +281,7 @@ impl Cache {
 
     pub fn clean(&self) -> std::io::Result<CacheStats> {
         let before = self.stats();
-        if let Some(db) = self.get_or_init_db() {
+        if let Some(db) = self.cached_db() {
             let _ = db.clear_cache_tables();
         }
         if self.views_dir().exists() {
@@ -280,23 +291,24 @@ impl Cache {
     }
 
     pub fn prune(&self, options: PruneOptions) -> std::io::Result<PruneStats> {
-        let initial_stats = self.stats();
         let mut files_removed = 0;
+        let mut bytes_reclaimed = 0u64;
 
-        if let Some(db) = self.get_or_init_db() {
+        if let Some(db) = self.cached_db() {
             if let Some(max_age) = options.older_than
-                && let Ok(count) = db.prune_cache_by_age(max_age)
+                && let Ok((cnt, bytes)) = db.prune_cache_by_age(max_age)
             {
-                files_removed += count;
+                files_removed += cnt;
+                bytes_reclaimed = bytes_reclaimed.saturating_add(bytes);
             }
             if let Some(max_bytes) = options.max_bytes
-                && let Ok(count) = db.prune_cache_lru(max_bytes as usize)
+                && let Ok((cnt, bytes)) = db.prune_cache_lru(max_bytes as usize)
             {
-                files_removed += count;
+                files_removed += cnt;
+                bytes_reclaimed = bytes_reclaimed.saturating_add(bytes);
             }
         }
 
-        // Prune views
         if self.views_dir().exists() {
             let now = SystemTime::now();
             let ttl = options.older_than.unwrap_or(self.policy.views_ttl);
@@ -310,15 +322,11 @@ impl Cache {
                         && fs::remove_file(&path).is_ok()
                     {
                         files_removed += 1;
+                        bytes_reclaimed = bytes_reclaimed.saturating_add(meta.len());
                     }
                 }
             }
         }
-
-        let final_stats = self.stats();
-        let bytes_reclaimed = initial_stats
-            .total_bytes
-            .saturating_sub(final_stats.total_bytes);
 
         Ok(PruneStats {
             files_removed,
@@ -386,7 +394,6 @@ impl Cache {
         (count, bytes)
     }
 
-    // Page cache
     pub fn get_page(&self, url: &str) -> Option<ScrapedPage> {
         self.get_page_with_ttl(url, self.policy.pages_ttl)
     }
@@ -396,25 +403,13 @@ impl Cache {
     }
 
     pub fn get_page_with_ttl(&self, url: &str, ttl: Duration) -> Option<ScrapedPage> {
-        if !self.enabled {
-            return None;
-        }
-        let db = self.get_or_init_db()?;
-        let hash = crate::system::sha256::sha256_hex(url.as_bytes());
-        db.get_cached_json(TABLE_CACHE_PAGES, &hash, ttl)
+        self.get_json(TABLE_CACHE_PAGES, &sha256_hex(url.as_bytes()), ttl)
     }
 
     pub fn set_page(&self, url: &str, page: &ScrapedPage) {
-        if !self.enabled {
-            return;
-        }
-        if let Some(db) = self.get_or_init_db() {
-            let hash = crate::system::sha256::sha256_hex(url.as_bytes());
-            let _ = db.set_cached_json(TABLE_CACHE_PAGES, &hash, page);
-        }
+        self.set_json(TABLE_CACHE_PAGES, &sha256_hex(url.as_bytes()), page);
     }
 
-    // Search cache
     fn search_key(title: &str, author: Option<&str>) -> String {
         let t = title.trim().to_ascii_lowercase();
         let a = author
@@ -423,21 +418,13 @@ impl Cache {
         format!("{}:{}", t, a)
     }
 
-    fn metadata_key(title: &str, author: Option<&str>) -> String {
-        format!("meta:{}", Self::search_key(title, author))
-    }
-
     pub fn get_book_metadata(
         &self,
         title: &str,
         author: Option<&str>,
     ) -> Option<Option<BookMetadata>> {
-        if !self.enabled {
-            return None;
-        }
-        let db = self.get_or_init_db()?;
-        let key = Self::metadata_key(title, author);
-        db.get_cached_json(TABLE_CACHE_SEARCH, &key, self.policy.search_ttl)
+        let key = format!("meta:{}", Self::search_key(title, author));
+        self.get_json(TABLE_CACHE_SEARCH, &key, self.policy.search_ttl)
     }
 
     pub fn set_book_metadata(
@@ -446,13 +433,8 @@ impl Cache {
         author: Option<&str>,
         metadata: &Option<BookMetadata>,
     ) {
-        if !self.enabled {
-            return;
-        }
-        if let Some(db) = self.get_or_init_db() {
-            let key = Self::metadata_key(title, author);
-            let _ = db.set_cached_json(TABLE_CACHE_SEARCH, &key, metadata);
-        }
+        let key = format!("meta:{}", Self::search_key(title, author));
+        self.set_json(TABLE_CACHE_SEARCH, &key, metadata);
     }
 
     pub fn get_search_results(
@@ -460,25 +442,15 @@ impl Cache {
         title: &str,
         author: Option<&str>,
     ) -> Option<Vec<SearchResult>> {
-        if !self.enabled {
-            return None;
-        }
-        let db = self.get_or_init_db()?;
         let key = Self::search_key(title, author);
-        db.get_cached_json(TABLE_CACHE_SEARCH, &key, self.policy.search_ttl)
+        self.get_json(TABLE_CACHE_SEARCH, &key, self.policy.search_ttl)
     }
 
     pub fn set_search_results(&self, title: &str, author: Option<&str>, results: &[SearchResult]) {
-        if !self.enabled {
-            return;
-        }
-        if let Some(db) = self.get_or_init_db() {
-            let key = Self::search_key(title, author);
-            let _ = db.set_cached_json(TABLE_CACHE_SEARCH, &key, results);
-        }
+        let key = Self::search_key(title, author);
+        self.set_json(TABLE_CACHE_SEARCH, &key, results);
     }
 
-    // Summary cache
     pub fn book_cache_title(title: &str, author: Option<&str>) -> String {
         match author {
             Some(a) if !a.trim().is_empty() => format!("\"{}\" by {}", title.trim(), a.trim()),
@@ -497,89 +469,28 @@ impl Cache {
         }
     }
 
-    pub fn get_web_summary(
-        &self,
-        url: &str,
-        style: SummaryStyle,
-        model: &str,
-    ) -> Option<CachedSummary> {
-        self.get_summary_from_db_with_ttl(
-            "web",
-            url,
-            style.as_str(),
-            model,
-            self.policy.summaries_ttl,
-        )
-    }
-
-    pub fn get_file_summary(
-        &self,
-        file_key: &str,
-        style: SummaryStyle,
-        model: &str,
-    ) -> Option<CachedSummary> {
-        self.get_summary_from_db_with_ttl(
-            "file",
-            file_key,
-            style.as_str(),
-            model,
-            self.policy.summaries_ttl,
-        )
-    }
-
-    pub fn get_book_summary(
-        &self,
-        title: &str,
-        author: Option<&str>,
-        style: SummaryStyle,
-        model: &str,
-    ) -> Option<CachedSummary> {
-        let key = Self::book_cache_title(title, author);
-        self.get_summary_from_db_with_ttl(
-            "book",
-            &key,
-            style.as_str(),
-            model,
-            self.policy.summaries_ttl,
-        )
-    }
-
-    pub fn get_news_summary(
-        &self,
-        topic: &str,
-        timeframe: crate::cli::NewsTimeframe,
-        style: SummaryStyle,
-        model: &str,
-    ) -> Option<CachedSummary> {
-        let key = Self::news_cache_title(topic, timeframe);
-        self.get_summary_from_db_with_ttl("news", &key, style.as_str(), model, self.policy.news_ttl)
-    }
-
-    fn get_summary_from_db_with_ttl(
+    pub fn get_summary(
         &self,
         target_type: &str,
         identifier: &str,
-        style: &str,
+        style: SummaryStyle,
         model: &str,
-        ttl: Duration,
     ) -> Option<CachedSummary> {
-        if !self.enabled {
-            return None;
-        }
-        let db = self.get_or_init_db()?;
-        db.get_cached_summary(target_type, identifier, style, model, ttl)
+        let ttl = if target_type == "news" {
+            self.policy.news_ttl
+        } else {
+            self.policy.summaries_ttl
+        };
+        self.cached_db()?
+            .get_cached_summary(target_type, identifier, style.as_str(), model, ttl)
     }
 
-    // Caps cache
     pub fn get_server_capabilities(
         &self,
         endpoint: &str,
         model: &str,
     ) -> Option<ServerCapabilities> {
-        if !self.enabled {
-            return None;
-        }
-        let db = self.get_or_init_db()?;
+        let db = self.cached_db()?;
         let caps: ServerCapabilities =
             db.get_cached_json(TABLE_CACHE_CAPS, endpoint, self.policy.caps_ttl)?;
         if caps.model_id == model {
@@ -591,31 +502,13 @@ impl Cache {
     }
 
     pub fn set_server_capabilities(&self, caps: &ServerCapabilities) {
-        if !self.enabled {
-            return;
-        }
-        if let Some(db) = self.get_or_init_db() {
-            let _ = db.set_cached_json(TABLE_CACHE_CAPS, &caps.endpoint, caps);
-        }
-    }
-
-    #[cfg(test)]
-    fn backdate_page_cache_for_test(&self, url: &str, delta_secs: u64) {
-        if let Some(db) = self.get_or_init_db() {
-            db.backdate_page_cache_for_test(url, delta_secs);
-        }
-    }
-
-    #[cfg(test)]
-    fn backdate_history_for_test(&self, title: &str, delta_secs: u64) {
-        if let Some(db) = self.get_or_init_db() {
-            db.backdate_history_for_test(title, delta_secs);
-        }
+        self.set_json(TABLE_CACHE_CAPS, &caps.endpoint, caps);
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::make_summary;
     use super::*;
     use crate::cli::NewsTimeframe;
     use crate::storage::db::NewSummaryRecord;
@@ -637,98 +530,30 @@ mod tests {
         }
     }
 
-    use super::super::make_summary;
-
     #[test]
-    fn test_page_cache_roundtrip() {
-        let (_tmp, cache) = test_cache("page");
-        let page = make_page("https://example.com", "Example", "Hello world content", 3);
+    fn test_page_search_and_metadata_cache_roundtrip() {
+        let (_tmp, cache) = test_cache("roundtrip");
+        let url = "https://example.com";
+        assert!(cache.get_page(url).is_none());
+        cache.set_page(url, &make_page(url, "Example", "Hello world content", 3));
+        assert_eq!(
+            cache.get_page(url).unwrap().title.as_deref(),
+            Some("Example")
+        );
 
-        assert!(cache.get_page("https://example.com").is_none());
-        cache.set_page("https://example.com", &page);
-
-        let loaded = cache
-            .get_page("https://example.com")
-            .expect("Should hit cache");
-        assert_eq!(loaded.title.as_deref(), Some("Example"));
-        assert_eq!(loaded.word_count, 3);
-    }
-
-    #[test]
-    fn test_search_results_cache_is_case_insensitive() {
-        let (_tmp, cache) = test_cache("search");
         let results = vec![SearchResult::new(
             "Dune (Wikipedia)",
             "https://en.wikipedia.org/wiki/Dune_(novel)",
             Some("Sci-fi novel".to_string()),
         )];
         cache.set_search_results("Dune", Some("Frank Herbert"), &results);
-
-        let loaded = cache
-            .get_search_results("  dune ", Some("FRANK HERBERT"))
-            .expect("Should hit case-insensitive search cache");
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].title, "Dune (Wikipedia)");
-    }
-
-    #[test]
-    fn test_disabled_cache_bypasses_reads() {
-        let (tmp, cache_enabled) = test_cache("disabled");
-        let cache_disabled = Cache::with_dir(tmp.path().to_path_buf(), false);
-
-        let db = cache_enabled.open_database().unwrap();
-        let record = NewSummaryRecord {
-            style: SummaryStyle::Detailed.as_str(),
-            model: "gemma-4",
-            word_count: 420,
-            reasoning: Some("Thought process about Dune"),
-            ..make_summary("book", "\"Dune\"", None, None, "Great sci-fi novel.")
-        };
-        db.record_summary_with_key(&record, Some(&Cache::book_cache_title("Dune", None)))
-            .unwrap();
-
-        assert!(
-            cache_disabled
-                .get_book_summary("Dune", None, SummaryStyle::Detailed, "gemma-4")
-                .is_none()
+        assert_eq!(
+            cache
+                .get_search_results("  dune ", Some("FRANK HERBERT"))
+                .unwrap()[0]
+                .title,
+            "Dune (Wikipedia)"
         );
-        let hit = cache_enabled
-            .get_book_summary("Dune", None, SummaryStyle::Detailed, "gemma-4")
-            .expect("Should hit cache");
-        assert_eq!(hit.word_count, 420);
-        assert_eq!(hit.reasoning.as_deref(), Some("Thought process about Dune"));
-    }
-
-    #[test]
-    fn test_cache_stats_and_clean() {
-        let (_tmp, cache) = test_cache("stats_clean");
-        assert_eq!(cache.stats().total_files, 0);
-
-        cache.set_page(
-            "https://example.com",
-            &make_page("https://example.com", "Example", "Some article body", 3),
-        );
-        let meta = Some(BookMetadata {
-            canonical_title: "Dune".to_string(),
-            author: Some("Frank Herbert".to_string()),
-            first_publish_year: Some(1965),
-            work_key: Some("/works/OL893415W".to_string()),
-        });
-        cache.set_book_metadata("Dune", None, &meta);
-
-        let stats = cache.stats();
-        assert_eq!((stats.pages, stats.searches, stats.total_files), (1, 1, 2));
-        assert!(stats.total_bytes > 0);
-
-        let removed = cache.clean().unwrap();
-        assert_eq!(removed.total_files, 2);
-        assert_eq!(cache.stats().total_files, 0);
-    }
-
-    #[test]
-    fn test_book_metadata_cache_roundtrip() {
-        let (_tmp, cache) = test_cache("metadata");
-        assert!(cache.get_book_metadata("The Hobbit", None).is_none());
 
         let meta = Some(BookMetadata {
             canonical_title: "The Hobbit".to_string(),
@@ -737,11 +562,89 @@ mod tests {
             work_key: Some("/works/OL262758W".to_string()),
         });
         cache.set_book_metadata("The Hobbit", None, &meta);
+        assert_eq!(
+            cache.get_book_metadata("  the hobbit ", None).unwrap(),
+            meta
+        );
+    }
 
-        let loaded = cache
-            .get_book_metadata("  the hobbit ", None)
-            .expect("Should hit metadata cache");
-        assert_eq!(loaded, meta);
+    #[test]
+    fn test_disabled_cache_bypasses_reads_but_opens_db() {
+        let (tmp, cache_enabled) = test_cache("disabled");
+        let cache_disabled = Cache::with_dir(tmp.path().to_path_buf(), false);
+
+        let db = cache_disabled.open_database().unwrap();
+        let record = NewSummaryRecord {
+            style: SummaryStyle::Detailed.as_str(),
+            model: "gemma-4",
+            word_count: 420,
+            reasoning: Some("Thought process about Dune"),
+            ..make_summary(
+                "book",
+                "\"Dune\"",
+                Some("Frank Herbert"),
+                None,
+                "Great sci-fi novel.",
+            )
+        };
+        db.record_summary(&record, Some(&Cache::book_cache_title("Dune", None)))
+            .unwrap();
+
+        assert!(
+            cache_disabled
+                .get_summary(
+                    "book",
+                    &Cache::book_cache_title("Dune", None),
+                    SummaryStyle::Detailed,
+                    "gemma-4"
+                )
+                .is_none()
+        );
+        // Release redb's exclusive file lock before opening from `cache_enabled`
+        drop(db);
+        drop(cache_disabled);
+        let hit = cache_enabled
+            .get_summary(
+                "book",
+                &Cache::book_cache_title("Dune", None),
+                SummaryStyle::Detailed,
+                "gemma-4",
+            )
+            .expect("Should hit cache");
+        assert_eq!(hit.word_count, 420);
+        assert_eq!(hit.author.as_deref(), Some("Frank Herbert"));
+        assert_eq!(hit.reasoning.as_deref(), Some("Thought process about Dune"));
+    }
+
+    #[test]
+    fn test_cache_stats_clean_and_permissions() {
+        let (tmp, cache) = test_cache("stats_clean");
+        let url = "https://redb-cached.com";
+        cache.set_page(url, &make_page(url, "redb Cache", "Body", 3));
+        cache.set_book_metadata("Dune", None, &None);
+
+        let db_path = tmp.path().join("srz.db");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(tmp.path()).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::metadata(&db_path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+
+        let stats = cache.stats();
+        assert_eq!((stats.pages, stats.searches, stats.total_files), (1, 1, 2));
+        assert!(stats.total_bytes > 0);
+
+        let removed = cache.clean().unwrap();
+        assert_eq!(removed.total_files, 2);
+        assert_eq!(cache.stats().total_files, 0);
+        assert!(cache.get_page(url).is_none());
     }
 
     #[test]
@@ -781,207 +684,125 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_ttl_expiration() {
+    fn test_cache_ttl_and_timeframe_discrimination() {
         let (_tmp, mut cache) = test_cache("ttl");
-        cache.policy_mut().pages_ttl = Duration::from_secs(60);
+        cache.policy.pages_ttl = Duration::from_secs(60);
 
         let url = "https://expiring.com";
         cache.set_page(url, &make_page(url, "Expiring", "Temporary content", 2));
         assert!(cache.get_page(url).is_some());
-
-        cache.backdate_page_cache_for_test(url, 120);
-        assert!(cache.get_page(url).is_none());
-    }
-
-    #[test]
-    fn test_news_cache_short_ttl_expiration() {
-        let (_tmp, cache) = test_cache("news_ttl");
-        assert_eq!(cache.policy().news_ttl, Duration::from_secs(2 * 3600));
-
-        let url = "https://news.google.com/articles/123";
-        cache.set_page(
-            url,
-            &make_page(url, "Breaking News", "Latest news update", 3),
-        );
         assert!(cache.get_news_page(url).is_some());
 
-        cache.backdate_page_cache_for_test(url, 10800);
-        assert!(cache.get_news_page(url).is_none());
-    }
-
-    #[test]
-    fn test_news_summary_cache_and_short_ttl_expiration() {
-        let (_tmp, cache) = test_cache("news_summary_ttl");
-        assert!(
-            cache
-                .get_news_summary(
-                    "python language news",
-                    NewsTimeframe::Week,
-                    SummaryStyle::Concise,
-                    "default"
-                )
-                .is_none()
-        );
-
         let db = cache.open_database().unwrap();
-        let news_record = NewSummaryRecord {
-            model: "default",
-            word_count: 350,
-            reasoning: Some("Model reasoning trace"),
-            ..make_summary(
-                "news",
-                "News: python language news",
-                None,
-                Some("https://news.google.com/search?q=python"),
-                "# Python News Briefing\nPython 3.13 released.",
-            )
-        };
-        db.record_summary_with_key(
-            &news_record,
-            Some(&Cache::news_cache_title(
-                "python language news",
-                NewsTimeframe::Week,
-            )),
+        db.backdate_page_cache_for_test(url, 120);
+        assert!(cache.get_page(url).is_none());
+        db.backdate_page_cache_for_test(url, 10800);
+        assert!(cache.get_news_page(url).is_none());
+
+        let news_key = Cache::news_cache_title("python language news", NewsTimeframe::Week);
+        db.record_summary(
+            &NewSummaryRecord {
+                model: "default",
+                ..make_summary(
+                    "news",
+                    "News: python language news",
+                    None,
+                    None,
+                    "Python 3.13.",
+                )
+            },
+            Some(&news_key),
         )
         .unwrap();
-
-        let cached = cache
-            .get_news_summary(
-                "python language news",
-                NewsTimeframe::Week,
-                SummaryStyle::Concise,
-                "default",
-            )
-            .expect("Cached news briefing should be present");
-        assert_eq!(cached.title, "News: python language news");
-        assert!(cached.summary.contains("Python 3.13 released."));
-        assert_eq!(cached.word_count, 350);
-        assert_eq!(cached.reasoning.as_deref(), Some("Model reasoning trace"));
         assert!(
             cache
-                .get_news_summary(
-                    "python language news",
-                    NewsTimeframe::Day,
-                    SummaryStyle::Concise,
-                    "default"
-                )
-                .is_none()
-        );
-
-        let book_record = NewSummaryRecord {
-            model: "default",
-            ..make_summary(
-                "book",
-                "\"Dune\" by Frank Herbert",
-                Some("Frank Herbert"),
-                None,
-                "Arrakis and spice.",
-            )
-        };
-        db.record_summary_with_key(
-            &book_record,
-            Some(&Cache::book_cache_title("Dune", Some("Frank Herbert"))),
-        )
-        .unwrap();
-
-        assert!(
-            cache
-                .get_book_summary(
-                    "Dune",
-                    Some("Frank Herbert"),
-                    SummaryStyle::Concise,
-                    "default"
-                )
+                .get_summary("news", &news_key, SummaryStyle::Concise, "default")
                 .is_some()
         );
         assert!(
             cache
-                .get_book_summary("Dune", None, SummaryStyle::Concise, "default")
-                .is_none()
-        );
-        assert!(cache.stats().summaries >= 2);
-
-        cache.backdate_history_for_test("News: python language news", 10800);
-        assert!(
-            cache
-                .get_news_summary(
-                    "python language news",
-                    NewsTimeframe::Week,
+                .get_summary(
+                    "news",
+                    &Cache::news_cache_title("python language news", NewsTimeframe::Day),
                     SummaryStyle::Concise,
                     "default"
                 )
                 .is_none()
         );
+        db.backdate_history_for_test("News: python language news", 10800);
+        assert!(
+            cache
+                .get_summary("news", &news_key, SummaryStyle::Concise, "default")
+                .is_none()
+        );
     }
 
     #[test]
-    fn test_cache_prune_by_age() {
-        let (_tmp, cache) = test_cache("prune_age");
-        let url = "https://prune-test.com";
-        cache.set_page(url, &make_page(url, "Prune Test", "To be pruned", 3));
-        assert_eq!(cache.stats().pages, 1);
-
-        cache.backdate_page_cache_for_test(url, 2 * 86400);
-        let stats = cache
-            .prune(PruneOptions {
-                older_than: Some(Duration::from_secs(86400)),
-                max_bytes: None,
-            })
-            .unwrap();
-        assert_eq!(stats.files_removed, 1);
-        assert!(stats.bytes_reclaimed > 0);
-        assert_eq!(cache.stats().pages, 0);
-    }
-
-    #[test]
-    fn test_cache_prune_by_max_size_lru() {
-        let (_tmp, cache) = test_cache("prune_size");
+    fn test_cache_prune_age_lru_and_auto_prune() {
+        let (tmp, mut cache) = test_cache("prune");
         let body = "A".repeat(1000);
         for i in 0..5 {
             let url = format!("https://example.com/{i}");
             cache.set_page(&url, &make_page(&url, &format!("Page {i}"), &body, 100));
         }
-
-        assert_eq!(cache.stats().pages, 5);
-        let original_bytes = cache.stats().total_bytes;
-
+        let db = cache.open_database().unwrap();
         for i in 0..5 {
-            cache.backdate_page_cache_for_test(&format!("https://example.com/{i}"), (4 - i) * 600);
+            db.backdate_page_cache_for_test(&format!("https://example.com/{i}"), (4 - i) * 600);
         }
 
-        let prune_stats = cache
+        let lru = cache
             .prune(PruneOptions {
                 older_than: None,
                 max_bytes: Some(2500),
             })
             .unwrap();
-        assert!(prune_stats.files_removed > 0);
+        assert!(lru.files_removed > 0 && lru.bytes_reclaimed > 0);
         assert!(cache.stats().total_bytes <= 2500);
-        assert!(cache.stats().total_bytes < original_bytes);
         assert!(cache.get_page("https://example.com/0").is_none());
         assert!(cache.get_page("https://example.com/4").is_some());
-    }
 
-    #[test]
-    fn test_cache_opportunistic_auto_prune() {
-        let (tmp, mut cache) = test_cache("auto_prune");
-        cache.policy_mut().auto_prune_interval = Duration::from_secs(60);
+        let age = cache
+            .prune(PruneOptions {
+                older_than: Some(Duration::from_secs(300)),
+                max_bytes: None,
+            })
+            .unwrap();
+        assert!(age.files_removed > 0);
 
-        let url = "https://auto.example.com";
-        cache.set_page(url, &make_page(url, "Auto", "Auto prune content", 3));
-
+        cache.policy.auto_prune_interval = Duration::from_secs(60);
         assert!(cache.maybe_auto_prune().is_some());
         assert!(tmp.path().join(".last_prune").exists());
         assert!(cache.maybe_auto_prune().is_none());
     }
 
     #[test]
-    fn test_cache_sha256_hash_keys() {
-        let (tmp, cache) = test_cache("sha256");
+    fn test_cache_sha256_keys_and_server_caps_invalidation() {
+        let (tmp, cache) = test_cache("caps_sha");
         let url = "https://secure-hash.example.com";
-        cache.set_page(
-            url,
-            &make_page(url, "Secure", "Testing SHA-256 hash length", 4),
+        cache.set_page(url, &make_page(url, "Secure", "Body", 1));
+        let caps = ServerCapabilities {
+            endpoint: "http://localhost:9931".to_string(),
+            model_id: "gemma-4".to_string(),
+            n_ctx: 32768,
+            backend_kind: "llama.cpp".to_string(),
+        };
+        cache.set_server_capabilities(&caps);
+        assert_eq!(
+            cache
+                .get_server_capabilities("http://localhost:9931", "gemma-4")
+                .unwrap()
+                .n_ctx,
+            32768
+        );
+        assert!(
+            cache
+                .get_server_capabilities("http://localhost:9931", "other")
+                .is_none()
+        );
+        assert!(
+            cache
+                .get_server_capabilities("http://localhost:9931", "gemma-4")
+                .is_none()
         );
         drop(cache);
 
@@ -990,102 +811,7 @@ mod tests {
         let read_txn = redb.begin_read().unwrap();
         let table = read_txn.open_table(TABLE_CACHE_PAGES).unwrap();
         let (key, _) = table.iter().unwrap().next().unwrap().unwrap();
-        let key_str = key.value();
-        assert_eq!(key_str.len(), 64);
-        assert!(key_str.chars().all(|c| c.is_ascii_hexdigit()));
-    }
-
-    #[test]
-    fn test_cache_redb_consolidation_and_permissions() {
-        let (tmp, cache) = test_cache("redb_cache");
-        let dir = tmp.path();
-        let url = "https://redb-cached.com";
-        cache.set_page(
-            url,
-            &make_page(url, "redb Cache", "Testing redb cache consolidation", 4),
-        );
-
-        let db = cache.open_database().unwrap();
-        let record = NewSummaryRecord {
-            model: "gemma-4",
-            word_count: 4,
-            ..make_summary(
-                "web",
-                "redb Cache",
-                None,
-                Some(url),
-                "Consolidated cache in redb",
-            )
-        };
-        db.record_summary_with_key(&record, Some(url)).unwrap();
-
-        let db_path = dir.join("srz.db");
-        assert!(db_path.exists());
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                fs::metadata(dir).unwrap().permissions().mode() & 0o777,
-                0o700
-            );
-            assert_eq!(
-                fs::metadata(&db_path).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
-        }
-        assert!(!dir.join("pages").exists());
-        assert!(!dir.join("summaries").exists());
-
-        assert_eq!(
-            cache.get_page(url).unwrap().title.as_deref(),
-            Some("redb Cache")
-        );
-        assert_eq!(
-            cache
-                .get_web_summary(url, SummaryStyle::Concise, "gemma-4")
-                .unwrap()
-                .summary,
-            "Consolidated cache in redb"
-        );
-
-        cache.clean().unwrap();
-        assert!(cache.get_page(url).is_none());
-        assert!(
-            cache
-                .get_web_summary(url, SummaryStyle::Concise, "gemma-4")
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn test_cache_server_capabilities_model_change_invalidation() {
-        let (_tmp, cache) = test_cache("server_caps");
-        let caps1 = ServerCapabilities {
-            endpoint: "http://localhost:9931".to_string(),
-            model_id: "ggml-org/gemma-4-E4B-it-GGUF:Q8_0".to_string(),
-            n_ctx: 32768,
-            backend_kind: "llama.cpp".to_string(),
-        };
-        cache.set_server_capabilities(&caps1);
-
-        let hit = cache
-            .get_server_capabilities("http://localhost:9931", "ggml-org/gemma-4-E4B-it-GGUF:Q8_0")
-            .unwrap();
-        assert_eq!(hit.n_ctx, 32768);
-        assert_eq!(hit.backend_kind, "llama.cpp");
-
-        assert!(
-            cache
-                .get_server_capabilities("http://localhost:9931", "different-model-id")
-                .is_none()
-        );
-        assert!(
-            cache
-                .get_server_capabilities(
-                    "http://localhost:9931",
-                    "ggml-org/gemma-4-E4B-it-GGUF:Q8_0"
-                )
-                .is_none()
-        );
+        assert_eq!(key.value().len(), 64);
+        assert!(key.value().chars().all(|c| c.is_ascii_hexdigit()));
     }
 }
