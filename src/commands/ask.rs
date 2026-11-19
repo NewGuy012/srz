@@ -163,10 +163,10 @@ pub fn format_grounded_context_with_budget_and_tokenizer(
     tokenizer_kind: TokenizerKind,
 ) -> String {
     let selected = select_relevant_context_bm25(content, question, max_tokens, tokenizer_kind);
-    let untrusted_block = crate::engine::llm::format_untrusted_section(
+    let untrusted_block = crate::engine::prompts::format_untrusted_section(
         "source_document",
         &selected,
-        Some(max_tokens),
+        Some((max_tokens, tokenizer_kind)),
     );
     let safe_title = crate::ui::sanitize_title(title);
     format!("Document: {safe_title}\n\n{untrusted_block}")

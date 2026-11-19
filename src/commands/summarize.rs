@@ -441,8 +441,10 @@ pub async fn handle_news(
     let mut digest = String::new();
     let mut total_words = 0;
     for (i, src) in sources.iter().enumerate() {
-        let trimmed_content =
-            crate::engine::llm::truncate_words_preserving_lines(&src.content, per_article_words);
+        let trimmed_content = crate::engine::prompts::truncate_words_preserving_lines(
+            &src.content,
+            per_article_words,
+        );
         let article_words = trimmed_content.split_whitespace().count();
         total_words += article_words;
 

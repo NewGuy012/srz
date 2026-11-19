@@ -1,12 +1,12 @@
-use crate::ui::Ui;
+use crate::ui::{Ui, format_duration_short};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::io::{self, Write};
 use std::time::Duration;
 
-pub const MAX_SSE_LINE_BYTES: usize = 1024 * 1024; // 1 MB per line
-pub const MAX_CONTENT_BUFFER_BYTES: usize = 10 * 1024 * 1024; // 10 MB total content
-pub const MAX_HTTP_RESPONSE_BYTES: usize = 10 * 1024 * 1024; // 10 MB for JSON responses
+pub(crate) const MAX_SSE_LINE_BYTES: usize = 1024 * 1024;
+const MAX_CONTENT_BUFFER_BYTES: usize = 10 * 1024 * 1024;
+pub(crate) const MAX_HTTP_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
 
 #[derive(Serialize)]
 pub(crate) struct StreamOptions {
@@ -31,10 +31,18 @@ pub struct RequestMessage<'a> {
 }
 
 #[derive(Deserialize)]
+pub(crate) struct SseErrorPayload<'a> {
+    #[serde(borrow)]
+    pub(crate) message: Option<Cow<'a, str>>,
+}
+
+#[derive(Deserialize)]
 pub(crate) struct ChatCompletionChunk<'a> {
     #[serde(default, borrow)]
     pub(crate) choices: Vec<ChunkChoice<'a>>,
     pub(crate) usage: Option<TokenUsage>,
+    #[serde(borrow)]
+    pub(crate) error: Option<SseErrorPayload<'a>>,
 }
 
 #[derive(Deserialize)]
@@ -49,7 +57,6 @@ pub(crate) struct ChunkChoice<'a> {
 pub(crate) struct ChunkDelta<'a> {
     #[serde(borrow)]
     pub(crate) content: Option<Cow<'a, str>>,
-    /// Emitted by llama.cpp / Gemma 4 / DeepSeek during internal chain-of-thought
     #[serde(borrow)]
     pub(crate) reasoning_content: Option<Cow<'a, str>>,
 }
@@ -75,7 +82,8 @@ pub(crate) struct ChatChoice {
 
 #[derive(Deserialize)]
 pub(crate) struct ResponseMessage {
-    pub(crate) content: String,
+    #[serde(default)]
+    pub(crate) content: Option<String>,
     #[serde(default)]
     pub(crate) reasoning_content: Option<String>,
 }
@@ -83,9 +91,7 @@ pub(crate) struct ResponseMessage {
 /// Controls whether tokens are streamed live to stdout or buffered behind a spinner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StreamMode<'a> {
-    /// Stream visible content tokens directly to stdout as they arrive.
     Stdout { header_title: &'a str },
-    /// Buffer tokens silently behind a spinner until complete (default).
     Buffered,
 }
 
@@ -113,13 +119,13 @@ pub(crate) enum ThinkingState {
 pub(crate) struct SseStreamState {
     pub(crate) content_buf: String,
     pub(crate) reasoning_buf: String,
-    pub(crate) thinking_tokens: usize,
     pub(crate) output_tokens: usize,
     pub(crate) started_visible: bool,
     pub(crate) thinking: ThinkingState,
     pub(crate) streamed_thinking: bool,
     pub(crate) pending_tag: String,
     pub(crate) truncated: bool,
+    pub(crate) upstream_error: Option<String>,
     pub(crate) last_usage: Option<TokenUsage>,
     pub(crate) needs_stdout_flush: bool,
     pub(crate) stream_renderer: Option<crate::ui::StreamMarkdownRenderer>,
@@ -133,13 +139,13 @@ impl SseStreamState {
         Self {
             content_buf: String::with_capacity(2048),
             reasoning_buf: String::with_capacity(1024),
-            thinking_tokens: 0,
             output_tokens: 0,
             started_visible: false,
             thinking: ThinkingState::Detecting,
             streamed_thinking: false,
             pending_tag: String::new(),
             truncated: false,
+            upstream_error: None,
             last_usage: None,
             needs_stdout_flush: false,
             stream_renderer: None,
@@ -160,7 +166,6 @@ impl Default for SseStreamState {
     }
 }
 
-/// Returns longest length `k < needle.len()` such that `haystack` ends with `&needle[..k]`.
 fn trailing_tag_prefix(haystack: &str, needle: &str) -> usize {
     let max_k = haystack.len().min(needle.len().saturating_sub(1));
     (1..=max_k)
@@ -170,7 +175,38 @@ fn trailing_tag_prefix(haystack: &str, needle: &str) -> usize {
 }
 
 impl SseStreamState {
-    /// Extracts `(content, reasoning)` for non-streaming responses via the same `<think>` tag state machine.
+    pub(crate) fn into_output(
+        mut self,
+        elapsed: Duration,
+        streamed_to_stdout: bool,
+        usage: Option<TokenUsage>,
+        warning: Option<String>,
+        fallback_chunk_tokens: bool,
+    ) -> LlmOutput {
+        let trimmed_len = self.content_buf.trim_end().len();
+        self.content_buf.truncate(trimmed_len);
+        let reasoning =
+            (!self.reasoning_buf.trim().is_empty()).then(|| self.reasoning_buf.trim().to_string());
+        let prompt_tokens = usage.and_then(|u| u.prompt_tokens);
+        let completion_tokens = usage
+            .and_then(|u| u.completion_tokens)
+            .or_else(|| fallback_chunk_tokens.then_some(self.output_tokens as u32));
+
+        LlmOutput {
+            content: self.content_buf,
+            reasoning,
+            truncated: self.truncated,
+            warning,
+            hint: None,
+            streamed_to_stdout,
+            prompt_tokens,
+            completion_tokens,
+            duration_ms: elapsed.as_millis() as u64,
+            tokens_per_second: compute_tokens_per_second(completion_tokens, elapsed),
+        }
+    }
+
+    /// Extracts `(content, reasoning)` for non-streaming responses via the same `<think>` state machine.
     pub(crate) fn split_non_streaming(
         content: &str,
         reasoning_content: Option<&str>,
@@ -185,14 +221,11 @@ impl SseStreamState {
             StreamMode::Buffered,
         );
         state.finish_stream(&pb, "", StreamMode::Buffered);
-        let trimmed_len = state.content_buf.trim_end().len();
-        state.content_buf.truncate(trimmed_len);
-        let reasoning = (!state.reasoning_buf.trim().is_empty())
-            .then(|| state.reasoning_buf.trim().to_string());
-        (state.content_buf, reasoning)
+        let out = state.into_output(Duration::ZERO, false, None, None, false);
+        (out.content, out.reasoning)
     }
 
-    /// Processes a single SSE line. Returns `true` if `[DONE]` was reached or a buffer cap was hit.
+    /// Processes a single SSE line. Returns `true` if `[DONE]`, an upstream error, or buffer cap was hit.
     pub(crate) fn process_line(
         &mut self,
         line_bytes: &[u8],
@@ -214,6 +247,17 @@ impl SseStreamState {
         let Ok(event) = serde_json::from_str::<ChatCompletionChunk<'_>>(payload) else {
             return false;
         };
+
+        if let Some(err) = event.error {
+            let msg = err
+                .message
+                .as_deref()
+                .map(crate::ui::sanitize_title)
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "Upstream stream error".to_string());
+            self.upstream_error = Some(msg);
+            return true;
+        }
 
         if event.usage.is_some() {
             self.last_usage = event.usage;
@@ -388,7 +432,6 @@ impl SseStreamState {
             self.truncated = true;
             return true;
         }
-        self.thinking_tokens += 1;
         if in_tag || self.thinking == ThinkingState::Detecting {
             self.thinking = ThinkingState::Thinking { in_tag };
         }
@@ -412,18 +455,20 @@ impl SseStreamState {
                 }
                 let safe_chunk = crate::ui::sanitize_terminal_text_cow(text);
                 if Ui::use_color() {
-                    let indented = safe_chunk.replace('\n', "\n  │ ");
-                    eprint!("{}", indented);
+                    eprint!("{}", safe_chunk.replace('\n', "\n  │ "));
                 } else {
-                    eprint!("{}", safe_chunk);
+                    eprint!("{safe_chunk}");
                 }
                 let _ = io::stderr().flush();
             } else if is_first_thinking
                 || now.duration_since(self.last_spinner_update) >= Duration::from_millis(100)
             {
                 self.last_spinner_update = now;
-                let step = extract_reasoning_step(&self.reasoning_buf);
-                pb.set_message(format_thinking_spinner_message(step.as_deref()));
+                let msg = match extract_reasoning_step(&self.reasoning_buf) {
+                    Some(s) => format!("💭 Thinking: {s}..."),
+                    None => "💭 Thinking...".to_string(),
+                };
+                pb.set_message(msg);
             }
         }
 
@@ -442,14 +487,9 @@ impl SseStreamState {
         }
         self.thinking = ThinkingState::Finished;
 
-        if pb.is_hidden() || Ui::is_quiet() {
+        if Ui::is_quiet() || (pb.is_hidden() && !self.show_thinking_stream) {
             return;
         }
-
-        let total_elapsed_s = self
-            .thinking_start
-            .map(|t| t.elapsed().as_secs_f64())
-            .unwrap_or(0.0);
 
         if self.show_thinking_stream {
             if self.streamed_thinking {
@@ -459,20 +499,24 @@ impl SseStreamState {
                     eprintln!("\n----------------");
                 }
             }
-        } else if self.thinking_tokens > 0 {
-            let total_duration_str = format_thinking_duration(total_elapsed_s);
-            let thought_line = format!("💭 Thought for {}", total_duration_str);
-
+        } else if let Some(started) = self.thinking_start {
+            let thought_line = format!(
+                "💭 Thought for {}",
+                format_duration_short(started.elapsed())
+            );
             match mode {
                 StreamMode::Buffered => pb.println(thought_line),
                 StreamMode::Stdout { .. } => {
                     pb.finish_and_clear();
-                    eprintln!("{}", thought_line);
+                    eprintln!("{thought_line}");
                 }
             }
         }
 
-        if matches!(mode, StreamMode::Buffered) && !spinner_label.trim().is_empty() {
+        if !pb.is_hidden()
+            && matches!(mode, StreamMode::Buffered)
+            && !spinner_label.trim().is_empty()
+        {
             if pb.is_finished() {
                 pb.reset();
             }
@@ -487,8 +531,6 @@ impl SseStreamState {
         spinner_label: &str,
         mode: StreamMode<'_>,
     ) {
-        self.finish_thinking_ui(pb, spinner_label, mode);
-
         let is_first = !self.started_visible;
         let text_to_emit = if is_first {
             let clean = delta_text.trim_start();
@@ -501,6 +543,7 @@ impl SseStreamState {
             delta_text
         };
 
+        self.finish_thinking_ui(pb, spinner_label, mode);
         self.output_tokens += 1;
         self.content_buf.push_str(text_to_emit);
 
@@ -509,14 +552,16 @@ impl SseStreamState {
                 if is_first {
                     pb.finish_and_clear();
                     let safe_title = crate::ui::sanitize_title(header_title);
-                    Ui::header(&format!("Summary: {}", safe_title));
+                    if safe_title.starts_with("Answer:") || safe_title.starts_with("Summary:") {
+                        Ui::header(&safe_title);
+                    } else {
+                        Ui::header(&format!("Summary: {safe_title}"));
+                    }
                     self.stream_renderer = Some(crate::ui::StreamMarkdownRenderer::new());
                 }
                 let clean_text = crate::ui::sanitize_terminal_text_cow(text_to_emit);
                 if let Some(ref mut renderer) = self.stream_renderer {
                     renderer.feed(&clean_text);
-                } else {
-                    print!("{}", clean_text);
                 }
                 self.needs_stdout_flush = true;
             }
@@ -536,149 +581,51 @@ fn update_generating_spinner(pb: &crate::ui::ProgressBar, spinner_label: &str) {
     } else {
         clean_label
     };
-    pb.set_message(format!("{}...", gen_label));
+    pb.set_message(format!("{gen_label}..."));
 }
 
-/// Formats an elapsed thinking duration consistently (`"0.4s"`, `"2.0s"`, `"12.3s"`, `"1m 5s"`).
-pub fn format_thinking_duration(secs: f64) -> String {
-    let tenths = if secs.is_finite() && secs > 0.0 {
-        (secs * 10.0).round() as u64
-    } else {
-        0
-    };
-    if tenths < 600 {
-        format!("{}.{}s", tenths / 10, tenths % 10)
-    } else {
-        let total_secs = (tenths + 5) / 10;
-        format!("{}m {}s", total_secs / 60, total_secs % 60)
-    }
-}
+fn extract_reasoning_step(reasoning: &str) -> Option<String> {
+    let tail_start = reasoning.floor_char_boundary(reasoning.len().saturating_sub(4096));
+    let tail = &reasoning[tail_start..];
+    let ends_with_nl = tail.ends_with('\n');
 
-fn format_thinking_spinner_message(step: Option<&str>) -> String {
-    match step.map(normalize_step_colons).filter(|s| !s.is_empty()) {
-        Some(s) => format!("💭 Thinking: {}...", s),
-        None => "💭 Thinking...".to_string(),
-    }
-}
-
-/// Extracts the latest top-level reasoning step header in sentence case from `reasoning`.
-pub fn extract_reasoning_step(reasoning: &str) -> Option<String> {
-    let ends_with_nl = reasoning.ends_with('\n');
-    for (idx, raw_line) in reasoning.rsplit('\n').take(20).enumerate() {
-        let allow_heading = idx > 0 || ends_with_nl;
-        let Some(candidate) = extract_step_candidate(raw_line, allow_heading) else {
+    for (idx, raw_line) in tail.rsplit('\n').take(20).enumerate() {
+        let trimmed = raw_line.trim_end_matches(['\r', ' ', '\t']);
+        if trimmed.is_empty()
+            || trimmed.starts_with([' ', '\t'])
+            || trimmed.starts_with("- ")
+            || trimmed.starts_with("+ ")
+            || (trimmed.starts_with('*') && !trimmed.starts_with("**"))
+        {
             continue;
+        }
+        let candidate = if (idx > 0 || ends_with_nl) && trimmed.starts_with('#') {
+            trimmed.trim_start_matches('#').trim()
+        } else {
+            let digits = trimmed.bytes().take_while(u8::is_ascii_digit).count();
+            let after_num = if digits > 0
+                && (trimmed[digits..].starts_with(". ") || trimmed[digits..].starts_with(") "))
+            {
+                trimmed[digits + 2..].trim_start()
+            } else {
+                trimmed
+            };
+            let Some(rest) = after_num.strip_prefix("**") else {
+                continue;
+            };
+            let Some(end) = rest.find("**") else {
+                continue;
+            };
+            rest[..end].trim()
         };
-        let cleaned = clean_step_text(candidate);
+        let cleaned = candidate
+            .trim_matches(|c: char| c.is_whitespace() || matches!(c, '*' | '#' | ':' | '.' | '…'))
+            .trim();
         if cleaned.chars().count() >= 4 {
-            return Some(to_sentence_case(&cleaned));
+            return Some(cleaned.to_string());
         }
     }
     None
-}
-
-fn strip_list_number(s: &str) -> &str {
-    let digits = s.bytes().take_while(u8::is_ascii_digit).count();
-    if digits > 0 && (s[digits..].starts_with(". ") || s[digits..].starts_with(") ")) {
-        s[digits + 2..].trim_start()
-    } else {
-        s
-    }
-}
-
-fn extract_step_candidate(line: &str, allow_heading: bool) -> Option<&str> {
-    let trimmed = line.trim_end_matches(['\r', ' ', '\t']);
-    if trimmed.is_empty()
-        || trimmed.starts_with([' ', '\t'])
-        || trimmed.starts_with("- ")
-        || trimmed.starts_with("+ ")
-        || (trimmed.starts_with('*') && !trimmed.starts_with("**"))
-    {
-        return None;
-    }
-    if allow_heading && trimmed.starts_with('#') {
-        let text = trimmed.trim_start_matches('#').trim();
-        return (!text.is_empty()).then_some(text);
-    }
-    let rest = strip_list_number(trimmed).strip_prefix("**")?;
-    let end = rest.find("**")?;
-    let inner = rest[..end].trim();
-    (!inner.is_empty()).then_some(inner)
-}
-
-fn normalize_step_colons(s: &str) -> String {
-    let trimmed = s.trim_matches(|c: char| c.is_whitespace() || matches!(c, ':' | '.' | '-' | '…'));
-    if !trimmed.contains(':') {
-        return trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
-    }
-    let replaced = trimmed.replace(':', " - ");
-    let mut words = Vec::new();
-    for word in replaced.split_whitespace() {
-        if word == "-" && words.last().is_some_and(|&w| w == "-") {
-            continue;
-        }
-        words.push(word);
-    }
-    words.join(" ")
-}
-
-fn clean_step_text(s: &str) -> String {
-    let md_stripped: String = s
-        .chars()
-        .filter(|&c| !matches!(c, '*' | '_' | '#' | '`'))
-        .collect();
-    let without_num = strip_list_number(md_stripped.trim());
-    let mut main = String::with_capacity(without_num.len());
-    let mut depth = 0usize;
-    for c in without_num.chars() {
-        match c {
-            '(' => depth += 1,
-            ')' if depth > 0 => depth -= 1,
-            _ if depth == 0 => main.push(c),
-            _ => {}
-        }
-    }
-    let normalized = normalize_step_colons(&main);
-    if !normalized.is_empty() {
-        return normalized;
-    }
-    let fallback: String = without_num
-        .chars()
-        .filter(|&c| !matches!(c, '(' | ')'))
-        .collect();
-    normalize_step_colons(&fallback)
-}
-
-fn to_sentence_case(s: &str) -> String {
-    let all_caps = s
-        .chars()
-        .filter(|c| c.is_alphabetic())
-        .all(char::is_uppercase);
-    let mut out = String::with_capacity(s.len());
-    let mut capitalized_first = false;
-    for word in s.split_whitespace() {
-        if !out.is_empty() {
-            out.push(' ');
-        }
-        let alpha_count = word.chars().filter(|c| c.is_alphabetic()).count();
-        let is_acronym = !all_caps
-            && (2..=4).contains(&alpha_count)
-            && word.chars().all(|c| !c.is_alphabetic() || c.is_uppercase());
-        if is_acronym {
-            out.push_str(word);
-            capitalized_first = true;
-        } else {
-            for c in word.chars() {
-                if !capitalized_first && c.is_alphabetic() {
-                    out.extend(c.to_uppercase());
-                    capitalized_first = true;
-                } else {
-                    out.extend(c.to_lowercase());
-                }
-            }
-        }
-    }
-    out
 }
 
 pub(crate) fn compute_tokens_per_second(
@@ -707,282 +654,84 @@ mod tests {
     }
 
     #[test]
-    fn test_sse_stream_state_process_line() {
+    fn test_sse_stream_lifecycle_leading_ws_error_and_usage() {
         let mut state = SseStreamState::default();
         let pb = crate::ui::ProgressBar::hidden();
 
-        // 1. Process reasoning tokens (thinking occurs before visible content)
-        let reason_chunk = br#"data: {"choices":[{"delta":{"reasoning_content":"Step 1"}}]}"#;
-        assert!(!state.process_line(reason_chunk, &pb, "Testing", StreamMode::Buffered));
-        assert_eq!(state.thinking_tokens, 1);
-        assert!(state.is_thinking());
-        assert_eq!(state.reasoning_buf, "Step 1");
-        assert_eq!(state.content_buf, "");
+        // Leading whitespace before `<think>` must NOT disable think-tag detection
+        assert!(!state.process_line(
+            br#"data: {"choices":[{"delta":{"content":"\n  "}}]}"#,
+            &pb,
+            "T",
+            StreamMode::Buffered
+        ));
+        assert!(!state.process_line(
+            br#"data: {"choices":[{"delta":{"content":"<thi"}}]}"#,
+            &pb,
+            "T",
+            StreamMode::Buffered
+        ));
+        assert!(!state.process_line(
+            br#"data: {"choices":[{"delta":{"content":"nk>Step 1 & done</th"}}]}"#,
+            &pb,
+            "T",
+            StreamMode::Buffered
+        ));
+        assert!(!state.process_line(
+            br#"data: {"choices":[{"delta":{"content":"ink>Hello "}}]}"#,
+            &pb,
+            "T",
+            StreamMode::Buffered
+        ));
+        assert!(!state.process_line(
+            br#"data: {"choices":[{"delta":{"content":"World!"}}]}"#,
+            &pb,
+            "T",
+            StreamMode::Buffered
+        ));
+        assert!(!state.process_line(br#"data: {"choices":[{"finish_reason":"length","delta":{}}],"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}"#, &pb, "T", StreamMode::Buffered));
+        assert!(state.process_line(b"data: [DONE]", &pb, "T", StreamMode::Buffered));
+        assert!(!state.process_line(b": ping", &pb, "T", StreamMode::Buffered));
+        assert!(!state.process_line(b"data: {bad json", &pb, "T", StreamMode::Buffered));
 
-        // 2. Process regular delta content chunks
-        let chunk1 = br#"data: {"choices":[{"delta":{"content":"Hello "}}]}"#;
-        assert!(!state.process_line(chunk1, &pb, "Testing", StreamMode::Buffered));
-        assert_eq!(state.content_buf, "Hello ");
-        assert_eq!(state.output_tokens, 1);
-        assert!(state.started_visible);
-
-        let chunk2 = br#"data: {"choices":[{"delta":{"content":"World!"}}]}"#;
-        assert!(!state.process_line(chunk2, &pb, "Testing", StreamMode::Buffered));
+        state.finish_stream(&pb, "T", StreamMode::Buffered);
+        assert_eq!(state.reasoning_buf, "Step 1 & done");
         assert_eq!(state.content_buf, "Hello World!");
-        assert_eq!(state.output_tokens, 2);
-
-        // 3. Process usage chunk
-        let usage_chunk = br#"data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}"#;
-        assert!(!state.process_line(usage_chunk, &pb, "Testing", StreamMode::Buffered));
-        assert_eq!(
-            state.last_usage,
-            Some(TokenUsage {
-                prompt_tokens: Some(10),
-                completion_tokens: Some(20),
-                total_tokens: Some(30),
-            })
-        );
-
-        // 4. Process length finish reason
-        let length_chunk = br#"data: {"choices":[{"finish_reason":"length","delta":{}}]}"#;
-        assert!(!state.process_line(length_chunk, &pb, "Testing", StreamMode::Buffered));
         assert!(state.truncated);
 
-        // 5. Process [DONE] sentinel
-        let done_chunk = b"data: [DONE]";
-        assert!(state.process_line(done_chunk, &pb, "Testing", StreamMode::Buffered));
+        let mut err_state = SseStreamState::default();
+        assert!(err_state.process_line(
+            br#"data: {"error":{"message":"Context full"}}"#,
+            &pb,
+            "T",
+            StreamMode::Buffered
+        ));
+        assert_eq!(err_state.upstream_error.as_deref(), Some("Context full"));
 
-        // 6. Non-data / malformed lines return false gracefully
-        assert!(!state.process_line(b": ping", &pb, "Testing", StreamMode::Buffered));
-        assert!(!state.process_line(b"data: {bad json", &pb, "Testing", StreamMode::Buffered));
+        let (c, r) =
+            SseStreamState::split_non_streaming("<think>Plan</think>\nFinal answer.", None);
+        assert_eq!(c, "Final answer.");
+        assert_eq!(r.as_deref(), Some("Plan"));
     }
 
     #[test]
-    fn test_format_thinking_duration() {
-        assert_eq!(format_thinking_duration(0.4), "0.4s");
-        assert_eq!(format_thinking_duration(2.0), "2.0s");
-        assert_eq!(format_thinking_duration(2.7), "2.7s");
-        assert_eq!(format_thinking_duration(19.0), "19.0s");
-        assert_eq!(format_thinking_duration(59.96), "1m 0s");
-        assert_eq!(format_thinking_duration(65.0), "1m 5s");
-
-        // Live thinking spinner omits elapsed duration, avoids double ellipsis, and replaces colons with dashes
-        assert_eq!(format_thinking_spinner_message(None), "💭 Thinking...");
-        assert_eq!(
-            format_thinking_spinner_message(Some("Analyze the request")),
-            "💭 Thinking: Analyze the request..."
-        );
-        assert_eq!(
-            format_thinking_spinner_message(Some("Draft paragraph 2: technical features:")),
-            "💭 Thinking: Draft paragraph 2 - technical features..."
-        );
-        assert_eq!(
-            format_thinking_spinner_message(Some("...")),
-            "💭 Thinking..."
-        );
-    }
-
-    #[test]
-    fn test_extract_reasoning_step_sentence_case() {
-        // Bold numbered step + indented metadata sub-bullets are skipped automatically
-        let trace = "Here's a thinking process:\n\n1.  **Analyze the Request:**\n    *   **Topic:** Nvidia\n    *   **Timeframe:** all time";
+    fn test_extract_reasoning_step() {
+        let trace = "Thinking:\n\n1.  **Analyze the Request:**\n    *   **Topic:** Nvidia\n";
         assert_eq!(
             extract_reasoning_step(trace).as_deref(),
-            Some("Analyze the request")
-        );
-
-        // Completed ATX heading converts to sentence case while preserving acronyms
-        let heading = "### 2. Comparing the US and LLM API Stories\nReviewing sources";
-        assert_eq!(
-            extract_reasoning_step(heading).as_deref(),
-            Some("Comparing the US and LLM API stories")
+            Some("Analyze the Request")
         );
         assert_eq!(
-            extract_reasoning_step("**US Chip Export Controls**").as_deref(),
-            Some("US chip export controls")
+            extract_reasoning_step("### 2. Comparing the US and LLM Stories\nBody").as_deref(),
+            Some("2. Comparing the US and LLM Stories")
         );
-
-        // Title-cased model headers preserve full main text in sentence case, replace colons with dashes, and avoid '…...'
-        let step_full = "**Draft Paragraph 2: Technical Depth and Complexity Overview**";
-        let extracted_full = extract_reasoning_step(step_full).unwrap();
-        assert_eq!(
-            extracted_full,
-            "Draft paragraph 2 - technical depth and complexity overview"
-        );
-        let spinner_msg = format_thinking_spinner_message(Some(&extracted_full));
-        assert_eq!(
-            spinner_msg,
-            "💭 Thinking: Draft paragraph 2 - technical depth and complexity overview..."
-        );
-        assert_eq!(spinner_msg.matches(':').count(), 1);
-
-        // Parenthetical glosses are stripped so main reasoning text isn't left with dangling '('
-        assert_eq!(
-            extract_reasoning_step(
-                "**Deconstruct the Source Document (Identify Key Themes, Dates, and Claims)**"
-            )
-            .as_deref(),
-            Some("Deconstruct the source document")
-        );
-        assert_eq!(
-            extract_reasoning_step("**1. (Analyze the Request)**").as_deref(),
-            Some("Analyze the request")
-        );
-
-        // Multiple or unspaced colons and adjacent dashes collapse cleanly so only Thinking: keeps a colon
-        for raw in [
-            "**Step 1: Intro: Details**",
-            "**Step 1:Intro:Details**",
-            "**Step 1:: - Intro : Details**",
-        ] {
-            let step = extract_reasoning_step(raw).unwrap();
-            assert_eq!(step, "Step 1 - intro - details");
-            assert_eq!(
-                format_thinking_spinner_message(Some(&step))
-                    .matches(':')
-                    .count(),
-                1
-            );
-        }
-
-        // Incomplete heading without trailing newline or unclosed bold does not flicker
         assert_eq!(extract_reasoning_step("### Halfway"), None);
-        assert_eq!(extract_reasoning_step("**Unclosed bold"), None);
-
-        // Mid-sentence bold emphasis or plain prose returns None
-        assert_eq!(
-            extract_reasoning_step("The article mentions **Nvidia** chips in passing."),
-            None
-        );
-        assert_eq!(
-            extract_reasoning_step("Just thinking in plain prose."),
-            None
-        );
-
-        // ALL CAPS headings normalize to sentence case and trailing ellipsis/dots are stripped without artificial length truncation
-        assert_eq!(
-            extract_reasoning_step("**ANALYZE THE REQUEST**").as_deref(),
-            Some("Analyze the request")
-        );
-        let long =
-            "**Synthesizing comprehensive developments across all global semiconductor articles…**";
-        let extracted = extract_reasoning_step(long).unwrap();
-        assert_eq!(
-            extracted,
-            "Synthesizing comprehensive developments across all global semiconductor articles"
-        );
+        assert_eq!(extract_reasoning_step("**Unclosed"), None);
+        assert_eq!(extract_reasoning_step("Mentions **Nvidia** inline."), None);
     }
 
     #[test]
-    fn test_sse_stream_state_clean_spinner_lifecycle() {
-        let pb = crate::ui::ProgressBar::hidden();
-        let mut state = SseStreamState::new(std::time::Instant::now(), false);
-
-        // Step 1: Thinking chunk
-        let reason_1 = br#"data: {"choices":[{"delta":{"reasoning_content":"Reading articles"}}]}"#;
-        assert!(!state.process_line(
-            reason_1,
-            &pb,
-            "Synthesizing news briefing...",
-            StreamMode::Buffered
-        ));
-        assert_eq!(state.thinking_tokens, 1);
-        assert!(state.is_thinking());
-        assert_ne!(state.thinking, ThinkingState::Finished);
-
-        // Step 2: Content generation starts: finishes thinking UI, keeps pb alive and transitions to loading status
-        let content_chunk =
-            b"data: {\"choices\":[{\"delta\":{\"content\":\"# Executive News Briefing\\n\"}}]}\n";
-        assert!(!state.process_line(
-            content_chunk,
-            &pb,
-            "Synthesizing news briefing...",
-            StreamMode::Buffered
-        ));
-        assert_eq!(state.thinking, ThinkingState::Finished);
-        assert!(!state.is_thinking());
-        assert!(
-            !pb.is_finished(),
-            "ProgressBar must remain active during buffered content generation"
-        );
-        assert_eq!(state.output_tokens, 1);
-        assert!(state.content_buf.contains("Executive News Briefing"));
-
-        // Subsequent content chunk updates spinner progress
-        let content_chunk_2 = b"data: {\"choices\":[{\"delta\":{\"content\":\"Key developments in Python 3.13.\"}}]}\n";
-        assert!(!state.process_line(
-            content_chunk_2,
-            &pb,
-            "Synthesizing news briefing...",
-            StreamMode::Buffered
-        ));
-        assert_eq!(state.output_tokens, 2);
-        assert!(!pb.is_finished());
-    }
-
-    #[test]
-    fn test_sse_stream_state_compact_vs_verbose_thinking() {
-        let pb = crate::ui::ProgressBar::hidden();
-
-        // Compact mode (default)
-        let mut state_compact = SseStreamState::new(std::time::Instant::now(), false);
-        let reason_chunk =
-            br#"data: {"choices":[{"delta":{"reasoning_content":"Checking parameters"}}]}"#;
-        assert!(!state_compact.process_line(reason_chunk, &pb, "Working", StreamMode::Buffered));
-        assert_eq!(state_compact.thinking_tokens, 1);
-        assert!(state_compact.is_thinking());
-        assert!(!state_compact.streamed_thinking);
-
-        // When content arrives, finish_thinking_ui runs and settles thinking
-        let content_chunk = br#"data: {"choices":[{"delta":{"content":"Summary result"}}]}"#;
-        assert!(!state_compact.process_line(content_chunk, &pb, "Working", StreamMode::Buffered));
-        assert!(!state_compact.is_thinking());
-        assert_eq!(state_compact.thinking, ThinkingState::Finished);
-        assert_eq!(state_compact.content_buf, "Summary result");
-
-        // Verbose / show_thinking_stream mode
-        let mut state_verbose = SseStreamState::new(std::time::Instant::now(), true);
-        assert!(!state_verbose.process_line(reason_chunk, &pb, "Working", StreamMode::Buffered));
-        assert_eq!(state_verbose.thinking_tokens, 1);
-        assert!(state_verbose.is_thinking());
-        assert!(state_verbose.streamed_thinking);
-    }
-
-    #[test]
-    fn test_sse_stream_state_split_think_tags_and_non_streaming() {
-        let pb = crate::ui::ProgressBar::hidden();
-        let mut state = SseStreamState::default();
-
-        for chunk in ["<thi", "nk>Step 1", " & done</th", "ink>Visible ", "answer"] {
-            let line = format!(r#"data: {{"choices":[{{"delta":{{"content":"{chunk}"}}}}]}}"#);
-            assert!(!state.process_line(line.as_bytes(), &pb, "", StreamMode::Buffered));
-        }
-        state.finish_stream(&pb, "", StreamMode::Buffered);
-
-        assert_eq!(state.reasoning_buf, "Step 1 & done");
-        assert_eq!(state.content_buf, "Visible answer");
-        assert_eq!(state.thinking, ThinkingState::Finished);
-
-        // Unclosed partial `<think>` prefix at EOF must still flush cleanly.
-        let mut eof_state = SseStreamState::default();
-        assert!(!eof_state.process_line(
-            br#"data: {"choices":[{"delta":{"content":"x <"}}]}"#,
-            &pb,
-            "",
-            StreamMode::Buffered
-        ));
-        eof_state.finish_stream(&pb, "", StreamMode::Buffered);
-        assert_eq!(eof_state.content_buf, "x <");
-
-        // Non-streaming path uses the same `<think>` + `reasoning_content` extraction.
-        let (content, reasoning) =
-            SseStreamState::split_non_streaming("<think>Plan steps</think>\nFinal answer.", None);
-        assert_eq!(content, "Final answer.");
-        assert_eq!(reasoning.as_deref(), Some("Plan steps"));
-    }
-
-    #[test]
-    fn test_sse_stream_state_bounds_reasoning_and_post_think_content() {
+    fn test_sse_stream_state_bounds_reasoning_and_content() {
         let pb = crate::ui::ProgressBar::hidden();
         let huge = "R".repeat(MAX_CONTENT_BUFFER_BYTES + 1024);
 
@@ -991,7 +740,7 @@ mod tests {
             ("content", "<think>", false),
             ("content", "<think>short</think>", true),
         ] {
-            let mut state = SseStreamState::new(std::time::Instant::now(), false);
+            let mut state = SseStreamState::default();
             let payload =
                 format!(r#"data: {{"choices":[{{"delta":{{"{field}":"{prefix}{huge}"}}}}]}}"#);
             assert!(state.process_line(payload.as_bytes(), &pb, "", StreamMode::Buffered));

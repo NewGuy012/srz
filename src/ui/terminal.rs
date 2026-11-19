@@ -466,17 +466,18 @@ pub fn sanitize_title(title: &str) -> String {
         .join(" ")
 }
 
-/// Formats a duration into a human-readable compact string (e.g., `80ms`, `1.4s`, `2m 15s`).
+/// Formats a duration into a compact string (`"45ms"`, `"0.4s"`, `"2.0s"`, `"1m 5s"`).
 pub fn format_duration_short(d: Duration) -> String {
-    let secs = d.as_secs_f64();
-    if secs < 0.1 {
-        format!("{:.0}ms", d.as_millis())
-    } else if secs < 60.0 {
-        format!("{:.1}s", secs)
+    let millis = d.as_millis();
+    if millis < 100 {
+        return format!("{millis}ms");
+    }
+    let tenths = (d.as_secs_f64() * 10.0).round() as u64;
+    if tenths < 600 {
+        format!("{}.{}s", tenths / 10, tenths % 10)
     } else {
-        let mins = (secs / 60.0).floor() as u64;
-        let rem_secs = secs - (mins as f64 * 60.0);
-        format!("{}m {:.0}s", mins, rem_secs)
+        let total_secs = (tenths + 5) / 10;
+        format!("{}m {}s", total_secs / 60, total_secs % 60)
     }
 }
 
