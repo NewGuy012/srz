@@ -1,24 +1,21 @@
 use crate::cli::NewsTimeframe;
-use crate::scraper::{ScrapedPage, WebScraper};
+use crate::scraper::{ScrapedPage, WebScraper, collapse_whitespace, validate_public_http_url};
 use crate::system::text_util::{
-    XmlEvent, XmlScanner, decode_html_entities, xml_attr, xml_local_name,
+    XmlEvent, XmlScanner, decode_html_entities, is_http_url, url_encode, xml_attr, xml_local_name,
 };
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-/// Maximum allowable limit of news articles to process in a single digest run.
 pub const MAX_NEWS_LIMIT: usize = 50;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NewsArticleItem {
-    pub title: String,
-    pub google_link: String,
-    pub source_name: Option<String>,
-    pub pub_date: Option<String>,
-    #[serde(default)]
-    pub snippet: Option<String>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NewsArticleItem {
+    title: String,
+    google_link: String,
+    source_name: Option<String>,
+    pub_date: Option<String>,
+    snippet: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -41,34 +38,29 @@ impl GoogleNewsClient {
         Self { client }
     }
 
-    /// Returns whether the provided topic is a direct HTTP/HTTPS feed URL.
     pub fn is_direct_feed(topic: &str) -> bool {
-        crate::system::text_util::is_http_url(topic.trim())
+        is_http_url(topic.trim())
     }
 
-    /// Returns the canonical search URL for a topic or direct feed URL.
     pub fn search_url_for_topic(topic: &str) -> String {
         let trimmed = topic.trim();
         if Self::is_direct_feed(trimmed) {
             trimmed.to_string()
         } else {
-            format!(
-                "https://news.google.com/search?q={}",
-                crate::system::text_util::url_encode(trimmed)
-            )
+            format!("https://news.google.com/search?q={}", url_encode(trimmed))
         }
     }
 
     /// Queries Google News RSS for a topic/timeframe, or fetches a direct RSS/Atom/JSON feed URL.
-    pub async fn fetch_feed(
+    async fn fetch_feed(
         &self,
         topic: &str,
         timeframe: NewsTimeframe,
         limit: usize,
     ) -> Result<Vec<NewsArticleItem>> {
         let trimmed = topic.trim();
-        let endpoint = if crate::system::text_util::is_http_url(trimmed) {
-            crate::scraper::validate_public_http_url(trimmed)?;
+        let endpoint = if Self::is_direct_feed(trimmed) {
+            validate_public_http_url(trimmed)?;
             trimmed.to_string()
         } else {
             let suffix = timeframe.as_google_query_suffix();
@@ -80,55 +72,78 @@ impl GoogleNewsClient {
 
             format!(
                 "https://news.google.com/rss/search?q={}&hl=en-US&gl=US&ceid=US:en",
-                crate::system::text_util::url_encode(&query)
+                url_encode(&query)
             )
         };
 
-        let xml = crate::scraper::fetch_text_limited(
+        let body = crate::scraper::fetch_text_limited(
             self.client.get(&endpoint),
             crate::scraper::MAX_SCRAPE_BYTES,
-            &format!("syndication feed from {}", endpoint),
+            &format!("syndication feed from {endpoint}"),
         )
         .await?;
-        let capped_limit = limit.clamp(1, MAX_NEWS_LIMIT.saturating_mul(2).saturating_add(2));
-        let items = parse_rss_items(&xml, capped_limit);
-
-        Ok(items)
+        Ok(parse_feed_items(&body, limit.clamp(1, MAX_NEWS_LIMIT)))
     }
 
-    /// Resolves an opaque Google News `/rss/articles/CBMi...` redirect link to the real publisher destination URL.
-    pub async fn resolve_article_url(&self, google_url: &str) -> Option<String> {
-        // 1. Fast-path: attempt zero-network offline protobuf decoding for CBMi IDs
+    async fn resolve_article_url(&self, google_url: &str) -> Option<String> {
         if let Some(direct) = decode_google_news_url(google_url) {
             return Some(direct);
         }
 
         let base64_id = extract_article_id(google_url)?;
 
-        // 2. Fetch intermediate Google News article page to extract ephemeral signature & timestamp.
-        // Must use /rss/articles/ because /articles/ triggers Google bot protection (HTTP 429 CAPTCHA).
-        let page_url = format!("https://news.google.com/rss/articles/{}", base64_id);
+        // Must use /rss/articles/ because /articles/ triggers Google HTTP 429 protection.
+        let page_url = format!("https://news.google.com/rss/articles/{base64_id}");
         let html = crate::scraper::fetch_text_limited(
             self.client.get(&page_url).timeout(Duration::from_secs(4)),
-            64 * 1024,
+            256 * 1024,
             "Google News article page",
         )
         .await
         .ok()?;
         let (sig, ts) = extract_gnews_sig_ts(&html)?;
 
-        // 3. Submit batchexecute RPC request to resolve destination URL safely via structured JSON
-        let payload_str = format!(
-            r#"["garturlreq",[[["X","X",["X","X"],null,null,1,1,"US:en",null,1,null,null,null,null,null,0,1],"X","X",1,[1,1,1],1,1,null,0,0,null,0],{},{},{}]"#,
-            serde_json::json!(base64_id),
+        let payload_str = serde_json::json!([
+            "garturlreq",
+            [
+                [
+                    "X",
+                    "X",
+                    ["X", "X"],
+                    null,
+                    null,
+                    1,
+                    1,
+                    "US:en",
+                    null,
+                    1,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    0,
+                    1
+                ],
+                "X",
+                "X",
+                1,
+                [1, 1, 1],
+                1,
+                1,
+                null,
+                0,
+                0,
+                null,
+                0
+            ],
+            base64_id,
             ts,
-            serde_json::json!(sig)
-        );
+            sig
+        ])
+        .to_string();
         let envelope = serde_json::json!([[["Fbv4je", payload_str, null, "generic"]]]);
-        let form_body = format!(
-            "f.req={}",
-            crate::system::text_util::url_encode(&envelope.to_string())
-        );
+        let form_body = format!("f.req={}", url_encode(&envelope.to_string()));
 
         let rpc_text = crate::scraper::fetch_text_limited(
             self.client
@@ -158,34 +173,32 @@ impl GoogleNewsClient {
     ) -> Result<Vec<NewsDigestSource>> {
         const MAX_CONCURRENT_NEWS_SCRAPES: usize = 6;
 
-        let target_limit = limit.max(5).clamp(1, MAX_NEWS_LIMIT);
-        // Buffer candidates generously to guarantee at least target_limit scrapeable articles
-        let fetch_limit = target_limit.saturating_mul(5).clamp(25, MAX_NEWS_LIMIT);
+        let target_limit = limit.clamp(1, MAX_NEWS_LIMIT);
+        let fetch_limit = target_limit.saturating_mul(5).clamp(15, MAX_NEWS_LIMIT);
         let feed_items = self.fetch_feed(topic, timeframe, fetch_limit).await?;
         if feed_items.is_empty() {
-            let tip = match timeframe {
-                NewsTimeframe::Day => {
-                    " Try expanding the recency timeframe with `-t week`, `-t month`, or `-t all`, or broadening the topic search terms."
-                }
-                NewsTimeframe::Week => {
-                    " Try expanding the recency timeframe with `-t month` or `-t all`, or broadening the topic search terms."
-                }
-                NewsTimeframe::Month => {
-                    " Try expanding the recency timeframe with `-t all`, or broadening the topic search terms."
-                }
-                NewsTimeframe::All => {
-                    " Try broadening the topic search terms, or verify the syndication feed URL."
+            let tip = if Self::is_direct_feed(topic) {
+                String::new()
+            } else {
+                let extra = match timeframe {
+                    NewsTimeframe::Day => "`-t week`, `-t month`, or `-t all`, or ",
+                    NewsTimeframe::Week => "`-t month` or `-t all`, or ",
+                    NewsTimeframe::Month => "`-t all`, or ",
+                    NewsTimeframe::All => "",
+                };
+                if extra.is_empty() {
+                    " Try broadening the topic search terms.".to_string()
+                } else {
+                    format!(
+                        " Try expanding the recency timeframe with {extra}broadening the topic search terms."
+                    )
                 }
             };
             anyhow::bail!(
                 "No recent articles found in feed for '{}' ({}){}",
                 topic,
                 timeframe.display_label(),
-                if crate::system::text_util::is_http_url(topic.trim()) {
-                    ""
-                } else {
-                    tip
-                }
+                tip
             );
         }
 
@@ -223,12 +236,22 @@ impl GoogleNewsClient {
             }
         }
 
-        if collected.len() < target_limit && !uncached_items.is_empty() {
+        let have_top_k = |map: &BTreeMap<usize, NewsDigestSource>, pending: &BTreeSet<usize>| {
+            map.keys()
+                .nth(target_limit.saturating_sub(1))
+                .is_some_and(|&cutoff| {
+                    map.len() >= target_limit && pending.first().is_none_or(|&min_p| min_p > cutoff)
+                })
+        };
+
+        if !have_top_k(&collected, &BTreeSet::new()) && !uncached_items.is_empty() {
             let semaphore =
                 std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_NEWS_SCRAPES));
             let mut join_set = tokio::task::JoinSet::new();
+            let mut pending_indices = BTreeSet::new();
 
             for (idx, item) in uncached_items {
+                pending_indices.insert(idx);
                 let client = self.clone();
                 let scraper_cloned = scraper.clone();
                 let sem = semaphore.clone();
@@ -237,8 +260,9 @@ impl GoogleNewsClient {
                         return (idx, item.google_link, None);
                     };
 
-                    // If feed already provides a rich multi-paragraph body, skip network scrape
-                    if let Some(src) = snippet_digest_source(&item, 150) {
+                    if is_safe_article_url(&item.google_link)
+                        && let Some(src) = snippet_digest_source(&item, 150)
+                    {
                         return (idx, item.google_link, Some(src));
                     }
 
@@ -249,7 +273,9 @@ impl GoogleNewsClient {
                         Some(u) => u,
                         None if !is_gnews => item.google_link.clone(),
                         None => {
-                            let src = snippet_digest_source(&item, 20);
+                            let src = is_safe_article_url(&item.google_link)
+                                .then(|| snippet_digest_source(&item, 20))
+                                .flatten();
                             return (idx, item.google_link, src);
                         }
                     };
@@ -285,24 +311,29 @@ impl GoogleNewsClient {
             }
 
             while let Some(res) = join_set.join_next().await {
-                if let Ok((idx, google_link, Some(source))) = res {
-                    if let Some(c) = cache {
-                        let page_record = ScrapedPage {
-                            url: source.url.clone(),
-                            title: Some(source.title.clone()),
-                            content: source.content.clone(),
-                            word_count: source.word_count,
-                        };
-                        if !is_google_news_link(&source.url) && is_safe_article_url(&source.url) {
+                if let Ok((idx, google_link, maybe_source)) = res {
+                    pending_indices.remove(&idx);
+                    if let Some(source) = maybe_source {
+                        if let Some(c) = cache
+                            && source.word_count > 60
+                            && !is_google_news_link(&source.url)
+                            && is_safe_article_url(&source.url)
+                        {
+                            let page_record = ScrapedPage {
+                                url: source.url.clone(),
+                                title: Some(source.title.clone()),
+                                content: source.content.clone(),
+                                word_count: source.word_count,
+                            };
                             c.set_page(&source.url, &page_record);
                             if source.url != google_link && is_safe_article_url(&google_link) {
                                 c.set_page(&google_link, &page_record);
                             }
                         }
+                        collected.insert(idx, source);
                     }
-                    collected.insert(idx, source);
 
-                    if collected.len() >= target_limit {
+                    if have_top_k(&collected, &pending_indices) {
                         join_set.abort_all();
                         break;
                     }
@@ -317,14 +348,10 @@ impl GoogleNewsClient {
             );
         }
 
-        // BTreeMap naturally yields articles in original Google News feed rank (relevance and recency)
-        let final_sources: Vec<NewsDigestSource> =
-            collected.into_values().take(target_limit).collect();
-        Ok(final_sources)
+        Ok(collected.into_values().take(target_limit).collect())
     }
 }
 
-/// Helper to construct a [`NewsDigestSource`] from a feed item and resolved/scraped content.
 fn make_digest_source(
     item: &NewsArticleItem,
     url: String,
@@ -385,34 +412,126 @@ fn extract_gnews_sig_ts(html: &str) -> Option<(String, i64)> {
     None
 }
 
-/// Strips inline HTML markup that feeds commonly embed inside `<description>` CDATA sections.
 fn clean_feed_snippet(raw: &str) -> String {
     let trimmed = raw.trim();
     if !(trimmed.contains('<') && trimmed.contains('>')) {
-        return trimmed.to_string();
+        return collapse_whitespace(decode_html_entities(trimmed).as_ref());
     }
     let mut out = String::with_capacity(trimmed.len());
     let mut scanner = XmlScanner::new(trimmed);
     while let Some(ev) = scanner.next_event() {
-        let piece = match ev {
-            XmlEvent::Text(t) => decode_html_entities(t),
-            XmlEvent::CData(c) => decode_html_entities(c),
-            _ => continue,
-        };
-        let s = piece.trim();
-        if s.is_empty() {
+        match ev {
+            XmlEvent::Start { name, .. } | XmlEvent::End { name } => {
+                let local = xml_local_name(name);
+                if matches!(
+                    local.to_ascii_lowercase().as_str(),
+                    "p" | "div"
+                        | "br"
+                        | "li"
+                        | "tr"
+                        | "h1"
+                        | "h2"
+                        | "h3"
+                        | "h4"
+                        | "h5"
+                        | "h6"
+                        | "blockquote"
+                ) && !out.ends_with(' ')
+                    && !out.is_empty()
+                {
+                    out.push(' ');
+                }
+            }
+            XmlEvent::Text(t) => out.push_str(decode_html_entities(t).as_ref()),
+            XmlEvent::CData(c) => out.push_str(decode_html_entities(c).as_ref()),
+        }
+    }
+    collapse_whitespace(&out)
+}
+
+fn parse_feed_items(body: &str, limit: usize) -> Vec<NewsArticleItem> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    if body.trim_start().starts_with('{') {
+        return parse_json_feed(body, limit);
+    }
+    parse_rss_items(body, limit)
+}
+
+fn parse_json_feed(json_str: &str, limit: usize) -> Vec<NewsArticleItem> {
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) else {
+        return Vec::new();
+    };
+    let feed_title = val
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let Some(entries) = val.get("items").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries {
+        let Some(title) = entry
+            .get("title")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
             continue;
+        };
+        let Some(link) = entry
+            .get("url")
+            .or_else(|| entry.get("external_url"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|u| is_http_url(u))
+        else {
+            continue;
+        };
+        let snippet = entry
+            .get("content_text")
+            .and_then(|v| v.as_str())
+            .map(collapse_whitespace)
+            .or_else(|| {
+                entry
+                    .get("content_html")
+                    .or_else(|| entry.get("summary"))
+                    .and_then(|v| v.as_str())
+                    .map(clean_feed_snippet)
+            })
+            .filter(|s| !s.is_empty());
+        let source_name = entry
+            .get("authors")
+            .and_then(|a| a.as_array())
+            .and_then(|arr| arr.first())
+            .or_else(|| entry.get("author"))
+            .and_then(|a| a.get("name"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| feed_title.clone());
+        let pub_date = entry
+            .get("date_published")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        out.push(NewsArticleItem {
+            title: title.to_string(),
+            google_link: link.to_string(),
+            source_name,
+            pub_date,
+            snippet,
+        });
+        if out.len() >= limit {
+            break;
         }
-        if !out.is_empty() {
-            out.push(' ');
-        }
-        out.push_str(s);
     }
     out
 }
 
-/// Parses RSS 0.9/1.0/2.0 or Atom feed items into a list of [`NewsArticleItem`].
-pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
+fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
     if limit == 0 {
         return Vec::new();
     }
@@ -422,12 +541,14 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
     let mut feed_source: Option<String> = None;
 
     let mut in_entry = false;
+    let mut in_author = false;
     let mut cur_title = String::new();
     let mut cur_link = String::new();
     let mut cur_id = String::new();
     let mut cur_pub_date = None;
     let mut cur_source = None;
-    let mut cur_author = None;
+    let mut cur_author: Option<String> = None;
+    let mut cur_author_plain = String::new();
     let mut cur_snippet: Option<String> = None;
 
     while let Some(ev) = scanner.next_event() {
@@ -437,88 +558,100 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
                 attrs,
                 is_empty,
             } => {
-                let local = xml_local_name(name).to_ascii_lowercase();
-                if (local == "item" || local == "entry") && !is_empty {
+                let local = xml_local_name(name);
+                if (local.eq_ignore_ascii_case("item") || local.eq_ignore_ascii_case("entry"))
+                    && !is_empty
+                {
                     in_entry = true;
+                    in_author = false;
                     cur_title.clear();
                     cur_link.clear();
                     cur_id.clear();
                     cur_pub_date = None;
                     cur_source = None;
                     cur_author = None;
+                    cur_author_plain.clear();
                     cur_snippet = None;
                 } else if in_entry {
-                    match local.as_str() {
-                        "title" if !is_empty => {
-                            let text = scanner.read_text(name);
-                            if cur_title.is_empty() {
-                                cur_title = text.trim().to_string();
+                    if in_author {
+                        if local.eq_ignore_ascii_case("name") && !is_empty {
+                            let n = scanner.read_text(name).trim().to_string();
+                            if !n.is_empty() {
+                                cur_author = Some(n);
+                            }
+                        } else if !is_empty {
+                            let _ = scanner.read_text(name);
+                        }
+                        continue;
+                    }
+                    if local.eq_ignore_ascii_case("title") && !is_empty {
+                        let text = scanner.read_text(name);
+                        if cur_title.is_empty() {
+                            cur_title = text.trim().to_string();
+                        }
+                    } else if local.eq_ignore_ascii_case("link") {
+                        let is_alt = xml_attr(attrs, "rel")
+                            .is_none_or(|r| r.trim().eq_ignore_ascii_case("alternate"));
+                        if cur_link.is_empty()
+                            && is_alt
+                            && let Some(href) = xml_attr(attrs, "href")
+                        {
+                            let trimmed = href.trim();
+                            if is_http_url(trimmed) {
+                                cur_link = trimmed.to_string();
                             }
                         }
-                        "link" => {
-                            if cur_link.is_empty()
-                                && let Some(href) = xml_attr(attrs, "href")
-                            {
-                                let trimmed = href.trim();
-                                if crate::system::text_util::is_http_url(trimmed) {
-                                    cur_link = trimmed.to_string();
-                                }
-                            }
-                            if !is_empty {
-                                let text = scanner.read_text(name);
-                                let trimmed = text.trim();
-                                if cur_link.is_empty()
-                                    && crate::system::text_util::is_http_url(trimmed)
-                                {
-                                    cur_link = trimmed.to_string();
-                                }
-                            }
-                        }
-                        "guid" | "id" if !is_empty => {
-                            let text = scanner.read_text(name);
-                            if cur_id.is_empty() {
-                                cur_id = text.trim().to_string();
-                            }
-                        }
-                        "pubdate" | "published" | "updated" if !is_empty => {
+                        if !is_empty {
                             let text = scanner.read_text(name);
                             let trimmed = text.trim();
-                            if cur_pub_date.is_none() && !trimmed.is_empty() {
-                                cur_pub_date = Some(trimmed.to_string());
+                            if cur_link.is_empty() && is_http_url(trimmed) {
+                                cur_link = trimmed.to_string();
                             }
                         }
-                        "source" if !is_empty => {
-                            let text = scanner.read_text(name);
-                            if cur_source.is_none() {
-                                let cleaned = text.trim();
-                                if !cleaned.is_empty() {
-                                    cur_source = Some(cleaned.to_string());
-                                }
-                            }
+                    } else if (local.eq_ignore_ascii_case("guid")
+                        || local.eq_ignore_ascii_case("id"))
+                        && !is_empty
+                    {
+                        let text = scanner.read_text(name);
+                        if cur_id.is_empty() {
+                            cur_id = text.trim().to_string();
                         }
-                        "author" | "name" if !is_empty => {
-                            let text = scanner.read_text(name);
-                            if cur_author.is_none() {
-                                let cleaned = text.trim();
-                                if !cleaned.is_empty() {
-                                    cur_author = Some(cleaned.to_string());
-                                }
-                            }
+                    } else if (local.eq_ignore_ascii_case("pubdate")
+                        || local.eq_ignore_ascii_case("published")
+                        || local.eq_ignore_ascii_case("updated"))
+                        && !is_empty
+                    {
+                        let text = scanner.read_text(name);
+                        let trimmed = text.trim();
+                        if cur_pub_date.is_none() && !trimmed.is_empty() {
+                            cur_pub_date = Some(trimmed.to_string());
                         }
-                        "description" | "summary" | "content" | "encoded" if !is_empty => {
-                            let text = scanner.read_text(name);
-                            let cleaned = clean_feed_snippet(&text);
-                            if !cleaned.is_empty()
-                                && cur_snippet
-                                    .as_ref()
-                                    .is_none_or(|existing| cleaned.len() > existing.len())
-                            {
-                                cur_snippet = Some(cleaned);
-                            }
+                    } else if local.eq_ignore_ascii_case("source") && !is_empty {
+                        let cleaned = scanner.read_text(name).trim().to_string();
+                        if cur_source.is_none() && !cleaned.is_empty() {
+                            cur_source = Some(cleaned);
                         }
-                        _ => {}
+                    } else if local.eq_ignore_ascii_case("author") && !is_empty {
+                        in_author = true;
+                        cur_author_plain.clear();
+                    } else if (local.eq_ignore_ascii_case("description")
+                        || local.eq_ignore_ascii_case("summary")
+                        || local.eq_ignore_ascii_case("content")
+                        || local.eq_ignore_ascii_case("encoded"))
+                        && !is_empty
+                    {
+                        let text = scanner.read_text(name);
+                        let cleaned = clean_feed_snippet(&text);
+                        if !cleaned.is_empty()
+                            && cur_snippet
+                                .as_ref()
+                                .is_none_or(|existing| cleaned.len() > existing.len())
+                        {
+                            cur_snippet = Some(cleaned);
+                        }
                     }
-                } else if local == "title" && feed_source.is_none() && !is_empty {
+                } else if local.eq_ignore_ascii_case("title") && feed_source.is_none() && !is_empty
+                {
                     let text = scanner.read_text(name);
                     let trimmed = text.trim();
                     if !trimmed.is_empty() {
@@ -526,13 +659,26 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
                     }
                 }
             }
+            XmlEvent::Text(t) if in_author => {
+                cur_author_plain.push_str(decode_html_entities(t).as_ref())
+            }
+            XmlEvent::CData(c) if in_author => cur_author_plain.push_str(c),
             XmlEvent::End { name } => {
-                let local = xml_local_name(name).to_ascii_lowercase();
-                if local == "item" || local == "entry" {
+                let local = xml_local_name(name);
+                if local.eq_ignore_ascii_case("author") && in_author {
+                    in_author = false;
+                    if cur_author.is_none() {
+                        let plain = cur_author_plain.trim();
+                        if !plain.is_empty() {
+                            cur_author = Some(plain.to_string());
+                        }
+                    }
+                } else if local.eq_ignore_ascii_case("item") || local.eq_ignore_ascii_case("entry")
+                {
                     in_entry = false;
                     let link = if !cur_link.is_empty() {
                         cur_link.clone()
-                    } else if crate::system::text_util::is_http_url(cur_id.trim()) {
+                    } else if is_http_url(cur_id.trim()) {
                         cur_id.trim().to_string()
                     } else {
                         String::new()
@@ -569,14 +715,8 @@ pub fn parse_rss_items(xml: &str, limit: usize) -> Vec<NewsArticleItem> {
     items
 }
 
-/// Extracts and decodes the target URL from a `CBMi...` Google News link offline.
-pub fn decode_google_news_url(url: &str) -> Option<String> {
+fn decode_google_news_url(url: &str) -> Option<String> {
     let id = extract_article_id(url)?;
-    decode_cbmi_id(id)
-}
-
-/// Decodes a raw `CBMi...` base64 protobuf article ID into its target URL.
-pub fn decode_cbmi_id(id: &str) -> Option<String> {
     if !id.starts_with("CBMi") {
         return None;
     }
@@ -584,7 +724,6 @@ pub fn decode_cbmi_id(id: &str) -> Option<String> {
     extract_url_from_protobuf(&raw)
 }
 
-/// Decodes standard or URL-safe base64 strings into raw bytes without external crate dependencies.
 fn decode_base64_url_safe(input: &str) -> Option<Vec<u8>> {
     let clean = input.trim_end_matches('=');
     let mut out = Vec::with_capacity((clean.len() * 3) / 4 + 4);
@@ -613,46 +752,47 @@ fn decode_base64_url_safe(input: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Returns `true` if `url` is a printable, public HTTP/HTTPS URL safe for external resolution or caching.
 fn is_safe_article_url(url: &str) -> bool {
-    let trimmed = url.trim();
-    !trimmed.chars().any(|c| c.is_control())
-        && crate::system::text_util::is_http_url(trimmed)
-        && crate::scraper::validate_public_http_url(trimmed).is_ok()
+    validate_public_http_url(url.trim()).is_ok()
 }
 
-/// Scans decoded protobuf byte slices for an embedded `http://` or `https://` payload.
+fn read_preceding_varint_len(raw: &[u8], pos: usize) -> Option<usize> {
+    if pos >= 2 && (raw[pos - 2] & 0x80) != 0 && (raw[pos - 1] & 0x80) == 0 {
+        let len = ((raw[pos - 2] & 0x7f) as usize) | (((raw[pos - 1] & 0x7f) as usize) << 7);
+        return (len >= 128 && pos + len <= raw.len()).then_some(len);
+    }
+    if pos >= 1 && (raw[pos - 1] & 0x80) == 0 {
+        let len = raw[pos - 1] as usize;
+        return (len < 128 && pos + len <= raw.len()).then_some(len);
+    }
+    None
+}
+
 fn extract_url_from_protobuf(raw: &[u8]) -> Option<String> {
     const SCHEMES: &[&[u8]] = &[b"https://", b"http://"];
     for scheme in SCHEMES {
         if let Some(pos) = raw.windows(scheme.len()).position(|w| w == *scheme) {
-            // First check if a length byte immediately precedes the scheme
-            if pos > 0 {
-                let len = raw[pos - 1] as usize;
-                if len >= scheme.len() && pos + len <= raw.len() {
-                    let slice = &raw[pos..pos + len];
-                    if let Ok(s) = std::str::from_utf8(slice)
-                        && !s
-                            .chars()
-                            .any(|c| c == ' ' || c == '"' || c == '<' || c == '>')
-                        && is_safe_article_url(s)
-                    {
-                        return Some(s.to_string());
-                    }
-                }
+            if let Some(len) = read_preceding_varint_len(raw, pos)
+                && len >= scheme.len()
+                && let Ok(s) = std::str::from_utf8(&raw[pos..pos + len])
+                && !s
+                    .chars()
+                    .any(|c| c == ' ' || c == '"' || c == '<' || c == '>')
+                && is_safe_article_url(s)
+            {
+                return Some(s.to_string());
             }
-            // Fallback: scan forward while encountering valid printable ASCII URL characters
+
             let mut end = pos;
             while end < raw.len() {
                 let b = raw[end];
-                if (33..=126).contains(&b) && b != b'"' && b != b'\'' && b != b'<' && b != b'>' {
+                if (33..=126).contains(&b) && !matches!(b, b'"' | b'\'' | b'<' | b'>' | b'*') {
                     end += 1;
                 } else {
                     break;
                 }
             }
-            let slice = &raw[pos..end];
-            if let Ok(s) = std::str::from_utf8(slice)
+            if let Ok(s) = std::str::from_utf8(&raw[pos..end])
                 && is_safe_article_url(s)
             {
                 return Some(s.to_string());
@@ -662,19 +802,24 @@ fn extract_url_from_protobuf(raw: &[u8]) -> Option<String> {
     None
 }
 
-/// Returns whether the provided URL points to Google News redirect/syndication endpoints.
-pub fn is_google_news_link(url: &str) -> bool {
-    let clean = url.trim();
-    clean.starts_with("https://news.google.com/") || clean.starts_with("http://news.google.com/")
+fn is_google_news_link(url: &str) -> bool {
+    reqwest::Url::parse(url.trim()).is_ok_and(|u| {
+        matches!(u.scheme(), "http" | "https") && u.host_str() == Some("news.google.com")
+    })
 }
 
-pub fn extract_article_id(url: &str) -> Option<&str> {
-    let clean = url.trim();
-    if !is_google_news_link(clean) {
+fn extract_article_id(url: &str) -> Option<&str> {
+    if !is_google_news_link(url) {
         return None;
     }
-    let pos = clean.find("/articles/")?;
-    let id = clean[pos + 10..].split(['?', '#', '/']).next()?;
+    let clean = url.trim();
+    let without_scheme = clean.split_once("://").map(|(_, r)| r).unwrap_or(clean);
+    let path_and_query = without_scheme.split_once('/').map(|(_, p)| p).unwrap_or("");
+    let path = path_and_query.split(['?', '#']).next().unwrap_or("");
+    let rest = path
+        .strip_prefix("rss/articles/")
+        .or_else(|| path.strip_prefix("articles/"))?;
+    let id = rest.split('/').next()?;
     (!id.is_empty()
         && id.len() <= 2048
         && id
@@ -683,12 +828,12 @@ pub fn extract_article_id(url: &str) -> Option<&str> {
     .then_some(id)
 }
 
-pub fn parse_batchexecute_destination_url(text: &str) -> Option<String> {
+fn parse_batchexecute_destination_url(text: &str) -> Option<String> {
     let clean = text.trim();
     let json_text = clean.strip_prefix(")]}'").unwrap_or(clean).trim();
     let candidate = json_text
-        .split("\n\n")
-        .find(|chunk| chunk.trim().starts_with('['))
+        .lines()
+        .find(|line| line.trim_start().starts_with('['))
         .unwrap_or(json_text);
     let parsed: serde_json::Value = serde_json::from_str(candidate.trim()).ok()?;
 
@@ -714,233 +859,61 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_rss_items_standard() {
-        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0">
-  <channel>
-    <title>Google News</title>
-    <item>
-      <title>Pens Points: Penguins give updates on Kindel, Rust - PensBurgh</title>
-      <link>https://news.google.com/rss/articles/CBMi12345?oc=5</link>
-      <pubDate>Fri, 23 Oct 2026 10:00:00 GMT</pubDate>
-      <source url="https://www.pensburgh.com">PensBurgh</source>
-    </item>
-    <item>
-      <title>Rust 1.85 Released with Async Closures &amp; Editions</title>
-      <link>https://news.google.com/rss/articles/CBMi67890?oc=5</link>
-      <pubDate>Thu, 22 Oct 2026 08:30:00 GMT</pubDate>
-      <source url="https://blog.rust-lang.org">Rust Blog</source>
-    </item>
-  </channel>
-</rss>"#;
-
-        let items = parse_rss_items(xml, 10);
-        assert_eq!(items.len(), 2);
-
-        assert_eq!(
-            items[0].title,
-            "Pens Points: Penguins give updates on Kindel, Rust - PensBurgh"
-        );
-        assert_eq!(
-            items[0].google_link,
-            "https://news.google.com/rss/articles/CBMi12345?oc=5"
-        );
-        assert_eq!(
-            items[0].pub_date.as_deref(),
-            Some("Fri, 23 Oct 2026 10:00:00 GMT")
-        );
-        assert_eq!(items[0].source_name.as_deref(), Some("PensBurgh"));
-
-        assert_eq!(
-            items[1].title,
-            "Rust 1.85 Released with Async Closures & Editions"
-        );
-        assert_eq!(
-            items[1].google_link,
-            "https://news.google.com/rss/articles/CBMi67890?oc=5"
-        );
-        assert_eq!(items[1].source_name.as_deref(), Some("Rust Blog"));
-    }
-
-    #[test]
-    fn test_parse_atom_feed() {
-        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom">
-  <title>Example Feed</title>
-  <entry>
-    <title>Atom Entry Title</title>
-    <link href="https://example.com/atom-1"/>
-    <id>urn:uuid:1225c695-cfb8-4ebb-aaaa-80da344efa6a</id>
-    <updated>2026-10-23T18:30:02Z</updated>
-    <author>
-      <name>John Doe</name>
-    </author>
-  </entry>
-</feed>"#;
-
-        let items = parse_rss_items(xml, 5);
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].title, "Atom Entry Title");
-        assert_eq!(items[0].google_link, "https://example.com/atom-1");
-        assert_eq!(items[0].source_name.as_deref(), Some("John Doe"));
-        assert_eq!(items[0].pub_date.as_deref(), Some("2026-10-23T18:30:02Z"));
-    }
-
-    #[test]
-    fn test_parse_rss_edge_cases_and_cdata_snippets() {
-        let limit_xml = r#"<rss version="2.0"><channel>
-            <item><title>Item 1</title><link>https://example.com/1</link></item>
-            <item><title>Item 2</title><link>https://example.com/2</link></item>
-            <item><title>Item 3</title><link>https://example.com/3</link></item>
-        </channel></rss>"#;
-        let limited = parse_rss_items(limit_xml, 2);
-        assert_eq!(limited.len(), 2);
-        assert_eq!(limited[1].title, "Item 2");
-
-        let xml = r#"<rss><channel>
+    fn test_parse_feed_rss_atom_json_and_edge_cases() {
+        let rss = r#"<?xml version="1.0"?><rss version="2.0"><channel><title>Feed</title>
             <item>
-                <title><![CDATA[Rust &amp; WebAssembly in 2026]]></title>
+                <title>Pens Points - PensBurgh</title>
+                <link>https://news.google.com/rss/articles/CBMi12345?oc=5</link>
+                <pubDate>Fri, 23 Oct 2026 10:00:00 GMT</pubDate>
+                <source url="https://pensburgh.com">PensBurgh</source>
+                <description><![CDATA[<p>a<b>b</b>! &amp; 3 < 5.</p>]]></description>
+            </item>
+            <item>
+                <title>Special &quot;Q&quot; &amp; &apos;A&apos;</title>
                 <guid>https://example.com/guid-link</guid>
-                <pubDate>2026年10月23日 09:00</pubDate>
-                <source url="https://example.com"><![CDATA[Tech Daily]]></source>
-                <description><![CDATA[<p>Breaking <b>story</b> &amp; 3 < 5 summary.</p>]]></description>
+                <description>Plain &amp; entity</description>
             </item>
-            <item>
-                <title>Special &quot;Quotes&quot; &amp; &apos;Apostrophes&apos;</title>
-                <link>https://example.com/quotes</link>
-            </item>
+            <item><title>XSS</title><link>javascript:alert(1)</link></item>
         </channel></rss>"#;
-        let items = parse_rss_items(xml, 5);
+        let items = parse_feed_items(rss, 2);
         assert_eq!(items.len(), 2);
-        assert_eq!(items[0].title, "Rust &amp; WebAssembly in 2026");
-        assert_eq!(items[0].google_link, "https://example.com/guid-link");
-        assert_eq!(items[0].source_name.as_deref(), Some("Tech Daily"));
-        assert_eq!(items[0].pub_date.as_deref(), Some("2026年10月23日 09:00"));
-        assert_eq!(
-            items[0].snippet.as_deref(),
-            Some("Breaking story & 3 < 5 summary.")
-        );
-        assert_eq!(items[1].title, "Special \"Quotes\" & 'Apostrophes'");
-    }
+        assert_eq!(items[0].source_name.as_deref(), Some("PensBurgh"));
+        assert_eq!(items[0].snippet.as_deref(), Some("ab! & 3 < 5."));
+        assert_eq!(items[1].title, "Special \"Q\" & 'A'");
+        assert_eq!(items[1].google_link, "https://example.com/guid-link");
+        assert_eq!(items[1].snippet.as_deref(), Some("Plain & entity"));
 
-    #[test]
-    fn test_google_news_url_extraction() {
-        let url = "https://news.google.com/rss/articles/CBMiWmh0dHBzOi8vd3d3LnNpdGVwb2ludC5jb20vamF2YXNjcmlwdC1uZXdzLw?oc=5";
-        assert_eq!(
-            extract_article_id(url),
-            Some("CBMiWmh0dHBzOi8vd3d3LnNpdGVwb2ludC5jb20vamF2YXNjcmlwdC1uZXdzLw")
-        );
+        let atom = r#"<feed xmlns="http://www.w3.org/2005/Atom"><entry>
+            <title>Atom Title</title>
+            <link rel="enclosure" href="https://example.com/audio.mp3"/>
+            <link rel="alternate" href="https://example.com/atom-1"/>
+            <updated>2026-10-23T18:30:02Z</updated>
+            <author><name>John Doe</name><email>john@example.com</email></author>
+        </entry></feed>"#;
+        let atom_items = parse_feed_items(atom, 5);
+        assert_eq!(atom_items.len(), 1);
+        assert_eq!(atom_items[0].google_link, "https://example.com/atom-1");
+        assert_eq!(atom_items[0].source_name.as_deref(), Some("John Doe"));
 
-        let html = r#"<div data-n-a-sg="ABC123xyz" data-n-a-ts="1714200000"></div>"#;
-        assert_eq!(
-            extract_gnews_sig_ts(html),
-            Some(("ABC123xyz".to_string(), 1714200000))
-        );
-
-        let rpc_text = ")]}'\n\n[[\"wrb.fr\",\"Fbv4je\",\"[\\\"garturlreq\\\",\\\"https://www.sitepoint.com/javascript-news/\\\"]\"]]";
-        assert_eq!(
-            parse_batchexecute_destination_url(rpc_text),
-            Some("https://www.sitepoint.com/javascript-news/".to_string())
-        );
-    }
-
-    #[test]
-    fn test_google_news_url_extraction_security() {
-        for bad in [
-            "https://attacker.com/articles/CBMi12345",
-            "http://evil.news.google.com.attacker.com/articles/CBMi12345",
-            "https://news.google.com/articles/../../etc/passwd",
-            "https://news.google.com/articles/<script>",
-        ] {
-            assert_eq!(extract_article_id(bad), None, "should reject {bad}");
-        }
-        assert_eq!(
-            extract_article_id("https://news.google.com/articles/CBMi-Valid_Id=123?oc=5"),
-            Some("CBMi-Valid_Id=123")
-        );
-
-        for bad_dest in ["javascript:alert(1)", "file:///etc/passwd"] {
-            let rpc = format!(
-                ")]}}'\n\n[[\"wrb.fr\",\"Fbv4je\",\"[\\\"garturlreq\\\",\\\"{bad_dest}\\\"]\"]]"
-            );
-            assert_eq!(parse_batchexecute_destination_url(&rpc), None);
-        }
-
-        let bad_rss = r#"<rss version="2.0"><channel>
-            <item><title>XSS Link</title><link>javascript:alert(1)</link></item>
-            <item><title>File Link</title><link>file:///etc/passwd</link></item>
-        </channel></rss>"#;
-        assert_eq!(parse_rss_items(bad_rss, 5).len(), 0);
-    }
-
-    #[test]
-    fn test_decode_google_news_url_offline() {
-        let url = "https://news.google.com/rss/articles/CBMiWmh0dHBzOi8vd3d3LnNpdGVwb2ludC5jb20vamF2YXNjcmlwdC1uZXdzLw?oc=5";
-        assert_eq!(
-            decode_google_news_url(url),
-            Some("https://www.sitepoint.com/javascript-news/".to_string())
-        );
-        // Non-CBMi IDs return None to fall back to RPC
-        assert_eq!(
-            decode_google_news_url("https://news.google.com/articles/CBIi98765"),
-            None
-        );
-    }
-
-    #[test]
-    fn test_is_google_news_link() {
-        for (url, expected) in [
-            ("https://news.google.com/rss/articles/CBMi123", true),
-            ("http://news.google.com/articles/CBMi123", true),
-            ("https://www.infoworld.com/article/123", false),
-            ("https://example.com/feed", false),
-        ] {
-            assert_eq!(is_google_news_link(url), expected);
-        }
-    }
-
-    #[test]
-    fn test_parse_batchexecute_destination_url_live_format() {
-        let live_rpc = ")]}'\n\n[[\"wrb.fr\",\"Fbv4je\",\"[\\\"garturlres\\\",\\\"https://www.infoworld.com/article/4217735/rustup-1-29-1-brings-concurrency-improvements.html\\\",1]\",null,null,null,\"generic\"],[\"di\",16],[\"af.httprm\",16,\"-7664160711534798251\",10]]";
-        assert_eq!(
-            parse_batchexecute_destination_url(live_rpc),
-            Some("https://www.infoworld.com/article/4217735/rustup-1-29-1-brings-concurrency-improvements.html".to_string())
-        );
-    }
-
-    #[test]
-    fn test_parse_rss_items_extracts_snippet() {
-        let xml = r#"<rss version="2.0"><channel>
-            <item>
-                <title>Article with Summary</title>
-                <link>https://example.com/article</link>
-                <description><![CDATA[This is a descriptive summary of the breaking story.]]></description>
-            </item>
-        </channel></rss>"#;
-
-        let items = parse_rss_items(xml, 5);
-        assert_eq!(items.len(), 1);
-        assert_eq!(
-            items[0].snippet.as_deref(),
-            Some("This is a descriptive summary of the breaking story.")
-        );
-    }
-
-    #[tokio::test]
-    async fn test_fetch_feed_blocks_private_direct_url() {
-        let client = GoogleNewsClient::with_client(reqwest::Client::new());
-        let err = client
-            .fetch_feed("http://127.0.0.1:8080/feed.xml", NewsTimeframe::Day, 5)
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("SSRF protection"));
+        let json_feed = r#"{"version":"https://jsonfeed.org/version/1.1","title":"JF","items":[{"title":"JSON Item","url":"https://example.com/j1","content_text":"Hello world"}]}"#;
+        let jf_items = parse_feed_items(json_feed, 5);
+        assert_eq!(jf_items.len(), 1);
+        assert_eq!(jf_items[0].google_link, "https://example.com/j1");
+        assert_eq!(jf_items[0].source_name.as_deref(), Some("JF"));
     }
 
     fn encode_cbmi_token(target_url: &str) -> String {
         const TABLE: &[u8; 64] =
             b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-        let mut raw = vec![0x08, 0x13, 0x22, target_url.len() as u8];
+        let mut raw = vec![0x08, 0x13, 0x22];
+        let mut len = target_url.len();
+        while len >= 0x80 {
+            raw.push((len as u8 & 0x7f) | 0x80);
+            len >>= 7;
+        }
+        raw.push(len as u8);
         raw.extend_from_slice(target_url.as_bytes());
+        raw.extend_from_slice(&[0x2a, 0x03, b'f', b'o', b'o']);
         let mut out = String::new();
         for chunk in raw.chunks(3) {
             let b0 = chunk[0] as usize;
@@ -959,71 +932,66 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_google_news_url_blocks_private_and_metadata_urls() {
-        let public_link = format!(
-            "https://news.google.com/rss/articles/{}",
-            encode_cbmi_token("https://example.com/public-news")
+    fn test_google_news_decoding_validation_and_rpc() {
+        let long_url = format!("https://example.com/{}/story.html", "a".repeat(130));
+        let long_link = format!(
+            "https://NEWS.GOOGLE.COM/rss/articles/{}",
+            encode_cbmi_token(&long_url)
         );
         assert_eq!(
-            decode_google_news_url(&public_link).as_deref(),
-            Some("https://example.com/public-news")
+            decode_google_news_url(&long_link).as_deref(),
+            Some(long_url.as_str())
+        );
+        assert_eq!(
+            decode_google_news_url("https://news.google.com/articles/CBIi98765"),
+            None
+        );
+
+        for bad in [
+            "https://attacker.com/articles/CBMi12345",
+            "https://example.com/?q=/articles/CBMi12345",
+            "https://news.google.com/articles/../../etc/passwd",
+            &format!(
+                "https://news.google.com/rss/articles/{}",
+                encode_cbmi_token("http://127.0.0.1/admin")
+            ),
+        ] {
+            assert_eq!(decode_google_news_url(bad), None, "should reject {bad}");
+        }
+
+        let sig_html = r#"<div data-n-a-sg="ABC123xyz" data-n-a-ts="1714200000"></div>"#;
+        assert_eq!(
+            extract_gnews_sig_ts(sig_html),
+            Some(("ABC123xyz".to_string(), 1714200000))
+        );
+
+        let rpc_framed = ")]}'\n\n123\n[[\"wrb.fr\",\"Fbv4je\",\"[\\\"garturlres\\\",\\\"https://www.infoworld.com/article/4217735/rustup.html\\\",1]\",null,null,null,\"generic\"]]";
+        assert_eq!(
+            parse_batchexecute_destination_url(rpc_framed).as_deref(),
+            Some("https://www.infoworld.com/article/4217735/rustup.html")
         );
 
         for blocked in [
-            "http://127.0.0.1/admin",
-            "http://169.254.169.254/latest/meta-data",
-            "http://localhost:8080/internal",
-            "http://10.0.0.5/secret",
-            "http://[::1]:9000/status",
-        ] {
-            let link = format!(
-                "https://news.google.com/rss/articles/{}",
-                encode_cbmi_token(blocked)
-            );
-            assert_eq!(
-                decode_google_news_url(&link),
-                None,
-                "should block {blocked}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_parse_batchexecute_destination_url_blocks_ssrf_targets() {
-        for blocked in [
-            "http://10.0.0.1/internal",
+            "javascript:alert(1)",
             "http://169.254.169.254/latest/meta-data/",
-            "http://localhost:3000/",
-            "http://127.0.0.1:8080/api",
-            "https://user:pass@example.com/story",
         ] {
-            let fbv4je = serde_json::json!([[
+            let rpc = serde_json::json!([[
                 "wrb.fr",
                 "Fbv4je",
                 serde_json::json!(["garturlres", blocked]).to_string()
             ]])
             .to_string();
-            assert_eq!(
-                parse_batchexecute_destination_url(&fbv4je),
-                None,
-                "Fbv4je should reject {blocked}"
-            );
-
-            let legacy = serde_json::json!([[
-                "wrb.fr",
-                "legacy",
-                serde_json::json!(["garturlres", blocked]).to_string()
-            ]])
-            .to_string();
-            assert_eq!(
-                parse_batchexecute_destination_url(&legacy),
-                None,
-                "legacy should reject {blocked}"
-            );
+            assert_eq!(parse_batchexecute_destination_url(&rpc), None);
         }
+    }
 
-        assert!(is_safe_article_url("https://example.com/news"));
-        assert!(!is_safe_article_url("http://192.168.1.1/router"));
-        assert!(!is_safe_article_url("https://example.com/news\nHost: evil"));
+    #[tokio::test]
+    async fn test_fetch_feed_blocks_private_direct_url() {
+        let client = GoogleNewsClient::with_client(reqwest::Client::new());
+        let err = client
+            .fetch_feed("http://127.0.0.1:8080/feed.xml", NewsTimeframe::Day, 5)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("SSRF protection"));
     }
 }

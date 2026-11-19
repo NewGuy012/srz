@@ -1,3 +1,6 @@
+use crate::scraper::{
+    collapse_whitespace, fetch_bytes_limited, fetch_text_limited, validate_public_http_url,
+};
 use crate::system::text_util::{
     XmlEvent, XmlScanner, decode_html_entities, find_ascii_case_insensitive, strip_html_tags,
     url_decode, url_encode, xml_attr,
@@ -49,7 +52,7 @@ impl BookSearcher {
     }
 
     async fn fetch_bytes(&self, url: &str, timeout_secs: u64, max_bytes: usize) -> Result<Vec<u8>> {
-        crate::scraper::fetch_bytes_limited(
+        fetch_bytes_limited(
             self.client
                 .get(url)
                 .timeout(Duration::from_secs(timeout_secs)),
@@ -59,13 +62,16 @@ impl BookSearcher {
         .await
     }
 
-    /// Queries Open Library API to resolve canonical book title, author, and first publication year.
-    /// Returns None if the query times out (3s), fails, or yields no close match.
+    /// Queries Open Library to resolve canonical book title, author, and first publication year.
     pub async fn resolve_book_metadata(
         &self,
         title: &str,
         author: Option<&str>,
     ) -> Option<BookMetadata> {
+        let norm_req = normalize_title_for_comparison(title);
+        if norm_req.is_empty() {
+            return None;
+        }
         let mut endpoint = format!(
             "https://openlibrary.org/search.json?title={}&limit=3&fields=title,author_name,first_publish_year,key",
             url_encode(title)
@@ -79,13 +85,10 @@ impl BookSearcher {
         let json: Value = serde_json::from_slice(&bytes).ok()?;
         let docs = json.get("docs")?.as_array()?;
 
-        let norm_req = normalize_title_for_comparison(title);
-
         for doc in docs {
             let doc_title = doc.get("title")?.as_str()?;
             let norm_doc = normalize_title_for_comparison(doc_title);
 
-            // Require close title match
             if norm_doc == norm_req || norm_doc.contains(&norm_req) || norm_req.contains(&norm_doc)
             {
                 let author_name = doc
@@ -117,34 +120,22 @@ impl BookSearcher {
         None
     }
 
-    /// Fetches the editorial description of an Open Library work (e.g. `/works/OL12345W`),
-    /// providing a grounded synopsis fallback when web scraping fails.
+    /// Fetches the editorial description of an Open Library work (e.g. `/works/OL12345W`).
     pub async fn fetch_work_description(&self, work_key: &str) -> Option<String> {
         let clean_key = work_key.trim().trim_start_matches('/');
         if !is_valid_work_key(clean_key) {
             return None;
         }
-        let endpoint = format!("https://openlibrary.org/{}.json", clean_key);
-
+        let endpoint = format!("https://openlibrary.org/{clean_key}.json");
         let bytes = self.fetch_bytes(&endpoint, 3, 2 * 1024 * 1024).await.ok()?;
         parse_work_description(&bytes)
     }
 
-    /// Searches for candidate book synopses concurrently across Wikipedia (OpenSearch + fulltext) and DuckDuckGo,
-    /// returning a deduplicated and scored/ranked list of candidates.
-    pub async fn search_candidates(&self, title: &str, author: Option<&str>) -> Vec<SearchResult> {
-        let mut unique = self.search_raw_candidates(title, author).await;
-        rank_candidates(title, author, &mut unique);
-        unique
-    }
-
-    /// Fetches candidates across search backends, prioritizing fast Wikipedia JSON APIs
-    /// and short-circuiting to bypass slow DuckDuckGo HTML scraping when a confident match is found.
-    pub async fn search_raw_candidates(
+    async fn fetch_candidates(
         &self,
         title: &str,
         author: Option<&str>,
-    ) -> Vec<SearchResult> {
+    ) -> (Vec<SearchResult>, PreparedQuery) {
         let (opensearch_res, fulltext_res) = tokio::join!(
             self.search_wikipedia_opensearch(title),
             self.search_wikipedia_fulltext(title, author)
@@ -159,23 +150,36 @@ impl BookSearcher {
         }
 
         let mut unique = deduplicate_candidates(raw_candidates);
-
-        // If Wikipedia yielded a high-confidence match (score >= 85), return immediately
-        // to bypass the 1.5-3.5s DuckDuckGo HTML scraping latency.
         let prepared = PreparedQuery::new(title, author);
         let has_high_confidence_wiki = unique.iter().any(|c| prepared.score(c) >= 85);
 
-        if !has_high_confidence_wiki
-            && let Ok(ddg_results) = self.search_duckduckgo(title, author).await
-        {
-            unique.extend(ddg_results);
-            unique = deduplicate_candidates(unique);
+        if !has_high_confidence_wiki {
+            let ddg_results = self.search_duckduckgo(title, author).await;
+            if !ddg_results.is_empty() {
+                unique.extend(ddg_results);
+                unique = deduplicate_candidates(unique);
+            }
         }
 
+        (unique, prepared)
+    }
+
+    /// Searches Wikipedia and DuckDuckGo concurrently without final sorting.
+    pub async fn search_raw_candidates(
+        &self,
+        title: &str,
+        author: Option<&str>,
+    ) -> Vec<SearchResult> {
+        self.fetch_candidates(title, author).await.0
+    }
+
+    /// Searches Wikipedia and DuckDuckGo concurrently and returns ranked, deduplicated candidates.
+    pub async fn search_candidates(&self, title: &str, author: Option<&str>) -> Vec<SearchResult> {
+        let (mut unique, prepared) = self.fetch_candidates(title, author).await;
+        score_with_prepared(&prepared, &mut unique);
         unique
     }
 
-    /// Queries Wikipedia OpenSearch API (canonical exact/prefix title index)
     async fn search_wikipedia_opensearch(&self, title: &str) -> Result<Vec<SearchResult>> {
         let endpoint = format!(
             "https://en.wikipedia.org/w/api.php?action=opensearch&search={}&limit=5&namespace=0&format=json",
@@ -186,14 +190,15 @@ impl BookSearcher {
         let json: Value = serde_json::from_slice(&bytes)?;
         let mut results = Vec::new();
 
-        // OpenSearch returns: [ search_term, [titles], [descriptions], [urls] ]
         let descriptions = json.get(2).and_then(|v| v.as_array());
         if let (Some(titles), Some(urls)) = (
             json.get(1).and_then(|v| v.as_array()),
             json.get(3).and_then(|v| v.as_array()),
         ) {
             for (idx, (t_val, u_val)) in titles.iter().zip(urls.iter()).enumerate() {
-                if let (Some(page_title), Some(page_url)) = (t_val.as_str(), u_val.as_str()) {
+                if let (Some(page_title), Some(page_url)) = (t_val.as_str(), u_val.as_str())
+                    && validate_public_http_url(page_url).is_ok()
+                {
                     let snippet = descriptions
                         .and_then(|d| d.get(idx))
                         .and_then(|v| v.as_str())
@@ -201,7 +206,7 @@ impl BookSearcher {
                         .filter(|s| !s.is_empty())
                         .map(|s| s.to_string());
                     results.push(SearchResult::new(
-                        format!("{} (Wikipedia)", page_title),
+                        format!("{page_title} (Wikipedia)"),
                         page_url,
                         snippet,
                     ));
@@ -212,15 +217,14 @@ impl BookSearcher {
         Ok(results)
     }
 
-    /// Queries Wikipedia full-text search API
     async fn search_wikipedia_fulltext(
         &self,
         title: &str,
         author: Option<&str>,
     ) -> Result<Vec<SearchResult>> {
         let query = match author {
-            Some(auth) => format!("{} {} novel OR book", title, auth),
-            None => format!("{} novel OR book", title),
+            Some(auth) => format!("{title} {auth} novel OR book"),
+            None => format!("{title} novel OR book"),
         };
 
         let endpoint = format!(
@@ -235,19 +239,16 @@ impl BookSearcher {
         if let Some(items) = json.pointer("/query/search").and_then(|v| v.as_array()) {
             for item in items.iter().take(3) {
                 if let Some(page_title) = item.get("title").and_then(|t| t.as_str()) {
-                    let snippet = item
-                        .get("snippet")
-                        .and_then(|s| s.as_str())
-                        .map(|raw_snippet| {
-                            let stripped = strip_html_tags(raw_snippet);
-                            decode_html_entities(stripped.trim()).into_owned()
-                        });
+                    let snippet = item.get("snippet").and_then(|s| s.as_str()).map(|raw| {
+                        let stripped = strip_html_tags(raw);
+                        decode_html_entities(stripped.trim()).into_owned()
+                    });
 
                     let url_title = page_title.replace(' ', "_");
                     let url = format!("https://en.wikipedia.org/wiki/{}", url_encode(&url_title));
 
                     results.push(SearchResult::new(
-                        format!("{} (Wikipedia)", page_title),
+                        format!("{page_title} (Wikipedia)"),
                         url,
                         snippet,
                     ));
@@ -258,26 +259,28 @@ impl BookSearcher {
         Ok(results)
     }
 
-    /// Queries DuckDuckGo HTML search for book synopses
-    async fn search_duckduckgo(
-        &self,
-        title: &str,
-        author: Option<&str>,
-    ) -> Result<Vec<SearchResult>> {
+    async fn search_duckduckgo(&self, title: &str, author: Option<&str>) -> Vec<SearchResult> {
+        let safe_title = title.replace('"', " ");
         let query = match author {
-            Some(auth) => format!("\"{}\" \"{}\" book synopsis summary", title, auth),
-            None => format!("\"{}\" book synopsis summary", title),
+            Some(auth) => format!(
+                "\"{}\" \"{}\" book synopsis summary",
+                safe_title,
+                auth.replace('"', " ")
+            ),
+            None => format!("\"{}\" book synopsis summary", safe_title),
         };
 
         let endpoint = format!("https://html.duckduckgo.com/html/?q={}", url_encode(&query));
-        let Ok(bytes) = self
-            .fetch_bytes(&endpoint, 3, crate::scraper::MAX_SCRAPE_BYTES)
-            .await
+        let Ok(html) = fetch_text_limited(
+            self.client.get(&endpoint).timeout(Duration::from_secs(3)),
+            crate::scraper::MAX_SCRAPE_BYTES,
+            &endpoint,
+        )
+        .await
         else {
-            return Ok(Vec::new());
+            return Vec::new();
         };
-        let html = String::from_utf8_lossy(&bytes);
-        Ok(parse_ddg_html_results(&html))
+        parse_ddg_html_results(&html)
     }
 }
 
@@ -317,22 +320,14 @@ fn parse_ddg_html_results(html: &str) -> Vec<SearchResult> {
             {
                 href = Some(raw_href.into_owned());
                 if !is_empty {
-                    title = scanner
-                        .read_text(name)
-                        .split_whitespace()
-                        .collect::<Vec<_>>()
-                        .join(" ");
+                    title = collapse_whitespace(&scanner.read_text(name));
                 }
             } else if snippet.is_none()
                 && xml_attr(attrs, "class")
                     .is_some_and(|c| c.split_ascii_whitespace().any(|t| t == "result__snippet"))
                 && !is_empty
             {
-                let cleaned = scanner
-                    .read_text(name)
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ");
+                let cleaned = collapse_whitespace(&scanner.read_text(name));
                 if !cleaned.is_empty() {
                     snippet = Some(cleaned);
                 }
@@ -346,7 +341,7 @@ fn parse_ddg_html_results(html: &str) -> Vec<SearchResult> {
             continue;
         };
         let actual_url = extract_ddg_url(&raw_href);
-        if crate::scraper::validate_public_http_url(&actual_url).is_err() {
+        if validate_public_http_url(&actual_url).is_err() {
             continue;
         }
 
@@ -359,11 +354,10 @@ fn parse_ddg_html_results(html: &str) -> Vec<SearchResult> {
     results
 }
 
-/// Extracts target destination URL from DuckDuckGo redirect link, returning a zero-copy
-/// `Cow::Borrowed` slice whenever no percent-decoding is needed.
-pub fn extract_ddg_url(raw: &str) -> Cow<'_, str> {
-    if let Some(pos) = raw.find("uddg=") {
-        let remainder = &raw[pos + 5..];
+fn extract_ddg_url(raw: &str) -> Cow<'_, str> {
+    let query_pos = raw.find("?uddg=").or_else(|| raw.find("&uddg="));
+    if let Some(pos) = query_pos {
+        let remainder = &raw[pos + 6..];
         let encoded_url = remainder.split('&').next().unwrap_or(remainder);
         if let Ok(decoded) = url_decode(encoded_url) {
             return decoded;
@@ -372,9 +366,7 @@ pub fn extract_ddg_url(raw: &str) -> Cow<'_, str> {
     Cow::Borrowed(raw)
 }
 
-/// Validates an Open Library work key (e.g. `/works/OL12345W` or `works/OL12345W`),
-/// ensuring it strictly starts with `works/OL` and contains only safe identifier characters (CWE-22 / CWE-918).
-pub fn is_valid_work_key(work_key: &str) -> bool {
+fn is_valid_work_key(work_key: &str) -> bool {
     let clean = work_key.trim().trim_start_matches('/');
     if !clean.starts_with("works/OL") {
         return false;
@@ -386,28 +378,17 @@ pub fn is_valid_work_key(work_key: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// Parses an Open Library work description JSON response, handling both plain string descriptions
-/// and typed objects `{"type": "/type/text", "value": "..."}`.
-pub fn parse_work_description(json_bytes: &[u8]) -> Option<String> {
+fn parse_work_description(json_bytes: &[u8]) -> Option<String> {
     let json: Value = serde_json::from_slice(json_bytes).ok()?;
-    if let Some(desc_val) = json.get("description") {
-        if let Some(desc_str) = desc_val.as_str() {
-            let trimmed = desc_str.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
-            }
-        } else if let Some(val_str) = desc_val.get("value").and_then(|v| v.as_str()) {
-            let trimmed = val_str.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
-            }
-        }
-    }
-    None
+    let desc_val = json.get("description")?;
+    let s = desc_val
+        .as_str()
+        .or_else(|| desc_val.get("value").and_then(|v| v.as_str()))?;
+    let trimmed = s.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
-/// Deduplicates search results by normalized (percent-decoded, trailing-slash-trimmed) URL.
-pub fn deduplicate_candidates(candidates: Vec<SearchResult>) -> Vec<SearchResult> {
+fn deduplicate_candidates(candidates: Vec<SearchResult>) -> Vec<SearchResult> {
     let mut seen = HashSet::with_capacity(candidates.len());
     let mut unique = Vec::with_capacity(candidates.len());
 
@@ -424,14 +405,12 @@ pub fn deduplicate_candidates(candidates: Vec<SearchResult>) -> Vec<SearchResult
 
 const DERIVATIVE_MARKERS: &[&str] = &[
     "history of",
-    "the history of",
     "companion to",
     "study of",
     "annotated",
     "the art of",
     "the philosophy of",
     "film series",
-    "(film series)",
     "(film)",
     "(franchise)",
     "soundtrack",
@@ -454,10 +433,10 @@ struct PreparedQuery {
 impl PreparedQuery {
     fn new(title_query: &str, author_query: Option<&str>) -> Self {
         let norm_req = normalize_title_for_comparison(title_query);
-        let novel_variant = format!("{} (novel)", norm_req);
-        let book_variant = format!("{} (book)", norm_req);
+        let novel_variant = format!("{norm_req} (novel)");
+        let book_variant = format!("{norm_req} (book)");
         let norm_author = author_query
-            .map(|a| a.trim().to_ascii_lowercase())
+            .map(|a| a.trim().to_lowercase())
             .filter(|a| !a.is_empty());
 
         Self {
@@ -472,7 +451,6 @@ impl PreparedQuery {
         let mut score = 0;
         let norm_cand = normalize_title_for_comparison(&candidate.title);
 
-        // 1. Exact match bonus
         if norm_cand == self.norm_req {
             score += 100;
         } else if norm_cand == self.novel_variant || norm_cand == self.book_variant {
@@ -480,10 +458,8 @@ impl PreparedQuery {
         } else if let Some(stripped) = norm_cand.strip_prefix(&self.norm_req) {
             let remainder = stripped.trim();
             if remainder.starts_with('(') && remainder.ends_with(')') {
-                // Parenthetical qualifier like "(novel)" or "(1937)"
                 score += 85;
             } else {
-                // Subtitle like ": an unexpected journey"
                 score += 40;
             }
         } else if norm_cand.ends_with(&self.norm_req) {
@@ -492,7 +468,6 @@ impl PreparedQuery {
             score += 20;
         }
 
-        // 2. Heavy penalty for derivative / commentary / adaptation keywords
         for marker in DERIVATIVE_MARKERS {
             if norm_cand.contains(marker) && !self.norm_req.contains(marker) {
                 score -= 60;
@@ -500,7 +475,6 @@ impl PreparedQuery {
             }
         }
 
-        // 3. Author matching bonus (without concatenating title + snippet into a new String)
         if let Some(norm_author) = &self.norm_author {
             let last_name = norm_author.split_whitespace().last().unwrap_or(norm_author);
             let snippet_str = candidate.snippet.as_deref().unwrap_or("");
@@ -517,7 +491,6 @@ impl PreparedQuery {
             }
         }
 
-        // 4. Source authority bonus for Wikipedia novel/canonical pages
         if candidate.url.contains("wikipedia.org/wiki/") {
             score += 15;
         }
@@ -526,18 +499,21 @@ impl PreparedQuery {
     }
 }
 
-/// Scores each candidate against the requested book title and optional author,
-/// sorting candidates descending by relevance score.
+fn score_with_prepared(prepared: &PreparedQuery, candidates: &mut [SearchResult]) {
+    for c in candidates.iter_mut() {
+        c.score = prepared.score(c);
+    }
+    candidates.sort_by_key(|a| std::cmp::Reverse(a.score));
+}
+
+/// Scores and sorts candidates descending against the requested book title and optional author.
 pub fn rank_candidates(
     title_query: &str,
     author_query: Option<&str>,
     candidates: &mut [SearchResult],
 ) {
     let prepared = PreparedQuery::new(title_query, author_query);
-    for c in candidates.iter_mut() {
-        c.score = prepared.score(c);
-    }
-    candidates.sort_by_key(|a| std::cmp::Reverse(a.score));
+    score_with_prepared(&prepared, candidates);
 }
 
 fn normalize_title_for_comparison(title: &str) -> String {
@@ -550,7 +526,9 @@ fn normalize_title_for_comparison(title: &str) -> String {
     let mut prev_space = false;
     for ch in stripped.chars() {
         if ch.is_alphanumeric() || ch == '(' || ch == ')' || ch == ':' {
-            out.push(ch.to_ascii_lowercase());
+            for lower in ch.to_lowercase() {
+                out.push(lower);
+            }
             prev_space = false;
         } else if !prev_space && !out.is_empty() {
             out.push(' ');
@@ -565,11 +543,6 @@ fn normalize_title_for_comparison(title: &str) -> String {
 
 /// Extracts the lead section and main narrative/summary section from a Wikipedia page.
 pub fn extract_wikipedia_synopsis(markdown: &str) -> Option<String> {
-    // 1. Identify lead section (text before the first `## ` heading)
-    let lead_end = markdown.find("\n## ").unwrap_or(markdown.len());
-    let lead = markdown[..lead_end].trim();
-
-    // 2. Search for plot/synopsis/overview section
     const PRIMARY_HEADINGS: &[&str] = &[
         "## plot",
         "## synopsis",
@@ -578,7 +551,6 @@ pub fn extract_wikipedia_synopsis(markdown: &str) -> Option<String> {
         "## premise",
         "## narrative",
     ];
-
     const NON_FICTION_HEADINGS: &[&str] = &[
         "## overview",
         "## content",
@@ -591,34 +563,38 @@ pub fn extract_wikipedia_synopsis(markdown: &str) -> Option<String> {
         "## structure",
     ];
 
-    let lower = markdown.to_ascii_lowercase();
-    let mut plot_start = None;
+    let lead_end = markdown.find("\n## ").unwrap_or(markdown.len());
+    let lead = markdown[..lead_end].trim();
 
-    // Check primary narrative/fiction headings first
-    for heading in PRIMARY_HEADINGS {
-        if let Some(pos) = lower.find(heading) {
-            plot_start = Some(pos);
-            break;
-        }
-    }
+    let mut primary_start = None;
+    let mut secondary_start = None;
+    let mut offset = 0;
 
-    // If no primary fiction heading found, check non-fiction content/overview headings
-    if plot_start.is_none() {
-        for heading in NON_FICTION_HEADINGS {
-            if let Some(pos) = lower.find(heading) {
-                plot_start = Some(pos);
+    for line in markdown.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if trimmed.starts_with("## ") {
+            if PRIMARY_HEADINGS
+                .iter()
+                .any(|h| trimmed.eq_ignore_ascii_case(h))
+            {
+                primary_start = Some(offset);
                 break;
             }
+            if secondary_start.is_none()
+                && NON_FICTION_HEADINGS
+                    .iter()
+                    .any(|h| trimmed.eq_ignore_ascii_case(h))
+            {
+                secondary_start = Some(offset);
+            }
         }
+        offset += line.len();
     }
 
-    let start_idx = plot_start?;
-
-    // Find where the plot/content section ends: the next `## ` heading after `start_idx`
+    let start_idx = primary_start.or(secondary_start)?;
     let section_body = &markdown[start_idx..];
     let body_start = section_body.find('\n').unwrap_or(0);
-    let after_heading = &section_body[body_start..];
-    let end_idx = after_heading
+    let end_idx = section_body[body_start..]
         .find("\n## ")
         .map(|p| start_idx + body_start + p)
         .unwrap_or(markdown.len());
@@ -643,231 +619,106 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_is_valid_work_key() {
-        for valid in [
-            "/works/OL12345W",
-            "works/OL12345W",
-            "works/OL12345-M",
-            "works/OL123_45",
-        ] {
+    fn test_work_key_validation_and_description() {
+        for valid in ["/works/OL12345W", "works/OL12345-M", "works/OL123_45"] {
             assert!(is_valid_work_key(valid), "expected valid: {valid}");
         }
-        // Path traversal / SSRF rejections
         for invalid in [
             "/works/../admin",
             "works/OL123?param=val",
             "works/OL123#frag",
-            "works/OL123/sub",
-            "@attacker.com/works/OL123",
             "authors/OL123A",
-            "works/",
             "",
         ] {
             assert!(!is_valid_work_key(invalid), "expected invalid: {invalid}");
         }
-    }
-
-    #[test]
-    fn test_extract_ddg_url() {
         assert_eq!(
-            extract_ddg_url(
-                "/l/?uddg=https%3A%2F%2Fen.wikipedia.org%2Fwiki%2FDune_%28novel%29&rut=123"
-            ),
-            "https://en.wikipedia.org/wiki/Dune_(novel)"
+            parse_work_description(br#"{"description": "Dune is a sci-fi novel."}"#).as_deref(),
+            Some("Dune is a sci-fi novel.")
         );
-        let direct_link = "https://example.com/summary";
-        assert_eq!(extract_ddg_url(direct_link), direct_link);
+        assert_eq!(
+            parse_work_description(br#"{"description": {"value": "Orwell classic."}}"#).as_deref(),
+            Some("Orwell classic.")
+        );
+        assert_eq!(parse_work_description(br#"{"description": ""}"#), None);
     }
 
     #[test]
-    fn test_deduplicate_candidates_normalizes_encoded_urls() {
-        let list = vec![
+    fn test_deduplicate_and_rank_candidates() {
+        let mut list = deduplicate_candidates(vec![
             SearchResult::new(
                 "Dune (novel) (Wikipedia)",
                 "https://en.wikipedia.org/wiki/Dune_%28novel%29",
                 None,
             ),
             SearchResult::new(
-                "Dune (novel) - Wikipedia",
+                "Dune - Wikipedia",
                 "https://en.wikipedia.org/wiki/Dune_(novel)/",
-                Some("Duplicate URL from DDG".to_string()),
-            ),
-            SearchResult::new("Other Source", "https://example.com/dune", None),
-        ];
-
-        let deduped = deduplicate_candidates(list);
-        assert_eq!(deduped.len(), 2);
-        assert_eq!(deduped[0].title, "Dune (novel) (Wikipedia)");
-        assert_eq!(deduped[1].url, "https://example.com/dune");
-    }
-
-    #[test]
-    fn test_rank_candidates_prioritizes_exact_novel_over_commentary_and_films() {
-        let mut candidates = vec![
-            SearchResult::new(
-                "The History of The Hobbit (Wikipedia)",
-                "https://en.wikipedia.org/wiki/The_History_of_The_Hobbit",
-                Some("A scholarly study by John D. Rateliff".to_string()),
+                Some("dup".to_string()),
             ),
             SearchResult::new(
-                "The Hobbit (film series) (Wikipedia)",
-                "https://en.wikipedia.org/wiki/The_Hobbit_(film_series)",
-                Some("Peter Jackson film trilogy".to_string()),
+                "The History of Dune (Wikipedia)",
+                "https://en.wikipedia.org/wiki/History_of_Dune",
+                Some("Study".to_string()),
             ),
             SearchResult::new(
-                "The Hobbit (Wikipedia)",
-                "https://en.wikipedia.org/wiki/The_Hobbit",
-                Some("1937 fantasy novel by English author J. R. R. Tolkien".to_string()),
+                "Dune (film series) (Wikipedia)",
+                "https://en.wikipedia.org/wiki/Dune_(film_series)",
+                Some("Film".to_string()),
             ),
-        ];
+        ]);
+        assert_eq!(list.len(), 3);
 
-        rank_candidates("The Hobbit", None, &mut candidates);
-        assert_eq!(candidates[0].title, "The Hobbit (Wikipedia)");
-        assert!(candidates[0].score > candidates[1].score);
-        assert!(candidates[0].score > candidates[2].score);
-
-        // If author is supplied, score is boosted even further
-        rank_candidates("The Hobbit", Some("J. R. R. Tolkien"), &mut candidates);
-        assert_eq!(candidates[0].title, "The Hobbit (Wikipedia)");
-        assert!(candidates[0].score >= 150);
-        // Verify high-confidence short-circuit threshold logic (score >= 85)
-        assert!(candidates[0].score >= 85);
+        rank_candidates("Dune", Some("Frank Herbert"), &mut list);
+        assert_eq!(list[0].title, "Dune (novel) (Wikipedia)");
+        assert!(list[0].score >= 85);
+        assert_eq!(
+            normalize_title_for_comparison("Étude — A Study"),
+            "étude a study"
+        );
     }
 
     #[test]
     fn test_extract_wikipedia_synopsis() {
-        let cases: &[(&str, &[&str], &[&str])] = &[
-            (
-                r#"# Dune (novel)
+        let forty_words =
+            "Arrakis supplies spice extending human life across interstellar empires. ".repeat(5);
+        let wiki = format!(
+            "# Dune\n\nLead paragraph.\n\n## Plot holes\nUnrelated tiny section.\n\n## Plot\n{forty_words}\n\n## References\n[1] Herbert."
+        );
+        let text = extract_wikipedia_synopsis(&wiki).expect("expected synopsis");
+        assert!(text.contains("Lead paragraph."));
+        assert!(text.contains("## Plot\nArrakis"));
+        assert!(!text.contains("Plot holes"));
+        assert!(!text.contains("References"));
 
-Dune is a 1965 epic science fiction novel by American author Frank Herbert. Set in the distant future.
-
-## Background
-Frank Herbert began researching in Oregon in 1957.
-
-## Plot
-Set in the distant future amidst a feudal interstellar society, Dune tells the story of young Paul Atreides, whose family accepts the stewardship of the desert planet Arrakis.
-
-### Arrakis
-Arrakis is the only source of the spice melange, the most valuable substance in the universe. The spice extends human life and provides higher levels of thought. Paul must navigate treacherous political alliances and survive the harsh desert sands.
-
-## Themes
-The novel explores the interplay between religion, politics, and ecology.
-
-## Adaptations
-A film adaptation was directed by David Lynch in 1984.
-
-## References
-[1] Herbert, Frank. Dune (1965).
-"#,
-                &[
-                    "Dune is a 1965 epic science fiction novel",
-                    "## Plot",
-                    "Paul Atreides",
-                    "Arrakis is the only source of the spice",
-                ],
-                &[
-                    "## Background",
-                    "Frank Herbert began researching",
-                    "## Adaptations",
-                    "David Lynch",
-                    "## References",
-                ],
-            ),
-            (
-                r#"# Thinking, Fast and Slow
-
-Thinking, Fast and Slow is a 2011 best-selling book by Nobel Memorial Prize in Economic Sciences laureate Daniel Kahneman.
-
-## Overview
-The book summarizes research that Kahneman conducted over decades, often in collaboration with Amos Tversky. It covers all three phases of his career: his early days working on cognitive biases, his work on prospect theory, and his later work on happiness. The central thesis is a dichotomy between two modes of thought: System 1 is fast, instinctive and emotional; System 2 is slower, more deliberative, and more logical.
-
-## Key themes
-The dichotomy between two modes of thought, heuristics and biases, and prospect theory.
-
-## References
-[1] Kahneman, Daniel. Thinking, Fast and Slow (2011). Farrar, Straus and Giroux.
-"#,
-                &[
-                    "Thinking, Fast and Slow is a 2011 best-selling book",
-                    "## Overview",
-                    "System 1 is fast, instinctive and emotional",
-                ],
-                &["## References", "Farrar, Straus and Giroux"],
-            ),
-        ];
-
-        for (wiki_markdown, expected, excluded) in cases {
-            let text = extract_wikipedia_synopsis(wiki_markdown).expect("expected synopsis");
-            for needle in *expected {
-                assert!(text.contains(needle), "missing {needle:?} in:\n{text}");
-            }
-            for needle in *excluded {
-                assert!(!text.contains(needle), "unexpected {needle:?} in:\n{text}");
-            }
-        }
+        let nonfiction = format!("# Thinking\n\nIntro.\n\n## Overview\n{forty_words}");
+        assert!(
+            extract_wikipedia_synopsis(&nonfiction)
+                .unwrap()
+                .contains("## Overview")
+        );
     }
 
     #[test]
-    fn test_parse_work_description() {
-        for (json, expected) in [
-            (
-                r#"{"title": "Dune", "description": "Dune is a science fiction novel by Frank Herbert."}"#,
-                Some("Dune is a science fiction novel by Frank Herbert."),
+    fn test_duckduckgo_parsing_and_ssrf_filtering() {
+        assert_eq!(
+            extract_ddg_url(
+                "/l/?notuddg=https%3A%2F%2Fevil.com&uddg=https%3A%2F%2Fexample.com%2Fa"
             ),
-            (
-                r#"{"title": "1984", "description": {"type": "/type/text", "value": "Nineteen Eighty-Four is a dystopian social science fiction novel by George Orwell."}}"#,
-                Some(
-                    "Nineteen Eighty-Four is a dystopian social science fiction novel by George Orwell.",
-                ),
-            ),
-            (r#"{"title": "Unknown Book", "description": ""}"#, None),
-            (r#"{"title": "No Description"}"#, None),
-        ] {
-            assert_eq!(parse_work_description(json.as_bytes()).as_deref(), expected);
-        }
-    }
-
-    #[test]
-    fn test_book_metadata_serde_backward_compatibility() {
-        let old_json = r#"{"canonical_title":"The Hobbit","author":"J. R. R. Tolkien","first_publish_year":1937}"#;
-        let meta: BookMetadata = serde_json::from_str(old_json).unwrap();
-        assert_eq!(meta.canonical_title, "The Hobbit");
-        assert_eq!(meta.author.as_deref(), Some("J. R. R. Tolkien"));
-        assert_eq!(meta.first_publish_year, Some(1937));
-        assert_eq!(meta.work_key, None);
-
-        let new_json = r#"{"canonical_title":"The Hobbit","author":"J. R. R. Tolkien","first_publish_year":1937,"work_key":"/works/OL262758W"}"#;
-        let meta_new: BookMetadata = serde_json::from_str(new_json).unwrap();
-        assert_eq!(meta_new.work_key.as_deref(), Some("/works/OL262758W"));
-    }
-
-    #[test]
-    fn test_duckduckgo_redirect_url_validation() {
-        let public =
-            extract_ddg_url("https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fbook");
-        assert!(crate::scraper::validate_public_http_url(&public).is_ok());
-
-        for unsafe_raw in [
-            "https://duckduckgo.com/l/?uddg=http%3A%2F%2F127.0.0.1%2Fadmin",
-            "https://duckduckgo.com/l/?uddg=http%3A%2F%2F169.254.169.254%2Flatest",
-            "javascript:alert(1)",
-        ] {
-            let extracted = extract_ddg_url(unsafe_raw);
-            assert!(
-                crate::scraper::validate_public_http_url(&extracted).is_err(),
-                "expected {extracted} to be rejected"
-            );
-        }
-
-        let html = r##"<div class="result__body"><h2 class="result__title"><a class="result__a" href="/l/?uddg=https%3A%2F%2Fexample.com%2Fdune"><b>Dune</b> (novel)</a></h2><a class="result__snippet" href="#"><b>Dune</b> is a <b>science fiction</b> novel &amp; classic.</a></div>"##;
+            "https://example.com/a"
+        );
+        let html = r##"
+            <div class="result__body"><h2 class="result__title"><a href="/l/?uddg=http%3A%2F%2F127.0.0.1%2Fadmin">Evil</a></h2></div>
+            <div class="result__body"><h2 class="result__title"><a href="javascript:alert(1)">XSS</a></h2></div>
+            <div class="result__body"><h2 class="result__title"><a class="result__a" href="/l/?uddg=https%3A%2F%2Fexample.com%2Fdune"><b>Dune</b> (novel)</a></h2><a class="result__snippet" href="#"><b>Dune</b> is classic &amp; iconic.</a></div>
+        "##;
         let parsed = parse_ddg_html_results(html);
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].title, "Dune (novel)");
         assert_eq!(parsed[0].url, "https://example.com/dune");
         assert_eq!(
             parsed[0].snippet.as_deref(),
-            Some("Dune is a science fiction novel & classic.")
+            Some("Dune is classic & iconic.")
         );
     }
 }

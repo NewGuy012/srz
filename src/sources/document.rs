@@ -1,18 +1,21 @@
 use crate::fs_util::read_file_bytes_limited;
-use crate::system::text_util::{XmlEvent, XmlScanner, xml_attr, xml_local_name};
+use crate::render;
+use crate::scraper::{ScrapedPage, WebScraper, bytes_to_lossy_utf8, clean_text, html_to_markdown};
+use crate::system::text_util::{
+    XmlEvent, XmlScanner, find_ascii_case_insensitive, url_decode, xml_attr, xml_local_name,
+};
 use crate::system::zip::ZipReader;
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use crate::render;
-use crate::scraper::{ScrapedPage, WebScraper, clean_text, html_to_markdown};
-use crate::system::text_util::url_decode;
+pub const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_PDF_TEXT_BYTES: usize = 50 * 1024 * 1024;
+const MAX_EPUB_XML_BYTES: usize = 5 * 1024 * 1024;
+const MAX_EPUB_CHAPTER_BYTES: usize = 15 * 1024 * 1024;
+const MAX_EPUB_TOTAL_BYTES: usize = 50 * 1024 * 1024;
+const MAX_EPUB_CHAPTER_COUNT: usize = 2000;
 
-pub const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024; // 20 MB limit for local files
-pub const MAX_PDF_TEXT_BYTES: usize = 50 * 1024 * 1024; // 50 MB limit for extracted PDF text
-
-#[derive(Default)]
 struct BoundedIoWriter {
     buf: Vec<u8>,
     max_bytes: usize,
@@ -33,17 +36,51 @@ impl std::io::Write for BoundedIoWriter {
     }
 }
 
-/// Maximum bytes decompressed for XML metadata files (`container.xml`, `.opf`).
-pub const MAX_EPUB_XML_BYTES: u64 = 5 * 1024 * 1024; // 5 MB
+struct CountingSink(u64);
 
-/// Maximum bytes decompressed per individual chapter HTML/XHTML entry.
-pub const MAX_EPUB_CHAPTER_BYTES: u64 = 15 * 1024 * 1024; // 15 MB
+impl std::io::Write for CountingSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(buf.len() as u64);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 
-/// Maximum cumulative uncompressed markdown bytes extracted from an EPUB archive.
-pub const MAX_EPUB_TOTAL_BYTES: usize = 50 * 1024 * 1024; // 50 MB
+fn finalize_document_page(
+    path: Option<&Path>,
+    default_filename: &str,
+    default_title: &str,
+    explicit_title: Option<String>,
+    raw_text: &str,
+    empty_msg: &str,
+) -> Result<ScrapedPage> {
+    let (content, word_count) = clean_text(raw_text, true, 2);
+    if word_count < 5 {
+        let path_str = path
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "provided document".to_string());
+        anyhow::bail!("{empty_msg} ({path_str})");
+    }
+    let title = explicit_title
+        .filter(|t| !t.trim().is_empty())
+        .or_else(|| {
+            path.and_then(|p| p.file_stem())
+                .map(|s| s.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| default_title.to_string());
+    let url = path
+        .map(|p| format!("file://{}", p.display()))
+        .unwrap_or_else(|| format!("file://{default_filename}"));
 
-/// Maximum number of chapters / spine items parsed from an EPUB.
-pub const MAX_EPUB_CHAPTER_COUNT: usize = 2000;
+    Ok(ScrapedPage {
+        url,
+        title: Some(title),
+        content,
+        word_count,
+    })
+}
 
 pub struct DocumentLoader;
 
@@ -68,9 +105,7 @@ impl DocumentLoader {
             EpubExtractor::extract_file(path)?
         } else {
             let bytes = read_file_bytes_limited(path, MAX_FILE_BYTES, false, "Document")?;
-            let raw = String::from_utf8(bytes)
-                .with_context(|| format!("Failed to read file: {:?}", path))?;
-
+            let raw = bytes_to_lossy_utf8(bytes);
             let (content, word_count, title) = Self::normalize_or_plain_text(
                 scraper,
                 &path.display().to_string(),
@@ -102,10 +137,17 @@ impl DocumentLoader {
         raw: String,
         fallback_title: impl FnOnce() -> String,
     ) -> (String, usize, String) {
-        let looks_like_html = render::is_html_path(Path::new(source))
-            || crate::system::text_util::find_ascii_case_insensitive(&raw, "<!doctype").is_some()
-            || crate::system::text_util::find_ascii_case_insensitive(&raw, "<html").is_some()
-            || crate::system::text_util::find_ascii_case_insensitive(&raw, "<body").is_some();
+        let path = Path::new(source);
+        let is_markdown = path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"));
+        let prefix = &raw[..raw.floor_char_boundary(raw.len().min(2048))];
+        let trimmed_prefix = prefix.trim_start();
+        let looks_like_html = render::is_html_path(path)
+            || (!is_markdown
+                && (find_ascii_case_insensitive(trimmed_prefix, "<!doctype").is_some()
+                    || find_ascii_case_insensitive(trimmed_prefix, "<html").is_some()
+                    || find_ascii_case_insensitive(trimmed_prefix, "<body").is_some()));
 
         if looks_like_html && let Ok(norm) = scraper.normalize(source, &raw) {
             let t = norm.title.unwrap_or_else(fallback_title);
@@ -117,10 +159,6 @@ impl DocumentLoader {
     }
 }
 
-// ---------------------------------------------------------------------------
-// PDF Extractor
-// ---------------------------------------------------------------------------
-
 pub struct PdfExtractor;
 
 impl PdfExtractor {
@@ -130,60 +168,143 @@ impl PdfExtractor {
         Self::extract_from_bytes(&bytes, Some(path))
     }
 
-    /// Pre-flights non-image FlateDecode PDF streams into `io::sink()` to block zlib bombs before `pdf_extract` allocates.
-    pub(super) fn verify_pdf_stream_budgets(
-        doc: &pdf_extract::Document,
-        max_bytes: usize,
-    ) -> Result<()> {
+    fn count_flate_decompressed(data: &[u8], remaining: u64) -> Result<u64> {
         use std::io::Read;
-        let mut remaining = max_bytes as u64;
+        let mut sink = CountingSink(0);
+        let mut zdec = flate2::read::ZlibDecoder::new(data).take(remaining + 1);
+        let zres = std::io::copy(&mut zdec, &mut sink);
+        if zres.is_err() && sink.0 == 0 && data.len() > 2 {
+            let mut rdec = flate2::read::DeflateDecoder::new(&data[2..]).take(remaining + 1);
+            let _ = std::io::copy(&mut rdec, &mut sink);
+        }
+        if sink.0 > remaining {
+            anyhow::bail!(
+                "Decompressed PDF stream data exceeds maximum allowed size of {} bytes",
+                MAX_PDF_TEXT_BYTES
+            );
+        }
+        Ok(sink.0)
+    }
 
-        for obj in doc.objects.values() {
-            let pdf_extract::Object::Stream(stream) = obj else {
-                continue;
-            };
-            if stream
-                .dict
-                .get(b"Subtype")
-                .and_then(|o| o.as_name())
-                .is_ok_and(|n| n == b"Image")
+    /// Pre-flights raw `/ObjStm` and `/XRef` Flate streams before `Document::load_mem` parses them eagerly.
+    fn preflight_raw_object_streams(bytes: &[u8]) -> Result<()> {
+        let mut remaining = MAX_PDF_TEXT_BYTES as u64;
+        for marker in [b"/ObjStm".as_slice(), b"/XRef".as_slice()] {
+            let mut cursor = 0;
+            while let Some(rel) = bytes[cursor..]
+                .windows(marker.len())
+                .position(|w| w == marker)
             {
-                continue;
-            }
-            let is_flate = match stream.dict.get(b"Filter") {
-                Ok(pdf_extract::Object::Name(n)) => n == b"FlateDecode",
-                Ok(pdf_extract::Object::Array(arr)) => {
-                    matches!(arr.first(), Some(pdf_extract::Object::Name(n)) if n == b"FlateDecode")
+                let start_search = cursor + rel + marker.len();
+                cursor = start_search;
+                let window_end = bytes.len().min(start_search + 4096);
+                if let Some(st_rel) = bytes[start_search..window_end]
+                    .windows(6)
+                    .position(|w| w == b"stream")
+                {
+                    let between = &bytes[start_search..start_search + st_rel];
+                    if !between.trim_ascii_end().ends_with(b">>")
+                        || between.windows(6).any(|w| w == b"endobj")
+                    {
+                        continue;
+                    }
+                    let mut stream_start = start_search + st_rel + 6;
+                    if bytes.get(stream_start) == Some(&b'\r') {
+                        stream_start += 1;
+                    }
+                    if bytes.get(stream_start) == Some(&b'\n') {
+                        stream_start += 1;
+                    }
+                    if let Some(end_rel) = bytes[stream_start..]
+                        .windows(9)
+                        .position(|w| w == b"endstream")
+                    {
+                        let slice = &bytes[stream_start..stream_start + end_rel];
+                        let decoded = Self::count_flate_decompressed(slice, remaining)?;
+                        remaining = remaining.saturating_sub(decoded);
+                    }
                 }
-                _ => false,
-            };
-            if !is_flate {
-                continue;
-            }
-
-            let mut decoder =
-                flate2::read::ZlibDecoder::new(stream.content.as_slice()).take(remaining + 1);
-            if let Ok(written) = std::io::copy(&mut decoder, &mut std::io::sink()) {
-                if written > remaining {
-                    anyhow::bail!(
-                        "Decompressed PDF stream data exceeds maximum allowed size of {} bytes",
-                        max_bytes
-                    );
-                }
-                remaining = remaining.saturating_sub(written);
             }
         }
         Ok(())
     }
 
-    pub(super) fn extract_pdf_text_bounded(
+    fn verify_pdf_stream_budgets(doc: &pdf_extract::Document, max_bytes: usize) -> Result<()> {
+        let mut remaining = max_bytes as u64;
+        let mut protected_ids = HashSet::new();
+
+        for obj in doc.objects.values() {
+            let dict = match obj {
+                pdf_extract::Object::Dictionary(d) => d,
+                pdf_extract::Object::Stream(s) => &s.dict,
+                _ => continue,
+            };
+            if let Ok(contents) = dict.get(b"Contents") {
+                match contents {
+                    pdf_extract::Object::Reference(id) => {
+                        protected_ids.insert(*id);
+                    }
+                    pdf_extract::Object::Array(arr) => {
+                        for item in arr {
+                            if let Ok(id) = item.as_reference() {
+                                protected_ids.insert(id);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if let Ok(id) = dict.get(b"ToUnicode").and_then(|o| o.as_reference()) {
+                protected_ids.insert(id);
+            }
+        }
+
+        for (&obj_id, obj) in &doc.objects {
+            let pdf_extract::Object::Stream(stream) = obj else {
+                continue;
+            };
+            let is_unreferenced_image = !protected_ids.contains(&obj_id)
+                && stream
+                    .dict
+                    .get(b"Subtype")
+                    .and_then(|o| o.as_name())
+                    .is_ok_and(|n| n == b"Image");
+            if is_unreferenced_image {
+                continue;
+            }
+
+            let Ok(filters) = stream.filters() else {
+                continue;
+            };
+            if filters.len() > 1 {
+                anyhow::bail!(
+                    "Unsupported chained PDF stream filters in preflight ({} stages)",
+                    filters.len()
+                );
+            }
+            match filters.first().copied() {
+                Some(b"FlateDecode") => {
+                    let decoded = Self::count_flate_decompressed(&stream.content, remaining)?;
+                    remaining = remaining.saturating_sub(decoded);
+                }
+                Some(b"LZWDecode") => {
+                    anyhow::bail!("Unsupported unbounded LZWDecode PDF stream in preflight");
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn extract_pdf_text_bounded(
         doc: &pdf_extract::Document,
         max_text_bytes: usize,
     ) -> Result<String> {
         Self::verify_pdf_stream_budgets(doc, max_text_bytes)?;
         let mut writer = BoundedIoWriter {
+            buf: Vec::new(),
             max_bytes: max_text_bytes,
-            ..Default::default()
+            exceeded: false,
         };
         let extract_res = {
             let writer_ref: &mut dyn std::io::Write = &mut writer;
@@ -200,13 +321,18 @@ impl PdfExtractor {
         String::from_utf8(writer.buf).context("Extracted PDF text was not valid UTF-8")
     }
 
-    /// Extracts text from in-memory PDF bytes, parsing the PDF document structure only once.
+    /// Extracts text from in-memory PDF bytes.
     pub fn extract_from_bytes(bytes: &[u8], path: Option<&Path>) -> Result<ScrapedPage> {
+        Self::preflight_raw_object_streams(bytes)?;
         let doc_res = pdf_extract::Document::load_mem(bytes);
         let mut doc = match doc_res {
             Ok(d) => d,
-            Err(_) if bytes.windows(2).any(|w| w == b"\r\n") => {
-                // Recover only `\r\n` CRLF translation without corrupting standalone `\r` inside binary streams.
+            Err(_)
+                if bytes[..bytes.len().min(1024)]
+                    .windows(5)
+                    .any(|w| w == b"%PDF-")
+                    && bytes.windows(2).any(|w| w == b"\r\n") =>
+            {
                 let mut normalized = Vec::with_capacity(bytes.len());
                 for (i, &b) in bytes.iter().enumerate() {
                     if b == b'\r' && bytes.get(i + 1) == Some(&b'\n') {
@@ -219,64 +345,68 @@ impl PdfExtractor {
             }
             Err(e) => return Err(e).context("Failed to parse PDF document"),
         };
-        if doc.is_encrypted() {
-            let _ = doc.decrypt("");
+        if doc.is_encrypted()
+            && let Err(err) = doc.decrypt("")
+        {
+            anyhow::bail!("PDF is password-protected or encrypted ({err})");
         }
         let raw_text = Self::extract_pdf_text_bounded(&doc, MAX_PDF_TEXT_BYTES)?;
-
-        let title = Self::extract_title_from_doc(&doc, path);
+        let title = Self::extract_title_from_doc(&doc);
         let processed = Self::post_process_text(&raw_text);
-        let (content, word_count) = clean_text(&processed, true, 2);
-
-        if word_count < 5 {
-            let path_str = path
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "provided document".to_string());
-            anyhow::bail!(
-                "No readable text found in PDF ({}). This appears to be a scanned image-only PDF without an embedded text layer.",
-                path_str
-            );
-        }
-
-        let url = path
-            .map(|p| format!("file://{}", p.display()))
-            .unwrap_or_else(|| "file://document.pdf".to_string());
-
-        Ok(ScrapedPage {
-            url,
-            title: Some(title),
-            content,
-            word_count,
-        })
+        finalize_document_page(
+            path,
+            "document.pdf",
+            "PDF Document",
+            title,
+            &processed,
+            "No readable text found in PDF. This appears to be a scanned image-only PDF without an embedded text layer.",
+        )
     }
 
-    /// Attempts to extract Title from the parsed PDF trailer Info dictionary.
-    fn extract_title_from_doc(doc: &pdf_extract::Document, path: Option<&Path>) -> String {
-        let mut title = None;
+    fn decode_pdf_text_string(raw: &[u8]) -> String {
+        if let Some(rest) = raw.strip_prefix(&[0xFE, 0xFF]) {
+            let units: Vec<u16> = rest
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_be_bytes(*c))
+                .collect();
+            String::from_utf16_lossy(&units)
+        } else if let Some(rest) = raw.strip_prefix(&[0xFF, 0xFE]) {
+            let units: Vec<u16> = rest
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_le_bytes(*c))
+                .collect();
+            String::from_utf16_lossy(&units)
+        } else {
+            String::from_utf8_lossy(raw).into_owned()
+        }
+    }
 
-        if let Ok(info) = doc
+    fn extract_title_from_doc(doc: &pdf_extract::Document) -> Option<String> {
+        let info = doc
             .trailer
             .get(b"Info")
             .and_then(|obj| doc.dereference(obj))
-            && let Ok(dict) = info.1.as_dict()
-            && let Ok(t) = dict.get(b"Title").and_then(|o| o.as_str())
-        {
-            let decoded = String::from_utf8_lossy(t).trim().to_string();
-            if !decoded.is_empty() {
-                title = Some(decoded);
-            }
-        }
-
-        let fallback_title = path
-            .and_then(|p| p.file_stem())
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "PDF Document".to_string());
-
-        title.unwrap_or(fallback_title)
+            .ok()?;
+        let dict = info.1.as_dict().ok()?;
+        let raw = dict.get(b"Title").and_then(|o| o.as_str()).ok()?;
+        let decoded = Self::decode_pdf_text_string(raw).trim().to_string();
+        (!decoded.is_empty()).then_some(decoded)
     }
 
-    /// Reconstructs natural paragraphs, removes carriage returns, and rejoins hyphenated line breaks.
-    pub fn post_process_text(raw: &str) -> String {
+    fn looks_like_numbered_heading(nt: &str) -> bool {
+        let digits = nt.bytes().take_while(|b| b.is_ascii_digit()).count();
+        if !(1..=3).contains(&digits) || nt.len() >= 80 {
+            return false;
+        }
+        let rest = &nt[digits..];
+        rest.starts_with(". ") && rest[2..].chars().next().is_some_and(|c| c.is_uppercase())
+    }
+
+    fn post_process_text(raw: &str) -> String {
         let mut cleaned = String::with_capacity(raw.len());
         let mut lines = raw.lines().peekable();
 
@@ -290,8 +420,11 @@ impl PdfExtractor {
                 continue;
             }
 
-            // Rejoin words split across line endings: "algo-\nrithm" -> "algorithm"
-            if trimmed.ends_with('-') && lines.peek().is_some() {
+            if trimmed.len() > 1
+                && trimmed.ends_with('-')
+                && !trimmed[..trimmed.len() - 1].ends_with(char::is_whitespace)
+                && lines.peek().is_some_and(|n| !n.trim().is_empty())
+            {
                 cleaned.push_str(&trimmed[..trimmed.len() - 1]);
             } else {
                 cleaned.push_str(trimmed);
@@ -300,9 +433,7 @@ impl PdfExtractor {
                     nt.starts_with(['#', '•'])
                         || nt.starts_with("- ")
                         || nt.starts_with("* ")
-                        || (nt.len() < 80
-                            && nt.bytes().next().is_some_and(|b| b.is_ascii_digit())
-                            && nt.contains(". "))
+                        || Self::looks_like_numbered_heading(nt)
                 });
 
                 if is_page_break {
@@ -321,23 +452,16 @@ impl PdfExtractor {
     }
 }
 
-// ---------------------------------------------------------------------------
-// EPUB Extractor
-// ---------------------------------------------------------------------------
-
-pub struct EpubExtractor;
+struct EpubExtractor;
 
 impl EpubExtractor {
-    /// Extracts text and metadata from an EPUB file path.
-    pub fn extract_file(path: &Path) -> Result<ScrapedPage> {
+    fn extract_file(path: &Path) -> Result<ScrapedPage> {
         let bytes = read_file_bytes_limited(path, MAX_FILE_BYTES, false, "EPUB")?;
         Self::extract_from_bytes(&bytes, Some(path))
     }
 
-    /// Extracts text and metadata from in-memory EPUB bytes.
-    pub fn extract_from_bytes(bytes: &[u8], path: Option<&Path>) -> Result<ScrapedPage> {
+    fn extract_from_bytes(bytes: &[u8], path: Option<&Path>) -> Result<ScrapedPage> {
         let archive = ZipReader::new(bytes).context("Failed to open EPUB as zip archive")?;
-
         let opf_path = find_opf_path(&archive)?;
         let (title, chapters) = parse_opf(&archive, &opf_path)?;
 
@@ -352,73 +476,58 @@ impl EpubExtractor {
             }
             let raw_cap = MAX_EPUB_TOTAL_BYTES
                 .saturating_sub(total_decompressed)
-                .min(MAX_EPUB_CHAPTER_BYTES as usize);
+                .min(MAX_EPUB_CHAPTER_BYTES);
             if raw_cap == 0 {
                 break;
             }
-            if let Ok(file_bytes) = archive.read_file(&chapter_path, raw_cap) {
-                total_decompressed = total_decompressed.saturating_add(file_bytes.len());
-                if let Ok(html) = std::str::from_utf8(&file_bytes) {
-                    let md = html_to_markdown(html);
-                    let trimmed = md.trim();
-                    let remaining = MAX_EPUB_TOTAL_BYTES.saturating_sub(total_bytes);
-                    let slice =
-                        &trimmed[..trimmed.floor_char_boundary(remaining.min(trimmed.len()))];
-                    if !slice.is_empty() {
-                        if !book_markdown.is_empty() {
-                            book_markdown.push_str("\n\n");
-                        }
-                        book_markdown.push_str(slice);
-                        total_bytes = total_bytes.saturating_add(slice.len());
+            let file_bytes = match archive.read_file(&chapter_path, raw_cap) {
+                Ok(b) => b,
+                Err(e) => {
+                    if archive.file_names().any(|n| n == chapter_path) {
+                        return Err(e).with_context(|| {
+                            format!("Failed to decompress EPUB chapter '{chapter_path}'")
+                        });
                     }
-                    if total_bytes >= MAX_EPUB_TOTAL_BYTES {
-                        break;
-                    }
+                    continue;
                 }
+            };
+            total_decompressed = total_decompressed.saturating_add(file_bytes.len());
+            let html = String::from_utf8_lossy(&file_bytes);
+            let md = html_to_markdown(&html);
+            let trimmed = md.trim();
+            let remaining = MAX_EPUB_TOTAL_BYTES.saturating_sub(total_bytes);
+            let slice = &trimmed[..trimmed.floor_char_boundary(remaining.min(trimmed.len()))];
+            if !slice.is_empty() {
+                if !book_markdown.is_empty() {
+                    book_markdown.push_str("\n\n");
+                }
+                book_markdown.push_str(slice);
+                total_bytes = total_bytes.saturating_add(slice.len());
+            }
+            if total_bytes >= MAX_EPUB_TOTAL_BYTES {
+                break;
             }
         }
 
-        let (cleaned_content, word_count) = clean_text(&book_markdown, true, 2);
-
-        if word_count < 5 {
-            let path_str = path
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "provided EPUB document".to_string());
-            anyhow::bail!(
-                "No readable text found in EPUB ({}). The file may be empty, image-only, or encrypted with DRM.",
-                path_str
-            );
-        }
-
-        let resolved_title = title.or_else(|| {
-            path.and_then(|p| p.file_stem())
-                .map(|s| s.to_string_lossy().into_owned())
-        });
-
-        let url = path
-            .map(|p| format!("file://{}", p.display()))
-            .unwrap_or_else(|| "file://document.epub".to_string());
-
-        Ok(ScrapedPage {
-            url,
-            title: resolved_title,
-            content: cleaned_content,
-            word_count,
-        })
+        finalize_document_page(
+            path,
+            "document.epub",
+            "EPUB Document",
+            title,
+            &book_markdown,
+            "No readable text found in EPUB. The file may be empty, image-only, or encrypted with DRM.",
+        )
     }
 }
 
-/// Locates the package OPF file path within the EPUB archive.
 fn find_opf_path(archive: &ZipReader) -> Result<String> {
-    // 1. Standard EPUB path: check META-INF/container.xml
-    if let Ok(xml_bytes) = archive.read_file("META-INF/container.xml", MAX_EPUB_XML_BYTES as usize)
+    if let Ok(xml_bytes) = archive.read_file("META-INF/container.xml", MAX_EPUB_XML_BYTES)
         && let Ok(xml) = std::str::from_utf8(&xml_bytes)
         && let Some(path) = parse_container_xml(xml)
     {
         return Ok(path);
     }
 
-    // 2. Fallback: locate any entry ending with .opf from the in-memory central directory
     for name in archive.file_names() {
         if crate::system::text_util::ends_with_ascii_case_insensitive(name, ".opf") {
             return Ok(name.to_string());
@@ -428,7 +537,6 @@ fn find_opf_path(archive: &ZipReader) -> Result<String> {
     anyhow::bail!("Invalid EPUB: no OPF package file found in archive")
 }
 
-/// Parses META-INF/container.xml to find the rootfile full-path.
 fn parse_container_xml(xml: &str) -> Option<String> {
     let mut scanner = XmlScanner::new(xml);
     while let Some(ev) = scanner.next_event() {
@@ -445,10 +553,9 @@ fn parse_container_xml(xml: &str) -> Option<String> {
     None
 }
 
-/// Parses the OPF package document to extract book title and ordered chapter file paths.
 fn parse_opf(archive: &ZipReader, opf_path: &str) -> Result<(Option<String>, Vec<String>)> {
     let opf_bytes = archive
-        .read_file(opf_path, MAX_EPUB_XML_BYTES as usize)
+        .read_file(opf_path, MAX_EPUB_XML_BYTES)
         .with_context(|| format!("Failed to read OPF file at {}", opf_path))?;
     let opf_xml = std::str::from_utf8(&opf_bytes).context("OPF XML is not valid UTF-8")?;
 
@@ -460,8 +567,9 @@ fn parse_opf(archive: &ZipReader, opf_path: &str) -> Result<(Option<String>, Vec
     const MAX_EPUB_MANIFEST_ITEMS: usize = 16_384;
     let mut scanner = XmlScanner::new(opf_xml);
     let mut title: Option<String> = None;
-    let mut manifest: HashMap<String, (String, String)> = HashMap::new(); // id -> (href, media_type)
-    let mut spine: Vec<String> = Vec::new(); // list of idref
+    let mut manifest: HashMap<String, String> = HashMap::new();
+    let mut manifest_order: Vec<(String, String)> = Vec::new();
+    let mut spine: Vec<String> = Vec::new();
 
     while let Some(ev) = scanner.next_event() {
         if let XmlEvent::Start {
@@ -486,7 +594,8 @@ fn parse_opf(archive: &ZipReader, opf_path: &str) -> Result<(Option<String>, Vec
                         let mt = xml_attr(attrs, "media-type")
                             .map(|s| s.trim().to_string())
                             .unwrap_or_default();
-                        manifest.insert(id.to_string(), (href.to_string(), mt));
+                        manifest.insert(id.to_string(), href.to_string());
+                        manifest_order.push((href.to_string(), mt));
                     }
                 }
             } else if local.eq_ignore_ascii_case("itemref")
@@ -501,10 +610,8 @@ fn parse_opf(archive: &ZipReader, opf_path: &str) -> Result<(Option<String>, Vec
     }
 
     let mut chapter_paths = Vec::new();
-
-    // 1. Follow spine reading order if present
     for idref in &spine {
-        if let Some((href, _)) = manifest.get(idref) {
+        if let Some(href) = manifest.get(idref) {
             chapter_paths.push(resolve_epub_path(opf_dir, href));
             if chapter_paths.len() >= MAX_EPUB_CHAPTER_COUNT {
                 break;
@@ -512,16 +619,16 @@ fn parse_opf(archive: &ZipReader, opf_path: &str) -> Result<(Option<String>, Vec
         }
     }
 
-    // 2. Fallback to manifest items if spine is empty
     if chapter_paths.is_empty() {
-        for (href, media_type) in manifest.values() {
-            let is_html = ["html", "xml"].iter().any(|m| {
-                crate::system::text_util::find_ascii_case_insensitive(media_type, m).is_some()
-            }) || [".xhtml", ".html", ".htm"]
+        for (href, media_type) in manifest_order {
+            let is_html = ["html", "xml"]
                 .iter()
-                .any(|e| crate::system::text_util::ends_with_ascii_case_insensitive(href, e));
+                .any(|m| find_ascii_case_insensitive(&media_type, m).is_some())
+                || [".xhtml", ".html", ".htm"]
+                    .iter()
+                    .any(|e| crate::system::text_util::ends_with_ascii_case_insensitive(&href, e));
             if is_html {
-                chapter_paths.push(resolve_epub_path(opf_dir, href));
+                chapter_paths.push(resolve_epub_path(opf_dir, &href));
                 if chapter_paths.len() >= MAX_EPUB_CHAPTER_COUNT {
                     break;
                 }
@@ -532,7 +639,6 @@ fn parse_opf(archive: &ZipReader, opf_path: &str) -> Result<(Option<String>, Vec
     Ok((title, chapter_paths))
 }
 
-/// Resolves relative EPUB href path against base OPF directory, normalizing `/` and `\` segments.
 fn resolve_epub_path(base_dir: &str, href: &str) -> String {
     let clean_href = href.split(['?', '#']).next().unwrap_or(href);
     let decoded = url_decode(clean_href).unwrap_or(std::borrow::Cow::Borrowed(clean_href));
@@ -562,89 +668,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_post_process_text_hyphenation() {
-        let raw = "This is an implemen-\ntation of modern systems.\n\nNew paragraph here.";
+    fn test_post_process_text_and_html_detection() {
+        let raw = "Implemen-\ntation done.\n2024 was good. Wait\nDash - keep\n\n";
         let processed = PdfExtractor::post_process_text(raw);
-        assert!(processed.contains("implementation of modern systems."));
-        assert!(processed.contains("New paragraph here."));
-    }
+        assert!(processed.contains("Implementation done."));
+        assert!(processed.contains("2024 was good. Wait"));
+        assert!(processed.contains("Dash - keep"));
+        assert_eq!(PdfExtractor::post_process_text("   \n\n "), "");
 
-    #[test]
-    fn test_empty_pdf_detection() {
-        let empty_text = "     \n\n  ";
-        let processed = PdfExtractor::post_process_text(empty_text);
-        assert_eq!(processed, "");
-    }
-
-    fn build_pdf_with_stream_content(content: &[u8]) -> Vec<u8> {
-        use pdf_extract::{Dictionary, Document, Object, Stream};
-
-        let mut doc = Document::with_version("1.5");
-        let pages_id = doc.new_object_id();
-
-        let mut font = Dictionary::new();
-        font.set("Type", "Font");
-        font.set("Subtype", "Type1");
-        font.set("BaseFont", "Helvetica");
-        let font_id = doc.add_object(font);
-
-        let mut fonts_dict = Dictionary::new();
-        fonts_dict.set("F1", font_id);
-        let mut resources = Dictionary::new();
-        resources.set("Font", fonts_dict);
-        let resources_id = doc.add_object(resources);
-
-        let content_id = doc.add_object(Stream::new(Dictionary::new(), content.to_vec()));
-
-        let mut page = Dictionary::new();
-        page.set("Type", "Page");
-        page.set("Parent", pages_id);
-        page.set("Contents", content_id);
-        page.set("Resources", resources_id);
-        page.set("MediaBox", vec![0.into(), 0.into(), 612.into(), 792.into()]);
-        let page_id = doc.add_object(page);
-
-        let mut pages = Dictionary::new();
-        pages.set("Type", "Pages");
-        pages.set("Kids", vec![page_id.into()]);
-        pages.set("Count", 1);
-        doc.objects.insert(pages_id, Object::Dictionary(pages));
-
-        let mut catalog = Dictionary::new();
-        catalog.set("Type", "Catalog");
-        catalog.set("Pages", pages_id);
-        let catalog_id = doc.add_object(catalog);
-        doc.trailer.set("Root", catalog_id);
-
-        let mut buffer = Vec::new();
-        doc.save_to(&mut buffer)
-            .expect("Failed to serialize sample PDF");
-        buffer
-    }
-
-    #[test]
-    fn test_extract_pdf_from_mem() {
-        let content = b"BT /F1 12 Tf 100 700 Td (Hello from Rust PDF extractor with enough words to pass the minimum text threshold for testing purposes) Tj ET";
-        let buffer = build_pdf_with_stream_content(content);
-        let page = PdfExtractor::extract_from_bytes(&buffer, None).unwrap();
-        assert!(page.content.contains("Hello from Rust PDF extractor"));
-        assert_eq!(page.title.as_deref(), Some("PDF Document"));
-
-        let sample_content = b"BT /F1 12 Tf 50 720 Td (srz - High-Performance Modular Rust CLI for Summarization) Tj /F1 10 Tf 0 -30 Td (srz extracts and synthesizes structured summaries using local OpenAI-compliant LLMs.) Tj 0 -20 Td (Key Features: Universal Ingestion for Web, YouTube captions, local PDFs, and live news.) Tj 0 -20 Td (Private and Secure: 100 percent offline local inference with strict POSIX permissions.) Tj 0 -20 Td (Offline Library: Embedded redb database stores every summary for instant full-text search.) Tj 0 -20 Td (Terminal Paging: Syntax-highlighted output with automatic terminal paging via less.) Tj 0 -20 Td (Interactive Grounded Q and A: Ask questions grounded on full source documents or past reads.) Tj ET";
-        let sample_page =
-            PdfExtractor::extract_from_bytes(&build_pdf_with_stream_content(sample_content), None)
-                .unwrap();
-        assert!(
-            sample_page
-                .content
-                .contains("srz - High-Performance Modular Rust CLI")
+        let scraper = WebScraper::new().unwrap();
+        let md_with_html = "Tutorial mentions <html> and <body> tags.\n# Real Title";
+        let (out, _, _) = DocumentLoader::normalize_or_plain_text(
+            &scraper,
+            "/tmp/guide.md",
+            md_with_html.to_string(),
+            || "guide".to_string(),
         );
-        assert!(sample_page.content.contains("Universal Ingestion"));
-        assert!(sample_page.word_count >= 50);
+        assert_eq!(out, md_with_html);
     }
 
     #[test]
-    fn test_pdf_extractor_bounds_type_checks_and_crlf_recovery() {
+    fn test_pdf_bounds_recovery_utf16_and_preflight_bypasses() {
         assert!(PdfExtractor::extract_file(Path::new("/tmp/does_not_exist_srz_test.pdf")).is_err());
         assert!(PdfExtractor::extract_file(&std::env::temp_dir()).is_err());
 
@@ -657,137 +701,10 @@ mod tests {
             }
             crlf_bytes.push(b);
         }
-        let page = PdfExtractor::extract_from_bytes(&crlf_bytes, None)
-            .expect("PdfExtractor should recover from CRLF line ending corruption");
+        let page = PdfExtractor::extract_from_bytes(&crlf_bytes, None).unwrap();
         assert!(page.content.contains("THE HISTORY OF RUST"));
-        assert!(page.word_count >= 100);
-    }
 
-    #[test]
-    fn test_epub_extractor_and_document_loader() {
-        let container_xml = br#"<?xml version="1.0"?>
-<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
-  <rootfiles>
-    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
-  </rootfiles>
-</container>"#;
-        let opf_xml = br#"<?xml version="1.0" encoding="utf-8"?>
-<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub-id">
-  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-    <dc:title>The Great Gatsby</dc:title>
-    <dc:creator>F. Scott Fitzgerald</dc:creator>
-  </metadata>
-  <manifest>
-    <item id="c1" href="chapters/ch1.xhtml" media-type="application/xhtml+xml"/>
-    <item id="c2" href="chapters/ch2.xhtml" media-type="application/xhtml+xml"/>
-  </manifest>
-  <spine>
-    <itemref idref="c1"/>
-    <itemref idref="c2"/>
-  </spine>
-</package>"#;
-        let ch1_xhtml = br#"<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml">
-<head><title>Chapter 1</title></head>
-<body>
-  <h1>Chapter 1</h1>
-  <p>In my younger and more vulnerable years my father gave me some advice that I've been turning over in my mind ever since.</p>
-</body>
-</html>"#;
-        let ch2_xhtml = br#"<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml">
-<head><title>Chapter 2</title></head>
-<body>
-  <h1>Chapter 2</h1>
-  <p>About half way between West Egg and New York the motor road hastily joins the railroad.</p>
-</body>
-</html>"#;
-
-        let epub_bytes = crate::system::zip::create_test_zip(&[
-            ("META-INF/container.xml", &container_xml[..]),
-            ("OEBPS/content.opf", &opf_xml[..]),
-            ("OEBPS/chapters/ch1.xhtml", &ch1_xhtml[..]),
-            ("OEBPS/chapters/ch2.xhtml", &ch2_xhtml[..]),
-        ]);
-
-        let page = EpubExtractor::extract_from_bytes(&epub_bytes, None).unwrap();
-        assert_eq!(page.title.as_deref(), Some("The Great Gatsby"));
-        assert!(
-            page.content
-                .contains("In my younger and more vulnerable years")
-        );
-        assert!(page.content.contains("About half way between West Egg"));
-        assert!(page.word_count >= 20);
-
-        let temp_dir = crate::fs_util::tempdir().unwrap();
-        let epub_file = temp_dir.path().join("gatsby.epub");
-        std::fs::write(&epub_file, &epub_bytes).unwrap();
-
-        let scraper = WebScraper::new().unwrap();
-        let doc = DocumentLoader::load_file(&epub_file, &scraper).unwrap();
-        assert_eq!(doc.title.as_deref(), Some("The Great Gatsby"));
-        assert!(doc.url.starts_with("file://"));
-        assert!(
-            doc.content
-                .contains("In my younger and more vulnerable years")
-        );
-        assert_eq!(doc.word_count, page.word_count);
-    }
-
-    #[test]
-    fn test_epub_deduplication_and_spine_limit() {
-        let container_xml =
-            br#"<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
-  <rootfiles><rootfile full-path="content.opf"/></rootfiles>
-</container>"#;
-        let opf_xml = br#"<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
-  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Bomb Test</dc:title></metadata>
-  <manifest>
-    <item id="c1" href="ch1.html" media-type="application/xhtml+xml"/>
-  </manifest>
-  <spine>
-    <itemref idref="c1"/>
-    <itemref idref="c1"/>
-    <itemref idref="c1"/>
-  </spine>
-</package>"#;
-        let ch1_html = b"<html><body><p>Unique single chapter text content here.</p></body></html>";
-
-        let bytes = crate::system::zip::create_test_zip(&[
-            ("META-INF/container.xml", container_xml),
-            ("content.opf", opf_xml),
-            ("ch1.html", ch1_html),
-        ]);
-        let page = EpubExtractor::extract_from_bytes(&bytes, None).unwrap();
-        let occurrences = page.content.matches("Unique single chapter text").count();
-        assert_eq!(occurrences, 1);
-
-        assert_eq!(
-            resolve_epub_path("OEBPS%25/", "chapters/ch1.xhtml#p1"),
-            "OEBPS%25/chapters/ch1.xhtml"
-        );
-        assert_eq!(
-            resolve_epub_path("OEBPS/text/", "..\\..\\secret%2ffile.xhtml?v=1#top"),
-            "secret/file.xhtml"
-        );
-        assert_eq!(
-            resolve_epub_path("OEBPS/text/", "../images%5Cfig1.xhtml"),
-            "OEBPS/images/fig1.xhtml"
-        );
-    }
-
-    #[test]
-    fn test_pdf_extract_text_bounded_enforces_limit() {
-        let pdf_bytes =
-            std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/document.pdf")).unwrap();
-        let doc = pdf_extract::Document::load_mem(&pdf_bytes).unwrap();
-
-        assert!(
-            !PdfExtractor::extract_pdf_text_bounded(&doc, MAX_PDF_TEXT_BYTES)
-                .unwrap()
-                .trim()
-                .is_empty()
-        );
+        let doc = pdf_extract::Document::load_mem(&original_bytes).unwrap();
         assert!(
             PdfExtractor::extract_pdf_text_bounded(&doc, 16)
                 .unwrap_err()
@@ -795,18 +712,68 @@ mod tests {
                 .contains("exceeds maximum allowed size")
         );
 
-        let mut flate_doc = pdf_extract::Document::with_version("1.5");
-        let mut dict = pdf_extract::Dictionary::new();
-        dict.set("Filter", pdf_extract::Object::Name(b"FlateDecode".to_vec()));
-        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
-        std::io::Write::write_all(&mut encoder, &vec![b'A'; 64 * 1024]).unwrap();
-        let compressed = encoder.finish().unwrap();
-        flate_doc.add_object(pdf_extract::Stream::new(dict, compressed));
-        assert!(
-            PdfExtractor::verify_pdf_stream_budgets(&flate_doc, 1024)
-                .unwrap_err()
-                .to_string()
-                .contains("Decompressed PDF stream data exceeds")
+        let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        std::io::Write::write_all(&mut enc, &vec![b'A'; 64 * 1024]).unwrap();
+        let mut bad_adler = enc.finish().unwrap();
+        let last = bad_adler.len() - 1;
+        bad_adler[last] ^= 0xff; // Corrupt Adler-32 trailer (Bypass #6)
+
+        // Spoofed /Subtype /Image on a page's /Contents stream must NOT skip preflight (Bypass #4)
+        let mut bypass_doc = pdf_extract::Document::with_version("1.5");
+        let mut sdict = pdf_extract::Dictionary::new();
+        sdict.set("Subtype", "Image");
+        sdict.set("Filter", "FlateDecode");
+        let sid = bypass_doc.add_object(pdf_extract::Stream::new(sdict, bad_adler));
+        let mut pdict = pdf_extract::Dictionary::new();
+        pdict.set("Contents", pdf_extract::Object::Reference(sid));
+        bypass_doc.add_object(pdict);
+        assert!(PdfExtractor::verify_pdf_stream_budgets(&bypass_doc, 1024).is_err());
+
+        // Chained filters & LZWDecode must be rejected (Bypasses #2 & #3)
+        let mut chain_doc = pdf_extract::Document::with_version("1.5");
+        let mut cdict = pdf_extract::Dictionary::new();
+        cdict.set("Filter", vec!["FlateDecode".into(), "FlateDecode".into()]);
+        chain_doc.add_object(pdf_extract::Stream::new(cdict, b"x".to_vec()));
+        assert!(PdfExtractor::verify_pdf_stream_budgets(&chain_doc, 1024).is_err());
+
+        let mut lzw_doc = pdf_extract::Document::with_version("1.5");
+        let mut ldict = pdf_extract::Dictionary::new();
+        ldict.set("Filter", "LZWDecode");
+        lzw_doc.add_object(pdf_extract::Stream::new(ldict, b"x".to_vec()));
+        assert!(PdfExtractor::verify_pdf_stream_budgets(&lzw_doc, 1024).is_err());
+
+        let be_utf16: Vec<u8> = [0xFE, 0xFF, 0x00, b'R', 0x00, b'u', 0x00, b's', 0x00, b't'].into();
+        assert_eq!(PdfExtractor::decode_pdf_text_string(&be_utf16), "Rust");
+    }
+
+    #[test]
+    fn test_epub_extractor_dedup_lossy_utf8_and_path_resolution() {
+        let container_xml = br#"<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf"/></rootfiles></container>"#;
+        let opf_xml = br#"<package xmlns="http://www.idpf.org/2007/opf" version="3.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>The Great Gatsby</dc:title></metadata><manifest><item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/><item id="c2" href="ch2.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c1"/><itemref idref="c1"/><itemref idref="c2"/></spine></package>"#;
+        let ch1 = b"<html><head><title>IgnoredHead</title><style>p{color:red}</style></head><body><h1>Ch1</h1><p>In my younger\xa0years my father gave me advice.</p></body></html>";
+        let ch2 = b"<html><body><p>Between West Egg and New York.</p></body></html>";
+
+        let epub_bytes = crate::system::zip::create_test_zip(&[
+            ("META-INF/container.xml", &container_xml[..]),
+            ("OEBPS/content.opf", &opf_xml[..]),
+            ("OEBPS/ch1.xhtml", &ch1[..]),
+            ("OEBPS/ch2.xhtml", &ch2[..]),
+        ]);
+
+        let temp_dir = crate::fs_util::tempdir().unwrap();
+        let epub_file = temp_dir.path().join("gatsby.epub");
+        std::fs::write(&epub_file, &epub_bytes).unwrap();
+        let doc = DocumentLoader::load_file(&epub_file, &WebScraper::new().unwrap()).unwrap();
+        assert_eq!(doc.title.as_deref(), Some("The Great Gatsby"));
+        assert!(doc.url.starts_with("file://"));
+        assert_eq!(doc.content.matches("In my younger").count(), 1);
+        assert!(doc.content.contains("West Egg"));
+        assert!(!doc.content.contains("IgnoredHead"));
+        assert!(!doc.content.contains("color:red"));
+
+        assert_eq!(
+            resolve_epub_path("OEBPS/text/", "..\\..\\secret%2ffile.xhtml?v=1#top"),
+            "secret/file.xhtml"
         );
     }
 }

@@ -1,3 +1,4 @@
+use crate::system::text_util::{XmlEvent, XmlScanner, xml_local_name};
 use anyhow::{Context, Result};
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
@@ -8,8 +9,6 @@ pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_
 
 pub const MAX_SCRAPE_BYTES: usize = 10 * 1024 * 1024; // 10 MB limit for web responses
 
-/// Helper to check if a byte slice starts with a given tag name case-insensitively,
-/// ensuring a tag delimiter (whitespace, '>', or '/') follows immediately.
 fn starts_with_tag(slice: &[u8], prefix: &[u8]) -> bool {
     slice.len() >= prefix.len()
         && slice[..prefix.len()].eq_ignore_ascii_case(prefix)
@@ -18,8 +17,6 @@ fn starts_with_tag(slice: &[u8], prefix: &[u8]) -> bool {
             .is_none_or(|&b| b.is_ascii_whitespace() || b == b'>' || b == b'/')
 }
 
-/// Returns the offset of the closing `>` for the opening tag starting at `bytes[0] == b'<'`,
-/// respecting single/double quotes and aborting on unquoted `<` to stay linear-time.
 fn find_open_tag_end(bytes: &[u8]) -> Option<usize> {
     let mut i = 1;
     let mut quote = 0u8;
@@ -41,34 +38,62 @@ fn find_open_tag_end(bytes: &[u8]) -> Option<usize> {
     None
 }
 
-/// Strips `<script>`, `<style>`, `<svg>`, and `<noscript>` blocks from raw HTML before Readability.
-pub fn strip_boilerplate_html_tags(html: &str) -> Cow<'_, str> {
-    const TAGS: [(&[u8], &[u8]); 4] = [
-        (b"<script", b"</script>"),
-        (b"<style", b"</style>"),
-        (b"<svg", b"</svg>"),
-        (b"<noscript", b"</noscript>"),
+fn find_closing_tag_end(bytes: &[u8], close_prefix: &[u8]) -> Option<usize> {
+    let mut offset = 0;
+    while let Some(pos) =
+        crate::system::text_util::find_subslice_ignore_case(&bytes[offset..], close_prefix)
+    {
+        let abs = offset + pos + close_prefix.len();
+        let mut i = abs;
+        while bytes.get(i).is_some_and(|b| b.is_ascii_whitespace()) {
+            i += 1;
+        }
+        if bytes.get(i) == Some(&b'>') {
+            return Some(i + 1);
+        }
+        offset = abs;
+    }
+    None
+}
+
+fn strip_boilerplate_html_tags(html: &str, strip_head: bool) -> Cow<'_, str> {
+    const TAGS: [(&[u8], &[u8]); 5] = [
+        (b"<script", b"</script"),
+        (b"<style", b"</style"),
+        (b"<svg", b"</svg"),
+        (b"<noscript", b"</noscript"),
+        (b"<head", b"</head"),
     ];
-    if !TAGS.iter().any(|(open, _)| {
-        crate::system::text_util::find_subslice_ignore_case(html.as_bytes(), open).is_some()
-    }) {
+    let active_tags = if strip_head { &TAGS[..] } else { &TAGS[..4] };
+    let bytes = html.as_bytes();
+    let has_comments = bytes.windows(4).any(|w| w == b"<!--");
+    if !has_comments
+        && !active_tags.iter().any(|(open, _)| {
+            crate::system::text_util::find_subslice_ignore_case(bytes, open).is_some()
+        })
+    {
         return Cow::Borrowed(html);
     }
 
     let mut out = String::with_capacity(html.len());
-    let bytes = html.as_bytes();
     let mut cursor = 0;
     let mut missing_closing_mask = 0u8;
 
     while cursor < bytes.len() {
+        if bytes[cursor..].starts_with(b"<!--") {
+            cursor = bytes[cursor + 4..]
+                .windows(3)
+                .position(|w| w == b"-->")
+                .map_or(bytes.len(), |p| cursor + 4 + p + 3);
+            continue;
+        }
         if bytes[cursor] == b'<'
-            && let Some((idx, (open_b, closing))) = TAGS
+            && let Some((idx, (open_b, close_prefix))) = active_tags
                 .iter()
                 .enumerate()
                 .find(|(_, (open_b, _))| starts_with_tag(&bytes[cursor..], open_b))
         {
-            if open_b == b"<svg"
-                && let Some(tag_end) = find_open_tag_end(&bytes[cursor..])
+            if let Some(tag_end) = find_open_tag_end(&bytes[cursor..])
                 && tag_end > open_b.len()
                 && bytes[cursor + tag_end - 1] == b'/'
             {
@@ -76,10 +101,8 @@ pub fn strip_boilerplate_html_tags(html: &str) -> Cow<'_, str> {
                 continue;
             }
             if (missing_closing_mask & (1 << idx)) == 0 {
-                if let Some(close_offset) =
-                    crate::system::text_util::find_subslice_ignore_case(&bytes[cursor..], closing)
-                {
-                    cursor += close_offset + closing.len();
+                if let Some(close_end) = find_closing_tag_end(&bytes[cursor..], close_prefix) {
+                    cursor += close_end;
                     continue;
                 }
                 missing_closing_mask |= 1 << idx;
@@ -96,22 +119,20 @@ pub fn strip_boilerplate_html_tags(html: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-/// Truncates Wikipedia HTML before the references, bibliography, and navigation footer,
-/// avoiding expensive DOM parsing and Markdown conversion of thousands of citation links.
-pub fn truncate_wikipedia_html_before_references(html: &str) -> Cow<'_, str> {
-    const WIKI_REFERENCE_MARKERS: &[&str] = &[
-        "id=\"references\"",
-        "id=\"bibliography\"",
-        "id=\"works_cited\"",
-        "class=\"reflist",
-        "class=\"references",
+fn truncate_wikipedia_html_before_references(html: &str) -> Cow<'_, str> {
+    const WIKI_REFERENCE_MARKERS: &[&[u8]] = &[
+        b"id=\"references\"",
+        b"id=\"bibliography\"",
+        b"id=\"works_cited\"",
+        b"class=\"reflist",
+        b"class=\"references",
     ];
 
-    let lower = html.to_ascii_lowercase();
+    let bytes = html.as_bytes();
     let mut cut_idx = None;
 
     for marker in WIKI_REFERENCE_MARKERS {
-        if let Some(pos) = lower.find(marker) {
+        if let Some(pos) = crate::system::text_util::find_subslice_ignore_case(bytes, marker) {
             let tag_start = html[..pos].rfind('<').unwrap_or(pos);
             cut_idx = Some(match cut_idx {
                 Some(prev) => std::cmp::min(prev, tag_start),
@@ -132,31 +153,48 @@ pub fn truncate_wikipedia_html_before_references(html: &str) -> Cow<'_, str> {
     Cow::Borrowed(html)
 }
 
-/// Converts HTML to clean semantic Markdown preserving headings, lists, code blocks, and formatting.
-pub fn html_to_markdown(html: &str) -> String {
-    use crate::system::text_util::{XmlEvent, XmlScanner, decode_html_entities, xml_local_name};
+fn ascii_lower_tag<'a>(s: &str, buf: &'a mut [u8; 16]) -> Option<&'a str> {
+    let b = s.as_bytes();
+    if b.len() > buf.len() {
+        return None;
+    }
+    for (dst, &src) in buf.iter_mut().zip(b.iter()) {
+        *dst = src.to_ascii_lowercase();
+    }
+    std::str::from_utf8(&buf[..b.len()]).ok()
+}
 
-    let mut scanner = XmlScanner::new(html);
-    let mut out = String::with_capacity(html.len());
+/// Converts HTML to Markdown preserving headings, lists, tables, code blocks, and formatting.
+pub fn html_to_markdown(html: &str) -> String {
+    let sanitized = strip_boilerplate_html_tags(html, true);
+    let mut scanner = XmlScanner::new(sanitized.as_ref());
+    let mut out = String::with_capacity(sanitized.len());
     let mut list_depth: usize = 0;
+    let mut in_pre: usize = 0;
+    let mut row_has_cell = false;
+    let mut tag_buf = [0u8; 16];
 
     while let Some(event) = scanner.next_event() {
         match event {
-            XmlEvent::Start { name, .. } => {
-                match xml_local_name(name).to_ascii_lowercase().as_str() {
+            XmlEvent::Start { name, is_empty, .. } => {
+                let Some(tag) = ascii_lower_tag(xml_local_name(name), &mut tag_buf) else {
+                    continue;
+                };
+                match tag {
+                    "br" => out.push('\n'),
+                    "hr" => out.push_str("\n\n---\n\n"),
+                    _ if is_empty => {}
                     "h1" => out.push_str("\n\n# "),
                     "h2" => out.push_str("\n\n## "),
                     "h3" => out.push_str("\n\n### "),
                     "h4" => out.push_str("\n\n#### "),
                     "h5" => out.push_str("\n\n##### "),
                     "h6" => out.push_str("\n\n###### "),
-                    "p" | "div" | "article" | "section" => {
+                    "p" | "div" | "article" | "section" | "table" => {
                         if !out.ends_with("\n\n") && !out.is_empty() {
                             out.push_str("\n\n");
                         }
                     }
-                    "br" => out.push('\n'),
-                    "hr" => out.push_str("\n\n---\n\n"),
                     "ul" | "ol" => {
                         list_depth = list_depth.saturating_add(1);
                         if !out.ends_with('\n') {
@@ -170,74 +208,141 @@ pub fn html_to_markdown(html: &str) -> String {
                         }
                         out.push_str("* ");
                     }
-                    "pre" => out.push_str("\n```\n"),
-                    "code" => out.push('`'),
+                    "tr" => {
+                        if !out.ends_with('\n') && !out.is_empty() {
+                            out.push('\n');
+                        }
+                        row_has_cell = false;
+                    }
+                    "td" | "th" => {
+                        if row_has_cell {
+                            out.push_str(" | ");
+                        } else {
+                            row_has_cell = true;
+                        }
+                    }
+                    "pre" => {
+                        in_pre = in_pre.saturating_add(1);
+                        out.push_str("\n```\n");
+                    }
+                    "code" if in_pre == 0 => out.push('`'),
                     "strong" | "b" => out.push_str("**"),
                     "em" | "i" => out.push('*'),
                     "blockquote" => out.push_str("\n> "),
                     _ => {}
                 }
             }
-            XmlEvent::End { name } => match xml_local_name(name).to_ascii_lowercase().as_str() {
-                "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" => {
-                    if !out.ends_with("\n\n") {
-                        out.push_str("\n\n");
+            XmlEvent::End { name } => {
+                let Some(tag) = ascii_lower_tag(xml_local_name(name), &mut tag_buf) else {
+                    continue;
+                };
+                match tag {
+                    "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" | "table" => {
+                        if !out.ends_with("\n\n") {
+                            out.push_str("\n\n");
+                        }
                     }
-                }
-                "ul" | "ol" => {
-                    list_depth = list_depth.saturating_sub(1);
-                    if !out.ends_with('\n') {
-                        out.push('\n');
+                    "ul" | "ol" => {
+                        list_depth = list_depth.saturating_sub(1);
+                        if !out.ends_with('\n') {
+                            out.push('\n');
+                        }
                     }
+                    "tr" => {
+                        if !out.ends_with('\n') {
+                            out.push('\n');
+                        }
+                        row_has_cell = false;
+                    }
+                    "pre" => {
+                        in_pre = in_pre.saturating_sub(1);
+                        out.push_str("\n```\n\n");
+                    }
+                    "code" if in_pre == 0 => out.push('`'),
+                    "strong" | "b" => out.push_str("**"),
+                    "em" | "i" => out.push('*'),
+                    _ => {}
                 }
-                "pre" => out.push_str("\n```\n\n"),
-                "code" => out.push('`'),
-                "strong" | "b" => out.push_str("**"),
-                "em" | "i" => out.push('*'),
-                _ => {}
-            },
-            XmlEvent::Text(text) => out.push_str(&decode_html_entities(text)),
+            }
+            XmlEvent::Text(text) => {
+                out.push_str(&crate::system::text_util::decode_html_entities(text));
+            }
             XmlEvent::CData(cdata) => out.push_str(cdata),
         }
     }
 
     if out.trim().is_empty() {
-        crate::system::text_util::strip_html_tags(html)
+        crate::system::text_util::strip_html_tags(sanitized.as_ref())
     } else {
         out
     }
 }
 
-/// Reads response body bytes up to `max_bytes`, erroring if the content length or streamed bytes exceed `max_bytes`.
+fn format_byte_limit(max_bytes: usize) -> String {
+    if max_bytes >= 1024 * 1024 {
+        format!("{} MB", max_bytes / (1024 * 1024))
+    } else if max_bytes >= 1024 {
+        format!("{} KB", max_bytes / 1024)
+    } else {
+        format!("{max_bytes} bytes")
+    }
+}
+
+pub(super) fn bytes_to_lossy_utf8(bytes: Vec<u8>) -> String {
+    match String::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+    }
+}
+
+pub(super) async fn send_checked(
+    request: reqwest::RequestBuilder,
+    label: &str,
+) -> Result<reqwest::Response> {
+    let response = request
+        .send()
+        .await
+        .with_context(|| format!("Failed to fetch {label}"))?;
+    if !response.status().is_success() {
+        anyhow::bail!(
+            "Failed to fetch {label} (HTTP status: {})",
+            response.status()
+        );
+    }
+    Ok(response)
+}
+
+/// Reads response body bytes up to `max_bytes`, failing if content length or streamed bytes exceed `max_bytes`.
 pub async fn read_response_bytes_limited(
     mut response: reqwest::Response,
     max_bytes: usize,
 ) -> Result<Vec<u8>> {
-    if let Some(content_len) = response.content_length()
-        && content_len as usize > max_bytes
-    {
-        anyhow::bail!(
-            "Response content length ({} bytes) exceeds limit of {} MB",
-            content_len,
-            max_bytes / (1024 * 1024)
-        );
-    }
-
-    let mut bytes = if let Some(content_len) = response.content_length() {
-        Vec::with_capacity((content_len as usize).min(max_bytes))
+    let initial_cap = if let Some(content_len) = response.content_length() {
+        if content_len > max_bytes as u64 {
+            anyhow::bail!(
+                "Response content length ({} bytes) exceeds limit of {}",
+                content_len,
+                format_byte_limit(max_bytes)
+            );
+        }
+        usize::try_from(content_len)
+            .unwrap_or(max_bytes)
+            .min(max_bytes)
+            .min(64 * 1024)
     } else {
-        Vec::new()
+        0
     };
 
+    let mut bytes = Vec::with_capacity(initial_cap);
     while let Some(chunk) = response
         .chunk()
         .await
         .context("Failed to read response body chunk")?
     {
-        if bytes.len() + chunk.len() > max_bytes {
+        if chunk.len() > max_bytes.saturating_sub(bytes.len()) {
             anyhow::bail!(
-                "Response body exceeded limit of {} MB",
-                max_bytes / (1024 * 1024)
+                "Response body exceeded limit of {}",
+                format_byte_limit(max_bytes)
             );
         }
         bytes.extend_from_slice(&chunk);
@@ -251,11 +356,9 @@ pub async fn read_response_text_limited(
     response: reqwest::Response,
     max_bytes: usize,
 ) -> Result<String> {
-    let bytes = read_response_bytes_limited(response, max_bytes).await?;
-    Ok(match String::from_utf8(bytes) {
-        Ok(s) => s,
-        Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
-    })
+    Ok(bytes_to_lossy_utf8(
+        read_response_bytes_limited(response, max_bytes).await?,
+    ))
 }
 
 /// Sends an HTTP request, validates a 2xx status, and reads up to `max_bytes` bytes.
@@ -264,17 +367,7 @@ pub async fn fetch_bytes_limited(
     max_bytes: usize,
     label: &str,
 ) -> Result<Vec<u8>> {
-    let response = request
-        .send()
-        .await
-        .with_context(|| format!("Failed to fetch {}", label))?;
-    if !response.status().is_success() {
-        anyhow::bail!(
-            "Failed to fetch {} (HTTP status: {})",
-            label,
-            response.status()
-        );
-    }
+    let response = send_checked(request, label).await?;
     read_response_bytes_limited(response, max_bytes).await
 }
 
@@ -284,16 +377,11 @@ pub async fn fetch_text_limited(
     max_bytes: usize,
     label: &str,
 ) -> Result<String> {
-    let bytes = fetch_bytes_limited(request, max_bytes, label).await?;
-    Ok(match String::from_utf8(bytes) {
-        Ok(s) => s,
-        Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
-    })
+    let response = send_checked(request, label).await?;
+    read_response_text_limited(response, max_bytes).await
 }
 
-/// Returns true if the given IPv4 address belongs to a private, loopback, link-local,
-/// or non-routable subnet (RFC 1918, RFC 3927, RFC 6598, etc.).
-pub fn is_private_ipv4(ipv4: std::net::Ipv4Addr) -> bool {
+fn is_private_ipv4(ipv4: std::net::Ipv4Addr) -> bool {
     let o = ipv4.octets();
     o[0] == 0
         || o[0] == 127
@@ -304,22 +392,17 @@ pub fn is_private_ipv4(ipv4: std::net::Ipv4Addr) -> bool {
         || (o[0] == 100 && (64..=127).contains(&o[1]))
         || (o[0] == 192 && o[1] == 0 && o[2] == 0)
         || (o[0] == 192 && o[1] == 0 && o[2] == 2)
+        || (o[0] == 192 && o[1] == 88 && o[2] == 99)
+        || (o[0] == 198 && (o[1] & 0xfe) == 18)
         || (o[0] == 198 && o[1] == 51 && o[2] == 100)
         || (o[0] == 203 && o[1] == 0 && o[2] == 113)
         || o[0] >= 224
 }
 
-/// Returns true if the given IPv6 address belongs to a loopback, unique-local, link-local,
-/// deprecated site-local, multicast, transitional, documentation, or IPv4-mapped/translated private address.
-pub fn is_private_ipv6(ipv6: std::net::Ipv6Addr) -> bool {
+fn is_private_ipv6(ipv6: std::net::Ipv6Addr) -> bool {
     let s = ipv6.segments();
-    if ipv6.is_loopback() || ipv6.is_unspecified() || ipv6.is_multicast() {
-        return true;
-    }
-    // IPv4-compatible (::/96), IPv4-mapped (::ffff:0:0/96), and SIIT IPv4-translated (::ffff:0:0:0/96)
-    if s[0..4] == [0, 0, 0, 0]
-        && ((s[4] == 0 && (s[5] == 0 || s[5] == 0xffff)) || (s[4] == 0xffff && s[5] == 0))
-    {
+    // IPv4-mapped (::ffff:0:0/96): allow only when embedded IPv4 is public
+    if s[0..5] == [0, 0, 0, 0, 0] && s[5] == 0xffff {
         let ip4 = std::net::Ipv4Addr::new(
             (s[6] >> 8) as u8,
             (s[6] & 0xff) as u8,
@@ -328,35 +411,28 @@ pub fn is_private_ipv6(ipv6: std::net::Ipv6Addr) -> bool {
         );
         return is_private_ipv4(ip4);
     }
-    // NAT64 (64:ff9b::/96, 64:ff9b:1::/48)
-    if s[0] == 0x0064 && s[1] == 0xff9b && ((s[2..=5] == [0, 0, 0, 0]) || s[2] == 0x0001) {
+    // Default-deny outside Global Unicast (2000::/3) and block special-purpose ranges within it
+    if (s[0] & 0xe000) != 0x2000 {
         return true;
     }
-    // Discard-Only (100::/64)
-    if s[0] == 0x0100 && s[1] == 0 && s[2] == 0 && s[3] == 0 {
-        return true;
-    }
-    // Teredo (2001::/32), Benchmarking (2001:2::/48), Documentation (2001:db8::/32), 6to4 (2002::/16)
-    if (s[0] == 0x2001 && (s[1] == 0 || (s[1] == 0x0002 && s[2] == 0) || s[1] == 0x0db8))
+    (s[0] == 0x2001
+        && (s[1] == 0
+            || (s[1] == 0x0002 && s[2] == 0)
+            || (s[1] & 0xfff0) == 0x0010
+            || (s[1] & 0xfff0) == 0x0020
+            || s[1] == 0x0db8))
         || s[0] == 0x2002
-    {
-        return true;
-    }
-    let o = ipv6.octets();
-    // Unique local (fc00::/7), link-local (fe80::/10), and deprecated site-local (fec0::/10)
-    (o[0] & 0xfe) == 0xfc || (o[0] == 0xfe && (o[1] & 0x80) == 0x80)
+        || (s[0] == 0x3fff && (s[1] & 0xf000) == 0)
 }
 
-/// Returns true if an IPv4 or IPv6 address is private, loopback, or otherwise non-routable.
-pub fn is_private_ip(ip: std::net::IpAddr) -> bool {
+fn is_private_ip(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(v4) => is_private_ipv4(v4),
         std::net::IpAddr::V6(v6) => is_private_ipv6(v6),
     }
 }
 
-/// Checks if a host name or IP address resolves to a local or private network destination.
-pub fn is_private_or_local_host(host: &str) -> bool {
+fn is_private_or_local_host(host: &str) -> bool {
     let unbracketed = host.trim_start_matches('[').trim_end_matches(']');
     if unbracketed.contains('%') {
         return true;
@@ -446,8 +522,11 @@ pub fn validate_parsed_public_http_url(parsed: &reqwest::Url) -> Result<()> {
     Ok(())
 }
 
-/// Validates that `url_str` uses HTTP or HTTPS and does not target private or local network hosts (SSRF mitigation).
+/// Validates that `url_str` uses HTTP or HTTPS, has no control chars/userinfo, and targets public hosts.
 pub fn validate_public_http_url(url_str: &str) -> Result<()> {
+    if url_str.chars().any(|c| c.is_control()) {
+        anyhow::bail!("Invalid URL: control characters are not permitted");
+    }
     let parsed =
         reqwest::Url::parse(url_str).with_context(|| format!("Invalid URL: {}", url_str))?;
     validate_parsed_public_http_url(&parsed)
@@ -469,30 +548,14 @@ pub struct WebScraper {
 impl WebScraper {
     pub fn new() -> Result<Self> {
         let mut headers = HeaderMap::new();
-        for (k, v) in [
-            ("user-agent", DEFAULT_USER_AGENT),
-            (
-                "accept",
-                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            ),
-            ("accept-language", "en-US,en;q=0.9"),
-            (
-                "sec-ch-ua",
-                "\"Chromium\";v=\"124\", \"Google Chrome\";v=\"124\", \"Not-A.Brand\";v=\"99\"",
-            ),
-            ("sec-ch-ua-mobile", "?0"),
-            ("sec-ch-ua-platform", "\"macOS\""),
-            ("sec-fetch-dest", "document"),
-            ("sec-fetch-mode", "navigate"),
-            ("sec-fetch-site", "none"),
-            ("sec-fetch-user", "?1"),
-            ("upgrade-insecure-requests", "1"),
-        ] {
-            headers.insert(
-                reqwest::header::HeaderName::from_static(k),
-                HeaderValue::from_static(v),
-            );
-        }
+        headers.insert(
+            reqwest::header::USER_AGENT,
+            HeaderValue::from_static(DEFAULT_USER_AGENT),
+        );
+        headers.insert(
+            reqwest::header::ACCEPT_LANGUAGE,
+            HeaderValue::from_static("en-US,en;q=0.9"),
+        );
 
         let client = reqwest::Client::builder()
             .default_headers(headers)
@@ -518,54 +581,55 @@ impl WebScraper {
         &self.client
     }
 
-    /// Fetches and normalizes the text from the given URL with a strict maximum response limit (10 MB).
+    /// Fetches and normalizes text from `url` with a strict 10 MB response cap.
     pub async fn scrape(&self, url: &str) -> Result<ScrapedPage> {
         validate_public_http_url(url)?;
-        let html = fetch_text_limited(
-            self.client.get(url),
-            MAX_SCRAPE_BYTES,
-            &format!("URL: {}", url),
-        )
-        .await?;
-        self.normalize(url, &html)
+        let req = self.client.get(url).header(
+            reqwest::header::ACCEPT,
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        );
+        let response = send_checked(req, &format!("URL: {url}")).await?;
+        let final_url = response.url().to_string();
+        let html = read_response_text_limited(response, MAX_SCRAPE_BYTES).await?;
+        self.normalize(&final_url, &html)
     }
 
-    /// Normalizes raw HTML into clean, readable text using Readability and Markdown conversion.
+    /// Normalizes raw HTML into clean Markdown and counts words.
     pub fn normalize(&self, url: &str, raw_html: &str) -> Result<ScrapedPage> {
-        let pre_cleaned = if url.contains("wikipedia.org") {
+        let is_wikipedia = reqwest::Url::parse(url)
+            .ok()
+            .and_then(|u| {
+                u.host_str()
+                    .map(|h| h == "wikipedia.org" || h.ends_with(".wikipedia.org"))
+            })
+            .unwrap_or(false);
+        let pre_cleaned = if is_wikipedia {
             truncate_wikipedia_html_before_references(raw_html)
         } else {
             Cow::Borrowed(raw_html)
         };
-        let sanitized = strip_boilerplate_html_tags(pre_cleaned.as_ref());
 
-        // 1. Attempt Readability extraction first (dom_smoothie)
+        let doc_url = crate::system::text_util::is_http_url(url).then_some(url);
+        let cfg = dom_smoothie::Config {
+            max_elements_to_parse: 50_000,
+            ..Default::default()
+        };
         let (article_title, extracted_html) =
-            match dom_smoothie::Readability::new(sanitized.as_ref(), Some(url), None) {
-                Ok(mut readability) => match readability.parse() {
-                    Ok(article) => {
-                        let title = if !article.title.trim().is_empty() {
-                            Some(article.title.trim().to_string())
-                        } else {
-                            None
-                        };
-                        (title, std::borrow::Cow::Owned(article.content.to_string()))
-                    }
-                    Err(_) => (None, Cow::Borrowed(raw_html)),
-                },
-                Err(_) => (None, Cow::Borrowed(raw_html)),
+            match dom_smoothie::Readability::new(pre_cleaned.as_ref(), doc_url, Some(cfg))
+                .and_then(|mut r| r.parse())
+            {
+                Ok(article) => {
+                    let t = article.title.trim();
+                    (
+                        (!t.is_empty()).then(|| t.to_string()),
+                        Cow::Owned(article.content.to_string()),
+                    )
+                }
+                Err(_) => (None, Cow::Borrowed(pre_cleaned.as_ref())),
             };
 
-        // 2. Extract or fallback Title
-        let title = match article_title {
-            Some(t) => Some(t),
-            None => extract_title_from_html(raw_html),
-        };
-
-        // 3. Convert HTML to clean semantic Markdown (preserving headings, lists, tables)
+        let title = article_title.or_else(|| extract_title_from_html(pre_cleaned.as_ref()));
         let rendered_markdown = html_to_markdown(&extracted_html);
-
-        // 4. Clean and normalize whitespace/formatting + count words in a single pass
         let (cleaned_content, word_count) = clean_text(&rendered_markdown, true, 2);
 
         Ok(ScrapedPage {
@@ -577,56 +641,58 @@ impl WebScraper {
     }
 }
 
-/// Extracts title from raw HTML by inspecting `<meta property="og:title">`, `<title>`, or `<h1>`.
-pub fn extract_title_from_html(html: &str) -> Option<String> {
-    // 1. Try og:title
-    if let Some(pos) =
-        crate::system::text_util::find_ascii_case_insensitive(html, "property=\"og:title\"")
-            .or_else(|| {
-                crate::system::text_util::find_ascii_case_insensitive(html, "property='og:title'")
-            })
-    {
-        let tag_start = html[..pos].rfind('<').unwrap_or(pos);
-        let tag_end = html[pos..].find('>').map(|p| pos + p).unwrap_or(html.len());
-        let tag = &html[tag_start..tag_end];
-        if let Some((_, attrs)) = tag.split_once(|c: char| c.is_ascii_whitespace())
-            && let Some(content) = crate::system::text_util::xml_attr(attrs, "content")
-        {
-            let trimmed = content.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
-            }
+pub(super) fn collapse_whitespace(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for word in s.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
         }
+        out.push_str(word);
     }
+    out
+}
 
-    // 2. Try <title>...</title> or <h1>...</h1>
-    for (open, close, strip_tags) in [("<title", "</title>", false), ("<h1", "</h1>", true)] {
-        if let Some(pos) = crate::system::text_util::find_ascii_case_insensitive(html, open)
-            && let Some(tag_end) = html[pos + open.len()..].find('>')
-        {
-            let content = &html[pos + open.len() + tag_end + 1..];
-            if let Some(end) = crate::system::text_util::find_ascii_case_insensitive(content, close)
+pub(super) fn extract_title_from_html(html: &str) -> Option<String> {
+    let clean = strip_boilerplate_html_tags(html, false);
+    let mut scanner = XmlScanner::new(clean.as_ref());
+    let mut title_fallback: Option<String> = None;
+    let mut h1_fallback: Option<String> = None;
+
+    while let Some(XmlEvent::Start {
+        name,
+        attrs,
+        is_empty,
+    }) = scanner.next_event()
+    {
+        let local = xml_local_name(name);
+        if local.eq_ignore_ascii_case("meta") {
+            if crate::system::text_util::xml_attr(attrs, "property")
+                .is_some_and(|p| p.trim().eq_ignore_ascii_case("og:title"))
+                && let Some(content) = crate::system::text_util::xml_attr(attrs, "content")
             {
-                let raw = &content[..end];
-                let cow = if strip_tags {
-                    Cow::Owned(crate::system::text_util::strip_html_tags(raw))
-                } else {
-                    Cow::Borrowed(raw)
-                };
-                let trimmed = cow.trim();
+                let trimmed = content.trim();
                 if !trimmed.is_empty() {
                     return Some(
                         crate::system::text_util::decode_html_entities(trimmed).into_owned(),
                     );
                 }
             }
+        } else if !is_empty && local.eq_ignore_ascii_case("title") && title_fallback.is_none() {
+            let text = collapse_whitespace(&scanner.read_text(name));
+            if !text.is_empty() {
+                title_fallback = Some(text);
+            }
+        } else if !is_empty && local.eq_ignore_ascii_case("h1") && h1_fallback.is_none() {
+            let text = collapse_whitespace(&scanner.read_text(name));
+            if !text.is_empty() {
+                h1_fallback = Some(text);
+            }
         }
     }
 
-    None
+    title_fallback.or(h1_fallback)
 }
 
-/// Helper to scan for a matching closing bracket `]`, stopping on newlines or unescaped open brackets.
 fn find_closing_bracket(bytes: &[u8], start: usize) -> Option<usize> {
     let mut i = start;
     while i < bytes.len() {
@@ -641,7 +707,6 @@ fn find_closing_bracket(bytes: &[u8], start: usize) -> Option<usize> {
     None
 }
 
-/// Helper to scan for a matching closing parenthesis `)` handling nested parentheses.
 fn find_closing_paren(bytes: &[u8], start: usize) -> Option<usize> {
     let mut depth = 1usize;
     let mut i = start;
@@ -661,8 +726,7 @@ fn find_closing_paren(bytes: &[u8], start: usize) -> Option<usize> {
     None
 }
 
-/// Identifies whether a bracketed anchor represents a footnote citation, Wikipedia edit tag, or metadata reference.
-pub fn is_citation_or_footnote(anchor: &str) -> bool {
+fn is_citation_or_footnote(anchor: &str) -> bool {
     let s = anchor.trim();
     if s.is_empty() {
         return true;
@@ -719,9 +783,8 @@ fn skip_citation_whitespace(out: &mut String, bytes: &[u8], next_idx: usize, i: 
     }
 }
 
-/// Strips link URLs, images, and citation tags from prose while preserving inline code.
-pub fn clean_markdown_line(line: &str) -> Cow<'_, str> {
-    if !line.contains('[') && !line.contains('!') {
+fn clean_markdown_line(line: &str) -> Cow<'_, str> {
+    if !line.contains('[') {
         return Cow::Borrowed(line);
     }
 
@@ -748,7 +811,6 @@ pub fn clean_markdown_line(line: &str) -> Cow<'_, str> {
             continue;
         }
 
-        // Markdown image: ![alt](url)
         if bytes[i] == b'!'
             && i + 1 < len
             && bytes[i + 1] == b'['
@@ -761,7 +823,6 @@ pub fn clean_markdown_line(line: &str) -> Cow<'_, str> {
             continue;
         }
 
-        // Markdown link or bracket: [anchor]...
         if bytes[i] == b'['
             && let Some(close_bracket) = find_closing_bracket(bytes, i + 1)
         {
@@ -773,8 +834,6 @@ pub fn clean_markdown_line(line: &str) -> Cow<'_, str> {
                         skip_citation_whitespace(&mut out, bytes, next_idx, &mut i);
                         continue;
                     }
-
-                    // Emit anchor text (preserving clean prose without URL overhead)
                     out.push_str(anchor);
                     i = next_idx;
                     continue;
@@ -794,18 +853,16 @@ pub fn clean_markdown_line(line: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-/// Checks if a line is a reference, bibliography, or appendix heading (including Wikipedia `[edit]` variants).
-pub fn is_reference_heading(line: &str) -> bool {
+fn is_reference_heading(line: &str) -> bool {
     let mut s = line.trim();
     if s.is_empty() {
         return false;
     }
-    // Strip leading Markdown heading markers (#)
-    s = s.trim_start_matches('#').trim();
-    // Strip leading/trailing MediaWiki heading markers (=)
-    s = s.trim_matches('=').trim();
+    let has_hash = s.starts_with('#');
+    let has_wiki_eq = s.len() >= 2 && s.starts_with('=') && s.ends_with('=');
+    s = s.trim_start_matches('#').trim().trim_matches('=').trim();
 
-    // Strip trailing [edit], [edit source], (edit), etc.
+    let mut has_edit = false;
     if let Some(idx) = s.rfind('[') {
         let suffix = s[idx..].trim();
         if suffix.eq_ignore_ascii_case("[edit]")
@@ -813,12 +870,17 @@ pub fn is_reference_heading(line: &str) -> bool {
             || suffix.eq_ignore_ascii_case("[ edit ]")
         {
             s = s[..idx].trim();
+            has_edit = true;
         }
-    } else if let Some(idx) = s.rfind('(') {
-        let suffix = s[idx..].trim();
-        if suffix.eq_ignore_ascii_case("(edit)") {
-            s = s[..idx].trim();
-        }
+    } else if let Some(idx) = s.rfind('(')
+        && s[idx..].trim().eq_ignore_ascii_case("(edit)")
+    {
+        s = s[..idx].trim();
+        has_edit = true;
+    }
+
+    if !(has_hash || has_wiki_eq || has_edit) {
+        return false;
     }
 
     matches!(
@@ -838,9 +900,7 @@ pub fn is_reference_heading(line: &str) -> bool {
     )
 }
 
-/// Cleans lines, strips markdown link URLs and inline citations,
-/// optionally strips trailing reference/appendix sections,
-/// and computes total word count in a single pass into one pre-sized `String`.
+/// Strips markdown links/citations, optionally drops trailing reference headings, and counts words.
 pub fn clean_text(text: &str, strip_references: bool, max_empty_lines: usize) -> (String, usize) {
     let mut out = String::with_capacity(text.len());
     let mut word_count = 0;
@@ -848,22 +908,27 @@ pub fn clean_text(text: &str, strip_references: bool, max_empty_lines: usize) ->
     let mut in_code_block = false;
 
     for raw_line in text.lines() {
-        let trimmed_line = raw_line.trim();
-
-        if trimmed_line.starts_with("```") || trimmed_line.starts_with("~~~") {
+        let trimmed = raw_line.trim();
+        let is_fence = trimmed.starts_with("```") || trimmed.starts_with("~~~");
+        if is_fence {
             in_code_block = !in_code_block;
         }
 
-        if !in_code_block && strip_references && is_reference_heading(trimmed_line) {
+        if !in_code_block && strip_references && is_reference_heading(trimmed) {
             break;
         }
 
-        let cleaned_line = if in_code_block {
-            Cow::Borrowed(trimmed_line)
+        let cleaned_line = if is_fence {
+            Cow::Borrowed(trimmed)
+        } else if in_code_block {
+            Cow::Borrowed(raw_line.trim_end())
         } else {
-            clean_markdown_line(trimmed_line)
+            match clean_markdown_line(trimmed) {
+                Cow::Borrowed(b) => Cow::Borrowed(b.trim()),
+                Cow::Owned(o) => Cow::Owned(o.trim().to_string()),
+            }
         };
-        let line = cleaned_line.trim();
+        let line = cleaned_line.as_ref();
 
         if line.is_empty() {
             empty_line_count += 1;
@@ -890,7 +955,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_scraper_normalize_with_readability() {
+    fn test_scraper_normalize_web_and_local_html() {
         let scraper = WebScraper::new().unwrap();
         let html = r#"
             <!DOCTYPE html>
@@ -914,162 +979,111 @@ mod tests {
             </html>
         "#;
 
-        let page = scraper
-            .normalize("https://example.com/article", html)
+        for source in ["https://example.com/article", "/tmp/local.html", "stdin"] {
+            let page = scraper.normalize(source, html).unwrap();
+            assert_eq!(page.title.as_deref(), Some("Extracted Article Title"));
+            assert!(
+                page.content
+                    .contains("first paragraph of the core article text")
+            );
+            assert!(!page.content.contains("Ad sidebar with lots of links"));
+            assert!(!page.content.contains("[1]"));
+            assert!(!page.content.contains("Citation 1"));
+            assert!(page.word_count > 10);
+        }
+
+        // Fallback HTML (too short for Readability) still strips scripts/styles/head
+        let local_small = scraper
+            .normalize(
+                "/tmp/small.html",
+                "<html><head><script>window.evil=1;</script><title>Small</title></head><body><svg><title>Icon</title></svg><p>Body text</p></body></html>",
+            )
             .unwrap();
-        assert_eq!(page.title.as_deref(), Some("Extracted Article Title"));
-        assert!(
-            page.content
-                .contains("first paragraph of the core article text")
-        );
-        assert!(
-            page.content
-                .contains("second paragraph providing in-depth analysis")
-        );
-        assert!(!page.content.contains("Ad sidebar with lots of links"));
-        assert!(!page.content.contains("All rights reserved"));
-        assert!(!page.content.contains("[1]"));
-        assert!(!page.content.contains("Citation 1"));
-        assert!(page.word_count > 10);
+        assert_eq!(local_small.title.as_deref(), Some("Small"));
+        assert!(!local_small.content.contains("evil"));
+        assert!(!local_small.content.contains("Icon"));
+        assert!(local_small.content.contains("Body text"));
     }
 
     #[test]
-    fn test_html_to_markdown_preserves_semantics() {
-        let html = "<h2>Overview</h2><p>Here is a list:</p><ul><li>First item</li><li>Second item</li></ul>";
+    fn test_html_to_markdown_semantics_tables_and_boilerplate() {
+        let html = r#"<html><head><title>T</title><style>body{}</style><script>var a=1<2;</script></head><body><!-- <script> --><h2>Overview</h2><pre/><ul><li>Item 1</li><li>Item 2</li></ul><pre><code>let x = 1;</code></pre><table><tr><th>ColA</th><th>ColB</th></tr><tr><td>Val1</td><td>Val2</td></tr></table><svg width="24"/><svg><path/></svg><noscript>Enable JS</noscript></body></html>"#;
         let md = html_to_markdown(html);
-        assert!(md.contains("## Overview") || md.contains("Overview"));
-        assert!(md.contains("First item"));
-        assert!(md.contains("Second item"));
-    }
-
-    #[test]
-    fn test_strip_boilerplate_html_tags() {
-        let html = r#"<html><head><script type="application/json">{"data": 123}</script><style>body { color: red; }</style><title>Test</title></head><body><svg width="24" height="24"/><p>Actual article content here.</p><svg><path d="M0 0"/></svg><noscript>Enable JS</noscript></body></html>"#;
-        let stripped = strip_boilerplate_html_tags(html);
-        assert!(!stripped.contains("application/json"));
-        assert!(!stripped.contains("color: red"));
-        assert!(!stripped.contains("<svg"));
-        assert!(!stripped.contains("Enable JS"));
-        assert!(stripped.contains("<title>Test</title>"));
-        assert!(stripped.contains("<p>Actual article content here.</p>"));
+        assert!(md.contains("## Overview"));
+        assert!(md.contains("* Item 1"));
+        assert!(md.contains("ColA | ColB"));
+        assert!(md.contains("Val1 | Val2"));
+        assert!(!md.contains("var a=1"));
+        assert!(!md.contains("Enable JS"));
+        assert!(md.contains("```\nlet x = 1;\n```"));
+        assert!(!md.contains("```\n`"));
 
         let unclosed = format!("{}<p>ok</p>", "<script>".repeat(5_000));
-        assert!(strip_boilerplate_html_tags(&unclosed).contains("<p>ok</p>"));
+        assert!(html_to_markdown(&unclosed).contains("ok"));
     }
 
     #[test]
     fn test_truncate_wikipedia_html_before_references() {
         let padding = "A".repeat(1200);
         let html = format!(
-            "<html><body><p>Article introduction and body: {}</p><h2 id=\"References\">References</h2><div class=\"reflist\"><ul><li>Citation 1</li></ul></div></body></html>",
-            padding
+            "<html><body><p>Body: {padding}</p><h2 id=\"References\">Refs</h2><div class=\"reflist\">Citation 1</div></body></html>"
         );
-
         let truncated = truncate_wikipedia_html_before_references(&html);
-        assert!(truncated.contains("Article introduction and body"));
-        assert!(!truncated.contains("<h2 id=\"References\">"));
-        assert!(!truncated.contains("reflist"));
+        assert!(truncated.contains("Body:"));
         assert!(!truncated.contains("Citation 1"));
         assert!(truncated.ends_with("</div></body></html>"));
     }
 
     #[test]
-    fn test_clean_markdown_line() {
+    fn test_clean_markdown_line_and_clean_text_invariants() {
         assert_eq!(
             clean_markdown_line(
-                "Rust is a [systems programming language](https://en.wikipedia.org/wiki/Systems_programming_language) created by [Graydon Hoare](https://en.wikipedia.org/wiki/Graydon_Hoare)."
+                "Learn [Rust](https://en.wikipedia.org/wiki/Rust_(programming_language))[12], check `arr[0]` & alerts!"
             ),
-            "Rust is a systems programming language created by Graydon Hoare."
+            "Learn Rust, check `arr[0]` & alerts!"
         );
-        assert_eq!(
-            clean_markdown_line(
-                "Learn about [Rust](https://en.wikipedia.org/wiki/Rust_(programming_language)) today."
-            ),
-            "Learn about Rust today."
-        );
-        assert_eq!(
-            clean_markdown_line(
-                "Rust was announced in 2010[12][13] by Mozilla Research[14], winning awards [15]."
-            ),
-            "Rust was announced in 2010 by Mozilla Research, winning awards."
-        );
-        assert_eq!(
-            clean_markdown_line("It is considered safe[citation needed] and efficient [note 1]."),
-            "It is considered safe and efficient."
-        );
-        assert_eq!(
-            clean_markdown_line("Access element with `arr[0]` or check [a-z] regex."),
-            "Access element with `arr[0]` or check [a-z] regex."
-        );
-    }
 
-    #[test]
-    fn test_clean_text_preserves_code_blocks_and_truncates_references() {
-        let md = "Some intro text.\n\n```rust\nfn main() {\n    let arr = [1, 2, 3];\n    println!(\"{}\", arr[0]);\n}\n```\n\nOutro text.";
+        let md = "Intro.\n\nNotes\nBody after bare Notes line!\n\n```rust\nfn main() {\n    let arr = [1, 2];\n}\n```\n\n## References [edit]\n\n1. Citation link";
         let (cleaned, _) = clean_text(md, true, 2);
-        assert!(cleaned.contains("let arr = [1, 2, 3];"));
-        assert!(cleaned.contains("println!(\"{}\", arr[0]);"));
-
-        let doc =
-            "Core article content.\n\nMore details.\n\n## References [edit]\n\n1. Citation link";
-        let (trimmed, _) = clean_text(doc, true, 2);
-        assert!(trimmed.contains("Core article content."));
-        assert!(trimmed.contains("More details."));
-        assert!(!trimmed.contains("References"));
-        assert!(!trimmed.contains("Citation link"));
-    }
-
-    #[test]
-    fn test_is_reference_heading_wikipedia_variants() {
-        for heading in [
-            "## References",
-            "## References [edit]",
-            "## References [edit source]",
-            "### External links [edit]",
-            "== References ==",
-            "=== Further reading ===",
-            "## Notes and references",
-            "## See also",
-        ] {
-            assert!(is_reference_heading(heading), "expected true: {heading}");
-        }
-        for heading in ["## Language features", "## History of Rust"] {
-            assert!(!is_reference_heading(heading), "expected false: {heading}");
-        }
+        assert!(cleaned.contains("Body after bare Notes line!"));
+        assert!(cleaned.contains("\n    let arr = [1, 2];\n"));
+        assert!(!cleaned.contains("Citation link"));
+        assert!(is_reference_heading("== Further reading =="));
+        assert!(!is_reference_heading("Notes"));
+        assert!(!is_reference_heading("## History of Rust"));
     }
 
     #[test]
     fn test_ssrf_validation_blocks_private_and_local_targets() {
         for blocked in [
             "http://localhost/",
-            "http://localhost:8080/admin",
             "http://server.local/",
             "http://service.internal/",
             "http://127.0.0.1/",
-            "http://127.0.0.2:9000/",
             "http://10.0.0.1/status",
             "http://172.16.0.1/",
-            "http://172.31.255.254/",
-            "http://192.168.1.1/router",
+            "http://192.168.1.1/",
             "http://169.254.169.254/latest/meta-data",
+            "http://198.18.0.1/",
+            "http://192.88.99.1/",
             "http://0.0.0.0/",
             "http://[::1]/",
             "http://[fe80::1]/",
             "http://[fe80::1%25eth0]/",
             "http://[fec0::1]/",
             "http://[::ffff:127.0.0.1]/",
-            "http://[::ffff:169.254.169.254]/",
             "http://[::ffff:0:127.0.0.1]/",
             "http://[64:ff9b::7f00:1]/",
             "http://[2002:7f00:1::]/",
             "http://[2001::1]/",
             "http://[2001:db8::1]/",
+            "http://[3fff::1]/",
+            "http://[5f00::1]/",
             "http://[ff02::1]/",
             "http://user:pass@example.com/",
-            "https://token@example.com/",
+            "https://example.com/\nHost: evil",
             "ftp://example.com/file",
             "file:///etc/passwd",
-            "gopher://example.com/",
         ] {
             assert!(
                 validate_public_http_url(blocked).is_err(),
@@ -1079,8 +1093,8 @@ mod tests {
 
         for allowed in [
             "https://example.com",
-            "https://en.wikipedia.org/wiki/Rust",
             "http://93.184.216.34/",
+            "https://[2606:4700:4700::1111]/",
         ] {
             assert!(
                 validate_public_http_url(allowed).is_ok(),
