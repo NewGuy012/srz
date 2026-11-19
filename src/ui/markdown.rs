@@ -1,12 +1,14 @@
 //! Lightweight CommonMark/GFM subset parser for HTML and ANSI terminal rendering.
 
-use std::borrow::Cow;
+use std::fmt::Write as _;
+
+const MAX_DEPTH: usize = 32;
 
 /// Returns `true` if `url` is a safe web, mailto, or relative anchor URL for HTML rendering.
-/// Rejects dangerous schemes (`javascript:`, `vbscript:`, `data:`, `file:`) and control characters.
-pub fn is_safe_markdown_url(url: &str) -> bool {
+/// Rejects dangerous schemes (`javascript:`, `vbscript:`, `data:`, `file:`), UNC paths, and control characters.
+pub(crate) fn is_safe_markdown_url(url: &str) -> bool {
     let trimmed = url.trim();
-    if trimmed.is_empty() || trimmed.chars().any(char::is_control) {
+    if trimmed.is_empty() || trimmed.chars().any(char::is_control) || trimmed.starts_with('\\') {
         return false;
     }
     if trimmed.starts_with('#') {
@@ -26,18 +28,23 @@ pub fn is_safe_markdown_url(url: &str) -> bool {
 }
 
 /// Converts CommonMark/GFM Markdown into sanitized HTML (escaping raw HTML tags and blocking dangerous link schemes).
-pub fn markdown_to_html(md: &str) -> String {
+pub(crate) fn markdown_to_html(md: &str) -> String {
     let mut out = String::with_capacity(md.len() * 3 / 2);
-    render_blocks(md, &mut out, true);
+    render_blocks(md, &mut out, true, 0);
     out
 }
 
-/// Renders Markdown into ANSI-formatted terminal text after stripping unsafe control/escape sequences.
-pub fn render_markdown(markdown: &str) -> String {
-    let safe = crate::ui::sanitize_terminal_text_cow(markdown);
-    let mut out = String::with_capacity(safe.len() * 2);
-    render_blocks(safe.as_ref(), &mut out, false);
+/// Renders pre-sanitized Markdown (already free of unsafe control/escape sequences) into ANSI terminal text.
+pub(super) fn render_markdown_presanitized(safe_md: &str) -> String {
+    let mut out = String::with_capacity(safe_md.len() * 2);
+    render_blocks(safe_md, &mut out, false, 0);
     out.trim_end().to_string()
+}
+
+/// Renders Markdown into ANSI-formatted terminal text after stripping unsafe control/escape sequences.
+pub(crate) fn render_markdown(markdown: &str) -> String {
+    let safe = crate::ui::sanitize_terminal_text_cow(markdown);
+    render_markdown_presanitized(safe.as_ref())
 }
 
 fn push_escaped(out: &mut String, text: &str, html: bool) {
@@ -48,8 +55,30 @@ fn push_escaped(out: &mut String, text: &str, html: bool) {
     }
 }
 
-fn render_blocks(md: &str, out: &mut String, html: bool) {
+fn is_block_start(lines: &[&str], i: usize) -> bool {
+    let line = lines[i];
+    let trimmed = line.trim();
+    trimmed.is_empty()
+        || parse_fence_open(trimmed).is_some()
+        || is_thematic_break(trimmed)
+        || parse_heading(trimmed).is_some()
+        || line.trim_start().starts_with('>')
+        || parse_list_marker(line).is_some()
+        || (i + 1 < lines.len()
+            && line.contains('|')
+            && parse_table_separator(lines[i + 1]).is_some())
+}
+
+fn render_blocks(md: &str, out: &mut String, html: bool, depth: usize) {
     let lines: Vec<&str> = md.lines().collect();
+    if depth >= MAX_DEPTH {
+        for line in lines {
+            push_escaped(out, line, html);
+            out.push('\n');
+        }
+        return;
+    }
+
     let mut i = 0;
 
     while i < lines.len() {
@@ -70,7 +99,7 @@ fn render_blocks(md: &str, out: &mut String, html: bool) {
             }
             let code_lines = &lines[code_start..i];
             if i < lines.len() {
-                i += 1; // consume closing fence
+                i += 1;
             }
             if html {
                 let lang = info.split_whitespace().next().unwrap_or("");
@@ -100,11 +129,11 @@ fn render_blocks(md: &str, out: &mut String, html: bool) {
         // 2. Thematic break (---, ***, ___)
         if is_thematic_break(trimmed) {
             i += 1;
-            if html {
-                out.push_str("<hr>\n");
+            out.push_str(if html {
+                "<hr>\n"
             } else {
-                out.push_str("\x1b[2m──────────\x1b[0m\n\n");
-            }
+                "\x1b[2m──────────\x1b[0m\n\n"
+            });
             continue;
         }
 
@@ -112,16 +141,17 @@ fn render_blocks(md: &str, out: &mut String, html: bool) {
         if let Some((level, heading_text)) = parse_heading(trimmed) {
             i += 1;
             if html {
-                out.push_str(&format!("<h{}>", level));
-                render_inlines(heading_text, out, true);
-                out.push_str(&format!("</h{}>\n", level));
+                let _ = write!(out, "<h{level}>");
+                render_inlines(heading_text, out, true, "", depth + 1);
+                let _ = writeln!(out, "</h{level}>");
             } else {
-                match level {
-                    1 => out.push_str("\x1b[1;36;4m"),
-                    2 => out.push_str("\x1b[1;36m"),
-                    _ => out.push_str("\x1b[1;33m"),
-                }
-                render_inlines(heading_text, out, false);
+                let ansi = match level {
+                    1 => "\x1b[1;36;4m",
+                    2 => "\x1b[1;36m",
+                    _ => "\x1b[1;33m",
+                };
+                out.push_str(ansi);
+                render_inlines(heading_text, out, false, ansi, depth + 1);
                 out.push_str("\x1b[0m\n\n");
             }
             continue;
@@ -143,31 +173,25 @@ fn render_blocks(md: &str, out: &mut String, html: bool) {
                 rows.push(split_table_row(r));
                 i += 1;
             }
-            render_table(&headers, &alignments, &rows, out, html);
+            render_table(&headers, &alignments, &rows, out, html, depth + 1);
             continue;
         }
 
         // 5. Blockquote (> ...)
         if line.trim_start().starts_with('>') {
             let mut quote_buf = String::new();
-            while i < lines.len() {
-                let ql = lines[i].trim_start();
-                if let Some(rest) = ql.strip_prefix('>') {
-                    let body = rest.strip_prefix(' ').unwrap_or(rest);
-                    quote_buf.push_str(body);
-                    quote_buf.push('\n');
-                    i += 1;
-                } else {
-                    break;
-                }
+            while let Some(rest) = lines.get(i).and_then(|l| l.trim_start().strip_prefix('>')) {
+                quote_buf.push_str(rest.strip_prefix(' ').unwrap_or(rest));
+                quote_buf.push('\n');
+                i += 1;
             }
             if html {
                 out.push_str("<blockquote>\n");
-                render_blocks(&quote_buf, out, true);
+                render_blocks(&quote_buf, out, true, depth + 1);
                 out.push_str("</blockquote>\n");
             } else {
                 let mut inner = String::new();
-                render_blocks(&quote_buf, &mut inner, false);
+                render_blocks(&quote_buf, &mut inner, false, depth + 1);
                 for ql in inner.trim_end().lines() {
                     out.push_str("\x1b[2m│ \x1b[0m");
                     out.push_str(ql);
@@ -180,27 +204,13 @@ fn render_blocks(md: &str, out: &mut String, html: bool) {
 
         // 6. Ordered / Unordered List
         if parse_list_marker(line).is_some() {
-            i = render_list(&lines, i, out, html);
+            i = render_list(&lines, i, out, html, depth + 1);
             continue;
         }
 
         // 7. Paragraph
         let para_start = i;
-        while i < lines.len() {
-            let cur = lines[i];
-            let cur_trimmed = cur.trim();
-            if cur_trimmed.is_empty()
-                || parse_fence_open(cur_trimmed).is_some()
-                || is_thematic_break(cur_trimmed)
-                || parse_heading(cur_trimmed).is_some()
-                || cur.trim_start().starts_with('>')
-                || parse_list_marker(cur).is_some()
-                || (i + 1 < lines.len()
-                    && cur.contains('|')
-                    && parse_table_separator(lines[i + 1]).is_some())
-            {
-                break;
-            }
+        while i < lines.len() && !is_block_start(&lines, i) {
             i += 1;
         }
 
@@ -213,7 +223,7 @@ fn render_blocks(md: &str, out: &mut String, html: bool) {
                 .strip_suffix("  ")
                 .or_else(|| trimmed_start.strip_suffix('\\'))
                 .map_or((trimmed_start, false), |s| (s, true));
-            render_inlines(content, out, html);
+            render_inlines(content, out, html, "", depth + 1);
             if idx + 1 < i - para_start {
                 out.push_str(match (hard_break, html) {
                     (true, true) => "<br />\n",
@@ -312,31 +322,33 @@ fn parse_table_separator(line: &str) -> Option<Vec<&'static str>> {
     Some(aligns)
 }
 
-fn render_table_row_html(tag: &str, cells: &[&str], alignments: &[&str], out: &mut String) {
-    out.push_str("<tr>");
-    for (c, &style) in alignments.iter().enumerate() {
-        out.push('<');
-        out.push_str(tag);
-        out.push_str(style);
-        out.push('>');
-        if let Some(cell) = cells.get(c) {
-            render_inlines(cell, out, true);
-        }
-        out.push_str("</");
-        out.push_str(tag);
-        out.push('>');
+fn render_table_row(
+    tag: &str,
+    cells: &[&str],
+    alignments: &[&str],
+    out: &mut String,
+    html: bool,
+    active_ansi: &str,
+    depth: usize,
+) {
+    if html {
+        out.push_str("<tr>");
     }
-    out.push_str("</tr>");
-}
-
-fn render_table_row_ansi(cells: &[&str], cols: usize, out: &mut String) {
-    for c in 0..cols {
-        if c > 0 {
+    for (c, &style) in alignments.iter().enumerate() {
+        if html {
+            let _ = write!(out, "<{tag}{style}>");
+        } else if c > 0 {
             out.push_str(" | ");
         }
         if let Some(cell) = cells.get(c) {
-            render_inlines(cell, out, false);
+            render_inlines(cell, out, html, active_ansi, depth);
         }
+        if html {
+            let _ = write!(out, "</{tag}>");
+        }
+    }
+    if html {
+        out.push_str("</tr>");
     }
 }
 
@@ -346,23 +358,23 @@ fn render_table(
     rows: &[Vec<&str>],
     out: &mut String,
     html: bool,
+    depth: usize,
 ) {
-    let cols = alignments.len();
     if html {
         out.push_str("<table><thead>");
-        render_table_row_html("th", headers, alignments, out);
+        render_table_row("th", headers, alignments, out, true, "", depth);
         out.push_str("</thead><tbody>\n");
         for row in rows {
-            render_table_row_html("td", row, alignments, out);
+            render_table_row("td", row, alignments, out, true, "", depth);
             out.push('\n');
         }
         out.push_str("</tbody></table>\n");
     } else {
         out.push_str("\x1b[1m");
-        render_table_row_ansi(headers, cols, out);
+        render_table_row("", headers, alignments, out, false, "\x1b[1m", depth);
         out.push_str("\x1b[0m\n");
         for row in rows {
-            render_table_row_ansi(row, cols, out);
+            render_table_row("", row, alignments, out, false, "", depth);
             out.push('\n');
         }
         out.push('\n');
@@ -412,7 +424,13 @@ fn parse_list_marker(line: &str) -> Option<ListMarker<'_>> {
     None
 }
 
-fn render_list(lines: &[&str], start_idx: usize, out: &mut String, html: bool) -> usize {
+fn render_list(
+    lines: &[&str],
+    start_idx: usize,
+    out: &mut String,
+    html: bool,
+    depth: usize,
+) -> usize {
     let mut stack: Vec<(usize, bool)> = Vec::new();
     let mut i = start_idx;
 
@@ -444,33 +462,33 @@ fn render_list(lines: &[&str], start_idx: usize, out: &mut String, html: bool) -
             }
         }
 
-        let depth = stack.len();
+        let nesting = stack.len();
         let (task_checkbox, body) = parse_task_prefix(marker.content);
 
         if html {
             out.push_str("<li>");
             if let Some(checked) = task_checkbox {
-                if checked {
-                    out.push_str("<input disabled=\"\" type=\"checkbox\" checked=\"\"/> ");
+                out.push_str(if checked {
+                    "<input disabled=\"\" type=\"checkbox\" checked=\"\"/> "
                 } else {
-                    out.push_str("<input disabled=\"\" type=\"checkbox\"/> ");
-                }
+                    "<input disabled=\"\" type=\"checkbox\"/> "
+                });
             }
-            render_inlines(body, out, true);
+            render_inlines(body, out, true, "", depth);
             out.push_str("</li>\n");
         } else {
-            for _ in 0..depth.saturating_sub(1) {
+            for _ in 0..nesting.saturating_sub(1) {
                 out.push_str("  ");
             }
             if marker.ordered {
-                out.push_str(&format!("\x1b[36m{}.\x1b[0m ", marker.number));
+                let _ = write!(out, "\x1b[36m{}.\x1b[0m ", marker.number);
             } else {
                 out.push_str("\x1b[36m•\x1b[0m ");
             }
             if let Some(checked) = task_checkbox {
                 out.push_str(if checked { "[x] " } else { "[ ] " });
             }
-            render_inlines(body, out, false);
+            render_inlines(body, out, false, "", depth);
             out.push('\n');
         }
 
@@ -501,7 +519,12 @@ fn parse_task_prefix(content: &str) -> (Option<bool>, &str) {
     }
 }
 
-fn render_inlines(text: &str, out: &mut String, html: bool) {
+fn render_inlines(text: &str, out: &mut String, html: bool, active_ansi: &str, depth: usize) {
+    if depth >= MAX_DEPTH {
+        push_escaped(out, text, html);
+        return;
+    }
+
     let bytes = text.as_bytes();
     let len = bytes.len();
     let mut i = 0;
@@ -536,6 +559,7 @@ fn render_inlines(text: &str, out: &mut String, html: bool) {
                     out.push_str("\x1b[32m");
                     out.push_str(code_trimmed);
                     out.push_str("\x1b[0m");
+                    out.push_str(active_ansi);
                 }
                 i += ticks + close_rel + ticks;
                 continue;
@@ -551,29 +575,29 @@ fn render_inlines(text: &str, out: &mut String, html: bool) {
         if (bytes[i] == b'!' && bytes.get(i + 1) == Some(&b'[') || bytes[i] == b'[')
             && let Some((is_img, label, dest, end_idx)) = parse_link_or_image(text, i)
         {
-            let safe_url: Cow<'_, str> = if is_safe_markdown_url(dest) {
-                Cow::Borrowed(dest.trim())
+            let safe_url = if is_safe_markdown_url(dest) {
+                dest.trim()
             } else {
-                Cow::Borrowed("#")
+                "#"
             };
             if html {
                 if is_img {
                     out.push_str("<img src=\"");
-                    push_escaped(out, &safe_url, true);
+                    push_escaped(out, safe_url, true);
                     out.push_str("\" alt=\"");
                     push_escaped(out, label, true);
                     out.push_str("\" />");
                 } else {
                     out.push_str("<a href=\"");
-                    push_escaped(out, &safe_url, true);
+                    push_escaped(out, safe_url, true);
                     out.push_str("\">");
-                    render_inlines(label, out, true);
+                    render_inlines(label, out, true, "", depth + 1);
                     out.push_str("</a>");
                 }
             } else if is_img {
                 out.push_str(label);
             } else {
-                render_inlines(label, out, false);
+                render_inlines(label, out, false, active_ansi, depth + 1);
             }
             i = end_idx;
             continue;
@@ -588,12 +612,13 @@ fn render_inlines(text: &str, out: &mut String, html: bool) {
             let inner = &text[i + 2..i + 2 + close_rel];
             if html {
                 out.push_str("<del>");
-                render_inlines(inner, out, true);
+                render_inlines(inner, out, true, "", depth + 1);
                 out.push_str("</del>");
             } else {
                 out.push_str("\x1b[9m");
-                render_inlines(inner, out, false);
+                render_inlines(inner, out, false, "\x1b[9m", depth + 1);
                 out.push_str("\x1b[0m");
+                out.push_str(active_ansi);
             }
             i += 2 + close_rel + 2;
             continue;
@@ -606,12 +631,13 @@ fn render_inlines(text: &str, out: &mut String, html: bool) {
         {
             if html {
                 out.push_str(open_tag);
-                render_inlines(inner, out, true);
+                render_inlines(inner, out, true, "", depth + 1);
                 out.push_str(close_tag);
             } else {
                 out.push_str(ansi_seq);
-                render_inlines(inner, out, false);
+                render_inlines(inner, out, false, ansi_seq, depth + 1);
                 out.push_str("\x1b[0m");
+                out.push_str(active_ansi);
             }
             i = next_idx;
             continue;
@@ -761,7 +787,7 @@ fn try_parse_emphasis(
 
             let inner = &text[open_end..close_pos];
             let (open_tag, close_tag, ansi_seq) = match delim_len {
-                3 => ("<em><strong>", "</strong></em>", "\x1b[1;35;37m"),
+                3 => ("<em><strong>", "</strong></em>", "\x1b[1;3;35m"),
                 2 => ("<strong>", "</strong>", "\x1b[1;37m"),
                 _ => ("<em>", "</em>", "\x1b[35m"),
             };

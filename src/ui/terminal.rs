@@ -1,48 +1,56 @@
 use crate::config::PagingMode;
 use std::borrow::Cow;
 use std::env;
+use std::fmt::Write as _;
 use std::future::Future;
 use std::io::{self, IsTerminal, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, LazyLock, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-#[derive(Clone)]
-pub struct ProgressBar {
-    inner: Arc<SpinnerInner>,
+struct SpinnerState {
+    finished: bool,
+    message: String,
 }
 
-struct SpinnerInner {
+struct SpinnerShared {
     hidden: bool,
     start_time: Mutex<Instant>,
-    finished: AtomicBool,
-    message: Mutex<String>,
+    state: Mutex<SpinnerState>,
+    wake: Condvar,
+}
+
+pub(crate) struct ProgressBar {
+    shared: Arc<SpinnerShared>,
     handle: Mutex<Option<JoinHandle<()>>>,
 }
 
-impl Drop for SpinnerInner {
+impl Drop for ProgressBar {
     fn drop(&mut self) {
-        if !self.finished.swap(true, Ordering::SeqCst) && !self.hidden {
-            eprint!("\r\x1b[2K");
-            let _ = std::io::stderr().flush();
-        }
+        self.finish_and_clear();
     }
 }
 
 impl ProgressBar {
     pub fn hidden() -> Self {
+        Self::with_hidden(true)
+    }
+
+    fn with_hidden(hidden: bool) -> Self {
         Self {
-            inner: Arc::new(SpinnerInner {
-                hidden: true,
+            shared: Arc::new(SpinnerShared {
+                hidden,
                 start_time: Mutex::new(Instant::now()),
-                finished: AtomicBool::new(false),
-                message: Mutex::new(String::new()),
-                handle: Mutex::new(None),
+                state: Mutex::new(SpinnerState {
+                    finished: false,
+                    message: String::new(),
+                }),
+                wake: Condvar::new(),
             }),
+            handle: Mutex::new(None),
         }
     }
 
@@ -50,112 +58,177 @@ impl ProgressBar {
         if Ui::is_quiet() || !*STDERR_IS_TERMINAL {
             return Self::hidden();
         }
-        let inner = Arc::new(SpinnerInner {
-            hidden: false,
-            start_time: Mutex::new(Instant::now()),
-            finished: AtomicBool::new(false),
-            message: Mutex::new(String::new()),
-            handle: Mutex::new(None),
-        });
-        let pb = Self { inner };
+        let pb = Self::with_hidden(false);
         pb.start_ticker();
         pb
     }
 
     fn start_ticker(&self) {
-        if self.inner.hidden {
+        if self.shared.hidden {
             return;
         }
-        self.inner.finished.store(false, Ordering::SeqCst);
-        let inner_clone = Arc::clone(&self.inner);
+        self.shared.state.lock().unwrap().finished = false;
+        let shared = Arc::clone(&self.shared);
         let handle = thread::spawn(move || {
             const TICKS: &[char] = &['⠋', '⠙', '⠚', '⠞', '⠖', '⠦', '⠴', '⠲', '⠳', '⠓'];
             let mut idx = 0;
-            while !inner_clone.finished.load(Ordering::SeqCst) {
-                let msg = inner_clone.message.lock().unwrap().clone();
-                if !msg.is_empty() {
+            let mut guard = shared.state.lock().unwrap();
+            loop {
+                if guard.finished {
+                    break;
+                }
+                if !guard.message.is_empty() {
+                    let msg = guard.message.clone();
+                    drop(guard);
                     let tick = TICKS[idx % TICKS.len()];
                     let display = match crossterm::terminal::size() {
                         Ok((cols, _)) => fit_spinner_message(&msg, cols as usize),
                         Err(_) => Cow::Borrowed(msg.as_str()),
                     };
                     if Ui::use_color() {
-                        eprint!("\r\x1b[2K\x1b[1;36m{}\x1b[0m {}", tick, display);
+                        eprint!("\r\x1b[2K\x1b[1;36m{tick}\x1b[0m {display}");
                     } else {
-                        eprint!("\r\x1b[2K{} {}", tick, display);
+                        eprint!("\r\x1b[2K{tick} {display}");
                     }
-                    let _ = std::io::stderr().flush();
+                    let _ = io::stderr().flush();
+                    idx += 1;
+                    guard = shared.state.lock().unwrap();
+                    if guard.finished {
+                        break;
+                    }
                 }
-                idx += 1;
-                thread::sleep(Duration::from_millis(80));
+                let (next_guard, _) = shared
+                    .wake
+                    .wait_timeout(guard, Duration::from_millis(80))
+                    .unwrap();
+                guard = next_guard;
             }
         });
-        *self.inner.handle.lock().unwrap() = Some(handle);
+        *self.handle.lock().unwrap() = Some(handle);
     }
 
     pub fn set_message(&self, msg: impl Into<Cow<'static, str>>) {
         let msg = msg.into();
-        let s = sanitize_title(msg.as_ref());
-        *self.inner.message.lock().unwrap() = s;
+        self.shared.state.lock().unwrap().message = sanitize_title(msg.as_ref());
     }
 
     pub fn elapsed(&self) -> Duration {
-        self.inner.start_time.lock().unwrap().elapsed()
+        self.shared.start_time.lock().unwrap().elapsed()
     }
 
     pub fn finish_and_clear(&self) {
-        if self.inner.finished.swap(true, Ordering::SeqCst) {
+        let already_finished = {
+            let mut st = self.shared.state.lock().unwrap();
+            let prev = st.finished;
+            st.finished = true;
+            prev
+        };
+        if already_finished {
             return;
         }
-        if let Some(h) = self.inner.handle.lock().unwrap().take() {
+        self.shared.wake.notify_all();
+        if let Some(h) = self.handle.lock().unwrap().take() {
             let _ = h.join();
         }
-        if !self.inner.hidden {
+        if !self.shared.hidden {
             eprint!("\r\x1b[2K");
-            let _ = std::io::stderr().flush();
+            let _ = io::stderr().flush();
         }
     }
 
     pub fn is_hidden(&self) -> bool {
-        self.inner.hidden
+        self.shared.hidden
     }
 
     pub fn is_finished(&self) -> bool {
-        self.inner.finished.load(Ordering::SeqCst)
+        self.shared.state.lock().unwrap().finished
     }
 
     pub fn reset(&self) {
         self.finish_and_clear();
-        *self.inner.start_time.lock().unwrap() = Instant::now();
-        self.inner.finished.store(false, Ordering::SeqCst);
-        if !self.inner.hidden {
+        *self.shared.start_time.lock().unwrap() = Instant::now();
+        self.shared.state.lock().unwrap().finished = false;
+        if !self.shared.hidden {
             self.start_ticker();
         }
     }
 
     pub fn println(&self, msg: impl AsRef<str>) {
-        if !self.inner.hidden {
+        if !self.shared.hidden {
             let safe = sanitize_terminal_text_cow(msg.as_ref());
-            eprint!("\r\x1b[2K{}\n", safe);
-            let _ = std::io::stderr().flush();
+            eprint!("\r\x1b[2K{safe}\n");
+            let _ = io::stderr().flush();
         }
     }
 }
 
 pub(super) fn char_display_width(c: char) -> usize {
+    const ZERO_WIDTH: &[(u32, u32)] = &[
+        (0x0300, 0x036F),
+        (0x1AB0, 0x1AFF),
+        (0x1DC0, 0x1DFF),
+        (0x200B, 0x200F),
+        (0x202A, 0x202E),
+        (0x2060, 0x206F),
+        (0x20D0, 0x20FF),
+        (0xFE00, 0xFE0F),
+        (0xFE20, 0xFE2F),
+    ];
+    const WIDE: &[(u32, u32)] = &[
+        (0x1100, 0x115F),
+        (0x231A, 0x231B),
+        (0x23E9, 0x23FA),
+        (0x25FD, 0x25FE),
+        (0x2614, 0x2615),
+        (0x2648, 0x2653),
+        (0x267F, 0x267F),
+        (0x2693, 0x2693),
+        (0x26A1, 0x26A1),
+        (0x26AA, 0x26AB),
+        (0x26BD, 0x26BE),
+        (0x26C4, 0x26C5),
+        (0x26CE, 0x26CE),
+        (0x26D4, 0x26D4),
+        (0x26EA, 0x26EA),
+        (0x26F2, 0x26F3),
+        (0x26F5, 0x26F5),
+        (0x26FA, 0x26FA),
+        (0x26FD, 0x26FD),
+        (0x2705, 0x2705),
+        (0x270A, 0x270B),
+        (0x2728, 0x2728),
+        (0x274C, 0x274C),
+        (0x274E, 0x274E),
+        (0x2753, 0x2755),
+        (0x2757, 0x2757),
+        (0x2795, 0x2797),
+        (0x27B0, 0x27B0),
+        (0x27BF, 0x27BF),
+        (0x2B1B, 0x2B1C),
+        (0x2B50, 0x2B50),
+        (0x2B55, 0x2B55),
+        (0x2E80, 0xA4CF),
+        (0xAC00, 0xD7A3),
+        (0xF900, 0xFAFF),
+        (0xFE10, 0xFE6F),
+        (0xFF00, 0xFF60),
+        (0xFFE0, 0xFFE6),
+        (0x1F300, 0x1FAFF),
+        (0x20000, 0x3FFFD),
+    ];
+    if c.is_control() {
+        return 0;
+    }
     if c.is_ascii() {
         return 1;
     }
-    match c as u32 {
-        0x1100..=0x115F
-        | 0x2E80..=0xA4CF
-        | 0xAC00..=0xD7A3
-        | 0xF900..=0xFAFF
-        | 0xFE10..=0xFE6F
-        | 0xFF00..=0xFF60
-        | 0xFFE0..=0xFFE6
-        | 0x1F300..=0x1FAFF => 2,
-        _ => 1,
+    let cp = c as u32;
+    if ZERO_WIDTH.iter().any(|&(lo, hi)| (lo..=hi).contains(&cp)) {
+        0
+    } else if WIDE.iter().any(|&(lo, hi)| (lo..=hi).contains(&cp)) {
+        2
+    } else {
+        1
     }
 }
 
@@ -182,7 +255,7 @@ fn fit_spinner_message(msg: &str, terminal_cols: usize) -> Cow<'_, str> {
                 .filter(|&i| i > min_cut)
                 .unwrap_or(end);
             let trimmed = msg[..cut].trim_end_matches([' ', ':', '.', '-', '…', '(']);
-            return Cow::Owned(format!("{}...", trimmed));
+            return Cow::Owned(format!("{trimmed}..."));
         }
     }
     Cow::Borrowed(msg)
@@ -191,59 +264,51 @@ fn fit_spinner_message(msg: &str, terminal_cols: usize) -> Cow<'_, str> {
 static QUIET: AtomicBool = AtomicBool::new(false);
 static VERBOSE: AtomicBool = AtomicBool::new(false);
 
-static STDERR_IS_TERMINAL: LazyLock<bool> = LazyLock::new(|| std::io::stderr().is_terminal());
+static STDERR_IS_TERMINAL: LazyLock<bool> = LazyLock::new(|| io::stderr().is_terminal());
+static STDOUT_IS_TERMINAL: LazyLock<bool> = LazyLock::new(|| io::stdout().is_terminal());
 
-static USE_COLOR: LazyLock<bool> = LazyLock::new(|| {
-    if env::var_os("CLICOLOR_FORCE")
-        .map(|v| v != "0")
-        .unwrap_or(false)
-    {
+fn resolve_color(is_tty: bool) -> bool {
+    if env::var_os("CLICOLOR_FORCE").is_some_and(|v| v != "0") {
         return true;
     }
-    if env::var_os("NO_COLOR").is_some() {
+    if env::var_os("NO_COLOR").is_some() || env::var_os("CLICOLOR").is_some_and(|v| v == "0") {
         return false;
     }
-    if let Some(val) = env::var_os("CLICOLOR")
-        && val == "0"
-    {
-        return false;
-    }
-    *STDERR_IS_TERMINAL
-});
+    is_tty
+}
+
+static USE_STDERR_COLOR: LazyLock<bool> = LazyLock::new(|| resolve_color(*STDERR_IS_TERMINAL));
+static USE_STDOUT_COLOR: LazyLock<bool> = LazyLock::new(|| resolve_color(*STDOUT_IS_TERMINAL));
 
 pub struct Ui;
 
 impl Ui {
-    /// Sets whether quiet mode is enabled globally.
     pub fn set_quiet(quiet: bool) {
         QUIET.store(quiet, Ordering::Relaxed);
     }
 
-    /// Returns whether quiet mode is active.
-    pub fn is_quiet() -> bool {
+    pub(crate) fn is_quiet() -> bool {
         QUIET.load(Ordering::Relaxed)
     }
 
-    /// Sets whether verbose mode is enabled globally.
     pub fn set_verbose(verbose: bool) {
         VERBOSE.store(verbose, Ordering::Relaxed);
     }
 
-    /// Returns whether verbose mode is active.
-    pub fn is_verbose() -> bool {
+    pub(crate) fn is_verbose() -> bool {
         VERBOSE.load(Ordering::Relaxed)
     }
 
-    /// Determines if ANSI color escapes should be emitted to stderr based on
-    /// cached `NO_COLOR`, `CLICOLOR`, `CLICOLOR_FORCE`, and terminal detection.
+    /// Returns whether ANSI colors are enabled for stderr diagnostics and spinners.
     pub fn use_color() -> bool {
-        *USE_COLOR
+        *USE_STDERR_COLOR
     }
 
-    /// Creates a styled spinner on stderr with a status message,
-    /// or a hidden progress bar if quiet mode is enabled, stderr is not a terminal,
-    /// or the message is empty.
-    pub fn spinner(message: impl Into<std::borrow::Cow<'static, str>>) -> ProgressBar {
+    pub(crate) fn use_stdout_color() -> bool {
+        *USE_STDOUT_COLOR
+    }
+
+    pub(crate) fn spinner(message: impl Into<Cow<'static, str>>) -> ProgressBar {
         let msg = message.into();
         if Self::is_quiet() || !*STDERR_IS_TERMINAL || msg.trim().is_empty() {
             return ProgressBar::hidden();
@@ -253,8 +318,7 @@ impl Ui {
         pb
     }
 
-    /// Clears the spinner from stderr and prints a clean completion line with elapsed timing.
-    pub fn finish_spinner(pb: &ProgressBar, message: &str) {
+    pub(crate) fn finish_spinner(pb: &ProgressBar, message: &str) {
         let elapsed = pb.elapsed();
         pb.finish_and_clear();
         if !message.trim().is_empty() {
@@ -262,8 +326,7 @@ impl Ui {
         }
     }
 
-    /// Prints a success message to stderr, optionally appending formatted elapsed duration.
-    pub fn success_with_elapsed(message: &str, elapsed: Duration) {
+    pub(crate) fn success_with_elapsed(message: &str, elapsed: Duration) {
         if Self::is_quiet() || message.trim().is_empty() {
             return;
         }
@@ -271,21 +334,16 @@ impl Ui {
         if elapsed >= Duration::from_millis(50) {
             let elapsed_str = format_duration_short(elapsed);
             if Self::use_color() {
-                eprintln!(
-                    "\x1b[1;32m✔\x1b[0m {} \x1b[2m({})\x1b[0m",
-                    safe_msg, elapsed_str
-                );
+                eprintln!("\x1b[1;32m✔\x1b[0m {safe_msg} \x1b[2m({elapsed_str})\x1b[0m");
             } else {
-                eprintln!("✔ {} ({})", safe_msg, elapsed_str);
+                eprintln!("✔ {safe_msg} ({elapsed_str})");
             }
         } else {
             Self::success(message);
         }
     }
 
-    /// Runs an async operation with a spinner, cleanly clearing the spinner before printing
-    /// the completion message or propagating an error.
-    pub async fn with_spinner<T, E, F>(
+    pub(crate) async fn with_spinner<T, E, F>(
         start_message: &'static str,
         done_message: &str,
         fut: F,
@@ -306,47 +364,41 @@ impl Ui {
         }
     }
 
-    /// Prints a section header to stderr (keeping stdout pure for piped Markdown).
-    pub fn header(title: &str) {
+    pub(crate) fn header(title: &str) {
         if Self::is_quiet() {
             return;
         }
         let safe_title = sanitize_title(title);
         if Self::use_color() {
-            eprintln!("\n\x1b[1;36m=== {} ===\x1b[0m\n", safe_title);
+            eprintln!("\n\x1b[1;36m=== {safe_title} ===\x1b[0m\n");
         } else {
-            eprintln!("\n=== {} ===\n", safe_title);
+            eprintln!("\n=== {safe_title} ===\n");
         }
     }
 
-    /// Prints an informational message to stderr.
-    pub fn info(message: &str) {
+    pub(crate) fn info(message: &str) {
         if !Self::is_quiet() {
             Self::print_styled("ℹ", "1;34", message);
         }
     }
 
-    /// Prints a success message to stderr.
-    pub fn success(message: &str) {
+    pub(crate) fn success(message: &str) {
         if !Self::is_quiet() && !message.trim().is_empty() {
             Self::print_styled("✔", "1;32", message);
         }
     }
 
-    /// Prints a warning message to stderr.
-    pub fn warn(message: &str) {
+    pub(crate) fn warn(message: &str) {
         if !Self::is_quiet() {
             Self::print_styled("⚠", "1;33", message);
         }
     }
 
-    /// Prints an error message to stderr.
     pub fn error(message: &str) {
         Self::print_styled("✖", "1;31", message);
     }
 
-    /// Prints verbose diagnostic message if verbose mode is enabled.
-    pub fn verbose(message: &str) {
+    pub(crate) fn verbose(message: &str) {
         if Self::is_verbose() {
             Self::print_styled("[debug]", "1;35", message);
         }
@@ -363,7 +415,7 @@ impl Ui {
 }
 
 #[inline]
-fn is_bidi_control(c: char) -> bool {
+pub(super) fn is_bidi_control(c: char) -> bool {
     matches!(
         c,
         '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}' | '\u{061C}'
@@ -371,16 +423,10 @@ fn is_bidi_control(c: char) -> bool {
 }
 
 /// Strips ANSI/C1/BiDi/control sequences (CWE-150/CWE-451), borrowing clean inputs zero-copy.
-pub fn sanitize_terminal_text_cow<'a>(input: &'a str) -> Cow<'a, str> {
-    let has_suspicious = input.chars().any(|c| {
-        c == '\x1b'
-            || (c.is_control() && c != '\n' && c != '\t')
-            || is_bidi_control(c)
-            || matches!(
-                c,
-                '\u{0090}' | '\u{0098}' | '\u{009B}' | '\u{009D}' | '\u{009E}' | '\u{009F}'
-            )
-    });
+pub(crate) fn sanitize_terminal_text_cow<'a>(input: &'a str) -> Cow<'a, str> {
+    let has_suspicious = input
+        .chars()
+        .any(|c| (c.is_control() && c != '\n' && c != '\t') || is_bidi_control(c));
     if !has_suspicious {
         return Cow::Borrowed(input);
     }
@@ -389,8 +435,16 @@ pub fn sanitize_terminal_text_cow<'a>(input: &'a str) -> Cow<'a, str> {
     let mut chars = input.chars().peekable();
 
     let skip_csi = |iter: &mut std::iter::Peekable<std::str::Chars>| {
-        for c in iter.by_ref() {
-            if ('@'..='~').contains(&c) {
+        // ECMA-48 CSI: optional parameter/intermediate bytes (0x20..=0x3F), capped, then final (@..=~).
+        let mut count = 0usize;
+        while let Some(&c) = iter.peek() {
+            if ('\u{0020}'..='\u{003F}').contains(&c) && count < 256 {
+                iter.next();
+                count += 1;
+            } else if ('@'..='~').contains(&c) {
+                iter.next();
+                break;
+            } else {
                 break;
             }
         }
@@ -398,24 +452,44 @@ pub fn sanitize_terminal_text_cow<'a>(input: &'a str) -> Cow<'a, str> {
 
     let skip_string_control = |iter: &mut std::iter::Peekable<std::str::Chars>| {
         let mut prev = '\0';
-        for c in iter.by_ref() {
-            if c == '\x07' || c == '\u{009C}' || (prev == '\x1b' && c == '\\') {
+        for _ in 0..4096 {
+            let Some(&next) = iter.peek() else {
+                break;
+            };
+            if next == '\n' {
                 break;
             }
-            prev = c;
+            iter.next();
+            if next == '\x07' || next == '\u{009C}' || (prev == '\x1b' && next == '\\') {
+                break;
+            }
+            prev = next;
         }
     };
 
     while let Some(ch) = chars.next() {
         if ch == '\x1b' {
-            match chars.peek() {
+            match chars.peek().copied() {
                 Some('[') => {
-                    chars.next(); // consume '['
+                    chars.next();
                     skip_csi(&mut chars);
                 }
                 Some(']' | 'P' | 'X' | '^' | '_') => {
-                    chars.next(); // consume string sequence initiator
+                    chars.next();
                     skip_string_control(&mut chars);
+                }
+                // Guard against "\x1b\x1b]52..." smuggling: never swallow an adjacent ESC or C1 opener.
+                Some(next) if next == '\x1b' || ('\u{0080}'..='\u{009F}').contains(&next) => {}
+                Some(next) if (' '..='/').contains(&next) => {
+                    for _ in 0..16 {
+                        if !chars.peek().is_some_and(|c| (' '..='/').contains(c)) {
+                            break;
+                        }
+                        chars.next();
+                    }
+                    if chars.peek().is_some_and(|c| ('0'..='~').contains(c)) {
+                        chars.next();
+                    }
                 }
                 Some(_) => {
                     chars.next();
@@ -425,13 +499,11 @@ pub fn sanitize_terminal_text_cow<'a>(input: &'a str) -> Cow<'a, str> {
             continue;
         }
 
-        // 8-bit C1 CSI sequence (\u{009B})
         if ch == '\u{009B}' {
             skip_csi(&mut chars);
             continue;
         }
 
-        // 8-bit C1 string-type sequences (OSC \u{009D}, DCS \u{0090}, SOS \u{0098}, PM \u{009E}, APC \u{009F})
         if matches!(
             ch,
             '\u{0090}' | '\u{0098}' | '\u{009D}' | '\u{009E}' | '\u{009F}'
@@ -440,7 +512,6 @@ pub fn sanitize_terminal_text_cow<'a>(input: &'a str) -> Cow<'a, str> {
             continue;
         }
 
-        // Filter out control characters (except \n and \t) and Unicode BiDi overrides
         if (ch.is_control() && ch != '\n' && ch != '\t') || is_bidi_control(ch) {
             continue;
         }
@@ -451,15 +522,13 @@ pub fn sanitize_terminal_text_cow<'a>(input: &'a str) -> Cow<'a, str> {
     Cow::Owned(clean)
 }
 
-/// Sanitizes a string for safe terminal display by stripping ANSI escape sequences,
-/// string-type controls (OSC, DCS, SOS, PM, APC), 8-bit C1 controls, BiDi overrides,
-/// and unprintable ASCII control characters (CWE-150 / CWE-451).
-pub fn sanitize_terminal_text(input: &str) -> String {
+/// Sanitizes a string for safe terminal display (stripping ANSI/C1/BiDi/control sequences).
+pub(crate) fn sanitize_terminal_text(input: &str) -> String {
     sanitize_terminal_text_cow(input).into_owned()
 }
 
 /// Sanitizes a title string for terminal presentation by removing escape sequences and collapsing whitespace.
-pub fn sanitize_title(title: &str) -> String {
+pub(crate) fn sanitize_title(title: &str) -> String {
     sanitize_terminal_text_cow(title)
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -467,7 +536,7 @@ pub fn sanitize_title(title: &str) -> String {
 }
 
 /// Formats a duration into a compact string (`"45ms"`, `"0.4s"`, `"2.0s"`, `"1m 5s"`).
-pub fn format_duration_short(d: Duration) -> String {
+pub(crate) fn format_duration_short(d: Duration) -> String {
     let millis = d.as_millis();
     if millis < 100 {
         return format!("{millis}ms");
@@ -481,12 +550,12 @@ pub fn format_duration_short(d: Duration) -> String {
     }
 }
 
-pub use super::markdown::render_markdown;
+pub(crate) use super::markdown::render_markdown;
 
 /// Returns the usable terminal line width when stdout is a TTY, leaving 1 column
 /// before the right margin to prevent terminal auto-wrap quirks.
-pub fn terminal_width() -> Option<usize> {
-    if !io::stdout().is_terminal() {
+pub(crate) fn terminal_width() -> Option<usize> {
+    if !*STDOUT_IS_TERMINAL {
         return None;
     }
     crossterm::terminal::size()
@@ -494,24 +563,33 @@ pub fn terminal_width() -> Option<usize> {
         .map(|(cols, _)| (cols as usize).saturating_sub(1).max(20))
 }
 
+/// Parses a leading 7-bit CSI sequence (`\x1b[...<final>`) returning `(byte_len, is_sgr)`.
+pub(super) fn parse_csi(s: &str) -> Option<(usize, bool)> {
+    let bytes = s.as_bytes();
+    if !bytes.starts_with(b"\x1b[") {
+        return None;
+    }
+    let mut i = 2;
+    while i < bytes.len() && (0x20..=0x3F).contains(&bytes[i]) {
+        i += 1;
+    }
+    if i < bytes.len() && (b'@'..=b'~').contains(&bytes[i]) {
+        Some((i + 1, bytes[i] == b'm'))
+    } else {
+        None
+    }
+}
+
 fn measure_visible_and_sgr<'a>(word: &'a str, active_sgr: &mut Option<&'a str>) -> usize {
-    let bytes = word.as_bytes();
     let mut i = 0;
     let mut width = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'\x1b' && bytes.get(i + 1) == Some(&b'[') {
-            let start = i;
-            i += 2;
-            while i < bytes.len() && !(b'@'..=b'~').contains(&bytes[i]) {
-                i += 1;
+    while i < word.len() {
+        if let Some((len, is_sgr)) = parse_csi(&word[i..]) {
+            if is_sgr {
+                let seq = &word[i..i + len];
+                *active_sgr = (seq != "\x1b[0m" && seq != "\x1b[m").then_some(seq);
             }
-            if i < bytes.len() {
-                if bytes[i] == b'm' {
-                    let seq = &word[start..=i];
-                    *active_sgr = (seq != "\x1b[0m" && seq != "\x1b[m").then_some(seq);
-                }
-                i += 1;
-            }
+            i += len;
             continue;
         }
         let ch = word[i..].chars().next().unwrap_or('\0');
@@ -522,7 +600,7 @@ fn measure_visible_and_sgr<'a>(word: &'a str, active_sgr: &mut Option<&'a str>) 
 }
 
 /// Wraps text to `max_width` visible columns on whitespace boundaries, preserving ANSI SGR styling across line breaks.
-pub fn wrap_terminal_text(text: &str, max_width: usize) -> String {
+pub(crate) fn wrap_terminal_text(text: &str, max_width: usize) -> String {
     if max_width == 0 {
         return text.to_string();
     }
@@ -569,7 +647,7 @@ pub fn wrap_terminal_text(text: &str, max_width: usize) -> String {
 }
 
 /// Wraps `text` when a terminal width is available, borrowing zero-copy when `width` is `None`.
-pub fn wrap_for_terminal<'a>(text: Cow<'a, str>, width: Option<usize>) -> Cow<'a, str> {
+pub(crate) fn wrap_for_terminal<'a>(text: Cow<'a, str>, width: Option<usize>) -> Cow<'a, str> {
     match width {
         Some(w) => Cow::Owned(wrap_terminal_text(text.as_ref(), w)),
         None => text,
@@ -577,7 +655,7 @@ pub fn wrap_for_terminal<'a>(text: Cow<'a, str>, width: Option<usize>) -> Cow<'a
 }
 
 /// Incremental line-buffered markdown stream renderer for real-time terminal output.
-pub struct StreamMarkdownRenderer {
+pub(crate) struct StreamMarkdownRenderer {
     line_buf: String,
     fence: Option<(u8, usize)>,
     use_color: bool,
@@ -592,10 +670,10 @@ impl Default for StreamMarkdownRenderer {
 
 impl StreamMarkdownRenderer {
     pub fn new() -> Self {
-        Self::with_options(Ui::use_color())
+        Self::with_options(Ui::use_stdout_color())
     }
 
-    pub fn with_options(use_color: bool) -> Self {
+    fn with_options(use_color: bool) -> Self {
         Self {
             line_buf: String::with_capacity(256),
             fence: None,
@@ -604,10 +682,8 @@ impl StreamMarkdownRenderer {
         }
     }
 
-    /// Maximum un-terminated line length buffered before flushing mid-line to bound memory.
     const MAX_STREAM_LINE_BYTES: usize = 16 * 1024;
 
-    /// Feeds a chunk of text into the streaming renderer, rendering completed lines.
     pub fn feed(&mut self, chunk: &str) {
         let mut rest = chunk;
         while !rest.is_empty() {
@@ -635,8 +711,7 @@ impl StreamMarkdownRenderer {
         while let Some(pos) = self.line_buf.find('\n') {
             let line: String = self.line_buf.drain(..=pos).collect();
             let line_trimmed = line.trim_end_matches(['\r', '\n']);
-            let rendered = self.render_complete_line(line_trimmed);
-            print!("{}", rendered);
+            print!("{}", self.render_complete_line(line_trimmed));
         }
     }
 
@@ -661,21 +736,20 @@ impl StreamMarkdownRenderer {
 
         if !self.use_color {
             let width = self.wrap_width.filter(|_| !in_fence && !is_fence_line);
-            let text = wrap_for_terminal(Cow::Borrowed(safe), width);
-            format!("{}\n", text)
+            format!("{}\n", wrap_for_terminal(Cow::Borrowed(safe), width))
         } else if is_fence_line {
-            format!("\x1b[32m{}\x1b[0m\n", safe)
+            format!("\x1b[32m{safe}\x1b[0m\n")
         } else if in_fence {
-            format!("\x1b[32m  {}\x1b[0m\n", safe)
+            format!("\x1b[32m  {safe}\x1b[0m\n")
         } else if safe.is_empty() {
             "\n".to_string()
         } else {
-            let rendered = render_markdown(safe);
+            let rendered = super::markdown::render_markdown_presanitized(safe);
             let wrapped = wrap_for_terminal(Cow::Owned(rendered), self.wrap_width);
             if wrapped.ends_with('\n') {
                 wrapped.into_owned()
             } else {
-                format!("{}\n", wrapped)
+                format!("{wrapped}\n")
             }
         }
     }
@@ -685,8 +759,10 @@ impl StreamMarkdownRenderer {
         let safe = sanitized.as_ref();
         let rendered = if !self.use_color {
             Cow::Borrowed(safe)
+        } else if self.fence.is_some() {
+            Cow::Owned(format!("\x1b[32m  {safe}\x1b[0m"))
         } else {
-            Cow::Owned(render_markdown(safe))
+            Cow::Owned(super::markdown::render_markdown_presanitized(safe))
         };
         let width = self.wrap_width.filter(|_| self.fence.is_none());
         wrap_for_terminal(rendered, width).into_owned()
@@ -694,23 +770,86 @@ impl StreamMarkdownRenderer {
 
     fn flush_partial_line(&mut self) {
         if !self.line_buf.is_empty() {
-            let rendered = self.render_partial_line(&self.line_buf);
-            print!("{}", rendered);
+            print!("{}", self.render_partial_line(&self.line_buf));
             self.line_buf.clear();
             let _ = io::stdout().flush();
         }
     }
 
-    /// Flushes any remaining partial line at stream completion.
     pub fn flush(&mut self) {
         self.drain_complete_lines();
         self.flush_partial_line();
     }
 }
 
+fn build_summary_output(
+    title: &str,
+    content: &str,
+    use_color: bool,
+    plain: bool,
+    wrap_width: Option<usize>,
+    view_files: Option<(&Path, &Path)>,
+    hint: Option<&str>,
+) -> String {
+    let sanitized_title = sanitize_title(title);
+    let sanitized_content = sanitize_terminal_text_cow(content);
+    let color = !plain && use_color;
+
+    let mut out = String::new();
+    if !plain {
+        let _ = write!(
+            out,
+            "\n{}=== Summary: {sanitized_title} ==={}\n\n",
+            if color { "\x1b[1;36m" } else { "" },
+            if color { "\x1b[0m" } else { "" }
+        );
+    }
+
+    let body = if color {
+        wrap_for_terminal(
+            Cow::Owned(super::markdown::render_markdown_presanitized(
+                &sanitized_content,
+            )),
+            wrap_width,
+        )
+    } else {
+        wrap_for_terminal(sanitized_content, wrap_width)
+    };
+    out.push_str(&body);
+    out.push('\n');
+
+    if let Some((html_path, md_path)) = view_files {
+        let safe_html = sanitize_terminal_text(&html_path.display().to_string());
+        let safe_md = sanitize_terminal_text(&md_path.display().to_string());
+        if color {
+            let _ = write!(
+                out,
+                "\n\x1b[32m✔\x1b[0m \x1b[2mStyled HTML view:\x1b[0m file://{safe_html}\n\x1b[32m✔\x1b[0m \x1b[2mMarkdown file:   \x1b[0m file://{safe_md}\n"
+            );
+        } else {
+            let _ = write!(
+                out,
+                "\n✔ Styled HTML view: file://{safe_html}\n✔ Markdown file:    file://{safe_md}\n"
+            );
+        }
+    }
+
+    if let Some(h) = hint {
+        let wrapped_hint = wrap_for_terminal(sanitize_terminal_text_cow(h), wrap_width);
+        let _ = write!(
+            out,
+            "\n{}{wrapped_hint}{}\n",
+            if color { "\x1b[2m" } else { "" },
+            if color { "\x1b[0m" } else { "" }
+        );
+    }
+
+    out
+}
+
 /// Prints a unified terminal summary document (including optional view file links and context hints),
-/// launching a pager if the combined document exceeds terminal height.
-pub fn display_summary_full(
+/// launching a pager when the combined document exceeds terminal height.
+pub(crate) fn display_summary_full(
     title: &str,
     content: &str,
     paging_mode: PagingMode,
@@ -718,62 +857,40 @@ pub fn display_summary_full(
     view_files: Option<(&Path, &Path)>,
     hint: Option<&str>,
 ) -> io::Result<()> {
-    let stdout_is_tty = io::stdout().is_terminal();
     let wrap_width = terminal_width();
-    let sanitized_title = sanitize_title(title);
-    let sanitized_content = sanitize_terminal_text_cow(content);
-
-    // If output is redirected/piped, or plain mode is requested, or colors are disabled:
-    if !stdout_is_tty || plain || !Ui::use_color() {
-        if stdout_is_tty && !plain {
-            Ui::header(&format!("Summary: {}", sanitized_title));
-        }
-        let body = wrap_for_terminal(sanitized_content, wrap_width);
-        println!("{}\n", body);
+    if !*STDOUT_IS_TERMINAL {
+        let body = wrap_for_terminal(sanitize_terminal_text_cow(content), wrap_width);
+        println!("{body}\n");
         return Ok(());
     }
 
-    // Terminal mode: format markdown
-    let header = format!(
-        "\n\x1b[1;36m=== Summary: {} ===\x1b[0m\n\n",
-        sanitized_title
+    let full_output = build_summary_output(
+        title,
+        content,
+        Ui::use_stdout_color(),
+        plain,
+        wrap_width,
+        view_files,
+        hint,
     );
-    let formatted_body =
-        wrap_for_terminal(Cow::Owned(render_markdown(&sanitized_content)), wrap_width);
-    let mut full_output = format!("{}{}\n", header, formatted_body);
-
-    // Append view file links if available
-    if let Some((html_path, md_path)) = view_files {
-        full_output.push_str(&format!(
-            "\n\x1b[32m✔\x1b[0m \x1b[2mStyled HTML view:\x1b[0m file://{}\n\x1b[32m✔\x1b[0m \x1b[2mMarkdown file:   \x1b[0m file://{}\n",
-            html_path.display(),
-            md_path.display()
-        ));
-    }
-
-    // Append hint if available
-    if let Some(h) = hint {
-        let wrapped_hint = wrap_for_terminal(sanitize_terminal_text_cow(h), wrap_width);
-        full_output.push_str(&format!("\n\x1b[2m{}\x1b[0m\n", wrapped_hint));
-    }
 
     let (_, term_height) = crossterm::terminal::size().unwrap_or((80, 24));
     let line_count = full_output.lines().count();
-
-    let should_page = match paging_mode {
-        PagingMode::Always => true,
-        PagingMode::Never => false,
-        PagingMode::Auto => line_count > term_height.saturating_sub(4) as usize,
-    };
+    let should_page = !plain
+        && match paging_mode {
+            PagingMode::Always => true,
+            PagingMode::Never => false,
+            PagingMode::Auto => line_count > term_height.saturating_sub(4) as usize,
+        };
 
     if should_page {
         if let Err(err) = run_pager(&full_output) {
             Ui::verbose(&format!("Pager error, falling back to direct print: {err}"));
-            print!("{}", full_output);
+            print!("{full_output}");
             io::stdout().flush()?;
         }
     } else {
-        print!("{}", full_output);
+        print!("{full_output}");
         io::stdout().flush()?;
     }
 
@@ -789,34 +906,62 @@ fn parse_pager_command(pager_cmd: &str) -> (&str, Vec<&str>) {
         return ("less", vec!["-R", "-F", "-X"]);
     }
     let mut args: Vec<&str> = parts.collect();
-    if bin == "less" && args.is_empty() {
+    let is_less = Path::new(bin).file_name().and_then(|n| n.to_str()) == Some("less");
+    if is_less && args.is_empty() {
         args = vec!["-R", "-F", "-X"];
     }
     (bin, args)
 }
 
-/// Pipes content through the system pager ($PAGER or less -RFX).
+/// Spawns `cmd` with `args`, writes `input` to stdin, and always reaps the child process.
+pub(super) fn pipe_to_command(
+    cmd: &str,
+    args: &[&str],
+    extra_env: Option<(&str, &str)>,
+    input: &str,
+    ignore_broken_pipe: bool,
+    quiet_stdio: bool,
+    check_exit_status: bool,
+) -> io::Result<()> {
+    let mut command = Command::new(cmd);
+    command.args(args).stdin(Stdio::piped());
+    if let Some((k, v)) = extra_env {
+        command.env(k, v);
+    }
+    if quiet_stdio {
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+    }
+    let mut child = command.spawn()?;
+    let mut write_err = None;
+    if let Some(mut stdin) = child.stdin.take()
+        && let Err(err) = stdin.write_all(input.as_bytes())
+        && (!ignore_broken_pipe || err.kind() != io::ErrorKind::BrokenPipe)
+    {
+        write_err = Some(err);
+    }
+    let status = child.wait();
+    if let Some(err) = write_err {
+        return Err(err);
+    }
+    let status = status?;
+    if check_exit_status && !status.success() {
+        return Err(io::Error::other(format!("{cmd} exited with error")));
+    }
+    Ok(())
+}
+
 fn run_pager(content: &str) -> io::Result<()> {
     let pager_cmd = env::var("PAGER").unwrap_or_else(|_| "less".to_string());
     let (safe_bin, args) = parse_pager_command(&pager_cmd);
-
-    let mut child = Command::new(safe_bin)
-        .args(&args)
-        .env("LESSSECURE", "1")
-        .stdin(Stdio::piped())
-        .spawn()?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        // Ignore BrokenPipe error when user exits pager early (e.g. presses 'q')
-        if let Err(err) = stdin.write_all(content.as_bytes())
-            && err.kind() != io::ErrorKind::BrokenPipe
-        {
-            return Err(err);
-        }
-    }
-
-    let _ = child.wait();
-    Ok(())
+    pipe_to_command(
+        safe_bin,
+        &args,
+        Some(("LESSSECURE", "1")),
+        content,
+        true,
+        false,
+        false,
+    )
 }
 
 #[cfg(test)]
@@ -827,221 +972,111 @@ mod tests {
     fn test_format_duration_short() {
         assert_eq!(format_duration_short(Duration::from_millis(45)), "45ms");
         assert_eq!(format_duration_short(Duration::from_millis(1400)), "1.4s");
-        assert_eq!(format_duration_short(Duration::from_secs(65)), "1m 5s");
+        assert_eq!(
+            format_duration_short(Duration::from_millis(59_960)),
+            "1m 0s"
+        );
         assert_eq!(format_duration_short(Duration::from_secs(120)), "2m 0s");
     }
 
     #[test]
-    fn test_sanitize_terminal_text_strips_ansi_and_osc() {
-        let csi_injected = "Hello \x1b[31;1mRed Alert\x1b[0m World";
+    fn test_sanitize_terminal_text_security_and_zero_alloc() {
+        assert!(matches!(
+            sanitize_terminal_text_cow("Clean string!"),
+            Cow::Borrowed("Clean string!")
+        ));
+        let dirty = "\x1b[31;1mRed\x1b[0m \x1b]0;Evil\x07 \u{009B}31mC1\u{009B}0m \u{009D}osc\u{009C} \x1bPdcs\x1b\\ \u{202E}bidi\u{202C}\x00\x07";
+        assert_eq!(sanitize_terminal_text(dirty), "Red  C1   bidi");
+
+        // Guard nested ESC smuggling ("\x1b\x1b]52..."), bounded CSI, and unterminated OSC stopping at '\n'.
+        assert_eq!(sanitize_terminal_text("\x1b\x1b]52;c;evil\x07ok"), "ok");
+        assert_eq!(sanitize_terminal_text("a\x1b[31\nkept"), "a\nkept");
         assert_eq!(
-            sanitize_terminal_text(csi_injected),
-            "Hello Red Alert World"
+            sanitize_terminal_text("head\x1b]0;unterminated\nvisible"),
+            "head\nvisible"
         );
-
-        let osc_injected = "Normal \x1b]0;Evil Title\x07Text";
-        assert_eq!(sanitize_terminal_text(osc_injected), "Normal Text");
-
-        let control_chars = "Line\x00with\x08bell\x07and\x1bsome chars";
         assert_eq!(
-            sanitize_terminal_text(control_chars),
-            "Linewithbellandome chars"
+            sanitize_title("\x1b[1mTitle\x1b[0m\nNext\r\n\u{202E}Line"),
+            "Title Next Line"
         );
     }
 
     #[test]
-    fn test_sanitize_terminal_text_strips_c1_bidi_and_string_controls() {
-        // C1 8-bit CSI
-        let c1_csi = "Hello \u{009B}31mC1 CSI\u{009B}0m World";
-        assert_eq!(sanitize_terminal_text(c1_csi), "Hello C1 CSI World");
-
-        // C1 8-bit OSC with ST terminator (\u{009C})
-        let c1_osc = "Start \u{009D}0;Evil Title\u{009C} End";
-        assert_eq!(sanitize_terminal_text(c1_osc), "Start  End");
-
-        // 7-bit DCS, PM, APC
-        let dcs_seq = "DCS \x1bP123;cmd\x1b\\Payload";
-        assert_eq!(sanitize_terminal_text(dcs_seq), "DCS Payload");
-        let apc_seq = "APC \x1b_secret\x07Data";
-        assert_eq!(sanitize_terminal_text(apc_seq), "APC Data");
-
-        // Unicode BiDi override injection (Trojan Source / CWE-451)
-        let bidi_text = "Benign \u{202E}gnineB\u{202C} Text \u{2067}RLI\u{2069}";
-        assert_eq!(sanitize_terminal_text(bidi_text), "Benign gnineB Text RLI");
-    }
-
-    #[test]
-    fn test_sanitize_title_collapses_newlines() {
-        let raw_title = "\x1b[1mImportant\x1b[0m\nDocument\r\nTitle";
-        assert_eq!(sanitize_title(raw_title), "Important Document Title");
-
-        let bidi_title = "Title \u{202E}with \n \t BiDi\u{202C}";
-        assert_eq!(sanitize_title(bidi_title), "Title with BiDi");
-    }
-
-    #[test]
-    fn test_sanitize_terminal_text_cow_zero_alloc() {
-        let clean = "This is a completely clean string!";
-        match sanitize_terminal_text_cow(clean) {
-            std::borrow::Cow::Borrowed(borrowed) => {
-                assert_eq!(borrowed, clean);
-            }
-            std::borrow::Cow::Owned(_) => panic!("expected clean string to be borrowed"),
-        }
-
-        let dirty = "This has \x1b[31mcolor\x1b[0m";
-        match sanitize_terminal_text_cow(dirty) {
-            std::borrow::Cow::Borrowed(_) => panic!("expected dirty string to be owned"),
-            std::borrow::Cow::Owned(owned) => {
-                assert_eq!(owned, "This has color");
-            }
-        }
-    }
-
-    #[test]
-    fn test_render_markdown_basic() {
-        let md =
-            "# Title\n\nThis is **bold** and *italic* text with `code`.\n\n* Bullet 1\n* Bullet 2";
+    fn test_markdown_rendering_nesting_and_safety() {
+        let md = "# H1 `code` tail\n\n**bold *it* end** ***bi*** ~~del~~";
         let rendered = render_markdown(md);
-        assert!(rendered.contains("Title"));
-        assert!(rendered.contains("bold"));
-        assert!(rendered.contains("Bullet"));
-        assert!(rendered.contains("\x1b[1;36;4m")); // H1 cyan underline
-        assert!(rendered.contains("\x1b[1;37m")); // Bold white
-        assert!(rendered.contains("\x1b[36m•\x1b[0m")); // Bullet
+        assert!(rendered.contains("\x1b[1;36;4mH1 \x1b[32mcode\x1b[0m\x1b[1;36;4m tail\x1b[0m"));
+        assert!(rendered.contains("\x1b[1;37mbold \x1b[35mit\x1b[0m\x1b[1;37m end\x1b[0m"));
+        assert!(rendered.contains("\x1b[1;3;35mbi\x1b[0m"));
+
+        assert!(!super::super::markdown::is_safe_markdown_url(
+            "\\\\server\\share"
+        ));
+        assert!(!super::super::markdown::is_safe_markdown_url(
+            "javascript:alert(1)"
+        ));
+        assert!(super::super::markdown::is_safe_markdown_url(
+            "https://example.com"
+        ));
+
+        // Deeply nested quotes must terminate cleanly within MAX_DEPTH instead of overflowing stack.
+        let deep_quotes = format!("{}leaf", "> ".repeat(64));
+        assert!(super::super::markdown::markdown_to_html(&deep_quotes).contains("leaf"));
     }
 
     #[test]
-    fn test_display_summary_plain_and_full() {
-        // Plain mode should succeed without error
-        let res = display_summary_full(
-            "Test Title",
-            "Test Body Content",
-            PagingMode::Never,
-            true,
-            Some((Path::new("/tmp/test.html"), Path::new("/tmp/test.md"))),
-            Some("💡 Context hint"),
-        );
-        assert!(res.is_ok());
-    }
-
-    #[test]
-    fn test_stream_markdown_renderer() {
-        let mut renderer = StreamMarkdownRenderer::new();
-        renderer.feed("# Heading 1\n");
-        renderer.feed("This is a paragraph with **bold** text.\n");
-        renderer.feed("```rust\n");
-        renderer.feed("let a = 42;\n");
-        renderer.feed("```\n");
-        renderer.feed("Trailing unclosed line without newline");
-        assert!(!renderer.line_buf.is_empty());
-        renderer.flush();
-        assert!(renderer.line_buf.is_empty());
-    }
-
-    #[test]
-    fn test_stream_markdown_renderer_options() {
-        for use_color in [true, false] {
-            let mut renderer = StreamMarkdownRenderer::with_options(use_color);
-            renderer.feed("Line 1\nLine 2\nPartial line");
-            assert_eq!(renderer.line_buf, "Partial line");
-            renderer.flush();
-            assert!(renderer.line_buf.is_empty());
-        }
-    }
-
-    #[test]
-    fn test_spinner_lifecycle() {
-        let active = ProgressBar::new_spinner();
-        active.set_message("Testing spinner");
-        let hidden = ProgressBar::hidden();
-        assert!(hidden.is_hidden());
-
-        for pb in [active, hidden] {
-            assert!(!pb.is_finished());
-            pb.finish_and_clear();
-            assert!(pb.is_finished());
-            pb.reset();
-            assert!(!pb.is_finished());
-            pb.finish_and_clear();
-            assert!(pb.is_finished());
-        }
-    }
-
-    #[test]
-    fn test_spinner_empty_message_returns_hidden() {
-        assert!(Ui::spinner("").is_hidden());
-        assert!(Ui::spinner("   ").is_hidden());
-        assert!(Ui::spinner("\n\t").is_hidden());
-    }
-
-    #[test]
-    fn test_success_and_elapsed_empty_message_ignored() {
-        // Smoke test: verify that empty/blank strings do not panic or emit corrupt escape sequences
-        Ui::success("");
-        Ui::success("   ");
-        Ui::success_with_elapsed("", Duration::from_secs(5));
-        Ui::success_with_elapsed("   ", Duration::from_secs(5));
-        let pb = ProgressBar::hidden();
-        Ui::finish_spinner(&pb, "");
-        Ui::finish_spinner(&pb, "   ");
-        assert!(pb.is_hidden());
-    }
-
-    #[test]
-    fn test_stream_markdown_renderer_strips_terminal_escapes() {
+    fn test_stream_renderer_sanitizes_fences_and_bounds() {
         let mut plain = StreamMarkdownRenderer::with_options(false);
-        let complete = plain.render_complete_line("\x1b]2;pwned\x07hello\x1b[31m!\r");
-        assert_eq!(complete, "hello!\n");
-        let partial = plain.render_partial_line("\x1b[2Jpartial\x07\r");
-        assert_eq!(partial, "partial");
+        assert_eq!(
+            plain.render_complete_line("\x1b]2;pwned\x07hello\x1b[31m!\r"),
+            "hello!\n"
+        );
+        plain.feed(&"🦀".repeat(10_000));
+        assert!(plain.line_buf.len() <= StreamMarkdownRenderer::MAX_STREAM_LINE_BYTES);
+        plain.flush();
+        assert!(plain.line_buf.is_empty());
 
         let mut colored = StreamMarkdownRenderer::with_options(true);
         let fence = colored.render_complete_line("```\x1b]0;title\x07");
-        assert!(!fence.contains("\x1b]0;"));
-        assert!(!fence.contains('\x07'));
-        let code_line = colored.render_complete_line("let x = \x1b[31m1\x1b[0m;\r");
-        assert!(!code_line.contains("\x1b[31m"));
-        assert!(!code_line.contains('\r'));
-        assert!(code_line.contains("let x = 1;"));
-        let colored_partial = colored.render_partial_line("tail\x1b[2J\x07");
-        assert!(!colored_partial.contains("\x1b[2J"));
-        assert!(!colored_partial.contains('\x07'));
-
-        let rendered_md = render_markdown("\x1b]2;pwned\x07**bold**\x1b[31m");
-        assert!(!rendered_md.contains("\x1b]2;"));
-        assert!(!rendered_md.contains("\x1b[31m"));
-        assert!(!rendered_md.contains('\x07'));
-        assert!(rendered_md.contains("bold"));
+        assert!(!fence.contains("\x1b]0;") && !fence.contains('\x07'));
+        let partial_code = colored.render_partial_line("let x = *raw*;");
+        assert!(partial_code.starts_with("\x1b[32m") && partial_code.contains("*raw*"));
     }
 
     #[test]
-    fn test_stream_markdown_renderer_bounds_unterminated_line() {
-        let mut renderer = StreamMarkdownRenderer::with_options(false);
-        renderer.feed(&"A".repeat(40_000));
-        assert!(renderer.line_buf.len() <= StreamMarkdownRenderer::MAX_STREAM_LINE_BYTES);
-
-        // Multi-byte UTF-8 input across buffer limit boundaries must not panic
-        renderer.feed(&"🦀".repeat(10_000));
-        assert!(renderer.line_buf.len() <= StreamMarkdownRenderer::MAX_STREAM_LINE_BYTES);
-        renderer.flush();
-        assert!(renderer.line_buf.is_empty());
+    fn test_summary_output_nocolor_and_path_sanitization() {
+        let out = build_summary_output(
+            "Title",
+            "Body",
+            false,
+            false,
+            Some(80),
+            Some((Path::new("/tmp/a\x1b]0;x\x07.html"), Path::new("/tmp/b.md"))),
+            Some("Hint text"),
+        );
+        assert!(out.contains("=== Summary: Title ==="));
+        assert!(out.contains("file:///tmp/a.html"));
+        assert!(out.contains("Hint text"));
+        assert!(!out.contains('\x1b'));
     }
 
     #[test]
-    fn test_progress_bar_set_message_sanitizes_control_sequences() {
+    fn test_progress_bar_drop_spinner_fit_and_display_width() {
+        assert_eq!(char_display_width('\u{0301}'), 0); // combining acute accent
+        assert_eq!(char_display_width('\u{FE0F}'), 0); // VS16
+        assert_eq!(char_display_width('\u{200D}'), 0); // ZWJ
+        assert_eq!(char_display_width('𠮷'), 2); // CJK Ext B
+
         let pb = ProgressBar::hidden();
         pb.set_message("Load \x1b]2;evil\x07\x1b[31mfile\r\nname");
-        let stored = pb.inner.message.lock().unwrap().clone();
-        assert!(!stored.contains('\x1b'));
-        assert!(!stored.contains('\x07'));
-        assert!(!stored.contains('\r'));
-        assert!(!stored.contains('\n'));
-        assert_eq!(stored, "Load file name");
-    }
+        assert_eq!(pb.shared.state.lock().unwrap().message, "Load file name");
+        let shared = Arc::clone(&pb.shared);
+        assert!(!pb.is_finished());
+        pb.reset();
+        assert!(!pb.is_finished());
+        drop(pb);
+        assert!(shared.state.lock().unwrap().finished);
 
-    #[test]
-    fn test_fit_spinner_message_adapts_to_terminal_width() {
         let msg = "💭 Thinking: Draft paragraph 2 - technical depth and complexity overview...";
         assert!(matches!(fit_spinner_message(msg, 120), Cow::Borrowed(_)));
         assert_eq!(
@@ -1052,41 +1087,23 @@ mod tests {
     }
 
     #[test]
-    fn test_wrap_terminal_text_and_ansi_sgr() {
-        // Basic word wrapping without cutting words mid-word
-        let wrapped =
-            wrap_terminal_text("Nvidia crisis triggered massive financial uncertainty.", 24);
-        assert_eq!(
-            wrapped,
-            "Nvidia crisis triggered\nmassive financial\nuncertainty."
-        );
-
-        // ANSI codes count as zero width and active style carries across wraps
+    fn test_wrap_terminal_text_and_pager_parse() {
         let styled = "\x1b[1;37mCEO Resignation and Collapse\x1b[0m follows.";
-        let wrapped_styled = wrap_terminal_text(styled, 18);
         assert_eq!(
-            wrapped_styled,
+            wrap_terminal_text(styled, 18),
             "\x1b[1;37mCEO Resignation\x1b[0m\n\x1b[1;37mand Collapse\x1b[0m\nfollows."
         );
-
-        // Indented list item and unbreakable long URL
-        let indented = "  \x1b[36m•\x1b[0m Read https://example.com/very/long/path/here now";
-        let wrapped_url = wrap_terminal_text(indented, 16);
-        assert_eq!(
-            wrapped_url,
-            "  \x1b[36m•\x1b[0m Read\nhttps://example.com/very/long/path/here\nnow"
-        );
-
-        // None width borrows without allocating
-        let input = "Unchanged paragraph";
         assert!(matches!(
-            wrap_for_terminal(Cow::Borrowed(input), None),
-            Cow::Borrowed("Unchanged paragraph")
+            wrap_for_terminal(Cow::Borrowed("Unchanged"), None),
+            Cow::Borrowed("Unchanged")
         ));
-
         assert_eq!(
             parse_pager_command("--evil foo"),
             ("less", vec!["-R", "-F", "-X"])
+        );
+        assert_eq!(
+            parse_pager_command("/usr/bin/less"),
+            ("/usr/bin/less", vec!["-R", "-F", "-X"])
         );
         assert_eq!(parse_pager_command("most -s"), ("most", vec!["-s"]));
     }

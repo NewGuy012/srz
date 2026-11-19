@@ -1,21 +1,22 @@
+use super::markdown::markdown_to_html;
 use crate::db::{HistoryEntry, LibraryStats};
 use crate::fs_util;
+use crate::system::text_util::slugify_unique;
+use std::borrow::Cow;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-pub struct RenderedFiles {
+pub(crate) struct RenderedFiles {
     pub html_path: PathBuf,
     pub md_path: PathBuf,
 }
 
-/// Returns `true` if `path` has a `.html` or `.htm` extension (case-insensitive).
-pub fn is_html_path(path: &Path) -> bool {
+pub(crate) fn is_html_path(path: &Path) -> bool {
     path.extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"))
 }
 
-/// Ensures both `.md` and `.html` view files exist in `views_dir` with collision-safe unique key support
-/// and an optional model reasoning trace.
-pub fn ensure_view_files_unique(
+pub(crate) fn ensure_view_files_unique(
     views_dir: &Path,
     title: &str,
     markdown: &str,
@@ -24,10 +25,12 @@ pub fn ensure_view_files_unique(
     force_write: bool,
 ) -> std::io::Result<RenderedFiles> {
     let slug = slugify_unique(title, unique_key);
-    let md_path = views_dir.join(format!("{}.md", slug));
-    let html_path = views_dir.join(format!("{}.html", slug));
+    let md_path = views_dir.join(format!("{slug}.md"));
+    let html_path = views_dir.join(format!("{slug}.html"));
 
     if !force_write && md_path.exists() && html_path.exists() {
+        fs_util::reject_symlink(&md_path, "reuse markdown symlink view")?;
+        fs_util::reject_symlink(&html_path, "reuse html symlink view")?;
         return Ok(RenderedFiles { html_path, md_path });
     }
 
@@ -40,9 +43,25 @@ pub fn ensure_view_files_unique(
     Ok(RenderedFiles { html_path, md_path })
 }
 
-/// Launches the default system browser to view the specified file or URL.
-pub fn open_in_browser(path: &Path) -> std::io::Result<()> {
-    let abs_path = path.canonicalize().unwrap_or_else(|_| {
+#[cfg(target_os = "windows")]
+fn normalize_browser_path(path: PathBuf) -> PathBuf {
+    let raw = path.to_string_lossy();
+    if let Some(unc) = raw.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{unc}"))
+    } else if let Some(trimmed) = raw.strip_prefix(r"\\?\") {
+        PathBuf::from(trimmed)
+    } else {
+        path
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn normalize_browser_path(path: PathBuf) -> PathBuf {
+    path
+}
+
+pub(crate) fn open_in_browser(path: &Path) -> std::io::Result<()> {
+    let abs_path = normalize_browser_path(path.canonicalize().unwrap_or_else(|_| {
         if path.is_absolute() {
             path.to_path_buf()
         } else {
@@ -50,7 +69,7 @@ pub fn open_in_browser(path: &Path) -> std::io::Result<()> {
                 .map(|cwd| cwd.join(path))
                 .unwrap_or_else(|_| path.to_path_buf())
         }
-    });
+    }));
 
     #[cfg(target_os = "macos")]
     let mut cmd = std::process::Command::new("open");
@@ -63,16 +82,18 @@ pub fn open_in_browser(path: &Path) -> std::io::Result<()> {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let mut cmd = std::process::Command::new("xdg-open");
 
-    cmd.arg(&abs_path)
+    let mut child = cmd
+        .arg(&abs_path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
 
     Ok(())
 }
-
-use crate::system::text_util::slugify_unique;
 
 const SHARED_THEME_CSS: &str = r#"    :root {
       --bg: #faf9f5;
@@ -102,8 +123,28 @@ const SHARED_THEME_CSS: &str = r#"    :root {
     }
     * { box-sizing: border-box; }"#;
 
-/// Renders a standalone HTML5 document including an optional collapsible model reasoning trace.
-pub fn render_html_document_with_reasoning(
+fn render_html_page(title: &str, csp: &str, extra_css: &str, body_html: &str) -> String {
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="{csp}">
+  <title>{title}</title>
+  <style>
+{SHARED_THEME_CSS}
+{extra_css}
+  </style>
+</head>
+<body>
+{body_html}</body>
+</html>
+"#
+    )
+}
+
+pub(crate) fn render_html_document_with_reasoning(
     title: &str,
     markdown: &str,
     reasoning: Option<&str>,
@@ -126,123 +167,58 @@ pub fn render_html_document_with_reasoning(
         _ => String::new(),
     };
 
-    format!(
-        r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: https:;">
-  <title>Summary: {escaped_title}</title>
-  <style>
-{SHARED_THEME_CSS}
-    body {{
-      margin: 0;
-      padding: 3rem 1.25rem 5rem;
-      background: var(--bg);
-      color: var(--text);
+    const DOC_CSS: &str = r#"    body {
+      margin: 0; padding: 3rem 1.25rem 5rem; background: var(--bg); color: var(--text);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      line-height: 1.72;
-      font-size: 1.05rem;
-      -webkit-font-smoothing: antialiased;
-    }}
-    main {{
-      max-width: 760px;
-      margin: 0 auto;
-      background: var(--surface);
-      padding: 2.75rem 3.25rem;
-      border-radius: 14px;
-      border: 1px solid var(--border);
-      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.06);
-    }}
-    @media (max-width: 640px) {{
-      body {{ padding: 1rem 0.5rem 3rem; }}
-      main {{ padding: 1.5rem 1.25rem; }}
-    }}
-    header.meta {{
-      border-bottom: 1px solid var(--border);
-      padding-bottom: 1rem;
-      margin-bottom: 2rem;
-      font-size: 0.85rem;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      font-weight: 600;
-    }}
-    h1, h2, h3, h4 {{
-      color: var(--text);
-      line-height: 1.3;
-      margin-top: 2rem;
-      margin-bottom: 0.75rem;
-      font-weight: 700;
-      letter-spacing: -0.015em;
-    }}
-    h1 {{ font-size: 2rem; margin-top: 0; }}
-    h2 {{
-      font-size: 1.45rem;
-      padding-bottom: 0.35rem;
-      border-bottom: 1px solid var(--border);
-    }}
-    h3 {{ font-size: 1.2rem; }}
-    p {{ margin: 0 0 1.1rem; }}
-    ul, ol {{
-      margin: 0 0 1.25rem;
-      padding-left: 1.5rem;
-    }}
-    li {{ margin-bottom: 0.45rem; }}
-    li > strong {{ color: var(--text); }}
-    hr {{
-      border: 0;
-      border-top: 1px solid var(--border);
-      margin: 2rem 0;
-    }}
-    blockquote {{
-      margin: 1.25rem 0;
-      padding: 0.85rem 1.25rem;
-      border-left: 4px solid var(--accent);
-      background: var(--quote-bg);
-      border-radius: 0 8px 8px 0;
-      color: var(--muted);
-    }}
-    code {{
+      line-height: 1.72; font-size: 1.05rem; -webkit-font-smoothing: antialiased;
+    }
+    main {
+      max-width: 760px; margin: 0 auto; background: var(--surface); padding: 2.75rem 3.25rem;
+      border-radius: 14px; border: 1px solid var(--border); box-shadow: 0 8px 30px rgba(0, 0, 0, 0.06);
+    }
+    @media (max-width: 640px) {
+      body { padding: 1rem 0.5rem 3rem; }
+      main { padding: 1.5rem 1.25rem; }
+    }
+    header.meta {
+      border-bottom: 1px solid var(--border); padding-bottom: 1rem; margin-bottom: 2rem;
+      font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;
+    }
+    h1, h2, h3, h4 {
+      color: var(--text); line-height: 1.3; margin-top: 2rem; margin-bottom: 0.75rem;
+      font-weight: 700; letter-spacing: -0.015em;
+    }
+    h1 { font-size: 2rem; margin-top: 0; }
+    h2 { font-size: 1.45rem; padding-bottom: 0.35rem; border-bottom: 1px solid var(--border); }
+    h3 { font-size: 1.2rem; }
+    p { margin: 0 0 1.1rem; }
+    ul, ol { margin: 0 0 1.25rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.45rem; }
+    li > strong { color: var(--text); }
+    hr { border: 0; border-top: 1px solid var(--border); margin: 2rem 0; }
+    blockquote {
+      margin: 1.25rem 0; padding: 0.85rem 1.25rem; border-left: 4px solid var(--accent);
+      background: var(--quote-bg); border-radius: 0 8px 8px 0; color: var(--muted);
+    }
+    code {
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      font-size: 0.9em;
-      background: var(--code-bg);
-      padding: 0.15em 0.4em;
-      border-radius: 5px;
-    }}
-    pre {{
-      background: var(--code-bg);
-      padding: 1rem 1.25rem;
-      border-radius: 8px;
-      overflow-x: auto;
-      margin: 1.25rem 0;
-    }}
-    pre code {{
-      background: none;
-      padding: 0;
-    }}
-  </style>
-</head>
-<body>
-  <main>
-    <header class="meta">srz &bull; Summary: {escaped_title}</header>
-{reasoning_html}{body_html}  </main>
-</body>
-</html>
-"#,
-        SHARED_THEME_CSS = SHARED_THEME_CSS,
-        escaped_title = escaped_title,
-        reasoning_html = reasoning_html,
-        body_html = body_html,
+      font-size: 0.9em; background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 5px;
+    }
+    pre { background: var(--code-bg); padding: 1rem 1.25rem; border-radius: 8px; overflow-x: auto; margin: 1.25rem 0; }
+    pre code { background: none; padding: 0; }
+    table { border-collapse: collapse; width: 100%; margin: 1.25rem 0; font-size: 0.95rem; }
+    th, td { border: 1px solid var(--border); padding: 0.5rem 0.75rem; text-align: left; }
+    th { background: var(--code-bg); font-weight: 600; }"#;
+
+    let main_html = format!(
+        "  <main>\n    <header class=\"meta\">srz &bull; Summary: {escaped_title}</header>\n{reasoning_html}{body_html}  </main>\n"
+    );
+    render_html_page(
+        &format!("Summary: {escaped_title}"),
+        "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:;",
+        DOC_CSS,
+        &main_html,
     )
-}
-
-pub use super::markdown::{is_safe_markdown_url, markdown_to_html};
-
-/// Appends HTML-escaped text directly into the provided output buffer.
-pub fn escape_html_to(out: &mut String, text: &str) {
-    push_html_escaped(out, text, true);
 }
 
 pub(crate) fn push_html_escaped(out: &mut String, text: &str, escape_single_quote: bool) {
@@ -258,51 +234,48 @@ pub(crate) fn push_html_escaped(out: &mut String, text: &str, escape_single_quot
     }
 }
 
-/// Returns a zero-allocation `Cow::Borrowed` when `text` requires no escaping.
-pub fn escape_html_cow(text: &str) -> std::borrow::Cow<'_, str> {
+fn escape_html_cow(text: &str) -> Cow<'_, str> {
     if !text.contains(['&', '<', '>', '"', '\'']) {
-        std::borrow::Cow::Borrowed(text)
+        Cow::Borrowed(text)
     } else {
         let mut out = String::with_capacity(text.len() + 16);
-        escape_html_to(&mut out, text);
-        std::borrow::Cow::Owned(out)
+        push_html_escaped(&mut out, text, true);
+        Cow::Owned(out)
     }
 }
 
-/// Formats an author name with a leading " by " if present.
-pub fn format_author_by(author: Option<&str>) -> String {
+pub(crate) fn format_author_by(author: Option<&str>) -> String {
     match author {
         Some(a) if !a.trim().is_empty() => format!(" by {}", crate::ui::sanitize_title(a)),
         _ => String::new(),
     }
 }
 
-/// Returns the canonical `(icon, label, badge)` tuple for a summary target type.
-pub fn target_meta(target_type: &str) -> (&'static str, &'static str, &'static str) {
-    match target_type {
-        "book" => ("📚", "Book", "📚 Book"),
-        "web" => ("🌐", "Web", "🌐 Web"),
-        "news" => ("📰", "News", "📰 News"),
-        "file" => ("📄", "File", "📄 File"),
-        "stdin" => ("⌨️", "Stdin", "⌨️ Stdin"),
-        "youtube" => ("📺", "Video", "📺 Video"),
-        _ => ("🌐", "Doc", "📝 Doc"),
-    }
+// (target_type, icon, badge, filter_plural)
+const TARGET_TYPES: &[(&str, &str, &str, &str)] = &[
+    ("book", "📚", "📚 Book", "Books"),
+    ("web", "🌐", "🌐 Web", "Web"),
+    ("youtube", "📺", "📺 Video", "Videos"),
+    ("news", "📰", "📰 News", "News"),
+    ("file", "📄", "📄 File", "Files"),
+    ("stdin", "⌨️", "⌨️ Stdin", "Stdin"),
+];
+
+pub(crate) fn target_icon(target_type: &str) -> &'static str {
+    TARGET_TYPES
+        .iter()
+        .find(|&&(k, ..)| k == target_type)
+        .map_or("📝", |&(_, icon, ..)| icon)
 }
 
-/// Returns the display emoji icon for a summary target type.
-pub fn target_icon(target_type: &str) -> &'static str {
-    target_meta(target_type).0
+pub(crate) fn target_badge(target_type: &str) -> &'static str {
+    TARGET_TYPES
+        .iter()
+        .find(|&&(k, ..)| k == target_type)
+        .map_or("📝 Doc", |&(_, _, badge, _)| badge)
 }
 
-/// Returns the formatted badge label (icon + category name) for a summary target type.
-pub fn target_badge(target_type: &str) -> &'static str {
-    target_meta(target_type).2
-}
-
-/// Generates a standalone HTML5 dashboard index of all past summaries in the library.
-pub fn render_index_html(stats: &LibraryStats, entries: &[HistoryEntry]) -> String {
-    use std::fmt::Write;
+fn render_index_html(stats: &LibraryStats, entries: &[HistoryEntry]) -> String {
     let mut cards_html = String::with_capacity(entries.len().max(1) * 640);
 
     if entries.is_empty() {
@@ -316,17 +289,21 @@ pub fn render_index_html(stats: &LibraryStats, entries: &[HistoryEntry]) -> Stri
         for entry in entries {
             let icon = target_icon(&entry.target_type);
             let slug = slugify_unique(&entry.title, entry.url.as_deref());
-            let author_line = if let Some(a) = &entry.author {
-                format!(
+            let author_line = match entry
+                .author
+                .as_deref()
+                .map(str::trim)
+                .filter(|a| !a.is_empty())
+            {
+                Some(a) => format!(
                     r#"<div class="entry-author">by {}</div>"#,
                     escape_html_cow(a)
-                )
-            } else {
-                String::new()
+                ),
+                None => String::new(),
             };
             let speed_str = entry
                 .tokens_per_second
-                .map(|s| format!("{:.1} tok/s", s))
+                .map(|s| format!("{s:.1} tok/s"))
                 .unwrap_or_else(|| "-".to_string());
             let time_str = format!("{:.1}s", entry.duration_ms as f64 / 1000.0);
             let search_data = format!(
@@ -361,228 +338,86 @@ pub fn render_index_html(stats: &LibraryStats, entries: &[HistoryEntry]) -> Stri
 "#,
                 target_type = escape_html_cow(&entry.target_type),
                 search_data = escape_html_cow(&search_data),
-                slug = slug,
-                icon = icon,
                 title = escape_html_cow(&entry.title),
                 date = escape_html_cow(&entry.created_at),
-                author_line = author_line,
                 style = escape_html_cow(&entry.style),
                 model = escape_html_cow(&entry.model),
                 words = entry.word_count,
-                speed_str = speed_str,
-                time_str = time_str
             );
         }
     }
 
-    format!(
-        r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
-  <title>srz &bull; Summary Library</title>
-  <style>
-{SHARED_THEME_CSS}
-    body {{
-      margin: 0;
-      padding: 2.5rem 1.25rem 5rem;
-      background: var(--bg);
-      color: var(--text);
+    let mut filter_buttons = String::from(
+        "      <button class=\"filter-btn active\" data-filter=\"all\">All</button>\n",
+    );
+    for &(key, icon, _, plural) in TARGET_TYPES {
+        let _ = writeln!(
+            filter_buttons,
+            "      <button class=\"filter-btn\" data-filter=\"{key}\">{icon} {plural}</button>"
+        );
+    }
+
+    const INDEX_CSS: &str = r#"    body {
+      margin: 0; padding: 2.5rem 1.25rem 5rem; background: var(--bg); color: var(--text);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
       line-height: 1.6;
-    }}
-    .container {{
-      max-width: 900px;
-      margin: 0 auto;
-    }}
-    header.hero {{
-      margin-bottom: 2rem;
-    }}
-    header.hero h1 {{
-      font-size: 2.2rem;
-      margin: 0 0 0.5rem;
-      letter-spacing: -0.02em;
-    }}
-    header.hero p {{
-      color: var(--muted);
-      margin: 0;
-      font-size: 1.05rem;
-    }}
-    .stats-bar {{
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-      gap: 1rem;
-      margin-bottom: 2rem;
-    }}
-    .stat-card {{
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 1rem 1.25rem;
-      text-align: center;
-    }}
-    .stat-val {{
-      font-size: 1.6rem;
-      font-weight: 700;
-      color: var(--text);
-      line-height: 1.2;
-    }}
-    .stat-lbl {{
-      font-size: 0.8rem;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: var(--muted);
-      margin-top: 0.25rem;
-    }}
-    .controls {{
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.75rem;
-      align-items: center;
-      margin-bottom: 1.75rem;
-    }}
-    .search-box {{
-      flex: 1;
-      min-width: 240px;
-      padding: 0.75rem 1rem;
-      border-radius: 8px;
-      border: 1px solid var(--border);
-      background: var(--surface);
-      color: var(--text);
-      font-size: 0.95rem;
-      outline: none;
-    }}
-    .filter-btn {{
-      padding: 0.55rem 0.95rem;
-      border-radius: 8px;
-      border: 1px solid var(--border);
-      background: var(--surface);
-      color: var(--muted);
-      cursor: pointer;
-      font-size: 0.88rem;
-      font-weight: 500;
-      transition: all 0.15s ease;
-    }}
-    .filter-btn.active, .filter-btn:hover {{
-      background: var(--accent);
-      color: #ffffff;
-      border-color: var(--accent);
-    }}
-    .entry-card {{
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 1.25rem 1.5rem;
-      margin-bottom: 1rem;
-      transition: background 0.15s ease;
-    }}
-    .entry-card:hover {{
-      background: var(--card-hover);
-    }}
-    .entry-header {{
-      display: flex;
-      align-items: baseline;
-      justify-content: space-between;
-      gap: 1rem;
-    }}
-    .entry-title {{
-      font-size: 1.2rem;
-      font-weight: 600;
-      color: var(--text);
-      text-decoration: none;
-    }}
-    .entry-title:hover {{
-      color: var(--accent);
-    }}
-    .entry-date {{
-      font-size: 0.85rem;
-      color: var(--muted);
-      white-space: nowrap;
-    }}
-    .entry-author {{
-      color: var(--muted);
-      font-size: 0.95rem;
-      margin: 0.2rem 0 0.6rem;
-    }}
-    .entry-badges {{
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.4rem;
-      margin-top: 0.6rem;
-      font-size: 0.8rem;
-    }}
-    .badge {{
-      background: var(--badge-bg);
-      padding: 0.2rem 0.55rem;
-      border-radius: 5px;
-      color: var(--muted);
-    }}
-    .actions {{
-      display: flex;
-      gap: 1.2rem;
-      margin-top: 0.8rem;
-    }}
-    .action-link {{
-      font-size: 0.85rem;
-      color: var(--accent);
-      text-decoration: none;
-      font-weight: 500;
-    }}
-    .action-link:hover {{
-      text-decoration: underline;
-    }}
-    .empty-state {{
-      text-align: center;
-      padding: 3rem 1rem;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      color: var(--muted);
-    }}
-  </style>
-</head>
-<body>
-  <div class="container">
+    }
+    .container { max-width: 900px; margin: 0 auto; }
+    header.hero { margin-bottom: 2rem; }
+    header.hero h1 { font-size: 2.2rem; margin: 0 0 0.5rem; letter-spacing: -0.02em; }
+    header.hero p { color: var(--muted); margin: 0; font-size: 1.05rem; }
+    .stats-bar { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+    .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.25rem; text-align: center; }
+    .stat-val { font-size: 1.6rem; font-weight: 700; color: var(--text); line-height: 1.2; }
+    .stat-lbl { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-top: 0.25rem; }
+    .controls { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; margin-bottom: 1.75rem; }
+    .search-box {
+      flex: 1; min-width: 240px; padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--surface); color: var(--text); font-size: 0.95rem; outline: none;
+    }
+    .filter-btn {
+      padding: 0.55rem 0.95rem; border-radius: 8px; border: 1px solid var(--border); background: var(--surface);
+      color: var(--muted); cursor: pointer; font-size: 0.88rem; font-weight: 500; transition: all 0.15s ease;
+    }
+    .filter-btn.active, .filter-btn:hover { background: var(--accent); color: #ffffff; border-color: var(--accent); }
+    .entry-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+      padding: 1.25rem 1.5rem; margin-bottom: 1rem; transition: background 0.15s ease;
+    }
+    .entry-card:hover { background: var(--card-hover); }
+    .entry-header { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
+    .entry-title { font-size: 1.2rem; font-weight: 600; color: var(--text); text-decoration: none; }
+    .entry-title:hover { color: var(--accent); }
+    .entry-date { font-size: 0.85rem; color: var(--muted); white-space: nowrap; }
+    .entry-author { color: var(--muted); font-size: 0.95rem; margin: 0.2rem 0 0.6rem; }
+    .entry-badges { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.6rem; font-size: 0.8rem; }
+    .badge { background: var(--badge-bg); padding: 0.2rem 0.55rem; border-radius: 5px; color: var(--muted); }
+    .actions { display: flex; gap: 1.2rem; margin-top: 0.8rem; }
+    .action-link { font-size: 0.85rem; color: var(--accent); text-decoration: none; font-weight: 500; }
+    .action-link:hover { text-decoration: underline; }
+    .empty-state {
+      text-align: center; padding: 3rem 1rem; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; color: var(--muted);
+    }"#;
+
+    let body = format!(
+        r#"  <div class="container">
     <header class="hero">
       <h1>srz &bull; Summary Library</h1>
       <p>Personal searchable reading library and distillation archive</p>
     </header>
 
     <div class="stats-bar">
-      <div class="stat-card">
-        <div class="stat-val">{total_summaries}</div>
-        <div class="stat-lbl">Total Summaries</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-val">{book_summaries}</div>
-        <div class="stat-lbl">Books</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-val">{web_summaries}</div>
-        <div class="stat-lbl">Web Articles</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-val">{file_summaries}</div>
-        <div class="stat-lbl">Files</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-val">{total_words}</div>
-        <div class="stat-lbl">Words Read</div>
-      </div>
+      <div class="stat-card"><div class="stat-val">{total_summaries}</div><div class="stat-lbl">Total Summaries</div></div>
+      <div class="stat-card"><div class="stat-val">{book_summaries}</div><div class="stat-lbl">Books</div></div>
+      <div class="stat-card"><div class="stat-val">{web_summaries}</div><div class="stat-lbl">Web Articles</div></div>
+      <div class="stat-card"><div class="stat-val">{file_summaries}</div><div class="stat-lbl">Files</div></div>
+      <div class="stat-card"><div class="stat-val">{total_words}</div><div class="stat-lbl">Words Read</div></div>
     </div>
 
     <div class="controls">
       <input type="text" id="search" class="search-box" placeholder="Search summaries by title, author, or model...">
-      <button class="filter-btn active" data-filter="all">All</button>
-      <button class="filter-btn" data-filter="book">📚 Books</button>
-      <button class="filter-btn" data-filter="web">🌐 Web</button>
-      <button class="filter-btn" data-filter="youtube">📺 Videos</button>
-      <button class="filter-btn" data-filter="news">📰 News</button>
-      <button class="filter-btn" data-filter="file">📄 Files</button>
-      <button class="filter-btn" data-filter="stdin">⌨️ Stdin</button>
-    </div>
+{filter_buttons}    </div>
 
     <div id="entries-list">
 {cards_html}    </div>
@@ -615,21 +450,22 @@ pub fn render_index_html(stats: &LibraryStats, entries: &[HistoryEntry]) -> Stri
       }});
     }});
   </script>
-</body>
-</html>
 "#,
-        SHARED_THEME_CSS = SHARED_THEME_CSS,
         total_summaries = stats.total_summaries,
         book_summaries = stats.book_summaries,
         web_summaries = stats.web_summaries,
         file_summaries = stats.file_summaries,
         total_words = stats.total_source_words,
-        cards_html = cards_html
+    );
+    render_html_page(
+        "srz &bull; Summary Library",
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';",
+        INDEX_CSS,
+        &body,
     )
 }
 
-/// Ensures the `index.html` library dashboard file is generated or updated in `views_dir`.
-pub fn ensure_index_file(
+pub(crate) fn ensure_index_file(
     views_dir: &Path,
     stats: &LibraryStats,
     entries: &[HistoryEntry],
@@ -643,216 +479,135 @@ pub fn ensure_index_file(
 
 #[cfg(test)]
 mod tests {
+    use super::super::markdown::is_safe_markdown_url;
     use super::*;
-    use crate::system::text_util::slugify;
 
     #[test]
-    fn test_is_safe_markdown_url() {
-        assert!(is_safe_markdown_url("https://example.com"));
-        assert!(is_safe_markdown_url("http://example.com/page"));
-        assert!(is_safe_markdown_url("mailto:user@example.com"));
-        assert!(is_safe_markdown_url("#anchor-heading"));
-        assert!(is_safe_markdown_url("/relative/path"));
-        assert!(is_safe_markdown_url("relative/doc.html"));
+    fn test_markdown_url_and_xss_sanitization() {
+        for safe in [
+            "https://example.com",
+            "http://example.com/page",
+            "mailto:user@example.com",
+            "#anchor",
+            "/relative/path",
+            "relative/doc.html",
+        ] {
+            assert!(is_safe_markdown_url(safe), "should allow {safe}");
+        }
+        for dangerous in [
+            "javascript:alert(1)",
+            "JAVASCRIPT:alert('xss')",
+            "vbscript:msgbox(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "file:///etc/passwd",
+            "",
+            "   ",
+            "http://example.com/\0evil",
+            "//evil.example/phish",
+            "/\\evil.example/smb",
+            "\\\\server\\share",
+        ] {
+            assert!(!is_safe_markdown_url(dangerous), "should block {dangerous}");
+        }
 
-        // Dangerous schemes must be rejected
-        assert!(!is_safe_markdown_url("javascript:alert(1)"));
-        assert!(!is_safe_markdown_url("JAVASCRIPT:alert('xss')"));
-        assert!(!is_safe_markdown_url("vbscript:msgbox(1)"));
-        assert!(!is_safe_markdown_url(
-            "data:text/html,<script>alert(1)</script>"
-        ));
-        assert!(!is_safe_markdown_url("file:///etc/passwd"));
-        assert!(!is_safe_markdown_url(""));
-        assert!(!is_safe_markdown_url("   "));
-        assert!(!is_safe_markdown_url("http://example.com/\0evil"));
-        assert!(!is_safe_markdown_url("//evil.example/phish"));
-        assert!(!is_safe_markdown_url("/\\evil.example/smb"));
-    }
-
-    #[test]
-    fn test_markdown_to_html_neutralizes_xss_schemes() {
-        let md = "[Safe](https://example.com) and [Dangerous](javascript:alert(1)) and [Data](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)";
-        let html = markdown_to_html(md);
+        let html = markdown_to_html(
+            "[Safe](https://example.com) [Bad](javascript:alert(1)) [Data](data:text/html;base64,PHNjcmlwdD4=)",
+        );
         assert!(html.contains(r#"href="https://example.com""#));
-        assert!(!html.contains("javascript:"));
-        assert!(!html.contains("data:text/html"));
+        assert!(!html.contains("javascript:") && !html.contains("data:text/html"));
         assert!(html.contains(r##"href="#"##));
     }
 
     #[test]
-    fn test_render_html_document_with_reasoning() {
-        let doc = render_html_document_with_reasoning(
-            "Test Title",
-            "# Summary\nContent here.",
-            Some("Thinking about implications..."),
-        );
-        assert!(doc.contains("Summary: Test Title"));
-        assert!(doc.contains("thought-drawer"));
-        assert!(doc.contains("Model Reasoning &amp; Analytical Trace"));
-        assert!(doc.contains("Thinking about implications..."));
-    }
-
-    #[test]
-    fn test_slugify_unique_prevents_collisions() {
-        let slug1 = slugify_unique(
-            "Getting Started",
-            Some("https://example.com/project-a/start"),
-        );
-        let slug2 = slugify_unique(
-            "Getting Started",
-            Some("https://example.com/project-b/start"),
-        );
-        assert_ne!(slug1, slug2);
-        assert!(slug1.starts_with("getting-started-"));
-        assert!(slug2.starts_with("getting-started-"));
-
-        let slug_no_key = slugify_unique("Getting Started", None);
-        assert_eq!(slug_no_key, "getting-started");
-    }
-
-    #[test]
-    fn test_markdown_to_styled_html_rendering_and_view_files() {
-        assert_eq!(
-            slugify("\"Dune\" by Frank Herbert"),
-            "dune-by-frank-herbert"
-        );
-
-        let md = "# Literary Analysis: Dune\n\n***\n\n## 1. Overview\n\n**Author:** Frank Herbert\n**Genre:** *Science Fiction*\n\n- Key item 1\n- Key item 2";
-        let html_body = markdown_to_html(md);
+    fn test_html_document_gfm_and_view_files() {
+        let md = "# Dune\n\n***\n\n## Overview\n\n*Fiction*\n\n- A\n\n| H1 | H2 |\n|---|---|\n| C1 | C2 |\n\n~~old~~";
+        let full_doc = render_html_document_with_reasoning("\"O'Reilly\"", md, Some("Trace..."));
         for expected in [
-            "<h1>Literary Analysis: Dune</h1>",
-            "<hr>",
-            "<h2>1. Overview</h2>",
-            "<strong>Author:</strong> Frank Herbert",
-            "<em>Science Fiction</em>",
-            "<ul>",
-            "<li>Key item 1</li>",
-        ] {
-            assert!(html_body.contains(expected), "missing {expected}");
-        }
-
-        let gfm_html = markdown_to_html(
-            "| Header 1 | Header 2 |\n|---|---|\n| Cell 1 | Cell 2 |\n\n~~strikethrough~~",
-        );
-        for expected in [
+            "<!DOCTYPE html>",
+            "Summary: &quot;O&#39;Reilly&quot;",
+            "img-src 'self' data:;",
+            "border-collapse: collapse;",
+            "thought-drawer",
+            "Trace...",
+            "<h1>Dune</h1>",
             "<table>",
-            "<th>Header 1</th>",
-            "<td>Cell 1</td>",
-            "<del>strikethrough</del>",
+            "<th>H1</th>",
+            "<td>C1</td>",
+            "<del>old</del>",
         ] {
-            assert!(gfm_html.contains(expected), "missing GFM {expected}");
+            assert!(full_doc.contains(expected), "missing {expected}");
         }
-
-        let full_doc = render_html_document_with_reasoning("\"Dune\"", md, None);
-        assert!(full_doc.contains("<!DOCTYPE html>"));
-        assert!(full_doc.contains("Summary: &quot;Dune&quot;"));
-        assert!(full_doc.contains("<meta http-equiv=\"Content-Security-Policy\""));
-
-        let escaped_quote = render_html_document_with_reasoning("O'Reilly", "It's a test", None);
-        assert!(escaped_quote.contains("O&#39;Reilly"));
-        assert!(escaped_quote.contains("<p>It's a test</p>"));
 
         let tmp = crate::fs_util::tempdir().unwrap();
         let rendered =
-            ensure_view_files_unique(tmp.path(), "Dune", "Initial summary", None, None, true)
-                .unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&rendered.md_path).unwrap(),
-            "Initial summary"
-        );
-
+            ensure_view_files_unique(tmp.path(), "Dune", "Init", None, None, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&rendered.md_path).unwrap(), "Init");
         let reused =
-            ensure_view_files_unique(tmp.path(), "Dune", "Updated summary", None, None, false)
-                .unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&reused.md_path).unwrap(),
-            "Initial summary"
-        );
+            ensure_view_files_unique(tmp.path(), "Dune", "New", None, None, false).unwrap();
+        assert_eq!(std::fs::read_to_string(&reused.md_path).unwrap(), "Init");
+        let overwrote =
+            ensure_view_files_unique(tmp.path(), "Dune", "New", None, None, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&overwrote.md_path).unwrap(), "New");
 
-        let overwritten =
-            ensure_view_files_unique(tmp.path(), "Dune", "Updated summary", None, None, true)
-                .unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&overwritten.md_path).unwrap(),
-            "Updated summary"
-        );
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(&overwrote.md_path).unwrap();
+            std::os::unix::fs::symlink(tmp.path().join("other"), &overwrote.md_path).unwrap();
+            assert!(ensure_view_files_unique(tmp.path(), "Dune", "X", None, None, false).is_err());
+        }
     }
 
     #[test]
-    fn test_render_index_html() {
+    fn test_target_meta_and_index_dashboard() {
+        assert_eq!(target_icon("unknown"), "📝");
+        assert_eq!(target_badge("unknown"), "📝 Doc");
+
         let stats = LibraryStats {
             total_summaries: 2,
             book_summaries: 1,
             web_summaries: 1,
-            file_summaries: 0,
-            stdin_summaries: 0,
-            news_summaries: 0,
-            video_summaries: 0,
             total_source_words: 5000,
-            total_summary_words: 600,
-            total_prompt_tokens: 3500,
-            total_completion_tokens: 800,
-            avg_tokens_per_second: 42.0,
-            max_tokens_per_second: 55.0,
-            total_duration_ms: 12000,
-            estimated_minutes_saved: 18.0,
-            reads_today: 1,
-            reads_this_week: 2,
-            reads_this_month: 2,
-            active_reading_days: 2,
-            current_streak_days: 1,
-            models: Vec::new(),
-            top_domains: Vec::new(),
+            ..LibraryStats::default()
         };
         let entries = vec![
             HistoryEntry {
                 id: 1,
-                target_type: "book".to_string(),
-                title: "Dune".to_string(),
-                author: Some("Frank Herbert".to_string()),
+                target_type: "book".into(),
+                title: "Dune".into(),
+                author: Some("Frank Herbert".into()),
                 url: None,
-                style: "concise".to_string(),
-                model: "gemma-4".to_string(),
+                style: "concise".into(),
+                model: "gemma-4".into(),
                 word_count: 3000,
                 prompt_tokens: Some(2000),
                 completion_tokens: Some(400),
                 duration_ms: 6000,
                 tokens_per_second: Some(45.0),
-                created_at: "2026-10-28 10:00".to_string(),
+                created_at: "2026-10-28 10:00".into(),
             },
             HistoryEntry {
                 id: 2,
-                target_type: "web".to_string(),
-                title: "Rust 2026 Edition".to_string(),
-                author: None,
-                url: Some("https://rust-lang.org".to_string()),
-                style: "bullets".to_string(),
-                model: "gemma-4".to_string(),
+                target_type: "web".into(),
+                title: "Rust 2026".into(),
+                author: Some("   ".into()),
+                url: Some("https://rust-lang.org".into()),
+                style: "bullets".into(),
+                model: "gemma-4".into(),
                 word_count: 2000,
-                prompt_tokens: Some(1500),
-                completion_tokens: Some(400),
+                prompt_tokens: None,
+                completion_tokens: None,
                 duration_ms: 6000,
-                tokens_per_second: Some(40.0),
-                created_at: "2026-10-28 10:15".to_string(),
+                tokens_per_second: None,
+                created_at: "2026-10-28 10:15".into(),
             },
         ];
 
         let html = render_index_html(&stats, &entries);
-        for expected in [
-            "srz &bull; Summary Library",
-            "Dune",
-            "Frank Herbert",
-            "Rust 2026 Edition",
-            "data-type=\"book\"",
-            "data-type=\"web\"",
-        ] {
-            assert!(html.contains(expected), "missing {expected}");
-        }
-
-        let expected_web_slug = slugify_unique("Rust 2026 Edition", Some("https://rust-lang.org"));
-        assert!(html.contains(&format!("href=\"./{expected_web_slug}.html\"")));
-        assert!(html.contains(&format!("href=\"./{expected_web_slug}.md\"")));
+        assert!(html.contains("Dune") && html.contains("by Frank Herbert"));
+        assert!(!html.contains("by    "));
+        assert!(html.contains("data-filter=\"book\""));
+        let web_slug = slugify_unique("Rust 2026", Some("https://rust-lang.org"));
+        assert!(html.contains(&format!("href=\"./{web_slug}.html\"")));
 
         let tmp = crate::fs_util::tempdir().unwrap();
         let index_file = ensure_index_file(tmp.path(), &stats, &entries).unwrap();

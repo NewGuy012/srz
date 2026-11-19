@@ -1,23 +1,34 @@
 use anyhow::Result;
 use crossterm::{
     cursor,
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use std::io::{Stdout, Write, stdout};
+use std::fmt::Write as _;
+use std::io::{IsTerminal, Stdout, Write, stdin, stdout};
 use std::path::PathBuf;
+use std::sync::Once;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::cache::Cache;
 use crate::render;
 use crate::storage::db::{Database, LibraryItem};
-use crate::ui::terminal::{char_display_width, wrap_terminal_text};
+use crate::ui::terminal::{char_display_width, is_bidi_control, parse_csi, wrap_terminal_text};
+
+const MAX_FILTER_QUERY_BYTES: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FocusPane {
     List,
     Preview,
+}
+
+struct PreviewCache {
+    item_id: i64,
+    width: usize,
+    wrapped: String,
 }
 
 struct AppState {
@@ -31,6 +42,7 @@ struct AppState {
     focus: FocusPane,
     status_message: Option<(String, Instant)>,
     views_dir: PathBuf,
+    preview_cache: Option<PreviewCache>,
 }
 
 impl AppState {
@@ -62,6 +74,7 @@ impl AppState {
             focus: FocusPane::List,
             status_message: None,
             views_dir,
+            preview_cache: None,
         }
     }
 
@@ -82,10 +95,31 @@ impl AppState {
         self.scroll_offset = 0;
     }
 
-    fn selected_item(&self) -> Option<&LibraryItem> {
+    fn selected_idx(&self) -> Option<usize> {
         self.selected
-            .and_then(|sel| self.filtered_indices.get(sel))
-            .and_then(|&idx| self.items.get(idx))
+            .and_then(|sel| self.filtered_indices.get(sel).copied())
+    }
+
+    fn selected_item(&self) -> Option<&LibraryItem> {
+        self.selected_idx().and_then(|idx| self.items.get(idx))
+    }
+
+    fn ensure_preview_wrapped(&mut self, item_idx: usize, width: usize) -> &str {
+        let item = &self.items[item_idx];
+        let hit = self
+            .preview_cache
+            .as_ref()
+            .is_some_and(|c| c.item_id == item.id && c.width == width);
+        if !hit {
+            let rendered = super::markdown::render_markdown_presanitized(&item.summary);
+            let wrapped = wrap_terminal_text(&rendered, width);
+            self.preview_cache = Some(PreviewCache {
+                item_id: item.id,
+                width,
+                wrapped,
+            });
+        }
+        &self.preview_cache.as_ref().unwrap().wrapped
     }
 
     fn step_selection(&mut self, forward: bool) {
@@ -111,7 +145,7 @@ impl AppState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum TuiAction {
+pub(crate) enum TuiAction {
     #[default]
     Exit,
     Ask {
@@ -119,32 +153,188 @@ pub enum TuiAction {
     },
 }
 
+static RAW_MODE_ACTIVE: AtomicBool = AtomicBool::new(false);
+static PANIC_HOOK_ONCE: Once = Once::new();
+
+fn restore_terminal() {
+    if RAW_MODE_ACTIVE.swap(false, Ordering::SeqCst) {
+        let _ = disable_raw_mode();
+        let mut out = stdout();
+        let _ = execute!(out, LeaveAlternateScreen, cursor::Show);
+    }
+}
+
 struct TerminalSessionGuard;
 
 impl TerminalSessionGuard {
     fn new() -> Result<Self> {
+        PANIC_HOOK_ONCE.call_once(|| {
+            let prev = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                restore_terminal();
+                prev(info);
+            }));
+        });
         enable_raw_mode()?;
+        RAW_MODE_ACTIVE.store(true, Ordering::SeqCst);
+        let guard = Self;
         let mut out = stdout();
         execute!(out, EnterAlternateScreen, cursor::Hide)?;
-        Ok(Self)
+        Ok(guard)
     }
 }
 
 impl Drop for TerminalSessionGuard {
     fn drop(&mut self) {
-        let mut out = stdout();
-        let _ = disable_raw_mode();
-        let _ = execute!(out, LeaveAlternateScreen, cursor::Show);
+        restore_terminal();
     }
 }
 
 /// Runs the interactive terminal UI library explorer.
-pub fn run_tui(db: &Database, cache: &Cache) -> Result<TuiAction> {
+pub(crate) fn run_tui(db: &Database, cache: &Cache) -> Result<TuiAction> {
+    if !stdin().is_terminal() || !stdout().is_terminal() {
+        anyhow::bail!("Interactive library TUI requires a terminal (TTY)");
+    }
+    let items = db.get_all_library_items()?;
     let _guard = TerminalSessionGuard::new()?;
     let mut out = stdout();
-    let items = db.get_all_library_items().unwrap_or_default();
     let mut state = AppState::new(items, cache.views_dir());
     run_loop(&mut out, &mut state, db)
+}
+
+enum KeyOutcome {
+    Continue,
+    Done(TuiAction),
+}
+
+fn handle_key_event(key: KeyEvent, state: &mut AppState, db: &Database) -> KeyOutcome {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('c') | KeyCode::Char('d') | KeyCode::Char('q') => {
+                return KeyOutcome::Done(TuiAction::Exit);
+            }
+            KeyCode::Char('u') if state.is_filtering => {
+                state.filter_query.clear();
+                state.apply_filter();
+            }
+            _ => {}
+        }
+        return KeyOutcome::Continue;
+    }
+
+    if state.is_filtering {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter => state.is_filtering = false,
+            KeyCode::Backspace => {
+                state.filter_query.pop();
+                state.apply_filter();
+            }
+            KeyCode::Char(c)
+                if !c.is_control()
+                    && !is_bidi_control(c)
+                    && state.filter_query.len() + c.len_utf8() <= MAX_FILTER_QUERY_BYTES =>
+            {
+                state.filter_query.push(c);
+                state.apply_filter();
+            }
+            _ => {}
+        }
+        return KeyOutcome::Continue;
+    }
+
+    match key.code {
+        KeyCode::Char('q') => return KeyOutcome::Done(TuiAction::Exit),
+        KeyCode::Esc => {
+            if !state.filter_query.is_empty() {
+                state.filter_query.clear();
+                state.apply_filter();
+                state.set_status("Filter cleared");
+            } else {
+                return KeyOutcome::Done(TuiAction::Exit);
+            }
+        }
+        KeyCode::Char('a') => {
+            if let Some(item) = state.selected_item() {
+                let target = item.url.clone().unwrap_or_else(|| item.title.clone());
+                return KeyOutcome::Done(TuiAction::Ask { target });
+            }
+        }
+        KeyCode::Char('/') => state.is_filtering = true,
+        KeyCode::Tab => {
+            state.focus = match state.focus {
+                FocusPane::List => FocusPane::Preview,
+                FocusPane::Preview => FocusPane::List,
+            };
+        }
+        KeyCode::Up | KeyCode::Char('k') => match state.focus {
+            FocusPane::List => state.step_selection(false),
+            FocusPane::Preview => {
+                state.scroll_offset = state.scroll_offset.saturating_sub(2);
+            }
+        },
+        KeyCode::Down | KeyCode::Char('j') => match state.focus {
+            FocusPane::List => state.step_selection(true),
+            FocusPane::Preview => {
+                state.scroll_offset = state.scroll_offset.saturating_add(2);
+            }
+        },
+        KeyCode::PageUp | KeyCode::Char('K') => {
+            state.scroll_offset = state.scroll_offset.saturating_sub(10);
+        }
+        KeyCode::PageDown | KeyCode::Char('J') => {
+            state.scroll_offset = state.scroll_offset.saturating_add(10);
+        }
+        KeyCode::Char('y') | KeyCode::Char('c') => {
+            if let Some(item) = state.selected_item() {
+                if copy_to_clipboard(&item.summary).is_ok() {
+                    state.set_status("✓ Summary copied to clipboard");
+                } else {
+                    state.set_status("⚠ Clipboard unavailable");
+                }
+            }
+        }
+        KeyCode::Enter | KeyCode::Char('b') => {
+            if let Some(item) = state.selected_item() {
+                let files = render::ensure_view_files_unique(
+                    &state.views_dir,
+                    &item.title,
+                    &item.summary,
+                    item.url.as_deref(),
+                    item.reasoning.as_deref(),
+                    false,
+                );
+                match files {
+                    Ok(files) => {
+                        if render::open_in_browser(&files.html_path).is_ok() {
+                            state.set_status(format!("✓ Opened {}", item.title));
+                        } else {
+                            state.set_status("⚠ Could not open default browser");
+                        }
+                    }
+                    Err(err) => state.set_status(format!("⚠ Failed to write view: {err}")),
+                }
+            }
+        }
+        KeyCode::Char('d') => {
+            if let Some(item) = state.selected_item() {
+                let id = item.id;
+                let title = item.title.clone();
+                if db.delete_library_item(id).is_ok() {
+                    if let Some(pos) = state.items.iter().position(|it| it.id == id) {
+                        state.items.remove(pos);
+                    }
+                    state.preview_cache = None;
+                    state.apply_filter();
+                    state.set_status(format!("✓ Deleted '{title}'"));
+                } else {
+                    state.set_status("⚠ Failed to delete item from database");
+                }
+            }
+        }
+        _ => {}
+    }
+
+    KeyOutcome::Continue
 }
 
 fn run_loop(out: &mut Stdout, state: &mut AppState, db: &Database) -> Result<TuiAction> {
@@ -170,109 +360,8 @@ fn run_loop(out: &mut Stdout, state: &mut AppState, db: &Database) -> Result<Tui
                 Event::Resize(_, _) => needs_redraw = true,
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     needs_redraw = true;
-                    if state.is_filtering {
-                        match key.code {
-                            KeyCode::Esc | KeyCode::Enter => state.is_filtering = false,
-                            KeyCode::Backspace => {
-                                state.filter_query.pop();
-                                state.apply_filter();
-                            }
-                            KeyCode::Char(c) => {
-                                state.filter_query.push(c);
-                                state.apply_filter();
-                            }
-                            _ => {}
-                        }
-                        continue;
-                    }
-
-                    match key.code {
-                        KeyCode::Char('q') => return Ok(TuiAction::Exit),
-                        KeyCode::Esc => {
-                            if !state.filter_query.is_empty() {
-                                state.filter_query.clear();
-                                state.apply_filter();
-                                state.set_status("Filter cleared");
-                            } else {
-                                return Ok(TuiAction::Exit);
-                            }
-                        }
-                        KeyCode::Char('a') => {
-                            if let Some(item) = state.selected_item() {
-                                let target = item.url.clone().unwrap_or_else(|| item.title.clone());
-                                return Ok(TuiAction::Ask { target });
-                            }
-                        }
-                        KeyCode::Char('/') => state.is_filtering = true,
-                        KeyCode::Tab => {
-                            state.focus = match state.focus {
-                                FocusPane::List => FocusPane::Preview,
-                                FocusPane::Preview => FocusPane::List,
-                            };
-                        }
-                        KeyCode::Up | KeyCode::Char('k') => match state.focus {
-                            FocusPane::List => state.step_selection(false),
-                            FocusPane::Preview => {
-                                state.scroll_offset = state.scroll_offset.saturating_sub(2);
-                            }
-                        },
-                        KeyCode::Down | KeyCode::Char('j') => match state.focus {
-                            FocusPane::List => state.step_selection(true),
-                            FocusPane::Preview => {
-                                state.scroll_offset = state.scroll_offset.saturating_add(2);
-                            }
-                        },
-                        KeyCode::PageUp | KeyCode::Char('K') => {
-                            state.scroll_offset = state.scroll_offset.saturating_sub(10);
-                        }
-                        KeyCode::PageDown | KeyCode::Char('J') => {
-                            state.scroll_offset = state.scroll_offset.saturating_add(10);
-                        }
-                        KeyCode::Char('y') | KeyCode::Char('c') => {
-                            if let Some(item) = state.selected_item() {
-                                if copy_to_clipboard(&item.summary).is_ok() {
-                                    state.set_status("✓ Summary copied to clipboard");
-                                } else {
-                                    state.set_status("⚠ Clipboard unavailable");
-                                }
-                            }
-                        }
-                        KeyCode::Enter | KeyCode::Char('b') => {
-                            if let Some(item) = state.selected_item() {
-                                let files = render::ensure_view_files_unique(
-                                    &state.views_dir,
-                                    &item.title,
-                                    &item.summary,
-                                    item.url.as_deref(),
-                                    item.reasoning.as_deref(),
-                                    false,
-                                );
-                                if let Ok(files) = files {
-                                    if render::open_in_browser(&files.html_path).is_ok() {
-                                        state.set_status(format!("✓ Opened {}", item.title));
-                                    } else {
-                                        state.set_status("⚠ Could not open default browser");
-                                    }
-                                }
-                            }
-                        }
-                        KeyCode::Char('d') => {
-                            if let Some(item) = state.selected_item() {
-                                let id = item.id;
-                                let title = item.title.clone();
-                                if db.delete_library_item(id).is_ok() {
-                                    if let Some(pos) = state.items.iter().position(|it| it.id == id)
-                                    {
-                                        state.items.remove(pos);
-                                    }
-                                    state.apply_filter();
-                                    state.set_status(format!("✓ Deleted '{}'", title));
-                                } else {
-                                    state.set_status("⚠ Failed to delete item from database");
-                                }
-                            }
-                        }
-                        _ => {}
+                    if let KeyOutcome::Done(action) = handle_key_event(key, state, db) {
+                        return Ok(action);
                     }
                 }
                 _ => {}
@@ -292,34 +381,27 @@ fn fit_padded_line(text: &str, max_cols: usize, row_bg: Option<&str>) -> String 
         out.push_str(bg);
     }
 
-    let bytes = text.as_bytes();
     let mut i = 0;
     let mut col = 0;
     let mut has_sgr = row_bg.is_some();
     let mut trunc_byte_len = out.len();
     let mut trunc_col = 0;
+    let mut trunc_has_sgr = has_sgr;
     let limit = max_cols.saturating_sub(1);
     let mut overflowed = false;
 
-    while i < bytes.len() {
-        if bytes[i] == b'\x1b' && bytes.get(i + 1) == Some(&b'[') {
-            let start = i;
-            i += 2;
-            while i < bytes.len() && !(b'@'..=b'~').contains(&bytes[i]) {
-                i += 1;
-            }
-            if i < bytes.len() {
-                if bytes[i] == b'm' {
-                    let seq = &text[start..=i];
-                    out.push_str(seq);
-                    has_sgr = seq != "\x1b[0m" && seq != "\x1b[m";
-                    if !has_sgr && let Some(bg) = row_bg {
-                        out.push_str(bg);
-                        has_sgr = true;
-                    }
+    while i < text.len() {
+        if let Some((len, is_sgr)) = parse_csi(&text[i..]) {
+            if is_sgr {
+                let seq = &text[i..i + len];
+                out.push_str(seq);
+                has_sgr = seq != "\x1b[0m" && seq != "\x1b[m";
+                if !has_sgr && let Some(bg) = row_bg {
+                    out.push_str(bg);
+                    has_sgr = true;
                 }
-                i += 1;
             }
+            i += len;
             continue;
         }
 
@@ -338,19 +420,15 @@ fn fit_padded_line(text: &str, max_cols: usize, row_bg: Option<&str>) -> String 
             col += cw;
             trunc_byte_len = out.len();
             trunc_col = col;
+            trunc_has_sgr = has_sgr;
             i += ch.len_utf8();
-        } else if col + cw <= max_cols {
-            let next_i = i + ch.len_utf8();
-            if text[next_i..].trim_end().is_empty() {
-                if ch == '\t' {
-                    out.push_str("  ");
-                } else {
-                    out.push(ch);
-                }
-                col += cw;
-                break;
+        } else if col + cw <= max_cols && text[i + ch.len_utf8()..].trim_end().is_empty() {
+            if ch == '\t' {
+                out.push_str("  ");
+            } else {
+                out.push(ch);
             }
-            overflowed = true;
+            col += cw;
             break;
         } else {
             overflowed = true;
@@ -362,6 +440,7 @@ fn fit_padded_line(text: &str, max_cols: usize, row_bg: Option<&str>) -> String 
         out.truncate(trunc_byte_len);
         out.push('…');
         col = trunc_col + 1;
+        has_sgr = trunc_has_sgr;
     }
 
     for _ in col..max_cols {
@@ -387,7 +466,6 @@ fn render_box(
     let inner_w = width - 2;
     let inner_h = height - 2;
 
-    // Top border with inline title
     let mut top = String::with_capacity(width * 2);
     top.push_str(border_ansi);
     top.push('┌');
@@ -434,11 +512,12 @@ fn render_frame(cols: usize, rows: usize, state: &mut AppState) -> String {
             } else {
                 ""
             };
-            frame.push_str(&format!(
+            let _ = write!(
+                frame,
                 "\x1b[{};1H{}",
                 r + 1,
                 fit_padded_line(msg, cols, None)
-            ));
+            );
         }
         return frame;
     }
@@ -532,7 +611,8 @@ fn render_frame(cols: usize, rows: usize, state: &mut AppState) -> String {
     let preview_inner_w = right_w.saturating_sub(2).max(1);
     let preview_inner_h = preview_h.saturating_sub(2);
 
-    let (meta_rows, preview_rows) = if let Some(item) = state.selected_item() {
+    let (meta_rows, preview_rows) = if let Some(item_idx) = state.selected_idx() {
+        let item = &state.items[item_idx];
         let source = item
             .author
             .as_deref()
@@ -560,30 +640,36 @@ fn render_frame(cols: usize, rows: usize, state: &mut AppState) -> String {
             meta_owned.iter().map(|s| (s.as_str(), None)).collect();
         let meta_box = render_box(right_w, meta_h, " Telemetry & Details ", DARK, &meta_refs);
 
-        let rendered_md = crate::ui::markdown::render_markdown(&item.summary);
-        let wrapped = wrap_terminal_text(&rendered_md, preview_inner_w);
-        let all_lines: Vec<&str> = wrapped.lines().collect();
-        let max_scroll = all_lines.len().saturating_sub(preview_inner_h);
-        let scroll = (state.scroll_offset as usize).min(max_scroll);
-        state.scroll_offset = scroll as u16;
-        let preview_slice: Vec<(&str, Option<&str>)> = all_lines
-            .iter()
-            .skip(scroll)
-            .take(preview_inner_h)
-            .map(|&l| (l, None))
-            .collect();
-        let preview_border = if state.focus == FocusPane::Preview {
-            CYAN
-        } else {
-            DARK
+        let focus = state.focus;
+        let requested_scroll = state.scroll_offset as usize;
+        let (preview_box, clamped_scroll) = {
+            let wrapped = state.ensure_preview_wrapped(item_idx, preview_inner_w);
+            let all_lines: Vec<&str> = wrapped.lines().collect();
+            let max_scroll = all_lines.len().saturating_sub(preview_inner_h);
+            let scroll = requested_scroll.min(max_scroll);
+            let preview_slice: Vec<(&str, Option<&str>)> = all_lines
+                .iter()
+                .skip(scroll)
+                .take(preview_inner_h)
+                .map(|&l| (l, None))
+                .collect();
+            let preview_border = if focus == FocusPane::Preview {
+                CYAN
+            } else {
+                DARK
+            };
+            (
+                render_box(
+                    right_w,
+                    preview_h,
+                    " Summary Content (Tab to focus, J/K to scroll) ",
+                    preview_border,
+                    &preview_slice,
+                ),
+                scroll,
+            )
         };
-        let preview_box = render_box(
-            right_w,
-            preview_h,
-            " Summary Content (Tab to focus, J/K to scroll) ",
-            preview_border,
-            &preview_slice,
-        );
+        state.scroll_offset = clamped_scroll.min(u16::MAX as usize) as u16;
         (meta_box, preview_box)
     } else {
         let meta_box = render_box(right_w, meta_h, " Telemetry & Details ", DARK, &[]);
@@ -605,48 +691,35 @@ fn render_frame(cols: usize, rows: usize, state: &mut AppState) -> String {
     let footer_line = fit_padded_line(&footer_raw, cols, None);
 
     for (idx, line) in header_rows.into_iter().enumerate() {
-        frame.push_str(&format!("\x1b[{};1H{line}", idx + 1));
+        let _ = write!(frame, "\x1b[{};1H{line}", idx + 1);
     }
     let left_all = search_rows.into_iter().chain(list_rows);
     let right_all = meta_rows.into_iter().chain(preview_rows);
     for (idx, (l, r)) in left_all.zip(right_all).enumerate() {
-        frame.push_str(&format!("\x1b[{};1H{l}{r}", idx + 4));
+        let _ = write!(frame, "\x1b[{};1H{l}{r}", idx + 4);
     }
-    frame.push_str(&format!("\x1b[{};1H{footer_line}", rows));
+    let _ = write!(frame, "\x1b[{rows};1H{footer_line}");
     frame
-}
-
-fn pipe_to_command(cmd: &str, args: &[&str], text: &str) -> std::io::Result<()> {
-    let mut child = std::process::Command::new(cmd)
-        .args(args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()?;
-    if let Some(mut stdin) = child.stdin.take()
-        && let Err(err) = stdin.write_all(text.as_bytes())
-        && err.kind() != std::io::ErrorKind::BrokenPipe
-    {
-        return Err(err);
-    }
-    let status = child.wait()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(std::io::Error::other(format!("{cmd} exited with error")))
-    }
 }
 
 fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     {
-        pipe_to_command("pbcopy", &[], text)
+        super::terminal::pipe_to_command("pbcopy", &[], None, text, false, true, true)
     }
 
     #[cfg(target_os = "windows")]
     {
         let clip = crate::fs_util::system_root_bin("clip.exe");
-        pipe_to_command(&clip.to_string_lossy(), &[], text)
+        super::terminal::pipe_to_command(
+            &clip.to_string_lossy(),
+            &[],
+            None,
+            text,
+            false,
+            true,
+            true,
+        )
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -656,7 +729,7 @@ fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
             ("xclip", &["-selection", "clipboard"][..]),
             ("xsel", &["--clipboard", "--input"][..]),
         ] {
-            if pipe_to_command(cmd, args, text).is_ok() {
+            if super::terminal::pipe_to_command(cmd, args, None, text, false, true, true).is_ok() {
                 return Ok(());
             }
         }
@@ -670,23 +743,16 @@ fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
-    fn make_item(
-        id: i64,
-        target_type: &str,
-        title: &str,
-        author: Option<&str>,
-        url: Option<&str>,
-        summary: &str,
-    ) -> LibraryItem {
+    fn make_item(id: i64, target_type: &str, title: &str, summary: &str) -> LibraryItem {
         LibraryItem {
             meta: crate::db::HistoryEntry {
                 id,
                 target_type: target_type.into(),
                 title: title.into(),
-                author: author.map(Into::into),
-                url: url.map(Into::into),
-                style: "concise".into(),
-                model: "gemma".into(),
+                author: Some("Author\u{202E}\x1b]0;t\x07".into()),
+                url: Some("https://example.com/\x1b[2Ja\nb".into()),
+                style: "concise\r\n".into(),
+                model: "gemma\x07".into(),
                 word_count: 500,
                 prompt_tokens: None,
                 completion_tokens: None,
@@ -700,71 +766,62 @@ mod tests {
     }
 
     #[test]
-    fn test_app_state_filtering_and_sanitization() {
-        let mut dirty = make_item(
+    fn test_app_state_sanitization_filter_and_ctrl_keys() {
+        let dirty = make_item(
             1,
             "web",
-            "\x1b[31mRed Title\x1b[0m\nSecond Line",
-            Some("Evil\u{202E}Author\x1b]0;Title\x07"),
-            Some("https://example.com/\x1b[2Jevil\npath"),
-            "Malicious \x1b[31;1mANSI\x1b[0m and \u{202E}BiDi summary",
+            "\x1b[31mRed Title\x1b[0m\nSecond",
+            "Malicious \x1b[31;1mANSI\x1b[0m and \u{202E}BiDi",
         );
-        dirty.style = "concise\r\n".into();
-        dirty.model = "gemma\x07".into();
-
-        let dune = make_item(
-            2,
-            "book",
-            "Dune",
-            Some("Frank Herbert"),
-            None,
-            "Spice and sandworms on Arrakis",
-        );
-
+        let dune = make_item(2, "book", "Dune", "Spice and sandworms on Arrakis");
         let mut state = AppState::new(vec![dirty, dune], PathBuf::from("/tmp"));
-        let item = &state.items[0];
-        assert_eq!(item.title, "Red Title Second Line");
-        assert!(!item.author.as_ref().unwrap().contains('\u{202E}'));
-        assert!(!item.url.as_ref().unwrap().contains('\n'));
-        assert!(!item.summary.contains("\x1b[31;1m"));
-        assert!(!item.summary.contains('\u{202E}'));
-        assert_eq!(item.style, "concise");
-        assert_eq!(item.model, "gemma");
 
-        for (query, expected) in [
-            ("arrakis", Some("Dune")),
-            ("red title", Some("Red Title Second Line")),
-            ("nonexistent", None),
-        ] {
-            state.filter_query = query.into();
+        assert_eq!(state.items[0].title, "Red Title Second");
+        assert!(!state.items[0].author.as_ref().unwrap().contains('\u{202E}'));
+        assert!(!state.items[0].url.as_ref().unwrap().contains('\n'));
+        assert!(!state.items[0].summary.contains("\x1b[31;1m"));
+        assert!(!state.items[0].summary.contains('\u{202E}'));
+        assert_eq!(state.items[0].style, "concise");
+
+        for (q, expected) in [("arrakis", Some("Dune")), ("missing", None)] {
+            state.filter_query = q.into();
             state.apply_filter();
-            assert_eq!(
-                state.selected_item().map(|i| i.title.as_str()),
-                expected,
-                "query={query}"
-            );
+            assert_eq!(state.selected_item().map(|i| i.title.as_str()), expected);
         }
+
+        // Ctrl+C / Ctrl+D exit cleanly without mutating clipboard/DB; BiDi in filter is dropped.
+        let tmp = crate::fs_util::tempdir().unwrap();
+        let db = Database::open_at(&tmp.path().join("t.redb")).unwrap();
+        for ch in ['c', 'd'] {
+            let ev = KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL);
+            assert!(matches!(
+                handle_key_event(ev, &mut state, &db),
+                KeyOutcome::Done(TuiAction::Exit)
+            ));
+        }
+        state.is_filtering = true;
+        handle_key_event(KeyEvent::from(KeyCode::Char('\u{202E}')), &mut state, &db);
+        assert_eq!(state.filter_query, "missing");
     }
 
     #[test]
-    fn test_render_frame_and_fit_padded_line() {
+    fn test_render_frame_preview_cache_and_fit_padded_line() {
         let fitted = fit_padded_line("\x1b[36mHello 世界\x1b[0m", 8, None);
-        assert!(fitted.ends_with("\x1b[0m"));
-        assert!(fitted.contains('…'));
+        assert!(fitted.ends_with("\x1b[0m") && fitted.contains('…'));
 
-        let item = make_item(
-            1,
-            "book",
-            "Dune",
-            Some("Frank Herbert"),
-            None,
-            "**Arrakis**",
-        );
+        // Reset SGR even when "\x1b[0m" occurred immediately after the truncation cutoff.
+        let cut_before_reset = fit_padded_line("\x1b[36mHello\x1b[0m world", 6, None);
+        assert!(cut_before_reset.ends_with("\x1b[0m"));
+
+        let item = make_item(1, "book", "Dune", "**Arrakis**");
         let mut state = AppState::new(vec![item], PathBuf::from("/tmp"));
         let frame = render_frame(100, 30, &mut state);
-        assert!(frame.contains("Library Explorer"));
-        assert!(frame.contains("Dune"));
-        assert!(frame.contains("Arrakis"));
+        assert!(
+            frame.contains("Library Explorer")
+                && frame.contains("Dune")
+                && frame.contains("Arrakis")
+        );
+        assert!(state.preview_cache.as_ref().is_some_and(|c| c.item_id == 1));
         assert!(render_frame(20, 10, &mut state).contains("Terminal too small"));
     }
 }
