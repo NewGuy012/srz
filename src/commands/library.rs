@@ -1,16 +1,15 @@
 use crate::cache::Cache;
+use crate::commands::{file_url, print_json};
 use crate::db::Database;
 use crate::render;
-use crate::ui::Ui;
+use crate::ui::{Ui, sanitize_terminal_text, sanitize_title};
 use anyhow::Result;
 use std::path::PathBuf;
 
-/// Displays recent summarization history.
-pub fn handle_history(db: &Database, limit: usize, as_json: bool) -> Result<()> {
+pub(crate) fn handle_history(db: &Database, limit: usize, as_json: bool) -> Result<()> {
     let entries = db.get_history(limit)?;
     if as_json {
-        println!("{}", serde_json::to_string_pretty(&entries)?);
-        return Ok(());
+        return print_json(&entries);
     }
     if entries.is_empty() {
         Ui::info("No summarization history recorded yet. Summarize a book or webpage first!");
@@ -24,10 +23,13 @@ pub fn handle_history(db: &Database, limit: usize, as_json: bool) -> Result<()> 
     for entry in &entries {
         let icon = render::target_icon(&entry.target_type);
         let author_str = render::format_author_by(entry.author.as_deref());
-        let safe_title = crate::ui::sanitize_title(&entry.title);
-        let safe_model = crate::ui::sanitize_terminal_text(&entry.model);
-
-        println!("[#{}] {} \"{}\"{}", entry.id, icon, safe_title, author_str);
+        println!(
+            "[#{}] {} \"{}\"{}",
+            entry.id,
+            icon,
+            sanitize_title(&entry.title),
+            author_str
+        );
         println!(
             "     Words: {} | Tokens: {} prompt / {} output | Speed: {:.1} tok/s | Time: {:.2}s",
             entry.word_count,
@@ -36,23 +38,21 @@ pub fn handle_history(db: &Database, limit: usize, as_json: bool) -> Result<()> 
             entry.tokens_per_second.unwrap_or(0.0),
             entry.duration_ms as f64 / 1000.0
         );
-        let safe_created = crate::ui::sanitize_title(&entry.created_at);
-        let safe_style = crate::ui::sanitize_title(&entry.style);
         println!(
             "     Date: {} | Style: {} | Model: {}\n",
-            safe_created, safe_style, safe_model
+            sanitize_title(&entry.created_at),
+            sanitize_title(&entry.style),
+            sanitize_terminal_text(&entry.model)
         );
     }
 
     Ok(())
 }
 
-/// Displays aggregate library and performance analytics.
-pub fn handle_stats(db: &Database, as_json: bool) -> Result<()> {
+pub(crate) fn handle_stats(db: &Database, as_json: bool) -> Result<()> {
     let stats = db.get_stats()?;
     if as_json {
-        println!("{}", serde_json::to_string_pretty(&stats)?);
-        return Ok(());
+        return print_json(&stats);
     }
     if stats.total_summaries == 0 {
         Ui::info("No library statistics available yet. Run a summary to begin tracking!");
@@ -73,10 +73,9 @@ pub fn handle_stats(db: &Database, as_json: bool) -> Result<()> {
     println!("  Source Words Read:   {} words", stats.total_source_words);
     if stats.estimated_minutes_saved > 0.0 {
         if stats.estimated_minutes_saved >= 60.0 {
-            let hours = stats.estimated_minutes_saved / 60.0;
             println!(
                 "  Reading Time Saved:  ~{:.1} hours (based on 225 wpm)",
-                hours
+                stats.estimated_minutes_saved / 60.0
             );
         } else {
             println!(
@@ -102,7 +101,6 @@ pub fn handle_stats(db: &Database, as_json: bool) -> Result<()> {
         stats.total_duration_ms as f64 / 1000.0
     );
 
-    // Reading Habits
     Ui::header("Reading Habits & Activity");
     println!(
         "  Activity Window:     {} today | {} this week | {} this month",
@@ -118,14 +116,12 @@ pub fn handle_stats(db: &Database, as_json: bool) -> Result<()> {
         streak_icon, stats.current_streak_days, stats.active_reading_days
     );
 
-    // Model Performance Breakdown
     if !stats.models.is_empty() {
         Ui::header("Model Throughput & Latency Breakdown");
         for m in &stats.models {
-            let safe_model = crate::ui::sanitize_terminal_text(&m.model);
             println!(
                 "  • {:<18} {:>3} runs | avg: {:>5.1} tok/s | p50: {:>5.1} tok/s | p95: {:>5.1} tok/s | avg time: {:>4.1}s",
-                safe_model,
+                sanitize_terminal_text(&m.model),
                 m.runs,
                 m.avg_tokens_per_second,
                 m.p50_tokens_per_second,
@@ -136,14 +132,14 @@ pub fn handle_stats(db: &Database, as_json: bool) -> Result<()> {
         println!();
     }
 
-    // Top Domains
     if !stats.top_domains.is_empty() {
         Ui::header("Top Reading Sources");
         for d in &stats.top_domains {
-            let safe_domain = crate::ui::sanitize_terminal_text(&d.domain);
             println!(
                 "  • {:<24} {:>3} reads ({} words)",
-                safe_domain, d.count, d.total_words
+                sanitize_terminal_text(&d.domain),
+                d.count,
+                d.total_words
             );
         }
         println!();
@@ -152,49 +148,43 @@ pub fn handle_stats(db: &Database, as_json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Searches the summarized library for matching queries.
-pub fn handle_find(db: &Database, query: &str, cache: &Cache, as_json: bool) -> Result<()> {
+pub(crate) fn handle_find(db: &Database, query: &str, cache: &Cache, as_json: bool) -> Result<()> {
     let results = db.search(query)?;
     if as_json {
-        println!("{}", serde_json::to_string_pretty(&results)?);
-        return Ok(());
+        return print_json(&results);
     }
+    let safe_query = sanitize_title(query);
     if results.is_empty() {
         Ui::info(&format!(
-            "No summaries found in library matching '{}'.",
-            query
+            "No summaries found in library matching '{safe_query}'."
         ));
         return Ok(());
     }
 
-    let safe_query = crate::ui::sanitize_title(query);
     Ui::header(&format!(
-        "Search Results for \"{}\" ({} match(es))",
-        safe_query,
+        "Search Results for \"{safe_query}\" ({} match(es))",
         results.len()
     ));
     for (i, res) in results.iter().enumerate() {
         let icon = render::target_icon(&res.target_type);
         let author_str = render::format_author_by(res.author.as_deref());
-        let safe_title = crate::ui::sanitize_title(&res.title);
-        let safe_snippet = crate::ui::sanitize_terminal_text(&res.snippet);
-
         println!(
             "[#{}] {} \"{}\"{} ({})",
             i + 1,
             icon,
-            safe_title,
+            sanitize_title(&res.title),
             author_str,
-            crate::ui::sanitize_title(&res.created_at)
+            sanitize_title(&res.created_at)
         );
+        let safe_snippet = sanitize_terminal_text(&res.snippet);
         if let Some(score) = res.score {
-            println!("     Score: {:.2} | \"{}\"", score, safe_snippet);
+            println!("     Score: {score:.2} | \"{safe_snippet}\"");
         } else {
-            println!("     \"{}\"", safe_snippet);
+            println!("     \"{safe_snippet}\"");
         }
         let view_path = cache.html_view_path_for(&res.title, res.url.as_deref());
         if view_path.exists() {
-            println!("     View: file://{}", view_path.display());
+            println!("     View: {}", file_url(&view_path));
         }
         println!();
     }
@@ -202,24 +192,22 @@ pub fn handle_find(db: &Database, query: &str, cache: &Cache, as_json: bool) -> 
     Ok(())
 }
 
-/// Generates or updates the HTML library dashboard in `views_dir`.
-pub fn update_index_dashboard(db: &Database, cache: &Cache) -> Result<PathBuf> {
+pub(crate) fn update_index_dashboard(db: &Database, cache: &Cache) -> Result<PathBuf> {
     let stats = db.get_stats()?;
     let entries = db.get_history(usize::MAX)?;
     let index_path = render::ensure_index_file(&cache.views_dir(), &stats, &entries)?;
     Ok(index_path)
 }
 
-/// Generates and optionally opens the HTML dashboard in the default browser.
-pub fn handle_index(db: &Database, cache: &Cache, open_browser: bool) -> Result<()> {
+pub(crate) fn handle_index(db: &Database, cache: &Cache, open_browser: bool) -> Result<()> {
     let index_path = update_index_dashboard(db, cache)?;
     Ui::success(&format!(
-        "Library dashboard generated: file://{}",
-        index_path.display()
+        "Library dashboard generated: {}",
+        file_url(&index_path)
     ));
     if open_browser {
         if let Err(err) = render::open_in_browser(&index_path) {
-            Ui::warn(&format!("Could not open browser: {}", err));
+            Ui::warn(&format!("Could not open browser: {err}"));
         } else {
             Ui::info("Opened library dashboard in browser.");
         }
@@ -227,27 +215,26 @@ pub fn handle_index(db: &Database, cache: &Cache, open_browser: bool) -> Result<
     Ok(())
 }
 
-/// Handles the `srz export` command.
-pub fn handle_export(
+pub(crate) fn handle_export(
     db: &Database,
     format: crate::config::ExportFormat,
     output: &std::path::Path,
 ) -> Result<()> {
+    let safe_out = sanitize_terminal_text(&output.display().to_string());
     match format {
         crate::config::ExportFormat::Markdown => {
             let count = db.export_markdown_vault(output)?;
             Ui::success(&format!(
-                "Exported {} markdown summary files to {:?}",
-                count, output
+                "Exported {count} markdown summary files to {safe_out}"
             ));
         }
         crate::config::ExportFormat::Json => {
             db.export_json(output)?;
-            Ui::success(&format!("Exported library JSON to {:?}", output));
+            Ui::success(&format!("Exported library JSON to {safe_out}"));
         }
         crate::config::ExportFormat::Csv => {
             db.export_csv(output)?;
-            Ui::success(&format!("Exported library CSV to {:?}", output));
+            Ui::success(&format!("Exported library CSV to {safe_out}"));
         }
     }
     Ok(())

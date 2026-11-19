@@ -1,14 +1,13 @@
 use crate::cache::Cache;
-use crate::cli::Cli;
-use crate::config::Config;
+use crate::commands::{init_llm, print_json};
+use crate::config::{Cli, Config, SECS_PER_DAY};
 use crate::llm::LlmClient;
-use crate::ui::Ui;
+use crate::ui::{Ui, sanitize_terminal_text, sanitize_title};
 use anyhow::Result;
 use std::path::Path;
 
-/// Lists available models reported by the local LLM endpoint (`GET /models`).
-pub async fn handle_models(args: &Cli, as_json: bool) -> Result<()> {
-    let llm = crate::commands::init_llm(args)?;
+pub(crate) async fn handle_models(args: &Cli, as_json: bool) -> Result<()> {
+    let llm = init_llm(args)?;
 
     let pb = Ui::spinner("Querying LLM server for available models...");
     let models_result = llm.list_models().await;
@@ -17,8 +16,7 @@ pub async fn handle_models(args: &Cli, as_json: bool) -> Result<()> {
     match models_result {
         Ok(models) => {
             if as_json {
-                println!("{}", serde_json::to_string_pretty(&models)?);
-                return Ok(());
+                return print_json(&models);
             }
             if models.is_empty() {
                 Ui::info(&format!(
@@ -37,15 +35,17 @@ pub async fn handle_models(args: &Cli, as_json: bool) -> Result<()> {
                 models.len()
             ));
             for m in &models {
-                let is_active = m.matches_model_id(&args.model);
-                let active_badge = if is_active { " [ACTIVE]" } else { "" };
-                let safe_id = crate::ui::sanitize_title(&m.id);
+                let active_badge = if m.matches_model_id(&args.model) {
+                    " [ACTIVE]"
+                } else {
+                    ""
+                };
                 let owner = m
                     .owned_by
                     .as_deref()
-                    .map(|o| format!(" ({})", crate::ui::sanitize_title(o)))
+                    .map(|o| format!(" ({})", sanitize_title(o)))
                     .unwrap_or_default();
-                println!("  • {}{}{}", safe_id, owner, active_badge);
+                println!("  • {}{}{}", sanitize_title(&m.id), owner, active_badge);
             }
             println!();
             Ok(())
@@ -57,16 +57,13 @@ pub async fn handle_models(args: &Cli, as_json: bool) -> Result<()> {
     }
 }
 
-/// Diagnoses LLM connectivity, redb database status, cache storage, and configuration.
-pub async fn handle_doctor(
+pub(crate) async fn handle_doctor(
     args: &Cli,
     config: &Config,
     config_path: Option<&Path>,
     cache: &Cache,
     as_json: bool,
 ) -> Result<()> {
-    // 1. LLM connectivity & latency
-    let llm_init = LlmClient::from_cli(args);
     let mut endpoint_ok = false;
     let mut latency_ms = None;
     let mut model_found = false;
@@ -74,34 +71,33 @@ pub async fn handle_doctor(
     let mut endpoint_err = None;
     let mut server_caps = None;
 
-    if let Ok(llm) = &llm_init {
-        let start = std::time::Instant::now();
-        match llm.list_models().await {
-            Ok(models) => {
-                endpoint_ok = true;
-                latency_ms = Some(start.elapsed().as_millis() as u64);
-                available_models = models.iter().map(|m| m.id.clone()).collect();
-                model_found = models.iter().any(|m| m.matches_model_id(&args.model));
-                let caps = llm.probe_server_capabilities().await;
-                cache.set_server_capabilities(&caps);
-                server_caps = Some(caps);
-            }
-            Err(e) => {
-                endpoint_err = Some(e.to_string());
+    match LlmClient::from_cli(args) {
+        Ok(llm) => {
+            let start = std::time::Instant::now();
+            match llm.list_models().await {
+                Ok(models) => {
+                    endpoint_ok = true;
+                    latency_ms = Some(start.elapsed().as_millis() as u64);
+                    available_models = models.iter().map(|m| m.id.clone()).collect();
+                    model_found = models.iter().any(|m| m.matches_model_id(&args.model));
+                    let caps = llm.probe_server_capabilities().await;
+                    if cache.dir().is_dir() {
+                        cache.set_server_capabilities(&caps);
+                    }
+                    server_caps = Some(caps);
+                }
+                Err(e) => endpoint_err = Some(format!("{e:#}")),
             }
         }
+        Err(e) => endpoint_err = Some(format!("{e:#}")),
     }
 
-    // 2. Hardware profile detection
     let hw = crate::system::hardware::HardwareProfile::detect();
-
-    // 3. redb database check (reusing any open cache handle to avoid self-locking)
     let (db_path, db_ok, db_entries_count, db_err) = diagnose_database(cache);
-
-    // 4. Cache directory check
-    let cache_dir = cache.dir().to_path_buf();
-    let cache_ok = cache_dir.exists() || crate::fs_util::create_private_dir_all(&cache_dir).is_ok();
+    let cache_dir = cache.dir();
+    let cache_ok = cache_dir.is_dir();
     let cache_stats = cache.stats();
+    let policy = cache.policy();
 
     if as_json {
         let report = serde_json::json!({
@@ -128,11 +124,12 @@ pub async fn handle_doctor(
                 "files_count": cache_stats.total_files,
                 "size_bytes": cache_stats.total_bytes,
                 "policy": {
-                    "pages_ttl_days": cache.policy().pages_ttl.as_secs() / 86400,
-                    "search_ttl_days": cache.policy().search_ttl.as_secs() / 86400,
-                    "summaries_ttl_days": cache.policy().summaries_ttl.as_secs() / 86400,
-                    "views_ttl_days": cache.policy().views_ttl.as_secs() / 86400,
-                    "max_budget_bytes": cache.policy().max_bytes,
+                    "pages_ttl_days": policy.pages_ttl.as_secs() / SECS_PER_DAY,
+                    "news_ttl_hours": policy.news_ttl.as_secs() / 3600,
+                    "search_ttl_days": policy.search_ttl.as_secs() / SECS_PER_DAY,
+                    "summaries_ttl_days": policy.summaries_ttl.as_secs() / SECS_PER_DAY,
+                    "views_ttl_days": policy.views_ttl.as_secs() / SECS_PER_DAY,
+                    "max_budget_bytes": policy.max_bytes,
                 },
             },
             "config": {
@@ -141,48 +138,46 @@ pub async fn handle_doctor(
                 "profiles_configured": config.profiles.keys().collect::<Vec<_>>(),
             }
         });
-        println!("{}", serde_json::to_string_pretty(&report)?);
-        return Ok(());
+        return print_json(&report);
     }
 
     Ui::header("srz System & LLM Health Diagnostics");
 
-    // Print Hardware Profile
     println!("Hardware:");
     print_host_device_info(hw);
     println!(
-        "  • Recommended: {} [{} {}] · {} ({})",
+        "  • Recommended: {} [{} {}] · {} ({})\n",
         hw.recommended_model,
         hw.recommended_size,
         hw.recommended_quant,
         hw.recommended_context_display,
         hw.ram_footprint
     );
-    println!();
 
-    // Print LLM status
     println!("LLM Backend:");
-    let safe_base_url = crate::ui::sanitize_terminal_text(&args.base_url);
-    let safe_model = crate::ui::sanitize_title(&args.model);
+    let safe_base_url = sanitize_terminal_text(&args.base_url);
+    let safe_model = sanitize_title(&args.model);
     if endpoint_ok {
         let latency = latency_ms.unwrap_or(0);
         let backend_info = if let Some(caps) = &server_caps {
-            let safe_kind = crate::ui::sanitize_title(&caps.backend_kind);
-            format!("{}ms latency, {}", latency, safe_kind)
+            format!(
+                "{latency}ms latency, {}",
+                sanitize_title(&caps.backend_kind)
+            )
         } else {
-            format!("{}ms latency", latency)
+            format!("{latency}ms latency")
         };
-        println!("  ✓ Reachable: {} ({})", safe_base_url, backend_info);
+        println!("  ✓ Reachable: {safe_base_url} ({backend_info})");
 
         if model_found {
-            println!("  ✓ Model: \"{}\" loaded and ready", safe_model);
+            println!("  ✓ Model: \"{safe_model}\" loaded and ready");
         } else {
-            println!("  ! Model: \"{}\" not detected on backend", safe_model);
+            println!("  ! Model: \"{safe_model}\" not detected on backend");
             if !available_models.is_empty() {
                 let safe_models: Vec<String> = available_models
                     .iter()
                     .take(5)
-                    .map(|m| crate::ui::sanitize_title(m))
+                    .map(|m| sanitize_title(m))
                     .collect();
                 let suffix = if available_models.len() > 5 {
                     format!(" (+{} more)", available_models.len() - 5)
@@ -197,79 +192,70 @@ pub async fn handle_doctor(
 
         if let Some(caps) = &server_caps {
             let ctx_label = crate::system::hardware::format_context_tokens(caps.n_ctx);
-            println!("  ✓ Context: {} ({} tokens)", ctx_label, caps.n_ctx);
-
+            println!("  ✓ Context: {ctx_label} ({} tokens)", caps.n_ctx);
             if caps.n_ctx < hw.recommended_context {
                 println!(
-                    "  ! Notice: Server context ({}) is below recommended {} for single-pass summaries",
-                    ctx_label, hw.recommended_context_display
+                    "  ! Notice: Server context ({ctx_label}) is below recommended {} for single-pass summaries",
+                    hw.recommended_context_display
                 );
             }
         }
     } else {
-        println!("  ✗ Unreachable: {}", safe_base_url);
-        let http_err = endpoint_err
-            .as_deref()
-            .map(crate::ui::sanitize_terminal_text)
-            .filter(|s| s.contains("Server returned HTTP"));
-        if let Some(err) = http_err {
-            println!("    Error: {}", err);
-        } else {
-            println!("    Ensure your local LLM runner (llama.cpp, Ollama, LM Studio) is running.");
+        println!("  ✗ Unreachable: {safe_base_url}");
+        if let Some(err) = endpoint_err.as_deref() {
+            println!("    Error: {}", sanitize_terminal_text(err));
         }
+        println!("    Ensure your local LLM runner (llama.cpp, Ollama, LM Studio) is running.");
     }
     println!();
 
-    // Print database status
     println!("Embedded Database (redb):");
+    let safe_db_path = sanitize_terminal_text(&db_path.display().to_string());
     if db_ok {
-        println!(
-            "  ✓ Healthy: {} ({} summaries)",
-            db_path.display(),
-            db_entries_count
-        );
+        println!("  ✓ Healthy: {safe_db_path} ({db_entries_count} summaries)");
     } else {
-        println!("  ✗ Cannot open database at: {}", db_path.display());
+        println!("  ✗ Cannot open database at: {safe_db_path}");
         if let Some(err) = &db_err {
-            let safe_err = crate::ui::sanitize_terminal_text(err);
-            println!("    Reason: {}", safe_err);
+            println!("    Reason: {}", sanitize_terminal_text(err));
         }
     }
     println!();
 
-    // Print Cache status
     println!("Cache & Storage:");
+    let safe_cache_dir = sanitize_terminal_text(&cache_dir.display().to_string());
     if cache_ok {
         println!(
-            "  ✓ Directory: {} ({}, {} files)",
-            cache_dir.display(),
+            "  ✓ Directory: {safe_cache_dir} ({}, {} files)",
             Cache::format_bytes(cache_stats.total_bytes),
             cache_stats.total_files
         );
         println!(
-            "  ✓ Retention: {}d pages · {}d search · {}d summaries (max {})",
-            cache.policy().pages_ttl.as_secs() / 86400,
-            cache.policy().search_ttl.as_secs() / 86400,
-            cache.policy().summaries_ttl.as_secs() / 86400,
-            Cache::format_bytes(cache.policy().max_bytes)
+            "  ✓ Retention: {}d pages · {}h news · {}d search · {}d summaries (max {})",
+            policy.pages_ttl.as_secs() / SECS_PER_DAY,
+            policy.news_ttl.as_secs() / 3600,
+            policy.search_ttl.as_secs() / SECS_PER_DAY,
+            policy.summaries_ttl.as_secs() / SECS_PER_DAY,
+            Cache::format_bytes(policy.max_bytes)
         );
     } else {
-        println!("  ✗ Inaccessible directory: {}", cache_dir.display());
+        println!("  ✗ Directory unavailable or not yet initialized: {safe_cache_dir}");
     }
     println!();
 
-    // Print Config status
     println!("Configuration:");
     if let Some(cp) = config_path {
-        println!("  ✓ Active config: {}", cp.display());
+        println!(
+            "  ✓ Active config: {}",
+            sanitize_terminal_text(&cp.display().to_string())
+        );
     } else {
         println!(
             "  • Using defaults (no config at {})",
-            Config::default_config_path().display()
+            sanitize_terminal_text(&Config::default_config_path().display().to_string())
         );
     }
     if let Some(p) = &args.profile {
-        println!("  • Active profile: {}", crate::ui::sanitize_title(p));
+        println!("  • Active profile: {}", sanitize_title(p));
     }
     println!();
 
@@ -281,15 +267,15 @@ fn diagnose_database(cache: &Cache) -> (std::path::PathBuf, bool, i64, Option<St
     let (db_ok, db_entries_count, db_err) = match cache.open_database() {
         Ok(db) => match db.get_stats() {
             Ok(stats) => (true, stats.total_summaries, None),
-            Err(e) => (false, 0, Some(format!("Failed to retrieve stats: {:#}", e))),
+            Err(e) => (false, 0, Some(format!("Failed to retrieve stats: {e:#}"))),
         },
-        Err(e) => (false, 0, Some(format!("{:#}", e))),
+        Err(e) => (false, 0, Some(format!("{e:#}"))),
     };
     (db_path, db_ok, db_entries_count, db_err)
 }
 
 fn print_host_device_info(hw: &crate::system::hardware::HardwareProfile) {
-    println!("  • Device: {}", hw.chip_name);
+    println!("  • Device: {}", sanitize_title(&hw.chip_name));
     println!(
         "  • Memory: {:.1} GB RAM ({})",
         hw.total_memory_gb,
@@ -297,15 +283,11 @@ fn print_host_device_info(hw: &crate::system::hardware::HardwareProfile) {
     );
 }
 
-/// Handles the `srz recommend` subcommand, outputting recommended model and context window
-/// based on detected host memory and hardware architecture.
-pub fn handle_recommend(as_json: bool) -> Result<()> {
+pub(crate) fn handle_recommend(as_json: bool) -> Result<()> {
     let hw = crate::system::hardware::HardwareProfile::detect();
 
     if as_json {
-        let report = hw.to_recommend_report_json();
-        println!("{}", serde_json::to_string_pretty(&report)?);
-        return Ok(());
+        return print_json(&hw.to_recommend_report_json());
     }
 
     Ui::header("srz Recommended Model & Context Length");
@@ -332,35 +314,23 @@ mod tests {
     use crate::engine::ServerCapabilities;
 
     #[test]
-    fn test_diagnose_database_reuses_open_cache_handle() {
-        let tmp = crate::fs_util::tempdir().unwrap();
-        let cache = Cache::with_dir(tmp.path().to_path_buf(), true);
-
-        // Simulate handle_doctor step 1 caching server capabilities (opens srz.db inside cache)
-        cache.set_server_capabilities(&ServerCapabilities {
-            endpoint: "http://localhost:9931/v1".to_string(),
-            model_id: "gemma-4".to_string(),
-            n_ctx: 65536,
-            backend_kind: "llama.cpp".to_string(),
-        });
-
-        let (db_path, db_ok, count, err) = diagnose_database(&cache);
-        assert_eq!(db_path, cache.db_path());
-        assert!(db_ok, "expected healthy db, got error: {:?}", err);
-        assert_eq!(count, 0);
-        assert!(err.is_none());
-    }
-
-    #[test]
-    fn test_diagnose_database_works_when_cache_disabled() {
-        let tmp = crate::fs_util::tempdir().unwrap();
-        let cache = Cache::with_dir(tmp.path().to_path_buf(), false);
-
-        let (db_path, db_ok, count, err) = diagnose_database(&cache);
-        assert_eq!(db_path, cache.db_path());
-        assert!(db_ok, "expected healthy db, got error: {:?}", err);
-        assert_eq!(count, 0);
-        assert!(err.is_none());
+    fn test_diagnose_database_reuses_handle_and_works_without_cache() {
+        for cache_enabled in [true, false] {
+            let tmp = crate::fs_util::tempdir().unwrap();
+            let cache = Cache::with_dir(tmp.path().to_path_buf(), cache_enabled);
+            if cache_enabled {
+                cache.set_server_capabilities(&ServerCapabilities {
+                    endpoint: "http://localhost:9931/v1".into(),
+                    model_id: "gemma-4".into(),
+                    n_ctx: 65536,
+                    backend_kind: "llama.cpp".into(),
+                });
+            }
+            let (db_path, db_ok, count, err) = diagnose_database(&cache);
+            assert_eq!(db_path, cache.db_path());
+            assert!(db_ok, "cache_enabled={cache_enabled}, err={err:?}");
+            assert_eq!(count, 0);
+        }
     }
 
     #[test]
@@ -372,9 +342,6 @@ mod tests {
         let (_db_path, db_ok, _count, err) = diagnose_database(&cache);
         assert!(!db_ok);
         let err_msg = err.expect("expected lock error message");
-        assert!(
-            err_msg.contains("DatabaseAlreadyOpen"),
-            "unexpected error: {err_msg}"
-        );
+        assert!(err_msg.contains("DatabaseAlreadyOpen"), "{err_msg}");
     }
 }

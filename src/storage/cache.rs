@@ -20,6 +20,8 @@ pub struct CachedSummary {
     pub title: String,
     #[serde(default)]
     pub author: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
     pub summary: String,
     #[serde(default)]
     pub word_count: usize,

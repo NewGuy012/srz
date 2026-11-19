@@ -1,18 +1,30 @@
 use crate::cache::{Cache, CachedSummary};
-use crate::cli::Cli;
-use crate::llm::{LlmClient, LlmOutput, StreamMode};
+use crate::commands::{
+    file_url, open_db_or_warn, print_json, read_line_bounded, update_index_dashboard,
+};
+use crate::config::{Cli, NewsTimeframe};
+use crate::db::NewSummaryRecord;
+use crate::engine::prompts::truncate_words_preserving_lines;
+use crate::llm::{LlmClient, LlmOutput};
+use crate::render::{
+    RenderedFiles, ensure_view_files_unique, is_html_path, open_in_browser,
+    render_html_document_with_reasoning,
+};
 use crate::scraper::{ScrapedPage, WebScraper};
-use crate::search::{BookSearcher, SearchResult};
-use crate::sources::document::DocumentLoader;
-use crate::ui::Ui;
+use crate::search::{BookSearcher, SearchResult, extract_wikipedia_synopsis, rank_candidates};
+use crate::sources::document::{DocumentLoader, MAX_FILE_BYTES, PdfExtractor};
+use crate::sources::news::GoogleNewsClient;
+use crate::sources::youtube::fetch_youtube_transcript;
+use crate::ui::{Ui, display_summary_full, sanitize_terminal_text_cow, sanitize_title};
 use anyhow::{Context, Result};
 use serde::Serialize;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal, Read, Write};
+use std::path::Path;
 
-pub const MAX_STDIN_BYTES: usize = 10 * 1024 * 1024; // 10 MB limit for standard input
+const MAX_STDIN_BYTES: usize = 10 * 1024 * 1024;
 
 #[derive(Serialize)]
-pub struct SummaryOutcome {
+pub(super) struct SummaryOutcome {
     pub title: String,
     pub author: Option<String>,
     pub url: Option<String>,
@@ -33,7 +45,7 @@ pub struct SummaryOutcome {
 }
 
 impl SummaryOutcome {
-    pub fn from_llm(
+    fn from_llm(
         target_type: &'static str,
         title: String,
         author: Option<String>,
@@ -45,7 +57,7 @@ impl SummaryOutcome {
         if let Some(warn) = &output.warning {
             Ui::warn(warn);
         }
-        let cache_key = (!output.truncated).then_some(cache_key).flatten();
+        let cache_key = cache_key.filter(|_| !output.truncated);
         Self {
             title,
             author,
@@ -65,15 +77,15 @@ impl SummaryOutcome {
         }
     }
 
-    pub fn from_cached(
+    pub(super) fn from_cached(
         target_type: &'static str,
         cached: CachedSummary,
-        url: Option<String>,
+        fallback_url: Option<String>,
     ) -> Self {
         Self {
             title: cached.title,
             author: cached.author,
-            url,
+            url: cached.url.or(fallback_url),
             target_type,
             summary: cached.summary,
             reasoning: cached.reasoning,
@@ -90,59 +102,37 @@ impl SummaryOutcome {
     }
 }
 
-pub async fn fetch_or_cache_page_with<F>(
+pub(super) async fn fetch_or_cache_page_with<F>(
     url: &str,
     cache: &Cache,
-    cache_hit_msg: &str,
-    spinner_msg: &'static str,
-    done_msg: &str,
+    status_msgs: Option<(&str, &'static str, &str)>,
     fetch_fut: F,
 ) -> Result<ScrapedPage>
 where
     F: std::future::Future<Output = Result<ScrapedPage>>,
 {
     if let Some(cached_page) = cache.get_page(url) {
-        if !cache_hit_msg.is_empty() {
-            Ui::info(cache_hit_msg);
+        if let Some((hit_msg, _, _)) = status_msgs {
+            Ui::info(hit_msg);
         }
         return Ok(cached_page);
     }
-    let page = if spinner_msg.is_empty() {
-        fetch_fut.await?
-    } else {
-        Ui::with_spinner(spinner_msg, done_msg, fetch_fut).await?
+    let page = match status_msgs {
+        Some((_, spinner_msg, done_msg)) => {
+            Ui::with_spinner(spinner_msg, done_msg, fetch_fut).await?
+        }
+        None => fetch_fut.await?,
     };
     cache.set_page(url, &page);
     Ok(page)
 }
 
-pub async fn fetch_or_cache_page(
-    url: &str,
-    scraper: &WebScraper,
-    cache: &Cache,
-    cache_hit_msg: &str,
-    spinner_msg: &'static str,
-    done_msg: &str,
-) -> Result<ScrapedPage> {
-    fetch_or_cache_page_with(
-        url,
-        cache,
-        cache_hit_msg,
-        spinner_msg,
-        done_msg,
-        scraper.scrape(url),
-    )
-    .await
-}
-
-/// Returns true if the URL points to a remote PDF file (case-insensitive, ignoring query parameters and fragments).
-pub fn is_pdf_url(url: &str) -> bool {
+pub(super) fn is_pdf_url(url: &str) -> bool {
     let clean = url.split(['?', '#']).next().unwrap_or(url);
     crate::system::text_util::ends_with_ascii_case_insensitive(clean, ".pdf")
 }
 
-/// Determines the target type label ("youtube", "file", or "web") for a given URL.
-pub fn target_type_for_url(url: &str) -> &'static str {
+pub(super) fn target_type_for_url(url: &str) -> &'static str {
     if crate::sources::youtube::extract_youtube_video_id(url).is_some() {
         "youtube"
     } else if is_pdf_url(url) {
@@ -152,19 +142,17 @@ pub fn target_type_for_url(url: &str) -> &'static str {
     }
 }
 
-/// Dispatches URL fetching according to destination type (YouTube transcript, remote PDF, or webpage scrape)
-/// and caches the resulting content.
-pub async fn fetch_url_content(
+pub(super) async fn fetch_url_content(
     url: &str,
     scraper: &WebScraper,
     cache: &Cache,
     verbose: bool,
 ) -> Result<ScrapedPage> {
-    let is_youtube = crate::sources::youtube::extract_youtube_video_id(url);
+    let video_id = crate::sources::youtube::extract_youtube_video_id(url);
     let is_pdf = is_pdf_url(url);
 
-    let (cache_msg, spinner_msg, done_msg) = if verbose {
-        if is_youtube.is_some() {
+    let status_msgs = verbose.then(|| {
+        if video_id.is_some() {
             (
                 "Loaded YouTube transcript from local cache.",
                 "Fetching YouTube video metadata and captions...",
@@ -183,39 +171,40 @@ pub async fn fetch_url_content(
                 "Webpage content scraped and normalized.",
             )
         }
-    } else {
-        ("", "", "")
-    };
+    });
 
-    if let Some(video_id) = is_youtube {
+    if let Some(vid) = video_id {
         fetch_or_cache_page_with(
             url,
             cache,
-            cache_msg,
-            spinner_msg,
-            done_msg,
-            crate::sources::youtube::fetch_youtube_transcript(scraper.client(), video_id),
+            status_msgs,
+            fetch_youtube_transcript(scraper.client(), vid),
         )
         .await
     } else if is_pdf {
-        fetch_or_cache_page_with(url, cache, cache_msg, spinner_msg, done_msg, async {
+        fetch_or_cache_page_with(url, cache, status_msgs, async {
             crate::scraper::validate_public_http_url(url)?;
             let bytes = crate::scraper::fetch_bytes_limited(
                 scraper.client().get(url),
-                crate::sources::document::MAX_FILE_BYTES as usize,
-                &format!("PDF from {}", url),
+                MAX_FILE_BYTES as usize,
+                &format!("PDF from {url}"),
             )
             .await?;
-            crate::sources::document::PdfExtractor::extract_from_bytes(&bytes, None)
+            let mut page =
+                tokio::task::spawn_blocking(move || PdfExtractor::extract_from_bytes(&bytes, None))
+                    .await
+                    .context("PDF extraction task failed")??;
+            page.url = url.to_string();
+            Ok(page)
         })
         .await
     } else {
-        fetch_or_cache_page(url, scraper, cache, cache_msg, spinner_msg, done_msg).await
+        fetch_or_cache_page_with(url, cache, status_msgs, scraper.scrape(url)).await
     }
 }
 
-/// Generates a deterministic cache key for a local file based on canonical path, size, and mtime.
-pub fn file_cache_key(path: &std::path::Path) -> Option<String> {
+/// Deterministic cache key based on canonical path, file size, and mtime.
+pub(super) fn file_cache_key(path: &Path) -> Option<String> {
     let meta = std::fs::metadata(path).ok()?;
     let mtime_ms = meta
         .modified()
@@ -232,19 +221,31 @@ pub fn file_cache_key(path: &std::path::Path) -> Option<String> {
     ))
 }
 
-/// Loads a local file using the content cache keyed by canonical path, size, and mtime.
-pub fn load_file_with_cache(
-    path: &std::path::Path,
+pub(super) fn canonical_file_url_string(path: &Path) -> String {
+    std::fs::canonicalize(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .display()
+        .to_string()
+}
+
+pub(super) async fn load_file_with_cache(
+    path: &Path,
     scraper: &WebScraper,
     cache: &Cache,
-) -> Result<(crate::scraper::ScrapedPage, Option<String>)> {
+) -> Result<(ScrapedPage, Option<String>)> {
     let file_key = file_cache_key(path);
     let doc = if let Some(ref k) = file_key
         && let Some(cached_page) = cache.get_page(k)
     {
         cached_page
     } else {
-        let loaded = crate::sources::DocumentLoader::load_file(path, scraper)?;
+        let path_owned = path.to_path_buf();
+        let scraper_owned = scraper.clone();
+        let loaded = tokio::task::spawn_blocking(move || {
+            DocumentLoader::load_file(&path_owned, &scraper_owned)
+        })
+        .await
+        .context("Document loader task failed")??;
         if let Some(ref k) = file_key {
             cache.set_page(k, &loaded);
         }
@@ -253,15 +254,15 @@ pub fn load_file_with_cache(
     Ok((doc, file_key))
 }
 
-pub async fn handle_file(
-    path: &std::path::Path,
+pub(super) async fn handle_file(
+    path: &Path,
     scraper: &WebScraper,
     llm: &LlmClient,
     cache: &Cache,
     args: &Cli,
 ) -> Result<SummaryOutcome> {
-    let path_str = path.display().to_string();
-    let (doc, file_key) = load_file_with_cache(path, scraper, cache)?;
+    let canonical_str = canonical_file_url_string(path);
+    let (doc, file_key) = load_file_with_cache(path, scraper, cache).await?;
     let title = doc.title.unwrap_or_else(|| path.display().to_string());
 
     Ui::info(&format!(
@@ -274,7 +275,7 @@ pub async fn handle_file(
     let output = llm
         .summarize_document_counted(
             &title,
-            Some(&path_str),
+            Some(&canonical_str),
             &doc.content,
             Some(doc.word_count),
             args.style,
@@ -286,42 +287,47 @@ pub async fn handle_file(
         "file",
         title,
         None,
-        Some(path_str),
+        Some(canonical_str),
         doc.word_count,
         output,
         file_key,
     ))
 }
 
-pub async fn handle_stdin(
+pub(super) async fn handle_stdin(
     scraper: &WebScraper,
     llm: &LlmClient,
     args: &Cli,
 ) -> Result<SummaryOutcome> {
-    use std::io::Read;
-    let mut raw = String::new();
-    let mut stdin_limited = io::stdin().take((MAX_STDIN_BYTES + 1) as u64);
-    stdin_limited
-        .read_to_string(&mut raw)
-        .context("Failed to read from standard input")?;
+    let scraper_owned = scraper.clone();
+    let (content, word_count, title) = tokio::task::spawn_blocking(move || -> Result<_> {
+        let mut raw = String::new();
+        io::stdin()
+            .take((MAX_STDIN_BYTES + 1) as u64)
+            .read_to_string(&mut raw)
+            .context("Failed to read from standard input")?;
 
-    if raw.len() > MAX_STDIN_BYTES {
-        anyhow::bail!(
-            "Standard input exceeded security limit of {} MB",
-            MAX_STDIN_BYTES / (1024 * 1024)
-        );
-    }
+        if raw.len() > MAX_STDIN_BYTES {
+            anyhow::bail!(
+                "Standard input exceeded security limit of {} MB",
+                MAX_STDIN_BYTES / (1024 * 1024)
+            );
+        }
+        if raw.trim().is_empty() {
+            anyhow::bail!("Standard input was empty.");
+        }
 
-    if raw.trim().is_empty() {
-        anyhow::bail!("Standard input was empty.");
-    }
+        Ok(DocumentLoader::normalize_or_plain_text(
+            &scraper_owned,
+            "stdin",
+            raw,
+            || "Standard Input".to_string(),
+        ))
+    })
+    .await
+    .context("Stdin reader task failed")??;
 
-    let (content, word_count, title) =
-        DocumentLoader::normalize_or_plain_text(scraper, "stdin", raw, || {
-            "Standard Input".to_string()
-        });
-
-    Ui::info(&format!("Read {} words from standard input", word_count));
+    Ui::info(&format!("Read {word_count} words from standard input"));
 
     let mode = args.stream_mode(&title);
     let output = llm
@@ -340,8 +346,7 @@ pub async fn handle_stdin(
     ))
 }
 
-/// Summarizes an already-fetched web page, transcript, or remote document.
-pub async fn summarize_fetched_web_page(
+pub(super) async fn summarize_fetched_web_page(
     url: &str,
     page: ScrapedPage,
     llm: &LlmClient,
@@ -378,32 +383,28 @@ pub async fn summarize_fetched_web_page(
     ))
 }
 
-pub async fn handle_news(
+pub(super) async fn handle_news(
     topic: &str,
-    timeframe: crate::cli::NewsTimeframe,
+    timeframe: NewsTimeframe,
     limit: usize,
     scraper: &WebScraper,
     llm: &LlmClient,
     cache: &Cache,
     args: &Cli,
 ) -> Result<SummaryOutcome> {
-    let title_display = format!("News: {}", topic);
-    let is_direct_feed = crate::sources::news::GoogleNewsClient::is_direct_feed(topic);
-    let search_url = crate::sources::news::GoogleNewsClient::search_url_for_topic(topic);
-
-    let news_client = crate::news::GoogleNewsClient::with_client(scraper.client().clone());
+    let title_display = format!("News: {topic}");
+    let is_direct_feed = GoogleNewsClient::is_direct_feed(topic);
+    let search_url = GoogleNewsClient::search_url_for_topic(topic);
+    let news_client = GoogleNewsClient::with_client(scraper.client().clone());
 
     if is_direct_feed {
         Ui::info(&format!(
-            "Fetching syndication feed '{}' (max articles: {})...",
-            topic, limit
+            "Fetching syndication feed '{topic}' (max articles: {limit})..."
         ));
     } else {
         Ui::info(&format!(
-            "Searching Google News for '{}' ({}, max articles: {})...",
-            topic,
-            timeframe.display_label(),
-            limit
+            "Searching Google News for '{topic}' ({}, max articles: {limit})...",
+            timeframe.display_label()
         ));
     }
 
@@ -416,9 +417,8 @@ pub async fn handle_news(
             Ui::finish_spinner(
                 &pb,
                 &format!(
-                    "Aggregated {} news article(s) on '{}' for briefing synthesis.",
-                    sources.len(),
-                    topic
+                    "Aggregated {} news article(s) on '{topic}' for briefing synthesis.",
+                    sources.len()
                 ),
             );
             sources
@@ -429,8 +429,6 @@ pub async fn handle_news(
         }
     };
 
-    // Dynamically budget words per article across all gathered sources so that
-    // the combined news digest fits proportionally into the LLM single-pass context window.
     let budget = llm.budget();
     let per_article_words = if !sources.is_empty() {
         (budget.single_pass_threshold.saturating_mul(3) / 4 / sources.len()).clamp(150, 800)
@@ -441,28 +439,20 @@ pub async fn handle_news(
     let mut digest = String::new();
     let mut total_words = 0;
     for (i, src) in sources.iter().enumerate() {
-        let trimmed_content = crate::engine::prompts::truncate_words_preserving_lines(
-            &src.content,
-            per_article_words,
-        );
-        let article_words = trimmed_content.split_whitespace().count();
-        total_words += article_words;
+        let trimmed_content = truncate_words_preserving_lines(&src.content, per_article_words);
+        total_words += trimmed_content.split_whitespace().count();
 
-        let safe_title = crate::ui::sanitize_title(&src.title);
-        let safe_publisher = crate::ui::sanitize_title(&src.source_name);
-        let safe_url = crate::ui::sanitize_title(&src.url);
         digest.push_str(&format!(
             "### Article {}: {}\n- Publisher: {}\n- URL: {}\n",
             i + 1,
-            safe_title,
-            safe_publisher,
-            safe_url
+            sanitize_title(&src.title),
+            sanitize_title(&src.source_name),
+            sanitize_title(&src.url)
         ));
         if let Some(date) = &src.pub_date {
-            let safe_date = crate::ui::sanitize_title(date);
-            digest.push_str(&format!("- Published: {}\n", safe_date));
+            digest.push_str(&format!("- Published: {}\n", sanitize_title(date)));
         }
-        digest.push_str(&format!("\n{}\n\n---\n\n", trimmed_content));
+        digest.push_str(&format!("\n{trimmed_content}\n\n---\n\n"));
     }
 
     let mode = args.stream_mode(&title_display);
@@ -482,177 +472,13 @@ pub async fn handle_news(
     ))
 }
 
-#[derive(Debug, Clone)]
-pub struct PreparedBookQuery {
-    pub title: String,
-    pub author: Option<String>,
-    pub resolved_title: String,
-    pub resolved_author: Option<String>,
-    pub work_key: Option<String>,
-    pub candidates: Vec<SearchResult>,
-}
-
-/// Resolves book metadata (Open Library) and candidates (Wikipedia / DDG) concurrently,
-/// returning structured context that can be fetched/summarized immediately once LLM is ready.
-pub async fn prepare_book_query(
-    title: &str,
-    author: Option<&str>,
-    scraper: &WebScraper,
-    cache: &Cache,
-) -> Result<PreparedBookQuery> {
-    let searcher = BookSearcher::with_client(scraper.client().clone());
-    let (resolved_title, resolved_author, work_key, candidates) =
-        resolve_book_and_candidates_concurrently(title, author, cache, &searcher).await?;
-
-    Ok(PreparedBookQuery {
-        title: title.to_string(),
-        author: author.map(|a| a.to_string()),
-        resolved_title,
-        resolved_author,
-        work_key,
-        candidates,
-    })
-}
-
-/// Summarizes a book after candidate reference discovery has completed.
-pub async fn summarize_prepared_book(
-    mut prep: PreparedBookQuery,
-    llm: &LlmClient,
-    scraper: &WebScraper,
-    cache: &Cache,
-    args: &Cli,
-) -> Result<SummaryOutcome> {
-    let saved_author = prep.author.clone().or_else(|| prep.resolved_author.clone());
-    let book_display = match saved_author.as_deref() {
-        Some(auth) => format!("\"{}\" by {}", prep.title, auth),
-        None => format!("\"{}\"", prep.title),
-    };
-
-    let mode = args.stream_mode(&book_display);
-
-    let (output, word_count, source_url) =
-        generate_prepared_book_summary(&mut prep, scraper, llm, cache, args, mode).await?;
-
-    let title_key = Cache::book_cache_title(&prep.title, prep.author.as_deref());
-    Ok(SummaryOutcome::from_llm(
-        "book",
-        book_display,
-        saved_author,
-        source_url,
-        word_count,
-        output,
-        Some(title_key),
-    ))
-}
-
-async fn resolve_book_and_candidates_concurrently(
-    query_title: &str,
-    query_author: Option<&str>,
-    cache: &Cache,
-    searcher: &BookSearcher,
-) -> Result<(String, Option<String>, Option<String>, Vec<SearchResult>)> {
-    if let Some(auth) = query_author {
-        let work_key = cache
-            .get_book_metadata(query_title, Some(auth))
-            .flatten()
-            .and_then(|meta| meta.work_key);
-        let candidates =
-            fetch_or_cache_candidates(query_title, Some(auth), cache, searcher).await?;
-        return Ok((
-            query_title.to_string(),
-            Some(auth.to_string()),
-            work_key,
-            candidates,
-        ));
-    }
-
-    // Check if metadata is already cached
-    if let Some(Some(meta)) = cache.get_book_metadata(query_title, None) {
-        if let Some(ref a) = meta.author {
-            let year_str = meta
-                .first_publish_year
-                .map(|y| format!(" ({y})"))
-                .unwrap_or_default();
-            Ui::info(&format!(
-                "Identified book: \"{}\" by {a}{year_str}",
-                meta.canonical_title
-            ));
-        }
-        let candidates = fetch_or_cache_candidates(
-            &meta.canonical_title,
-            meta.author.as_deref(),
-            cache,
-            searcher,
-        )
-        .await?;
-        return Ok((meta.canonical_title, meta.author, meta.work_key, candidates));
-    }
-
-    // Check if candidates are already cached under the query title
-    if let Some(cached_candidates) = cache.get_search_results(query_title, None) {
-        Ui::info(&format!(
-            "Loaded {} search candidate(s) from local cache.",
-            cached_candidates.len()
-        ));
-        return Ok((query_title.to_string(), None, None, cached_candidates));
-    }
-
-    // Fan-out Open Library metadata resolution AND candidate search concurrently
-    let spinner = Ui::spinner(
-        "Searching web for book synopsis & metadata (Wikipedia / DDG / Open Library)...",
-    );
-    let meta_fut = searcher.resolve_book_metadata(query_title, None);
-    let candidates_fut = searcher.search_raw_candidates(query_title, None);
-
-    let (meta_opt, mut raw_candidates) = tokio::join!(meta_fut, candidates_fut);
-
-    let (effective_title, effective_author, work_key) = if let Some(meta) = meta_opt {
-        cache.set_book_metadata(query_title, None, &Some(meta.clone()));
-        let year_str = meta
-            .first_publish_year
-            .map(|y| format!(" ({})", y))
-            .unwrap_or_default();
-        if let Some(ref a) = meta.author {
-            Ui::finish_spinner(
-                &spinner,
-                &format!(
-                    "Identified \"{}\" by {}{}",
-                    meta.canonical_title, a, year_str
-                ),
-            );
-        } else {
-            Ui::finish_spinner(
-                &spinner,
-                &format!("Identified \"{}\"", meta.canonical_title),
-            );
-        }
-        (meta.canonical_title, meta.author, meta.work_key)
-    } else {
-        if !raw_candidates.is_empty() {
-            Ui::finish_spinner(
-                &spinner,
-                &format!("Found {} search candidate(s) online.", raw_candidates.len()),
-            );
-        } else {
-            Ui::finish_spinner(&spinner, "No web results found.");
-        }
-        (query_title.to_string(), None, None)
-    };
-
-    crate::search::rank_candidates(
-        &effective_title,
-        effective_author.as_deref(),
-        &mut raw_candidates,
-    );
-    if !raw_candidates.is_empty() {
-        cache.set_search_results(
-            &effective_title,
-            effective_author.as_deref(),
-            &raw_candidates,
-        );
-    }
-
-    Ok((effective_title, effective_author, work_key, raw_candidates))
+pub(super) struct PreparedBookQuery {
+    title: String,
+    resolved_title: String,
+    resolved_author: Option<String>,
+    work_key: Option<String>,
+    candidates: Vec<SearchResult>,
+    searcher: BookSearcher,
 }
 
 async fn fetch_or_cache_candidates(
@@ -660,13 +486,13 @@ async fn fetch_or_cache_candidates(
     effective_author: Option<&str>,
     cache: &Cache,
     searcher: &BookSearcher,
-) -> Result<Vec<SearchResult>> {
-    if let Some(cached_candidates) = cache.get_search_results(effective_title, effective_author) {
+) -> Vec<SearchResult> {
+    if let Some(cached) = cache.get_search_results(effective_title, effective_author) {
         Ui::info(&format!(
             "Loaded {} search candidate(s) from local cache.",
-            cached_candidates.len()
+            cached.len()
         ));
-        return Ok(cached_candidates);
+        return cached;
     }
 
     let spinner = Ui::spinner("Searching web for book synopsis (Wikipedia / DuckDuckGo)...");
@@ -682,7 +508,95 @@ async fn fetch_or_cache_candidates(
     } else {
         Ui::finish_spinner(&spinner, "No web results found.");
     }
-    Ok(results)
+    results
+}
+
+pub(super) async fn prepare_book_query(
+    title: &str,
+    scraper: &WebScraper,
+    cache: &Cache,
+) -> PreparedBookQuery {
+    let searcher = BookSearcher::with_client(scraper.client().clone());
+
+    let (resolved_title, resolved_author, work_key, candidates) =
+        if let Some(Some(meta)) = cache.get_book_metadata(title, None) {
+            if let Some(ref a) = meta.author {
+                let year_str = meta
+                    .first_publish_year
+                    .map(|y| format!(" ({y})"))
+                    .unwrap_or_default();
+                Ui::info(&format!(
+                    "Identified book: \"{}\" by {a}{year_str}",
+                    meta.canonical_title
+                ));
+            }
+            let cands = fetch_or_cache_candidates(
+                &meta.canonical_title,
+                meta.author.as_deref(),
+                cache,
+                &searcher,
+            )
+            .await;
+            (meta.canonical_title, meta.author, meta.work_key, cands)
+        } else if let Some(cached) = cache.get_search_results(title, None) {
+            Ui::info(&format!(
+                "Loaded {} search candidate(s) from local cache.",
+                cached.len()
+            ));
+            (title.to_string(), None, None, cached)
+        } else {
+            let spinner = Ui::spinner(
+                "Searching web for book synopsis & metadata (Wikipedia / DDG / Open Library)...",
+            );
+            let (meta_opt, mut raw_candidates) = tokio::join!(
+                searcher.resolve_book_metadata(title, None),
+                searcher.search_raw_candidates(title, None)
+            );
+            let (effective_title, effective_author, work_key) = if let Some(meta) = meta_opt {
+                cache.set_book_metadata(title, None, &Some(meta.clone()));
+                let year_str = meta
+                    .first_publish_year
+                    .map(|y| format!(" ({y})"))
+                    .unwrap_or_default();
+                let done = match &meta.author {
+                    Some(a) => format!("Identified \"{}\" by {a}{year_str}", meta.canonical_title),
+                    None => format!("Identified \"{}\"", meta.canonical_title),
+                };
+                Ui::finish_spinner(&spinner, &done);
+                (meta.canonical_title, meta.author, meta.work_key)
+            } else {
+                let done = if raw_candidates.is_empty() {
+                    "No web results found.".to_string()
+                } else {
+                    format!("Found {} search candidate(s) online.", raw_candidates.len())
+                };
+                Ui::finish_spinner(&spinner, &done);
+                (title.to_string(), None, None)
+            };
+
+            rank_candidates(
+                &effective_title,
+                effective_author.as_deref(),
+                &mut raw_candidates,
+            );
+            if !raw_candidates.is_empty() {
+                cache.set_search_results(
+                    &effective_title,
+                    effective_author.as_deref(),
+                    &raw_candidates,
+                );
+            }
+            (effective_title, effective_author, work_key, raw_candidates)
+        };
+
+    PreparedBookQuery {
+        title: title.to_string(),
+        resolved_title,
+        resolved_author,
+        work_key,
+        candidates,
+        searcher,
+    }
 }
 
 fn disambiguate_candidates_if_needed(
@@ -696,31 +610,28 @@ fn disambiguate_candidates_if_needed(
 
     let top_score = ordered_candidates[0].score;
     let second_score = ordered_candidates[1].score;
-    let is_high_confidence = top_score >= 90 && (top_score - second_score) >= 30;
-    if is_high_confidence {
+    if top_score >= 90 && (top_score - second_score) >= 30 {
         return;
     }
 
     Ui::header(&format!(
         "Reference Disambiguation for \"{}\"",
-        crate::ui::sanitize_title(effective_title)
+        sanitize_title(effective_title)
     ));
     eprintln!("Multiple references found online:");
     let display_limit = ordered_candidates.len().min(4);
     for (i, cand) in ordered_candidates[..display_limit].iter().enumerate() {
         let tag = if i == 0 { " [Recommended]" } else { "" };
-        let safe_title = crate::ui::sanitize_title(&cand.title);
-        eprintln!("  [{}] {}{}", i + 1, safe_title, tag);
+        eprintln!("  [{}] {}{tag}", i + 1, sanitize_title(&cand.title));
         if let Some(snippet) = &cand.snippet {
-            let safe_snippet = crate::ui::sanitize_terminal_text(snippet);
-            eprintln!("      \"{}\"", safe_snippet);
+            eprintln!("      \"{}\"", sanitize_terminal_text_cow(snippet));
         }
     }
-    eprint!("\nSelect reference [1-{}, Enter for 1]: ", display_limit);
+    eprint!("\nSelect reference [1-{display_limit}, Enter for 1]: ");
     let _ = io::stderr().flush();
 
     let mut stdin_lock = io::stdin().lock();
-    if let Ok(input) = crate::commands::read_line_bounded(&mut stdin_lock, 256)
+    if let Ok(input) = read_line_bounded(&mut stdin_lock, 256)
         && let Ok(choice) = input.trim().parse::<usize>()
         && (1..=display_limit).contains(&choice)
     {
@@ -736,10 +647,8 @@ async fn resolve_book_reference_context(
     cache: &Cache,
     args: &Cli,
 ) -> Option<(String, String, usize)> {
-    let effective_title = prep.resolved_title.as_str();
-
     if !prep.candidates.is_empty() {
-        disambiguate_candidates_if_needed(effective_title, &mut prep.candidates, args);
+        disambiguate_candidates_if_needed(&prep.resolved_title, &mut prep.candidates, args);
 
         let mut fallback_snippet = None;
         let mut fallback_url = None;
@@ -750,40 +659,39 @@ async fn resolve_book_reference_context(
                 res.title, res.url
             ));
 
-            let page_result = fetch_or_cache_page(
+            match fetch_or_cache_page_with(
                 &res.url,
-                scraper,
                 cache,
-                "Loaded reference page from local cache.",
-                "Scraping reference page...",
-                "Reference page scraped.",
+                Some((
+                    "Loaded reference page from local cache.",
+                    "Scraping reference page...",
+                    "Reference page scraped.",
+                )),
+                scraper.scrape(&res.url),
             )
-            .await;
-
-            match page_result {
+            .await
+            {
                 Ok(page) => {
                     let (content_to_use, words_to_use) = if res.url.contains("wikipedia.org/wiki/")
-                        && let Some(synopsis) =
-                            crate::search::extract_wikipedia_synopsis(&page.content)
+                        && let Some(synopsis) = extract_wikipedia_synopsis(&page.content)
                     {
                         let wc = synopsis.split_whitespace().count();
                         Ui::info(&format!(
-                            "Extracted targeted plot synopsis: {} words (streamlined from {} full-page words)",
-                            wc, page.word_count
+                            "Extracted targeted plot synopsis: {wc} words (streamlined from {} full-page words)",
+                            page.word_count
                         ));
                         (synopsis, wc)
                     } else {
                         (page.content, page.word_count)
                     };
 
-                    Ui::info(&format!("Grounded reference text: {} words", words_to_use));
-
+                    Ui::info(&format!("Grounded reference text: {words_to_use} words"));
                     return Some((res.url.clone(), content_to_use, words_to_use));
                 }
                 Err(err) => {
                     Ui::warn(&format!(
-                        "Could not scrape {}: {}. Trying next reference...",
-                        res.url, err
+                        "Could not scrape {}: {err}. Trying next reference...",
+                        res.url
                     ));
                     if fallback_snippet.is_none()
                         && let Some(snippet) = &res.snippet
@@ -795,7 +703,6 @@ async fn resolve_book_reference_context(
             }
         }
 
-        // If scraping all candidate pages failed, try using search snippet
         if let (Some(snippet), Some(url)) = (fallback_snippet, fallback_url) {
             Ui::info("Using search snippet as grounded context...");
             let word_count = snippet.split_whitespace().count();
@@ -811,80 +718,98 @@ async fn resolve_book_reference_context(
         );
     }
 
-    // Check Open Library editorial work description fallback before parametric memory
-    if let Some(work_key) = &prep.work_key {
-        let searcher = BookSearcher::with_client(scraper.client().clone());
-        if let Some(desc) = searcher.fetch_work_description(work_key).await {
-            let wc = desc.split_whitespace().count();
-            if wc >= 30 {
-                Ui::info(&format!(
-                    "Using Open Library editorial description as grounded context ({} words)...",
-                    wc
-                ));
-                let work_url = format!(
-                    "https://openlibrary.org/{}",
-                    work_key.trim_start_matches('/')
-                );
-                return Some((work_url, desc, wc));
-            }
+    if let Some(work_key) = &prep.work_key
+        && let Some(desc) = prep.searcher.fetch_work_description(work_key).await
+    {
+        let wc = desc.split_whitespace().count();
+        if wc >= 30 {
+            Ui::info(&format!(
+                "Using Open Library editorial description as grounded context ({wc} words)..."
+            ));
+            let work_url = format!(
+                "https://openlibrary.org/{}",
+                work_key.trim().trim_start_matches('/')
+            );
+            return Some((work_url, desc, wc));
         }
     }
 
     None
 }
 
-async fn generate_prepared_book_summary(
-    prep: &mut PreparedBookQuery,
-    scraper: &WebScraper,
+pub(super) async fn summarize_prepared_book(
+    mut prep: PreparedBookQuery,
     llm: &LlmClient,
+    scraper: &WebScraper,
     cache: &Cache,
     args: &Cli,
-    mode: StreamMode<'_>,
-) -> Result<(LlmOutput, usize, Option<String>)> {
-    let reference_context = resolve_book_reference_context(prep, scraper, cache, args).await;
+) -> Result<SummaryOutcome> {
+    let author = prep.resolved_author.clone();
+    let book_display = match author.as_deref() {
+        Some(auth) => format!("\"{}\" by {auth}", prep.title),
+        None => format!("\"{}\"", prep.title),
+    };
+    let mode = args.stream_mode(&book_display);
+    let reference_context = resolve_book_reference_context(&mut prep, scraper, cache, args).await;
 
-    let effective_title = prep.resolved_title.as_str();
-    let effective_author = prep.resolved_author.as_deref().or(prep.author.as_deref());
-
-    if let Some((url, content, word_count)) = reference_context {
-        let output = llm
+    let (output, word_count, source_url) = if let Some((url, content, wc)) = reference_context {
+        let out = llm
             .summarize_book_with_context(
-                effective_title,
-                effective_author,
+                &prep.resolved_title,
+                author.as_deref(),
                 &url,
                 &content,
                 args.style,
                 mode,
             )
             .await?;
-        return Ok((output, word_count, Some(url)));
+        (out, wc, Some(url))
+    } else {
+        let out = llm
+            .summarize_book_from_memory(&prep.resolved_title, author.as_deref(), args.style, mode)
+            .await?;
+        (out, 0, None)
+    };
+
+    let title_key = Cache::book_cache_title(&prep.title, None);
+    Ok(SummaryOutcome::from_llm(
+        "book",
+        book_display,
+        author,
+        source_url,
+        word_count,
+        output,
+        Some(title_key),
+    ))
+}
+
+fn print_view_and_hint(files: Option<&RenderedFiles>, hint: Option<&str>) {
+    if let Some(f) = files {
+        Ui::success(&format!("Styled HTML view: {}", file_url(&f.html_path)));
+        Ui::success(&format!("Markdown file:    {}", file_url(&f.md_path)));
+    }
+    if let Some(h) = hint {
+        let safe = sanitize_terminal_text_cow(h);
+        if Ui::use_color() {
+            eprintln!("\n\x1b[2m{safe}\x1b[0m");
+        } else {
+            eprintln!("\n{safe}");
+        }
+    }
+}
+
+pub(super) fn present_summary_outcome(
+    outcome: SummaryOutcome,
+    args: &Cli,
+    cache: &Cache,
+) -> Result<()> {
+    if args.json {
+        return print_json(&outcome);
     }
 
-    let output = llm
-        .summarize_book_from_memory(effective_title, effective_author, args.style, mode)
-        .await?;
-    Ok((output, 0, None))
-}
-
-fn print_view_file_links(files: &crate::render::RenderedFiles) {
-    Ui::success(&format!(
-        "Styled HTML view: file://{}",
-        files.html_path.display()
-    ));
-    Ui::success(&format!(
-        "Markdown file:    file://{}",
-        files.md_path.display()
-    ));
-}
-
-/// Presents a summary outcome to the user based on CLI arguments (JSON, saved file, or terminal pager),
-/// records newly generated summaries into redb history & library, and runs opportunistic cache pruning.
-pub fn present_summary_outcome(outcome: SummaryOutcome, args: &Cli, cache: &Cache) -> Result<()> {
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&outcome)?);
-    } else if let Some(output_path) = &args.output {
-        let content = if crate::render::is_html_path(output_path) {
-            std::borrow::Cow::Owned(crate::render::render_html_document_with_reasoning(
+    if let Some(output_path) = &args.output {
+        let content = if is_html_path(output_path) {
+            std::borrow::Cow::Owned(render_html_document_with_reasoning(
                 &outcome.title,
                 &outcome.summary,
                 outcome.reasoning.as_deref(),
@@ -897,56 +822,47 @@ pub fn present_summary_outcome(outcome: SummaryOutcome, args: &Cli, cache: &Cach
 
         Ui::success(&format!(
             "Summary successfully saved to {}",
-            output_path.display()
+            sanitize_terminal_text_cow(&output_path.display().to_string())
         ));
     } else {
-        let is_tty = std::io::stdout().is_terminal();
-        let hint_ref = if !args.plain && !args.quiet {
-            outcome.hint.as_deref()
-        } else {
-            None
-        };
+        let is_tty = io::stdout().is_terminal();
+        let hint_ref = (!args.plain && !args.quiet)
+            .then_some(outcome.hint.as_deref())
+            .flatten();
 
-        // Only generate rendered HTML and Markdown view files when the user explicitly requests opening in browser (--open)
         let view_files = if args.open {
-            crate::render::ensure_view_files_unique(
+            match ensure_view_files_unique(
                 &cache.views_dir(),
                 &outcome.title,
                 &outcome.summary,
                 outcome.url.as_deref(),
                 outcome.reasoning.as_deref(),
                 !outcome.cached,
-            )
-            .ok()
+            ) {
+                Ok(files) => Some(files),
+                Err(err) => {
+                    Ui::warn(&format!("Failed to generate HTML view: {err}"));
+                    None
+                }
+            }
         } else {
             None
         };
 
         if args.open
             && let Some(ref files) = view_files
-            && let Err(err) = crate::render::open_in_browser(&files.html_path)
+            && let Err(err) = open_in_browser(&files.html_path)
         {
-            Ui::warn(&format!("Could not open browser: {}", err));
+            Ui::warn(&format!("Could not open browser: {err}"));
         }
 
         if outcome.streamed_to_stdout {
-            if is_tty {
-                if let Some(ref files) = view_files {
-                    print_view_file_links(files);
-                }
-                if let Some(hint) = hint_ref {
-                    eprintln!(
-                        "\n\x1b[2m{}\x1b[0m",
-                        crate::ui::sanitize_terminal_text_cow(hint)
-                    );
-                }
-            }
+            print_view_and_hint(view_files.as_ref(), hint_ref);
         } else {
             let view_pair = view_files
                 .as_ref()
                 .map(|f| (f.html_path.as_path(), f.md_path.as_path()));
-
-            crate::ui::display_summary_full(
+            display_summary_full(
                 &outcome.title,
                 &outcome.summary,
                 args.paging,
@@ -954,24 +870,16 @@ pub fn present_summary_outcome(outcome: SummaryOutcome, args: &Cli, cache: &Cach
                 if is_tty { view_pair } else { None },
                 if is_tty { hint_ref } else { None },
             )?;
-
-            // When output is piped (!is_tty), print view file notices and hints strictly to stderr
             if !is_tty {
-                if let Some(ref files) = view_files {
-                    print_view_file_links(files);
-                }
-                if let Some(hint) = hint_ref {
-                    eprintln!("\n{}", crate::ui::sanitize_terminal_text_cow(hint));
-                }
+                print_view_and_hint(view_files.as_ref(), hint_ref);
             }
         }
     }
 
-    // Record newly generated summaries in redb history & library (lazily opened)
     if !outcome.cached
-        && let Some(db) = crate::commands::open_db_or_warn(cache)
+        && let Some(db) = open_db_or_warn(cache)
     {
-        let record = crate::db::NewSummaryRecord {
+        let record = NewSummaryRecord {
             target_type: outcome.target_type,
             title: &outcome.title,
             author: outcome.author.as_deref(),
@@ -986,15 +894,17 @@ pub fn present_summary_outcome(outcome: SummaryOutcome, args: &Cli, cache: &Cach
             summary: &outcome.summary,
             reasoning: outcome.reasoning.as_deref(),
         };
-        let _ = db.record_summary(&record, outcome.cache_key.as_deref());
-        if args.open {
-            let _ = crate::commands::update_index_dashboard(&db, cache);
+        if let Err(err) = db.record_summary(&record, outcome.cache_key.as_deref()) {
+            Ui::warn(&format!("Failed to save summary to database: {err:#}"));
+        }
+        if args.open
+            && let Err(err) = update_index_dashboard(&db, cache)
+        {
+            Ui::warn(&format!("Failed to update library dashboard: {err:#}"));
         }
     }
 
-    // Run opportunistic maintenance off the critical path after summary presentation
     cache.maybe_auto_prune();
-
     Ok(())
 }
 
@@ -1004,23 +914,15 @@ mod tests {
 
     #[test]
     fn test_target_type_for_url() {
-        assert_eq!(
-            target_type_for_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
-            "youtube"
-        );
-        assert_eq!(
-            target_type_for_url("https://youtu.be/dQw4w9WgXcQ"),
-            "youtube"
-        );
-        assert_eq!(
-            target_type_for_url("https://example.com/paper.pdf?token=123"),
-            "file"
-        );
-        assert_eq!(
-            target_type_for_url("https://example.com/paper.PDF#page=3"),
-            "file"
-        );
-        assert_eq!(target_type_for_url("https://example.com/article"), "web");
+        for (url, expected) in [
+            ("https://www.youtube.com/watch?v=dQw4w9WgXcQ", "youtube"),
+            ("https://youtu.be/dQw4w9WgXcQ", "youtube"),
+            ("https://example.com/paper.pdf?token=123", "file"),
+            ("https://example.com/paper.PDF#page=3", "file"),
+            ("https://example.com/article", "web"),
+        ] {
+            assert_eq!(target_type_for_url(url), expected, "{url}");
+        }
     }
 
     #[tokio::test]

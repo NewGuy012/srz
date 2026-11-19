@@ -1056,6 +1056,7 @@ impl Database {
             Some(crate::storage::cache::CachedSummary {
                 title: item.meta.title,
                 author: item.meta.author,
+                url: item.meta.url,
                 summary: item.summary,
                 word_count: item.meta.word_count as usize,
                 reasoning: item.reasoning,

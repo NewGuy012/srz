@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use clap::{CommandFactory, FromArgMatches};
-use srz::commands::{dispatch_async, dispatch_sync, print_execution_error};
+use srz::commands::{execute, print_execution_error};
 use srz::config::{Cli, Config};
 use srz::ui::Ui;
 
@@ -23,18 +23,11 @@ fn run() -> Result<()> {
     if args.quiet || args.json {
         Ui::set_quiet(true);
     }
-    if args.verbose {
+    if args.verbose && !args.quiet && !args.json {
         Ui::set_verbose(true);
     }
 
-    if dispatch_sync(&args, &config, config_path.as_deref())? {
-        return Ok(());
-    }
-
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?
-        .block_on(dispatch_async(args, config, config_path))
+    execute(args, config, config_path)
 }
 
 fn main() {

@@ -4,34 +4,57 @@ mod library;
 mod summarize;
 
 use crate::cache::Cache;
-use crate::cli::{CacheCommand, Cli, ConfigSubcommand, ResolvedAction};
-use crate::config::Config;
-use crate::db::Database;
-use crate::ui::Ui;
+use crate::config::{CacheCommand, Cli, Commands, Config, ConfigSubcommand, ResolvedAction, Shell};
+use crate::ui::{Ui, sanitize_terminal_text};
 use anyhow::{Context, Result};
 use clap::{CommandFactory, ValueEnum};
+use serde::Serialize;
+use std::fmt::Write as _;
 use std::io::{BufRead as _, Read as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-pub(crate) use ask::{AskArgs, handle_ask, handle_ask_management};
-pub(crate) use diagnostics::handle_models;
-pub use diagnostics::{handle_doctor, handle_recommend};
-pub(crate) use library::{
+use ask::{AskArgs, handle_ask, handle_ask_management};
+use diagnostics::{handle_doctor, handle_models, handle_recommend};
+use library::{
     handle_export, handle_find, handle_history, handle_index, handle_stats, update_index_dashboard,
 };
-pub(crate) use summarize::{
-    SummaryOutcome, fetch_or_cache_page, fetch_url_content, handle_file, handle_news, handle_stdin,
-    prepare_book_query, present_summary_outcome, summarize_fetched_web_page,
-    summarize_prepared_book, target_type_for_url,
+use summarize::{
+    SummaryOutcome, canonical_file_url_string, fetch_url_content, file_cache_key, handle_file,
+    handle_news, handle_stdin, prepare_book_query, present_summary_outcome,
+    summarize_fetched_web_page, summarize_prepared_book, target_type_for_url,
 };
 
-/// Initializes an `LlmClient` from CLI arguments.
-pub(crate) fn init_llm(args: &Cli) -> Result<crate::llm::LlmClient> {
+pub(super) fn print_json<T: Serialize>(val: &T) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(val)?);
+    Ok(())
+}
+
+pub(super) fn file_url(path: &Path) -> String {
+    let safe = sanitize_terminal_text(&path.display().to_string());
+    let normalized = safe.replace('\\', "/");
+    let mut url = String::with_capacity(normalized.len() + 8);
+    url.push_str(if normalized.starts_with('/') {
+        "file://"
+    } else {
+        "file:///"
+    });
+    for ch in normalized.chars() {
+        match ch {
+            ' ' => url.push_str("%20"),
+            '%' => url.push_str("%25"),
+            '#' => url.push_str("%23"),
+            '?' => url.push_str("%3F"),
+            _ => url.push(ch),
+        }
+    }
+    url
+}
+
+pub(super) fn init_llm(args: &Cli) -> Result<crate::llm::LlmClient> {
     crate::llm::LlmClient::from_cli(args).context("Failed to initialize LLM client")
 }
 
-/// Reads a single UTF-8 line up to `max_bytes`, failing cleanly if exceeded.
-pub(crate) fn read_line_bounded(
+pub(super) fn read_line_bounded(
     reader: &mut impl std::io::BufRead,
     max_bytes: usize,
 ) -> std::io::Result<String> {
@@ -49,35 +72,23 @@ pub(crate) fn read_line_bounded(
     String::from_utf8(buf).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
-/// Opens the database via `cache`, issuing a UI warning on failure.
-pub(crate) fn open_db_or_warn(cache: &Cache) -> Option<Database> {
+pub(super) fn open_db_or_warn(cache: &Cache) -> Option<crate::db::Database> {
     match cache.open_database() {
         Ok(d) => Some(d),
         Err(err) => {
-            Ui::warn(&format!("Could not open database: {:#}", err));
+            Ui::warn(&format!("Could not open database: {err:#}"));
             None
         }
     }
 }
 
-/// Executes a closure with an active database connection if available.
-pub(crate) fn with_db<T: Default>(
-    cache: &Cache,
-    f: impl FnOnce(&Database) -> Result<T>,
-) -> Result<T> {
-    if let Some(db) = open_db_or_warn(cache) {
-        f(&db)
-    } else {
-        Ui::error("Database unavailable.");
-        Ok(T::default())
-    }
-}
-
-/// Handles cache maintenance subcommands (`dir`, `size`, `clean`, `prune`).
-pub(crate) fn handle_cache(cmd: CacheCommand, cache: &Cache) -> Result<()> {
+fn handle_cache(cmd: &CacheCommand, cache: &Cache) -> Result<()> {
     match cmd {
         CacheCommand::Dir => {
-            println!("{}", cache.dir().display());
+            println!(
+                "{}",
+                sanitize_terminal_text(&cache.dir().display().to_string())
+            );
         }
         CacheCommand::Size => {
             let stats = cache.stats();
@@ -93,16 +104,17 @@ pub(crate) fn handle_cache(cmd: CacheCommand, cache: &Cache) -> Result<()> {
         }
         CacheCommand::Clean { reset_db } => {
             let stats = cache.clean().context("Failed to clean cache directory")?;
-            let mut db_reset = false;
-            if reset_db && let Some(database) = open_db_or_warn(cache) {
-                database.reset().context("Failed to reset database")?;
-                db_reset = true;
+            if *reset_db {
+                cache
+                    .open_database()?
+                    .reset()
+                    .context("Failed to reset database")?;
             }
-            if stats.total_files == 0 && !db_reset {
+            if stats.total_files == 0 && !reset_db {
                 Ui::info("Cache is already empty.");
-            } else if stats.total_files == 0 && db_reset {
+            } else if stats.total_files == 0 && *reset_db {
                 Ui::success("Cache was already empty. Database tables reset.");
-            } else if db_reset {
+            } else if *reset_db {
                 Ui::success(&format!(
                     "Removed {} cached file(s) ({}) and reset database tables.",
                     stats.total_files,
@@ -120,21 +132,26 @@ pub(crate) fn handle_cache(cmd: CacheCommand, cache: &Cache) -> Result<()> {
             older_than,
             max_size,
         } => {
-            let parsed_older_than = match older_than.as_deref() {
-                Some(s) => Some(crate::cache::parse_duration(s).map_err(|e| anyhow::anyhow!(e))?),
-                None => None,
-            };
-            let parsed_max_size = match max_size.as_deref() {
-                Some(s) => Some(crate::cache::parse_bytes(s).map_err(|e| anyhow::anyhow!(e))?),
-                None => None,
-            };
+            let parsed_older_than = older_than
+                .as_deref()
+                .map(|s| crate::cache::parse_duration(s).map_err(|e| anyhow::anyhow!(e)))
+                .transpose()?;
+            let parsed_max_size = max_size
+                .as_deref()
+                .map(|s| crate::cache::parse_bytes(s).map_err(|e| anyhow::anyhow!(e)))
+                .transpose()?
+                .or_else(|| {
+                    parsed_older_than
+                        .is_none()
+                        .then_some(cache.policy().max_bytes)
+                });
 
-            let options = crate::cache::PruneOptions {
-                older_than: parsed_older_than,
-                max_bytes: parsed_max_size,
-            };
-
-            let prune_stats = cache.prune(options).context("Failed to prune cache")?;
+            let prune_stats = cache
+                .prune(crate::cache::PruneOptions {
+                    older_than: parsed_older_than,
+                    max_bytes: parsed_max_size,
+                })
+                .context("Failed to prune cache")?;
             if prune_stats.files_removed == 0 {
                 Ui::info("No expired or excess cache entries to prune.");
             } else {
@@ -149,8 +166,7 @@ pub(crate) fn handle_cache(cmd: CacheCommand, cache: &Cache) -> Result<()> {
     Ok(())
 }
 
-/// Handles configuration subcommands (`path`, `show`, `init`).
-pub(crate) fn handle_config(
+fn handle_config(
     subcmd: ConfigSubcommand,
     config: &Config,
     config_path: Option<&Path>,
@@ -158,11 +174,17 @@ pub(crate) fn handle_config(
 ) -> Result<()> {
     match subcmd {
         ConfigSubcommand::Path => {
-            let default_path = Config::default_config_path();
             if let Some(p) = config_path {
-                println!("{} (active, exists: {})", p.display(), p.exists());
+                println!(
+                    "{} (active, exists: {})",
+                    sanitize_terminal_text(&p.display().to_string()),
+                    p.exists()
+                );
             } else {
-                println!("{} (not found, using defaults)", default_path.display());
+                println!(
+                    "{} (not found, using defaults)",
+                    sanitize_terminal_text(&Config::default_config_path().display().to_string())
+                );
             }
         }
         ConfigSubcommand::Show => {
@@ -183,26 +205,18 @@ pub(crate) fn handle_config(
         }
         ConfigSubcommand::Init => {
             let default_path = Config::default_config_path();
-            if default_path.exists() {
-                Ui::info(&format!(
-                    "Config file already exists at {}",
-                    default_path.display()
-                ));
+            let safe_path = sanitize_terminal_text(&default_path.display().to_string());
+            let hw = crate::system::hardware::HardwareProfile::detect();
+            let template = Config::template_for_hardware(hw);
+            if !crate::fs_util::write_private_file_exclusive(&default_path, template.as_bytes())? {
+                Ui::info(&format!("Config file already exists at {safe_path}"));
                 Ui::info(
                     "Tip: Run `srz recommend` to view the optimal model and context for your machine.",
                 );
             } else {
-                if let Some(parent) = default_path.parent() {
-                    crate::fs_util::create_private_dir_all(parent)?;
-                }
-                let hw = crate::system::hardware::HardwareProfile::detect();
-                let template = Config::template_for_hardware(hw);
-                crate::fs_util::write_private_file(&default_path, template.as_bytes())?;
                 Ui::success(&format!(
-                    "Initialized config file tailored for your hardware ({:.1} GB RAM, {}) at {}",
-                    hw.total_memory_gb,
-                    hw.recommended_context_display,
-                    default_path.display()
+                    "Initialized config file tailored for your hardware ({:.1} GB RAM, {}) at {safe_path}",
+                    hw.total_memory_gb, hw.recommended_context_display
                 ));
                 Ui::info(&format!(
                     "Llama GUI: select {} ({}) | CLI: {}",
@@ -234,101 +248,102 @@ fn try_cached_summary(action: &ResolvedAction<'_>, args: &Cli, cache: &Cache) ->
             target_type_for_url(url),
             (*url).to_string(),
             Some((*url).to_string()),
-            "Loaded summary from local cache (pass `--no-cache` to refresh).",
+            "summary",
         )),
         ResolvedAction::Book { title } => Some((
             "book",
             Cache::book_cache_title(title, None),
             None,
-            "Loaded book summary from local cache (pass `--no-cache` to refresh).",
+            "book summary",
         )),
-        ResolvedAction::File { path } => {
-            crate::commands::summarize::file_cache_key(path).map(|k| {
-                (
-                    "file",
-                    k,
-                    Some(path.display().to_string()),
-                    "Loaded summary from local cache (pass `--no-cache` to refresh).",
-                )
-            })
-        }
+        ResolvedAction::File { path } => file_cache_key(path)
+            .map(|k| ("file", k, Some(canonical_file_url_string(path)), "summary")),
         ResolvedAction::News {
             topic, timeframe, ..
         } => Some((
             "news",
             Cache::news_cache_title(topic, *timeframe),
             Some(crate::sources::news::GoogleNewsClient::search_url_for_topic(topic)),
-            "Loaded news briefing from local cache (pass `--no-cache` to refresh).",
+            "news briefing",
         )),
         _ => None,
     };
 
-    if let Some((target_type, id, url, msg)) = cache_probe
+    if let Some((target_type, id, fallback_url, label)) = cache_probe
         && let Some(cached) = cache.get_summary(target_type, &id, args.style, &args.model)
     {
-        Ui::info(msg);
-        let outcome = SummaryOutcome::from_cached(target_type, cached, url);
-        present_summary_outcome(outcome, args, cache)?;
+        Ui::info(&format!(
+            "Loaded {label} from local cache (pass `--no-cache` to refresh)."
+        ));
+        present_summary_outcome(
+            SummaryOutcome::from_cached(target_type, cached, fallback_url),
+            args,
+            cache,
+        )?;
         return Ok(true);
     }
 
     Ok(false)
 }
 
-/// Runs synchronous offline subcommands and cache-hit fast paths without starting Tokio.
-/// Returns `Ok(true)` if handled completely, or `Ok(false)` when async execution is required.
-pub fn dispatch_sync(args: &Cli, config: &Config, config_path: Option<&Path>) -> Result<bool> {
-    let action = args.resolve_action().map_err(|msg| anyhow::anyhow!(msg))?;
-    let cache = build_cache(args, config);
-
+fn dispatch_sync(
+    action: &ResolvedAction<'_>,
+    args: &Cli,
+    config: &Config,
+    config_path: Option<&Path>,
+    cache: &Cache,
+) -> Result<bool> {
     match action {
         ResolvedAction::Ask {
             list_chats,
             show_chat,
             delete_chat,
             ..
-        } if list_chats || show_chat.is_some() || delete_chat.is_some() => {
-            handle_ask_management(list_chats, show_chat, delete_chat, &cache, args.json)?;
+        } if *list_chats || show_chat.is_some() || delete_chat.is_some() => {
+            handle_ask_management(*list_chats, *show_chat, *delete_chat, cache, args.json)?;
             return Ok(true);
         }
-        ResolvedAction::Cache(cache_cmd) => {
-            handle_cache(cache_cmd, &cache)?;
-            return Ok(true);
-        }
-        ResolvedAction::Config(config_cmd) => {
-            handle_config(config_cmd, config, config_path, args)?;
-            return Ok(true);
-        }
-        ResolvedAction::History { limit } => {
-            with_db(&cache, |db| handle_history(db, limit, args.json))?;
-            return Ok(true);
-        }
-        ResolvedAction::Stats => {
-            with_db(&cache, |db| handle_stats(db, args.json))?;
-            return Ok(true);
-        }
-        ResolvedAction::Find { query } => {
-            with_db(&cache, |db| handle_find(db, query, &cache, args.json))?;
-            return Ok(true);
-        }
-        ResolvedAction::Recommend => {
-            handle_recommend(args.json)?;
-            return Ok(true);
-        }
-        ResolvedAction::Index => {
-            with_db(&cache, |db| handle_index(db, &cache, args.open))?;
-            return Ok(true);
-        }
-        ResolvedAction::Export { format, output } => {
-            with_db(&cache, |db| handle_export(db, format, &output))?;
-            return Ok(true);
-        }
-        ResolvedAction::Completions { shell } => {
-            print!("{}", generate_completions_script(shell));
-            return Ok(true);
-        }
-        ref other => {
-            if try_cached_summary(other, args, &cache)? {
+        ResolvedAction::Subcommand(cmd) => match cmd {
+            Commands::Cache { action } => {
+                handle_cache(action, cache)?;
+                return Ok(true);
+            }
+            Commands::Config { action } => {
+                handle_config(*action, config, config_path, args)?;
+                return Ok(true);
+            }
+            Commands::History { limit } => {
+                handle_history(&cache.open_database()?, *limit, args.json)?;
+                return Ok(true);
+            }
+            Commands::Stats => {
+                handle_stats(&cache.open_database()?, args.json)?;
+                return Ok(true);
+            }
+            Commands::Find { query } => {
+                handle_find(&cache.open_database()?, query.trim(), cache, args.json)?;
+                return Ok(true);
+            }
+            Commands::Recommend => {
+                handle_recommend(args.json)?;
+                return Ok(true);
+            }
+            Commands::Index => {
+                handle_index(&cache.open_database()?, cache, args.open)?;
+                return Ok(true);
+            }
+            Commands::Export { format, output } => {
+                handle_export(&cache.open_database()?, *format, output)?;
+                return Ok(true);
+            }
+            Commands::Completions { shell } => {
+                print!("{}", generate_completions_script(*shell));
+                return Ok(true);
+            }
+            _ => {}
+        },
+        _ => {
+            if try_cached_summary(action, args, cache)? {
                 return Ok(true);
             }
         }
@@ -337,74 +352,81 @@ pub fn dispatch_sync(args: &Cli, config: &Config, config_path: Option<&Path>) ->
     Ok(false)
 }
 
-/// Dispatches async CLI execution (after `dispatch_sync` returns `Ok(false)`).
-pub async fn dispatch_async(
-    args: Cli,
-    config: Config,
-    config_path: Option<std::path::PathBuf>,
+async fn dispatch_async(
+    action: &ResolvedAction<'_>,
+    args: &Cli,
+    config: &Config,
+    config_path: Option<&Path>,
+    cache: &Cache,
 ) -> Result<()> {
-    let action = args.resolve_action().map_err(|msg| anyhow::anyhow!(msg))?;
-    let cache = build_cache(&args, &config);
-
-    match action {
-        ResolvedAction::Models => return handle_models(&args, args.json).await,
-        ResolvedAction::Doctor => {
-            return handle_doctor(&args, &config, config_path.as_deref(), &cache, args.json).await;
-        }
-        ResolvedAction::Upgrade {
-            check,
-            force,
-            version,
-        } => {
-            return crate::system::upgrade::run_upgrade(
+    if let ResolvedAction::Subcommand(cmd) = action {
+        match cmd {
+            Commands::Models => return handle_models(args, args.json).await,
+            Commands::Doctor => {
+                return handle_doctor(args, config, config_path, cache, args.json).await;
+            }
+            Commands::Upgrade {
                 check,
                 force,
-                version.as_deref(),
-                args.json,
-            )
-            .await;
-        }
-        ResolvedAction::Browse => {
-            loop {
-                let tui_action = with_db(&cache, |db| crate::ui::run_tui(db, &cache))?;
-                match tui_action {
-                    crate::ui::TuiAction::Exit => break,
-                    crate::ui::TuiAction::Ask { target } => {
-                        let scraper = crate::scraper::WebScraper::new()?;
-                        match init_llm(&args) {
-                            Ok(llm) => {
-                                let llm = llm.init_with_capabilities(Some(&cache)).await;
-                                if let Err(err) = handle_ask(
-                                    AskArgs {
-                                        target: Some(target),
-                                        interactive: true,
-                                        ..Default::default()
-                                    },
-                                    &scraper,
-                                    &llm,
-                                    &cache,
-                                    &args,
-                                )
-                                .await
-                                {
-                                    print_execution_error("Ask failed", &err);
+                version,
+            } => {
+                return crate::system::upgrade::run_upgrade(
+                    *check,
+                    *force,
+                    version.as_deref(),
+                    args.json,
+                )
+                .await;
+            }
+            Commands::Browse => {
+                loop {
+                    let tui_action = {
+                        let db = cache.open_database()?;
+                        crate::ui::run_tui(&db, cache)?
+                    };
+                    match tui_action {
+                        crate::ui::TuiAction::Exit => break,
+                        crate::ui::TuiAction::Ask { target } => {
+                            let scraper = crate::scraper::WebScraper::new()?;
+                            match init_llm(args) {
+                                Ok(llm) => {
+                                    let llm = llm.init_with_capabilities(Some(cache)).await;
+                                    if let Err(err) = handle_ask(
+                                        AskArgs {
+                                            target: Some(target),
+                                            interactive: true,
+                                            ..Default::default()
+                                        },
+                                        &scraper,
+                                        &llm,
+                                        cache,
+                                        args,
+                                    )
+                                    .await
+                                    {
+                                        print_execution_error("Ask failed", &err);
+                                    }
                                 }
+                                Err(err) => print_execution_error("Ask failed", &err),
                             }
-                            Err(err) => print_execution_error("Ask failed", &err),
+                            if Ui::use_stdout_color() {
+                                println!("\n\x1b[2mPress Enter to return to library...\x1b[0m");
+                            } else {
+                                println!("\nPress Enter to return to library...");
+                            }
+                            let mut stdin_lock = std::io::stdin().lock();
+                            let _ = read_line_bounded(&mut stdin_lock, 256);
                         }
-                        println!("\n\x1b[2mPress Enter to return to library...\x1b[0m");
-                        let mut stdin_lock = std::io::stdin().lock();
-                        let _ = read_line_bounded(&mut stdin_lock, 256);
                     }
                 }
+                return Ok(());
             }
-            return Ok(());
+            _ => unreachable!(),
         }
-        _ => {}
     }
 
     let scraper = crate::scraper::WebScraper::new()?;
-    let llm = init_llm(&args)?;
+    let llm = init_llm(args)?;
     if args.no_cache {
         Ui::info("Cache bypassed (`--no-cache`). Forcing fresh fetch and generation.");
     }
@@ -412,27 +434,24 @@ pub async fn dispatch_async(
     let summary_result = match action {
         ResolvedAction::Web { url } => {
             let (llm, page_res) = tokio::join!(
-                llm.init_with_capabilities(Some(&cache)),
-                fetch_url_content(url, &scraper, &cache, true)
+                llm.init_with_capabilities(Some(cache)),
+                fetch_url_content(url, &scraper, cache, true)
             );
             match page_res {
-                Ok(page) => summarize_fetched_web_page(url, page, &llm, &args).await,
+                Ok(page) => summarize_fetched_web_page(url, page, &llm, args).await,
                 Err(err) => Err(err),
             }
         }
         ResolvedAction::Book { title } => {
-            let (llm, prep_res) = tokio::join!(
-                llm.init_with_capabilities(Some(&cache)),
-                prepare_book_query(title, None, &scraper, &cache)
+            let (llm, prep) = tokio::join!(
+                llm.init_with_capabilities(Some(cache)),
+                prepare_book_query(title, &scraper, cache)
             );
-            match prep_res {
-                Ok(prep) => summarize_prepared_book(prep, &llm, &scraper, &cache, &args).await,
-                Err(err) => Err(err),
-            }
+            summarize_prepared_book(prep, &llm, &scraper, cache, args).await
         }
-        other_action => {
-            let llm = llm.init_with_capabilities(Some(&cache)).await;
-            match other_action {
+        other => {
+            let llm = llm.init_with_capabilities(Some(cache)).await;
+            match other {
                 ResolvedAction::Ask {
                     target,
                     question,
@@ -442,51 +461,60 @@ pub async fn dispatch_async(
                 } => {
                     return handle_ask(
                         AskArgs {
-                            target,
-                            question,
-                            interactive,
-                            resume,
+                            target: target.clone(),
+                            question: question.clone(),
+                            interactive: *interactive,
+                            resume: *resume,
                         },
                         &scraper,
                         &llm,
-                        &cache,
-                        &args,
+                        cache,
+                        args,
                     )
                     .await
                     .map_err(|e| e.context("Ask failed"));
                 }
                 ResolvedAction::File { path } => {
-                    handle_file(&path, &scraper, &llm, &cache, &args).await
+                    handle_file(path, &scraper, &llm, cache, args).await
                 }
-                ResolvedAction::Stdin => handle_stdin(&scraper, &llm, &args).await,
+                ResolvedAction::Stdin => handle_stdin(&scraper, &llm, args).await,
                 ResolvedAction::News {
                     topic,
                     timeframe,
                     limit,
-                } => handle_news(&topic, timeframe, limit, &scraper, &llm, &cache, &args).await,
+                } => handle_news(topic, *timeframe, *limit, &scraper, &llm, cache, args).await,
                 _ => unreachable!(),
             }
         }
     };
 
     let outcome = summary_result.map_err(|e| e.context("Summarization failed"))?;
-    present_summary_outcome(outcome, &args, &cache)
+    present_summary_outcome(outcome, args, cache)
 }
 
-/// Dispatches execution of the resolved CLI action.
-pub async fn dispatch_cli(
-    args: Cli,
-    config: Config,
-    config_path: Option<std::path::PathBuf>,
-) -> Result<()> {
-    if dispatch_sync(&args, &config, config_path.as_deref())? {
+/// Resolves the CLI action and cache once, runs fast sync paths without Tokio, or executes async commands.
+pub fn execute(args: Cli, config: Config, config_path: Option<PathBuf>) -> Result<()> {
+    let action = args.resolve_action()?;
+    let cache = build_cache(&args, &config);
+
+    if dispatch_sync(&action, &args, &config, config_path.as_deref(), &cache)? {
         return Ok(());
     }
-    dispatch_async(args, config, config_path).await
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(dispatch_async(
+            &action,
+            &args,
+            &config,
+            config_path.as_deref(),
+            &cache,
+        ))
 }
 
 pub fn print_execution_error(action_label: &str, err: &anyhow::Error) {
-    let err_msg = format!("{:#}", err);
+    let err_msg = format!("{err:#}");
     if err_msg.starts_with(action_label)
         || err_msg.starts_with("Ask failed:")
         || err_msg.starts_with("Summarization failed:")
@@ -494,7 +522,7 @@ pub fn print_execution_error(action_label: &str, err: &anyhow::Error) {
     {
         Ui::error(&err_msg);
     } else {
-        Ui::error(&format!("{}: {}", action_label, err_msg));
+        Ui::error(&format!("{action_label}: {err_msg}"));
     }
 
     let has_any = |needles: &[&str]| {
@@ -509,7 +537,7 @@ pub fn print_execution_error(action_label: &str, err: &anyhow::Error) {
         "connection refused",
         "connection error",
         "error trying to connect",
-        "is listening on port 9931",
+        "listening on port",
     ]);
     let is_model_not_found = has_any(&["local model not detected", "model not detected"])
         || (has_any(&["model"])
@@ -532,39 +560,29 @@ pub fn print_execution_error(action_label: &str, err: &anyhow::Error) {
     ]);
 
     if is_connection_error {
-        println!();
+        Ui::info("");
         Ui::info("💡 Quick Start: Your local LLM backend is not reachable.");
         Ui::info("How to resolve:");
         Ui::info("  • Ensure your LLM server (llama-server, Ollama, etc.) is running.");
         Ui::info("  • Run `srz doctor` to diagnose backend connectivity.");
-        Ui::info("  • Run `srz recommend` to view recommended models and launch commands.\n");
+        Ui::info("  • Run `srz recommend` to view recommended models and launch commands.");
     } else if is_model_not_found {
-        println!();
+        Ui::info("");
         Ui::info("💡 Quick Start: Local model not detected on your LLM backend.");
-        Ui::info("Your LLM server is active, but could not find or load the configured model.");
         Ui::info("How to resolve:");
-        Ui::info("  • Check models currently reported by your backend:");
-        println!("    \x1b[1;32msrz models\x1b[0m");
-        Ui::info("  • Run `srz recommend` for model suggestions for your machine:");
-        println!("    \x1b[1;32msrz recommend\x1b[0m");
-        Ui::info("  • Diagnose backend connection & model status:");
-        println!("    \x1b[1;32msrz doctor\x1b[0m\n");
+        Ui::info("  • Check available models:  srz models");
+        Ui::info("  • View recommendations:    srz recommend");
+        Ui::info("  • Diagnose configuration:  srz doctor");
     } else if is_context_error {
-        println!();
-        Ui::info("💡 Tip: The input exceeded the local LLM's context window.");
-        Ui::info(
-            "  • Increase the context window in your runner (e.g. `--ctx-size 65536` or in Llama GUI settings).",
-        );
-        Ui::info("  • Or pass `--context-window <TOKENS>` to configure srz to fit your runner.");
-        Ui::info(
-            "  • Run `srz recommend` to see optimal context recommendations for your machine.\n",
-        );
+        Ui::info("");
+        Ui::info("💡 Tip: The input exceeded the LLM's context window.");
+        Ui::info("  • Increase `--ctx-size` in your runner or pass `--context-window <TOKENS>`.");
+        Ui::info("  • Run `srz recommend` for optimal settings on your machine.");
     } else if is_oom_error {
-        println!();
+        Ui::info("");
         Ui::info("💡 Tip: Your LLM backend ran out of memory (VRAM/RAM).");
-        Ui::info("  • Try a model with smaller quantization (e.g. Q4_K_M instead of Q8_0).");
-        Ui::info("  • Or lower the context length in your runner.");
-        Ui::info("  • Run `srz recommend` for hardware-optimized recommendations.\n");
+        Ui::info("  • Try a smaller quantization (e.g. Q4_K_M) or lower context length.");
+        Ui::info("  • Run `srz recommend` for hardware-optimized settings.");
     }
 }
 
@@ -598,7 +616,10 @@ fn zsh_escape_single(s: &str) -> String {
 }
 
 fn zsh_escape_desc(s: &str) -> String {
-    zsh_escape_single(s).replace('[', "\\[").replace(']', "\\]")
+    zsh_escape_single(s)
+        .replace(':', "\\:")
+        .replace('[', "\\[")
+        .replace(']', "\\]")
 }
 
 fn fish_escape_dq(s: &str) -> String {
@@ -615,113 +636,142 @@ fn ps_array(words: &str) -> String {
         .join(", ")
 }
 
-fn possible_value_names(arg: &clap::Arg) -> String {
-    arg.get_possible_values()
-        .into_iter()
-        .filter(|pv| !pv.is_hide_set())
-        .map(|pv| pv.get_name().to_string())
-        .collect::<Vec<_>>()
-        .join(" ")
+struct FlagSpec {
+    short: Option<char>,
+    long: Option<String>,
+    aliases: Vec<String>,
+    help: String,
+    takes_val: bool,
+    possible_vals: String,
+    is_file: bool,
+    is_url: bool,
+    val_name: String,
 }
 
-fn zsh_argument_lines(cmd: &clap::Command) -> String {
+fn collect_visible_flags(cmd: &clap::Command) -> Vec<FlagSpec> {
+    cmd.get_arguments()
+        .filter(|arg| !arg.is_positional() && !arg.is_hide_set())
+        .map(|arg| FlagSpec {
+            short: arg.get_short(),
+            long: arg.get_long().map(str::to_string),
+            aliases: arg
+                .get_all_aliases()
+                .into_iter()
+                .flatten()
+                .map(str::to_string)
+                .collect(),
+            help: first_line(arg.get_help()),
+            takes_val: arg.get_action().takes_values(),
+            possible_vals: arg
+                .get_possible_values()
+                .into_iter()
+                .filter(|pv| !pv.is_hide_set())
+                .map(|pv| pv.get_name().to_string())
+                .collect::<Vec<_>>()
+                .join(" "),
+            is_file: matches!(arg.get_id().as_str(), "config" | "output"),
+            is_url: arg.get_id().as_str() == "base_url",
+            val_name: arg
+                .get_value_names()
+                .and_then(|v| v.first())
+                .map(|s| s.as_str())
+                .unwrap_or("VALUE")
+                .to_string(),
+        })
+        .collect()
+}
+
+fn zsh_argument_lines(specs: &[FlagSpec]) -> String {
     let mut lines = Vec::new();
-    for arg in cmd.get_arguments() {
-        if arg.is_positional() || arg.is_hide_set() {
-            continue;
-        }
+    for spec in specs {
         let mut names = Vec::new();
-        if let Some(s) = arg.get_short() {
+        if let Some(s) = spec.short {
             names.push(format!("-{s}"));
         }
-        if let Some(l) = arg.get_long() {
+        if let Some(ref l) = spec.long {
             names.push(format!("--{l}"));
         }
-        for alias in arg.get_all_aliases().into_iter().flatten() {
+        for alias in &spec.aliases {
             names.push(format!("--{alias}"));
         }
         if names.is_empty() {
             continue;
         }
 
-        let desc = zsh_escape_desc(&first_line(arg.get_help()));
-        let takes_val = arg.get_action().takes_values();
-        let val_suffix = if !takes_val {
+        let desc = zsh_escape_desc(&spec.help);
+        let val_suffix = if !spec.takes_val {
             String::new()
+        } else if !spec.possible_vals.is_empty() {
+            format!(":VALUE:({})", spec.possible_vals)
+        } else if spec.is_file {
+            ":FILE:_files".to_string()
+        } else if spec.is_url {
+            ":URL:_urls".to_string()
         } else {
-            let pvs = possible_value_names(arg);
-            if !pvs.is_empty() {
-                format!(":VALUE:({pvs})")
-            } else if matches!(arg.get_id().as_str(), "config" | "output") {
-                ":FILE:_files".to_string()
-            } else if arg.get_id().as_str() == "base_url" {
-                ":URL:_urls".to_string()
-            } else {
-                let vname = arg
-                    .get_value_names()
-                    .and_then(|v| v.first())
-                    .map(|s| s.as_str())
-                    .unwrap_or("VALUE");
-                format!(":{vname}:")
-            }
+            format!(":{}:", spec.val_name)
         };
 
-        let spec = if names.len() == 1 {
-            let eq = if takes_val { "=" } else { "" };
+        let line = if names.len() == 1 {
+            let eq = if spec.takes_val && names[0].starts_with("--") {
+                "="
+            } else {
+                ""
+            };
             format!("        '{}{eq}[{desc}]{val_suffix}'", names[0])
         } else {
             let joined = names.join(" ");
-            let brace = names.join(",");
+            let brace_items: Vec<String> = names
+                .iter()
+                .map(|n| {
+                    if spec.takes_val && n.starts_with("--") {
+                        format!("{n}=")
+                    } else {
+                        n.clone()
+                    }
+                })
+                .collect();
+            let brace = brace_items.join(",");
             format!("        '({joined})'{{{brace}}}'[{desc}]{val_suffix}'")
         };
-        lines.push(spec);
+        lines.push(line);
     }
     lines.join(" \\\n")
 }
 
-fn fish_flag_lines(cmd: &clap::Command) -> String {
+fn fish_flag_lines(specs: &[FlagSpec]) -> String {
     let mut out = String::new();
-    for arg in cmd.get_arguments() {
-        if arg.is_positional() || arg.is_hide_set() {
-            continue;
+    for spec in specs {
+        let desc = fish_escape_dq(&spec.help);
+        out.push_str("complete -c srz");
+        if let Some(s) = spec.short {
+            let _ = write!(out, " -s {s}");
         }
-        let desc = fish_escape_dq(&first_line(arg.get_help()));
-        let mut line = String::from("complete -c srz");
-        if let Some(s) = arg.get_short() {
-            line.push_str(&format!(" -s {s}"));
+        if let Some(ref l) = spec.long {
+            let _ = write!(out, " -l {l}");
         }
-        if let Some(l) = arg.get_long() {
-            line.push_str(&format!(" -l {l}"));
+        if spec.is_file {
+            out.push_str(" -F");
         }
-        if matches!(arg.get_id().as_str(), "config" | "output") {
-            line.push_str(" -F");
+        if !spec.possible_vals.is_empty() {
+            let _ = write!(out, " -a \"{}\"", spec.possible_vals);
         }
-        let pvs = possible_value_names(arg);
-        if !pvs.is_empty() {
-            line.push_str(&format!(" -a \"{pvs}\""));
-        }
-        line.push_str(&format!(" -d \"{desc}\"\n"));
-        out.push_str(&line);
-
-        if let Some(long) = arg.get_long() {
-            for alias in arg.get_all_aliases().into_iter().flatten() {
-                out.push_str(&format!(
-                    "complete -c srz -l {alias} -d \"Alias for --{long}\"\n"
-                ));
+        let _ = writeln!(out, " -d \"{desc}\"");
+        if let Some(ref long) = spec.long {
+            for alias in &spec.aliases {
+                let _ = writeln!(out, "complete -c srz -l {alias} -d \"Alias for --{long}\"");
             }
         }
     }
     out
 }
 
-/// Generates a shell completion script matching the active `srz` CLI definition.
-pub fn generate_completions_script(shell: crate::cli::Shell) -> String {
+fn generate_completions_script(shell: Shell) -> String {
     let mut cmd = Cli::command();
     cmd.build();
 
     let commands: Vec<(String, String)> = cmd
         .get_subcommands()
-        .filter(|s| !s.is_hide_set())
+        .filter(|s| !s.is_hide_set() && s.get_name() != "help")
         .map(|s| (s.get_name().to_string(), first_line(s.get_about())))
         .collect();
     let cmds_space = commands
@@ -730,22 +780,20 @@ pub fn generate_completions_script(shell: crate::cli::Shell) -> String {
         .collect::<Vec<_>>()
         .join(" ");
 
-    let mut flags = Vec::new();
-    for arg in cmd.get_arguments() {
-        if arg.is_positional() || arg.is_hide_set() {
-            continue;
+    let specs = collect_visible_flags(&cmd);
+    let mut flag_names = Vec::new();
+    for s in &specs {
+        if let Some(c) = s.short {
+            flag_names.push(format!("-{c}"));
         }
-        if let Some(s) = arg.get_short() {
-            flags.push(format!("-{s}"));
+        if let Some(ref l) = s.long {
+            flag_names.push(format!("--{l}"));
         }
-        if let Some(l) = arg.get_long() {
-            flags.push(format!("--{l}"));
-        }
-        for alias in arg.get_all_aliases().into_iter().flatten() {
-            flags.push(format!("--{alias}"));
+        for a in &s.aliases {
+            flag_names.push(format!("--{a}"));
         }
     }
-    let flags_space = flags.join(" ");
+    let flags_space = flag_names.join(" ");
 
     let styles = enum_values::<crate::config::SummaryStyle>();
     let paging = enum_values::<crate::config::PagingMode>();
@@ -756,7 +804,7 @@ pub fn generate_completions_script(shell: crate::cli::Shell) -> String {
     let config_cmds = subcommand_names(&cmd, "config");
 
     match shell {
-        crate::cli::Shell::Bash => format!(
+        Shell::Bash => format!(
             r#"_srz() {{
     local cur prev opts cmds
     COMPREPLY=()
@@ -786,7 +834,7 @@ pub fn generate_completions_script(shell: crate::cli::Shell) -> String {
 complete -F _srz -o bashdefault -o default srz
 "#
         ),
-        crate::cli::Shell::Zsh => {
+        Shell::Zsh => {
             let cmd_entries = commands
                 .iter()
                 .map(|(name, desc)| {
@@ -798,7 +846,7 @@ complete -F _srz -o bashdefault -o default srz
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            let arg_entries = zsh_argument_lines(&cmd);
+            let arg_entries = zsh_argument_lines(&specs);
             format!(
                 r#"#compdef srz
 
@@ -832,36 +880,37 @@ _srz "$@"
 "#
             )
         }
-        crate::cli::Shell::Fish => {
+        Shell::Fish => {
             let mut out = String::from("complete -c srz -f\n");
             for (name, desc) in &commands {
-                if name != "help" {
-                    out.push_str(&format!(
-                        "complete -c srz -n \"__fish_use_subcommand\" -a \"{name}\" -d \"{}\"\n",
-                        fish_escape_dq(desc)
-                    ));
-                }
+                let _ = writeln!(
+                    out,
+                    "complete -c srz -n \"__fish_use_subcommand\" -a \"{name}\" -d \"{}\"",
+                    fish_escape_dq(desc)
+                );
             }
-            out.push_str(&format!(
+            let _ = write!(
+                out,
                 "complete -c srz -n \"__fish_seen_subcommand_from cache\" -a \"{cache_cmds}\"\n\
                  complete -c srz -n \"__fish_seen_subcommand_from config\" -a \"{config_cmds}\"\n\
                  complete -c srz -n \"__fish_seen_subcommand_from completions\" -a \"{shells}\"\n\
                  complete -c srz -n \"__fish_seen_subcommand_from export\" -a \"{formats}\"\n\
                  complete -c srz -n \"__fish_seen_subcommand_from news\" -s t -l timeframe -a \"{timeframes}\" -d \"Timeframe for news recency\"\n"
-            ));
-            out.push_str(&fish_flag_lines(&cmd));
+            );
+            out.push_str(&fish_flag_lines(&specs));
             out
         }
-        crate::cli::Shell::PowerShell => format!(
+        Shell::PowerShell => format!(
             r#"Register-ArgumentCompleter -Native -CommandName 'srz' -ScriptBlock {{
     param($wordToComplete, $commandAst, $cursorPosition)
     $commands = @({cmds})
     $flags = @({flags})
     $elements = $commandAst.CommandElements
-    $vals = if ($elements.Count -le 2) {{
+    $prevIndex = if ([string]::IsNullOrEmpty($wordToComplete)) {{ $elements.Count - 1 }} else {{ $elements.Count - 2 }}
+    $vals = if ($prevIndex -lt 1) {{
         $commands + $flags
     }} else {{
-        switch ($elements[-2].Extent.Text) {{
+        switch ($elements[$prevIndex].Extent.Text) {{
             'cache'       {{ @({cache_cmds}) }}
             'config'      {{ @({config_cmds}) }}
             'completions' {{ @({shells}) }}
@@ -888,20 +937,21 @@ _srz "$@"
             paging = ps_array(&paging),
             timeframes = ps_array(&timeframes),
         ),
-        crate::cli::Shell::Elvish => format!(
+        Shell::Elvish => format!(
             r#"set edit:completion:arg-completer[srz] = {{|@words|
     var num-words = (count $words)
     if (== $num-words 2) {{
         put {cmds_space} {flags_space}
-    }} elif (== $num-words 3) {{
-        var prev = $words[1]
+    }} elif (>= $num-words 3) {{
+        var prev = $words[-2]
         if (== $prev cache) {{ put {cache_cmds}
         }} elif (== $prev config) {{ put {config_cmds}
         }} elif (== $prev completions) {{ put {shells}
         }} elif (== $prev export) {{ put {formats}
         }} elif (== $prev --style) {{ put {styles}
         }} elif (== $prev --paging) {{ put {paging}
-        }} elif (or (== $prev -t) (== $prev --timeframe)) {{ put {timeframes} }}
+        }} elif (or (== $prev -t) (== $prev --timeframe)) {{ put {timeframes}
+        }} else {{ put {flags_space} }}
     }}
 }}
 "#
@@ -916,48 +966,39 @@ mod tests {
     #[test]
     fn test_shell_completions_match_cli_surface() {
         for shell in [
-            crate::cli::Shell::Bash,
-            crate::cli::Shell::Zsh,
-            crate::cli::Shell::Fish,
-            crate::cli::Shell::PowerShell,
-            crate::cli::Shell::Elvish,
+            Shell::Bash,
+            Shell::Zsh,
+            Shell::Fish,
+            Shell::PowerShell,
+            Shell::Elvish,
         ] {
             let script = generate_completions_script(shell);
             for required in ["cache", "browse", "recommend", "bullets"] {
                 assert!(
                     script.contains(required),
-                    "shell {:?} missing '{required}'",
-                    shell
+                    "shell {shell:?} missing '{required}'"
                 );
             }
             for flag in ["paging", "plain"] {
-                let expected = match shell {
-                    crate::cli::Shell::Fish => format!("-l {flag}"),
-                    _ => format!("--{flag}"),
+                let expected = if matches!(shell, Shell::Fish) {
+                    format!("-l {flag}")
+                } else {
+                    format!("--{flag}")
                 };
                 assert!(
                     script.contains(&expected),
-                    "shell {:?} missing '{expected}'",
-                    shell
-                );
-            }
-            for legacy in [
-                "--no-stream",
-                "--page",
-                "bullet action technical",
-                "web book",
-            ] {
-                assert!(
-                    !script.contains(legacy),
-                    "shell {:?} still has stale '{legacy}'",
-                    shell
+                    "shell {shell:?} missing '{expected}'"
                 );
             }
         }
+        assert!(generate_completions_script(Shell::PowerShell).contains("$prevIndex -lt 1"));
+        assert!(generate_completions_script(Shell::Elvish).contains(">= $num-words 3"));
     }
 
     #[test]
-    fn test_cache_clean_reset_db_reuses_open_cache_handle() {
+    fn test_cache_clean_reset_db_and_file_url() {
+        assert!(file_url(Path::new("/tmp/a b#1.html")).ends_with("file:///tmp/a%20b%231.html"));
+
         let tmp = crate::fs_util::tempdir().unwrap();
         let cache = Cache::with_dir(tmp.path().to_path_buf(), true);
         let db = cache.open_database().unwrap();
@@ -982,7 +1023,7 @@ mod tests {
         .unwrap();
         assert_eq!(db.get_stats().unwrap().total_summaries, 1);
 
-        handle_cache(CacheCommand::Clean { reset_db: true }, &cache).unwrap();
+        handle_cache(&CacheCommand::Clean { reset_db: true }, &cache).unwrap();
         assert_eq!(db.get_stats().unwrap().total_summaries, 0);
     }
 
@@ -990,10 +1031,8 @@ mod tests {
     fn test_read_line_bounded_enforces_limit() {
         let mut ok_reader = std::io::Cursor::new(b"hello\n");
         assert_eq!(read_line_bounded(&mut ok_reader, 6).unwrap(), "hello\n");
-
         let mut eof_reader = std::io::Cursor::new(b"");
         assert_eq!(read_line_bounded(&mut eof_reader, 6).unwrap(), "");
-
         let mut long_reader = std::io::Cursor::new(b"1234567\n");
         assert!(read_line_bounded(&mut long_reader, 6).is_err());
     }

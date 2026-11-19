@@ -12,7 +12,6 @@ pub mod ui;
 pub(crate) use config as cli;
 pub(crate) use engine::chunker;
 pub(crate) use engine::llm;
-pub(crate) use sources::news;
 pub(crate) use sources::scraper;
 pub(crate) use sources::search;
 pub(crate) use storage::cache;

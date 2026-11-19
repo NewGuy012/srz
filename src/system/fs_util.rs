@@ -208,6 +208,43 @@ pub(crate) fn write_private_file(path: &Path, contents: impl AsRef<[u8]>) -> std
     Ok(())
 }
 
+/// Creates a new file exclusively (`0600` on Unix) without overwriting an existing file or symlink.
+/// Returns `Ok(true)` if created, or `Ok(false)` if the destination already existed.
+pub(crate) fn write_private_file_exclusive(
+    path: &Path,
+    contents: impl AsRef<[u8]>,
+) -> std::io::Result<bool> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
+    {
+        create_private_dir_all(parent)?;
+    }
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = match opts.open(path) {
+        Ok(f) => f,
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(err) => return Err(err),
+    };
+    if let Err(err) = file
+        .write_all(contents.as_ref())
+        .and_then(|_| file.flush())
+        .and_then(|_| file.sync_all())
+    {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(err);
+    }
+    set_unix_mode(path, 0o600)?;
+    Ok(true)
+}
+
 /// Reads at most `max_bytes` from a regular file, validating type and size before and after open.
 pub(crate) fn read_file_bytes_limited(
     path: &Path,

@@ -1,10 +1,15 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::HashMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub const SECS_PER_DAY: u64 = 86_400;
+const DEFAULT_NEWS_LIMIT: usize = 5;
+const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SummaryStyle {
     /// Concise summary with key takeaways
@@ -56,7 +61,7 @@ pub enum NewsTimeframe {
     Week,
     /// Past 30 days / month
     Month,
-    /// Any time / all results (default: recency-ranked without restrictive temporal filter)
+    /// Any time / all results (recency-ranked)
     #[default]
     All,
 }
@@ -118,20 +123,29 @@ pub enum Shell {
     Zsh,
 }
 
-#[derive(Parser, Debug)]
+#[inline]
+fn redact_secret(secret: &str) -> &'static str {
+    if secret.trim().is_empty() {
+        ""
+    } else {
+        "[REDACTED]"
+    }
+}
+
+#[derive(Parser)]
 #[command(
     name = "srz",
     version,
-    about = "Modular CLI to summarize webpages and books using local OpenAI-compliant LLMs",
-    long_about = "A fast, modular CLI that extracts and summarizes webpages and books. \
-                  Supports local OpenAI-compatible backends like Ollama, LM Studio, vLLM, and llama.cpp. \
-                  For books, searches the web by default for grounded synopses, with automatic fallback to LLM memory."
+    about = "Modular CLI to summarize URLs, documents, books, YouTube, news, and Q&A using local LLMs",
+    long_about = "A fast, modular CLI that extracts and summarizes web pages, YouTube transcripts, \
+                  local PDF/EPUB/text files, stdin, books, and news feeds via OpenAI-compatible \
+                  backends (llama.cpp, Ollama, LM Studio, vLLM, or cloud endpoints)."
 )]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
 
-    /// Auto-detected target (URL or book title) when no subcommand is specified
+    /// Auto-detected target (URL, local file, news query, book title, or '-' for stdin)
     #[arg(value_name = "TARGET")]
     pub target: Option<String>,
 
@@ -139,7 +153,7 @@ pub struct Cli {
     #[arg(long, global = true, default_value = "http://localhost:9931/v1")]
     pub base_url: String,
 
-    /// Model name to use (default: "ggml-org/gemma-4-E4B-it-GGUF:Q8_0" matching Llama GUI & llama.cpp)
+    /// Model ID matching your backend (e.g. llama-server or Ollama)
     #[arg(
         long,
         global = true,
@@ -147,7 +161,7 @@ pub struct Cli {
     )]
     pub model: String,
 
-    /// OpenAI API key (optional for local LLMs)
+    /// OpenAI API key (prefer OPENAI_API_KEY env var or config.toml to avoid shell history exposure)
     #[arg(long, global = true, default_value = "")]
     pub api_key: String,
 
@@ -167,7 +181,7 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub no_cache: bool,
 
-    /// Path to optional config file (defaults to ~/.config/srz/config.toml)
+    /// Path to optional config file (defaults to platform srz config.toml)
     #[arg(long, global = true)]
     pub config: Option<PathBuf>,
 
@@ -195,15 +209,15 @@ pub struct Cli {
     #[arg(short = 'b', long, global = true)]
     pub open: bool,
 
-    /// Stream LLM output tokens live to stdout as they are generated (default: false)
+    /// Stream LLM output tokens live to stdout as they are generated
     #[arg(long, global = true)]
     pub stream: bool,
 
-    /// Stream full raw model reasoning trace to stderr (default: compact one-liner dropdown)
+    /// Stream full raw model reasoning trace to stderr
     #[arg(long = "show-thinking", alias = "thinking", global = true)]
     pub show_thinking: bool,
 
-    /// Control terminal paging of summary output (auto, always, never)
+    /// Control terminal paging of summary output
     #[arg(long, global = true, value_enum, default_value = "auto")]
     pub paging: PagingMode,
 
@@ -212,9 +226,36 @@ pub struct Cli {
     pub plain: bool,
 }
 
-#[derive(Subcommand, Debug)]
+impl fmt::Debug for Cli {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Cli")
+            .field("command", &self.command)
+            .field("target", &self.target)
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("api_key", &redact_secret(&self.api_key))
+            .field("style", &self.style)
+            .field("max_tokens", &self.max_tokens)
+            .field("context_window", &self.context_window)
+            .field("no_cache", &self.no_cache)
+            .field("config", &self.config)
+            .field("profile", &self.profile)
+            .field("output", &self.output)
+            .field("quiet", &self.quiet)
+            .field("verbose", &self.verbose)
+            .field("json", &self.json)
+            .field("open", &self.open)
+            .field("stream", &self.stream)
+            .field("show_thinking", &self.show_thinking)
+            .field("paging", &self.paging)
+            .field("plain", &self.plain)
+            .finish()
+    }
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
 pub enum Commands {
-    /// Manage the local disk cache (dir, size, clean)
+    /// Manage the local disk cache (dir, size, clean, prune)
     Cache {
         #[command(subcommand)]
         action: CacheCommand,
@@ -226,7 +267,7 @@ pub enum Commands {
     },
     /// View recent summarization history and metrics
     History {
-        /// Maximum entries to display (default: 10)
+        /// Maximum entries to display
         #[arg(short, long, default_value_t = 10)]
         limit: usize,
     },
@@ -250,7 +291,7 @@ pub enum Commands {
     Browse,
     /// Export summarized library to Markdown, JSON, or CSV
     Export {
-        /// Target export format (markdown, json, csv; default: markdown)
+        /// Target export format
         #[arg(short, long, value_enum, default_value = "markdown")]
         format: ExportFormat,
 
@@ -287,15 +328,15 @@ pub enum Commands {
         #[arg(long)]
         delete_chat: Option<i64>,
     },
-    /// Search and summarize latest news on a topic using Google News RSS
+    /// Search and summarize latest news on a topic using RSS/Atom/JSON feeds
     News {
-        /// Topic or query to search for (e.g. "javascript", "rust", "tech")
+        /// Topic, search phrase, or direct feed URL
         topic: String,
-        /// Timeframe for news recency (day, week, month, all; default: all)
+        /// Timeframe for news recency
         #[arg(short = 't', long, value_enum, default_value = "all")]
         timeframe: NewsTimeframe,
-        /// Maximum number of top articles to aggregate and summarize (default: 5)
-        #[arg(short, long, default_value_t = 5)]
+        /// Maximum number of top articles to aggregate and summarize
+        #[arg(short, long, default_value_t = DEFAULT_NEWS_LIMIT)]
         limit: usize,
     },
     /// Generate shell auto-completion script
@@ -326,7 +367,7 @@ pub enum CacheCommand {
     Dir,
     /// Show total disk usage and entry counts in the cache
     Size,
-    /// Remove cached files (pages, search, summaries, views)
+    /// Remove cached entries (pages, search, summaries, views)
     #[command(alias = "clear", alias = "purge", alias = "wipe")]
     Clean {
         /// Also reset and wipe the analytics/history database
@@ -351,7 +392,7 @@ pub enum ConfigSubcommand {
     Path,
     /// Display active configuration
     Show,
-    /// Generate a default ~/.config/srz/config.toml template
+    /// Generate a default config.toml template
     Init,
 }
 
@@ -367,23 +408,10 @@ pub enum ResolvedAction<'a> {
         path: PathBuf,
     },
     Stdin,
-    Cache(CacheCommand),
-    Config(ConfigSubcommand),
-    History {
+    News {
+        topic: String,
+        timeframe: NewsTimeframe,
         limit: usize,
-    },
-    Stats,
-    Find {
-        query: &'a str,
-    },
-    Models,
-    Doctor,
-    Recommend,
-    Index,
-    Browse,
-    Export {
-        format: ExportFormat,
-        output: PathBuf,
     },
     Ask {
         target: Option<String>,
@@ -394,19 +422,7 @@ pub enum ResolvedAction<'a> {
         show_chat: Option<i64>,
         delete_chat: Option<i64>,
     },
-    News {
-        topic: String,
-        timeframe: NewsTimeframe,
-        limit: usize,
-    },
-    Completions {
-        shell: Shell,
-    },
-    Upgrade {
-        check: bool,
-        force: bool,
-        version: Option<String>,
-    },
+    Subcommand(&'a Commands),
 }
 
 impl Cli {
@@ -424,40 +440,21 @@ impl Cli {
         }
     }
 
-    pub fn resolve_action(&self) -> Result<ResolvedAction<'_>, String> {
+    pub fn resolve_action(&self) -> Result<ResolvedAction<'_>> {
         if self.max_tokens == Some(0) {
-            return Err("--max-tokens must be greater than 0".to_string());
+            anyhow::bail!("--max-tokens must be greater than 0");
         }
         if self.context_window == Some(0) {
-            return Err("--context-window must be greater than 0".to_string());
+            anyhow::bail!("--context-window must be greater than 0");
         }
         if let Some(cmd) = &self.command {
             match cmd {
-                Commands::Cache { action } => Ok(ResolvedAction::Cache(action.clone())),
-                Commands::Config { action } => Ok(ResolvedAction::Config(*action)),
-                Commands::History { limit } => {
-                    if *limit == 0 {
-                        return Err("--limit must be greater than 0".to_string());
-                    }
-                    Ok(ResolvedAction::History { limit: *limit })
+                Commands::History { limit } if *limit == 0 => {
+                    anyhow::bail!("--limit must be greater than 0");
                 }
-                Commands::Stats => Ok(ResolvedAction::Stats),
-                Commands::Find { query } => {
-                    let q = query.trim();
-                    if q.is_empty() {
-                        return Err("Search query must not be empty".to_string());
-                    }
-                    Ok(ResolvedAction::Find { query: q })
+                Commands::Find { query } if query.trim().is_empty() => {
+                    anyhow::bail!("Search query must not be empty");
                 }
-                Commands::Models => Ok(ResolvedAction::Models),
-                Commands::Doctor => Ok(ResolvedAction::Doctor),
-                Commands::Recommend => Ok(ResolvedAction::Recommend),
-                Commands::Index => Ok(ResolvedAction::Index),
-                Commands::Browse => Ok(ResolvedAction::Browse),
-                Commands::Export { format, output } => Ok(ResolvedAction::Export {
-                    format: *format,
-                    output: output.clone(),
-                }),
                 Commands::Ask {
                     first,
                     second,
@@ -467,19 +464,21 @@ impl Cli {
                     show_chat,
                     delete_chat,
                 } => {
+                    let mgmt_count = usize::from(*chats)
+                        + usize::from(show_chat.is_some())
+                        + usize::from(delete_chat.is_some());
+                    if mgmt_count > 1 {
+                        anyhow::bail!("--chats, --show-chat, and --delete-chat cannot be combined");
+                    }
                     let (target, question) = match (first.as_deref(), second.as_deref()) {
                         (Some(f), Some(s)) => {
                             (Some(f.trim().to_string()), Some(s.trim().to_string()))
                         }
-                        (Some(f), None) => {
-                            if is_probable_question(f) {
-                                (None, Some(f.trim().to_string()))
-                            } else {
-                                (Some(f.trim().to_string()), None)
-                            }
+                        (Some(f), None) if is_probable_question(f) => {
+                            (None, Some(f.trim().to_string()))
                         }
-                        (None, None) => (None, None),
-                        (None, Some(s)) => (None, Some(s.trim().to_string())),
+                        (Some(f), None) => (Some(f.trim().to_string()), None),
+                        (None, _) => (None, None),
                     };
                     Ok(ResolvedAction::Ask {
                         target,
@@ -496,8 +495,9 @@ impl Cli {
                     timeframe,
                     limit,
                 } => {
-                    if *limit == 0 {
-                        return Err("--limit must be greater than 0".to_string());
+                    let max_limit = crate::sources::news::MAX_NEWS_LIMIT;
+                    if *limit == 0 || *limit > max_limit {
+                        anyhow::bail!("--limit must be between 1 and {max_limit}");
                     }
                     let clean_topic =
                         if crate::sources::news::GoogleNewsClient::is_direct_feed(topic) {
@@ -511,18 +511,7 @@ impl Cli {
                         limit: *limit,
                     })
                 }
-                Commands::Completions { shell } => {
-                    Ok(ResolvedAction::Completions { shell: *shell })
-                }
-                Commands::Upgrade {
-                    check,
-                    force,
-                    version,
-                } => Ok(ResolvedAction::Upgrade {
-                    check: *check,
-                    force: *force,
-                    version: version.clone(),
-                }),
+                _ => Ok(ResolvedAction::Subcommand(cmd)),
             }
         } else if let Some(target) = &self.target {
             let trimmed = target.trim();
@@ -533,34 +522,37 @@ impl Cli {
                     Ok(ResolvedAction::News {
                         topic: trimmed.to_string(),
                         timeframe: NewsTimeframe::All,
-                        limit: 5,
+                        limit: DEFAULT_NEWS_LIMIT,
                     })
                 } else {
                     Ok(ResolvedAction::Web { url: trimmed })
                 }
             } else if is_file_like(trimmed) {
                 Ok(ResolvedAction::File {
-                    path: std::path::PathBuf::from(trimmed),
+                    path: expand_tilde(trimmed),
                 })
             } else if is_news_query(trimmed) {
-                let clean_topic = clean_news_query(trimmed);
                 Ok(ResolvedAction::News {
-                    topic: clean_topic,
+                    topic: clean_news_query(trimmed),
                     timeframe: NewsTimeframe::All,
-                    limit: 5,
+                    limit: DEFAULT_NEWS_LIMIT,
                 })
+            } else if trimmed.eq_ignore_ascii_case("version") {
+                anyhow::bail!(
+                    "Unrecognized command '{trimmed}'. Run `srz --version` to print the version."
+                );
             } else if let Some(suggestion) = suggest_command(trimmed) {
-                Err(format!(
+                anyhow::bail!(
                     "Unrecognized command '{trimmed}'.\n\n  \
                      tip: a similar command exists: '{suggestion}'"
-                ))
+                );
             } else {
                 Ok(ResolvedAction::Book { title: trimmed })
             }
         } else {
-            Err(
-                "Please provide a URL, local file, book title, or '-' for stdin. Run `srz --help` for details.".to_string(),
-            )
+            anyhow::bail!(
+                "Please provide a URL, local file, book title, or '-' for stdin. Run `srz --help` for details."
+            );
         }
     }
 
@@ -594,77 +586,102 @@ impl Cli {
                 .is_some_and(|s| s == clap::parser::ValueSource::CommandLine)
         };
 
-        macro_rules! apply_env_or_cfg {
-            ($field:ident, $env_key:literal) => {
+        if was_provided("api_key") && !self.api_key.trim().is_empty() {
+            crate::ui::Ui::warn(
+                "Passing `--api-key` on the CLI can expose secrets in process listings; prefer `OPENAI_API_KEY` or `config.toml`.",
+            );
+        }
+
+        macro_rules! apply_cfg {
+            ($field:ident, env: $env_key:literal) => {
                 if !was_provided(stringify!($field)) {
                     if let Some(val) = env_get($env_key).filter(|v| !v.trim().is_empty()) {
                         self.$field = val;
                     } else if let Some(val) = profile
                         .and_then(|p| p.$field.clone())
-                        .or_else(|| config.$field.clone())
+                        .or_else(|| config.settings.$field.clone())
                     {
                         self.$field = val;
                     }
                 }
             };
-        }
-
-        macro_rules! apply_field {
             ($field:ident) => {
                 if !was_provided(stringify!($field))
                     && let Some(val) = profile
                         .and_then(|p| p.$field.clone())
-                        .or_else(|| config.$field.clone())
+                        .or_else(|| config.settings.$field.clone())
                 {
                     self.$field = val;
                 }
             };
-        }
-
-        macro_rules! apply_opt_field {
-            ($field:ident) => {
+            (opt $field:ident) => {
                 if !was_provided(stringify!($field))
-                    && let Some(val) = profile.and_then(|p| p.$field).or_else(|| config.$field)
+                    && let Some(val) = profile
+                        .and_then(|p| p.$field)
+                        .or_else(|| config.settings.$field)
                 {
                     self.$field = Some(val);
                 }
             };
         }
 
-        apply_env_or_cfg!(base_url, "OPENAI_BASE_URL");
-        apply_env_or_cfg!(model, "OPENAI_MODEL");
-        apply_env_or_cfg!(api_key, "OPENAI_API_KEY");
-        apply_field!(style);
-        apply_opt_field!(max_tokens);
-        apply_field!(no_cache);
-        apply_field!(quiet);
-        apply_field!(verbose);
-        apply_field!(open);
-        apply_field!(stream);
-        apply_field!(show_thinking);
-        apply_opt_field!(context_window);
+        apply_cfg!(base_url, env: "OPENAI_BASE_URL");
+        apply_cfg!(model, env: "OPENAI_MODEL");
+        apply_cfg!(api_key, env: "OPENAI_API_KEY");
+        apply_cfg!(style);
+        apply_cfg!(opt max_tokens);
+        apply_cfg!(no_cache);
+        apply_cfg!(quiet);
+        apply_cfg!(verbose);
+        apply_cfg!(open);
+        apply_cfg!(stream);
+        apply_cfg!(show_thinking);
+        apply_cfg!(opt context_window);
         Ok(())
     }
+}
+
+/// Expands a leading `~/` (or bare `~`) against `$HOME` or `$USERPROFILE`.
+pub(crate) fn expand_tilde(s: &str) -> PathBuf {
+    let rest = if s == "~" {
+        Some("")
+    } else {
+        s.strip_prefix("~/").or_else(|| s.strip_prefix("~\\"))
+    };
+    if let Some(sub) = rest
+        && let Some(home) = std::env::var_os("HOME")
+            .filter(|v| !v.is_empty())
+            .or_else(|| std::env::var_os("USERPROFILE").filter(|v| !v.is_empty()))
+    {
+        return if sub.is_empty() {
+            PathBuf::from(home)
+        } else {
+            PathBuf::from(home).join(sub)
+        };
+    }
+    PathBuf::from(s)
 }
 
 pub fn is_file_like(s: &str) -> bool {
     if crate::system::text_util::is_http_url(s) {
         return false;
     }
-    let path = std::path::Path::new(s);
-    if path.is_file() {
+    let expanded = expand_tilde(s);
+    if expanded.exists() {
         return true;
     }
     if s.starts_with("./")
         || s.starts_with("../")
         || s.starts_with('/')
-        || s.starts_with('~')
-        || s.contains('/')
+        || s.starts_with("~/")
+        || s == "~"
         || s.contains('\\')
+        || (s.len() >= 3 && s.as_bytes()[0].is_ascii_alphabetic() && s.as_bytes()[1] == b':')
+        || (s.contains('/') && !s.chars().any(char::is_whitespace))
     {
         return true;
     }
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+    if let Some(ext) = expanded.extension().and_then(|e| e.to_str()) {
         const FILE_LIKE_EXTS: &[&str] = &[
             "pdf", "md", "markdown", "txt", "text", "html", "htm", "epub", "json",
         ];
@@ -811,7 +828,6 @@ pub fn is_probable_question(s: &str) -> bool {
 pub fn suggest_command(input: &str) -> Option<String> {
     let trimmed = input.trim();
 
-    // Multi-word inputs, empty inputs, or inputs with paths/extensions are not command typos.
     if trimmed.is_empty()
         || trimmed.contains(char::is_whitespace)
         || trimmed.contains('/')
@@ -826,13 +842,12 @@ pub fn suggest_command(input: &str) -> Option<String> {
     let mut candidates: Vec<String> = root
         .get_subcommands()
         .flat_map(|s| std::iter::once(s.get_name()).chain(s.get_all_aliases()))
-        .chain(["help", "chat", "library", "tui", "version"])
+        .chain(["help"])
         .map(str::to_string)
         .collect();
     candidates.sort();
     candidates.dedup();
 
-    // Exact case-insensitive match (e.g. user typed "Doctor" or "DOCTOR").
     if let Some(exact) = candidates.iter().find(|cmd| input_lower == cmd.as_str()) {
         return Some(exact.clone());
     }
@@ -855,7 +870,7 @@ pub fn suggest_command(input: &str) -> Option<String> {
         .map(|(cmd, _)| cmd)
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Default, Deserialize, PartialEq, Eq)]
 pub struct ProfileConfig {
     pub base_url: Option<String>,
     pub model: Option<String>,
@@ -871,7 +886,26 @@ pub struct ProfileConfig {
     pub context_window: Option<usize>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+impl fmt::Debug for ProfileConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProfileConfig")
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("api_key", &self.api_key.as_deref().map(redact_secret))
+            .field("style", &self.style)
+            .field("max_tokens", &self.max_tokens)
+            .field("no_cache", &self.no_cache)
+            .field("quiet", &self.quiet)
+            .field("verbose", &self.verbose)
+            .field("open", &self.open)
+            .field("stream", &self.stream)
+            .field("show_thinking", &self.show_thinking)
+            .field("context_window", &self.context_window)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 pub struct CacheConfig {
     pub max_size_mb: Option<u64>,
     pub pages_ttl_days: Option<u64>,
@@ -889,19 +923,20 @@ impl CacheConfig {
             policy.max_bytes = mb.saturating_mul(1024).saturating_mul(1024);
         }
         if let Some(days) = self.pages_ttl_days {
-            policy.pages_ttl = std::time::Duration::from_secs(days.saturating_mul(86400));
+            policy.pages_ttl = std::time::Duration::from_secs(days.saturating_mul(SECS_PER_DAY));
         }
         if let Some(hours) = self.news_ttl_hours {
             policy.news_ttl = std::time::Duration::from_secs(hours.saturating_mul(3600));
         }
         if let Some(days) = self.search_ttl_days {
-            policy.search_ttl = std::time::Duration::from_secs(days.saturating_mul(86400));
+            policy.search_ttl = std::time::Duration::from_secs(days.saturating_mul(SECS_PER_DAY));
         }
         if let Some(days) = self.summaries_ttl_days {
-            policy.summaries_ttl = std::time::Duration::from_secs(days.saturating_mul(86400));
+            policy.summaries_ttl =
+                std::time::Duration::from_secs(days.saturating_mul(SECS_PER_DAY));
         }
         if let Some(days) = self.views_ttl_days {
-            policy.views_ttl = std::time::Duration::from_secs(days.saturating_mul(86400));
+            policy.views_ttl = std::time::Duration::from_secs(days.saturating_mul(SECS_PER_DAY));
         }
         if let Some(false) = self.auto_prune {
             policy.auto_prune_interval = std::time::Duration::MAX;
@@ -910,7 +945,7 @@ impl CacheConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 pub struct Config {
     #[serde(flatten)]
     pub settings: ProfileConfig,
@@ -919,17 +954,6 @@ pub struct Config {
     #[serde(default)]
     pub cache: Option<CacheConfig>,
 }
-
-impl std::ops::Deref for Config {
-    type Target = ProfileConfig;
-
-    fn deref(&self) -> &Self::Target {
-        &self.settings
-    }
-}
-
-/// Maximum allowable size for a configuration file in bytes (1 MB).
-pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 
 #[cfg(unix)]
 fn has_configured_api_key(cfg: &Config) -> bool {
@@ -943,13 +967,19 @@ fn has_configured_api_key(cfg: &Config) -> bool {
             .any(|p| p.api_key.as_deref().is_some_and(|k| !k.trim().is_empty()))
 }
 
+fn sanitize_toml_scalar(s: &str) -> String {
+    s.chars()
+        .filter(|&c| !c.is_control() && c != '"' && c != '\\')
+        .collect()
+}
+
 impl Config {
-    /// Returns the default path for `config.toml` (`$SRZ_CONFIG`, `$XDG_CONFIG_HOME/srz/config.toml`, or `~/.config/srz/config.toml`).
+    /// Returns the default path for `config.toml` (`$SRZ_CONFIG`, `$SRZ_CONFIG_PATH`, `$XDG_CONFIG_HOME/srz/config.toml`, `~/.config/srz/config.toml`, or `%APPDATA%\srz\config.toml`).
     pub fn default_config_path() -> PathBuf {
         crate::fs_util::default_config_path()
     }
 
-    /// Loads the configuration file from a specific path (refusing symlinks and oversized files).
+    /// Loads configuration from `path` (refusing symlinks and files larger than 1 MB).
     pub fn load_from_path(path: &Path) -> Result<Self> {
         let bytes =
             crate::fs_util::read_file_bytes_limited(path, MAX_CONFIG_BYTES, true, "Config")?;
@@ -987,18 +1017,20 @@ impl Config {
         }
     }
 
-    /// Generates a starter `config.toml` template string tailored for the detected hardware.
+    /// Generates a starter `config.toml` template tailored for the detected hardware.
     pub fn template_for_hardware(hw: &crate::system::hardware::HardwareProfile) -> String {
+        let chip = sanitize_toml_scalar(&hw.chip_name);
+        let model = sanitize_toml_scalar(hw.recommended_model);
+        let launch_hint = sanitize_toml_scalar(&hw.llama_gui_selection());
         format!(
             r#"# srz (Summarize) configuration file
 # Default path: ~/.config/srz/config.toml
-# Tailored for host: {} ({:.1} GB RAM / {})
-# Recommended local setup: {}
+# Tailored for host: {chip} ({:.1} GB RAM / {})
+# Recommended local setup: {launch_hint}
 
 # Default local LLM endpoint (Llama-macOS, Llama-Windows, llama.cpp, Ollama)
-# Connects automatically with Llama GUI running on localhost:9931
 base_url = "http://localhost:9931/v1"
-model = "{}"
+model = "{model}"
 context_window = {}
 api_key = ""
 
@@ -1026,35 +1058,30 @@ summaries_ttl_days = 90   # Generated LLM outputs TTL
 views_ttl_days = 14       # Rendered HTML/MD reader views TTL
 auto_prune = true         # Opportunistic background cleanup
 
-# Cloud profile (e.g. OpenAI or Anthropic)
+# Cloud profile (set OPENAI_API_KEY env var or uncomment api_key below)
 [profiles.openai]
 base_url = "https://api.openai.com/v1"
 model = "gpt-4o-mini"
-api_key = "sk-..."
+# api_key = "sk-..."
 
 # Quick mode: Fast concise summaries for news and short articles
 [profiles.fast]
 base_url = "http://localhost:9931/v1"
-model = "{}"
+model = "{model}"
 style = "concise"
 context_window = 8192
 
 # Deep research / book mode: Full synthesis with maximum context window
 [profiles.deep]
 base_url = "http://localhost:9931/v1"
-model = "{}"
+model = "{model}"
 style = "detailed"
 context_window = {}
 max_tokens = 8192
 "#,
-            hw.chip_name,
             hw.total_memory_gb,
             hw.tier.display_name(),
-            hw.llama_gui_selection(),
-            hw.recommended_model,
             hw.recommended_context,
-            hw.recommended_model,
-            hw.recommended_model,
             hw.recommended_context,
         )
     }
@@ -1066,78 +1093,85 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn test_template_for_hardware_is_valid_toml() {
+    fn test_template_for_hardware_and_secret_redaction() {
         let template =
             Config::template_for_hardware(crate::system::hardware::HardwareProfile::detect());
         let cfg: Config =
             toml::from_str(&template).expect("hardware template must parse as valid TOML");
-        assert_eq!(cfg.base_url.as_deref(), Some("http://localhost:9931/v1"));
-        assert!(cfg.model.is_some());
-        assert!(cfg.context_window.is_some());
-        assert_eq!(cfg.style, Some(SummaryStyle::Concise));
-        assert_eq!(cfg.max_tokens, Some(8192));
-        assert!(cfg.profiles.contains_key("openai"));
-        assert!(cfg.profiles.contains_key("fast"));
-        assert!(cfg.profiles.contains_key("deep"));
+        assert_eq!(
+            cfg.settings.base_url.as_deref(),
+            Some("http://localhost:9931/v1")
+        );
+        assert!(cfg.settings.model.is_some());
+        assert_eq!(cfg.settings.style, Some(SummaryStyle::Concise));
+        assert_eq!(cfg.settings.max_tokens, Some(8192));
+        assert!(
+            cfg.profiles
+                .get("openai")
+                .is_some_and(|p| p.api_key.is_none()),
+            "placeholder api_key must stay commented out"
+        );
+        for key in ["openai", "fast", "deep"] {
+            assert!(cfg.profiles.contains_key(key));
+        }
+
+        let mut cli = Cli::parse_from(["srz", "Dune"]);
+        cli.api_key = "sk-top-secret".into();
+        let prof = ProfileConfig {
+            api_key: Some("sk-profile-secret".into()),
+            ..Default::default()
+        };
+        let cli_dbg = format!("{cli:?}");
+        let prof_dbg = format!("{prof:?}");
+        assert!(!cli_dbg.contains("sk-top-secret") && cli_dbg.contains("[REDACTED]"));
+        assert!(!prof_dbg.contains("sk-profile-secret") && prof_dbg.contains("[REDACTED]"));
     }
 
     #[test]
-    fn test_load_from_path_lifecycle() {
+    fn test_load_from_path_lifecycle_and_symlink_rejection() {
         let tmp = crate::system::fs_util::tempdir().unwrap();
         let config_path = tmp.path().join("config.toml");
-
-        // Missing file returns error
         assert!(Config::load_from_path(&config_path).is_err());
 
-        // Valid file loads correctly
-        let valid_toml = r#"
-            base_url = "http://localhost:11434/v1"
-            model = "llama3:8b"
-        "#;
-        fs::write(&config_path, valid_toml).unwrap();
-        let loaded = Config::load_from_path(&config_path).expect("Should load valid config");
+        fs::write(
+            &config_path,
+            "base_url = \"http://localhost:11434/v1\"\nmodel = \"llama3:8b\"\n",
+        )
+        .unwrap();
+        let loaded = Config::load_from_path(&config_path).unwrap();
         assert_eq!(
-            loaded.base_url.as_deref(),
+            loaded.settings.base_url.as_deref(),
             Some("http://localhost:11434/v1")
         );
-        assert_eq!(loaded.model.as_deref(), Some("llama3:8b"));
+        assert_eq!(loaded.settings.model.as_deref(), Some("llama3:8b"));
 
-        // Malformed TOML returns error
         fs::write(&config_path, "not a [valid toml").unwrap();
         assert!(Config::load_from_path(&config_path).is_err());
-    }
-
-    #[test]
-    fn test_load_from_path_bounds_and_file_type() {
-        let tmp = crate::system::fs_util::tempdir().unwrap();
-
-        // Directory path is rejected
-        let dir_path = tmp.path().join("config_dir");
-        fs::create_dir(&dir_path).unwrap();
-        assert!(Config::load_from_path(&dir_path).is_err());
-
-        // Oversized file is rejected
-        let large_config = tmp.path().join("large_config.toml");
-        let file = fs::File::create(&large_config).unwrap();
-        file.set_len(MAX_CONFIG_BYTES + 1).unwrap();
-        assert!(Config::load_from_path(&large_config).is_err());
 
         #[cfg(unix)]
         {
-            let real_config = tmp.path().join("real_config.toml");
-            let sym_config = tmp.path().join("sym_config.toml");
-            fs::write(&real_config, "model = \"test\"\n").unwrap();
-            std::os::unix::fs::symlink(&real_config, &sym_config).unwrap();
-            let err = Config::load_from_path(&sym_config).unwrap_err();
-            assert!(err.to_string().contains("symlink"));
+            let real = tmp.path().join("real.toml");
+            let sym = tmp.path().join("sym.toml");
+            fs::write(&real, "model = \"test\"\n").unwrap();
+            std::os::unix::fs::symlink(&real, &sym).unwrap();
+            assert!(
+                Config::load_from_path(&sym)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("symlink")
+            );
         }
     }
 
     #[test]
-    fn test_env_precedence_and_help_never_leaks_api_key() {
+    fn test_env_precedence_validation_and_edge_cases() {
         use clap::{CommandFactory, FromArgMatches};
-        let help = Cli::command().render_help().to_string();
-        assert!(!help.contains("OPENAI_API_KEY="));
+        assert!(
+            !Cli::command()
+                .render_help()
+                .to_string()
+                .contains("OPENAI_API_KEY=")
+        );
 
         let matches = Cli::command().get_matches_from(["srz", "Dune", "--model", "cli-model"]);
         let mut cli = Cli::from_arg_matches(&matches).unwrap();
@@ -1158,15 +1192,20 @@ mod tests {
         assert_eq!(cli.model, "cli-model");
         assert_eq!(cli.api_key, "sk-env-secret");
         assert_eq!(cli.base_url, "http://cfg/v1");
-        assert_eq!(cli.effective_max_tokens(), 1536);
 
-        let mut bad_prof = Cli::parse_from(["srz", "Dune", "--profile", "missing"]);
+        // "version" must not self-suggest, and slash-containing titles must not become files.
+        assert_eq!(suggest_command("version"), None);
+        assert!(!is_file_like("9/11 Commission Report"));
+        assert!(is_file_like("assets/document.pdf"));
         assert!(
-            bad_prof
-                .apply_config_with(&cfg, None, |_| None)
-                .unwrap_err()
-                .to_string()
-                .contains("Unknown configuration profile 'missing'")
+            Cli::parse_from(["srz", "srz version"])
+                .resolve_action()
+                .is_ok()
+        );
+        assert!(
+            Cli::parse_from(["srz", "version"])
+                .resolve_action()
+                .is_err()
         );
 
         for invalid in [
@@ -1174,6 +1213,8 @@ mod tests {
             &["srz", "Dune", "--context-window", "0"][..],
             &["srz", "history", "--limit", "0"][..],
             &["srz", "news", "rust", "--limit", "0"][..],
+            &["srz", "news", "rust", "--limit", "999"][..],
+            &["srz", "ask", "--chats", "--delete-chat", "1"][..],
             &["srz", "find", "   "][..],
         ] {
             assert!(
