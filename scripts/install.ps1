@@ -24,9 +24,9 @@
             throw "32-bit Windows is not supported with prebuilt binaries. Please install from source using 'cargo install srz'."
         }
 
-        # Determine download URL (case-sensitive version validation matching install.sh)
+        # Determine download URL (case-sensitive version validation matching install.sh; \z prevents trailing newline bypass)
         if ($env:VERSION) {
-            if ($env:VERSION -cnotmatch '^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$') {
+            if ($env:VERSION -cnotmatch '^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?\z') {
                 throw "Invalid version format '$($env:VERSION)'. Must match semver (e.g. '0.4.0' or 'v0.4.0')."
             }
             $Tag = if ($env:VERSION.StartsWith("v")) { $env:VERSION } else { "v$($env:VERSION)" }
@@ -43,14 +43,14 @@
         New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
 
         $ZipPath = Join-Path $TempDir $ArchiveName
-        Invoke-WebRequest -Uri $DownloadUrl -OutFile $ZipPath -UseBasicParsing
+        Invoke-WebRequest -Uri $DownloadUrl -OutFile $ZipPath -TimeoutSec 60 -UseBasicParsing
 
         # Download and parse SHA256 checksum; FORCE=1 only bypasses missing/unparseable checksum files
         $ShaUrl = "$DownloadUrl.sha256"
         $ShaPath = "$ZipPath.sha256"
         $ExpectedHash = $null
         try {
-            Invoke-WebRequest -Uri $ShaUrl -OutFile $ShaPath -UseBasicParsing
+            Invoke-WebRequest -Uri $ShaUrl -OutFile $ShaPath -TimeoutSec 60 -UseBasicParsing
             $ShaContent = ([string](Get-Content -Path $ShaPath -Raw)).Trim()
             $CandidateHash = ($ShaContent -split '\s+')[0]
             if ($CandidateHash -match '^[0-9a-fA-F]{64}$') {
@@ -128,13 +128,15 @@
             Write-Host "Restart your terminal if 'srz' is not recognized immediately." -ForegroundColor Yellow
 
             # Broadcast WM_SETTINGCHANGE to notify running Explorer and terminal sessions
-            Add-Type -Namespace Win32 -Name NativeMethods -MemberDefinition @"
+            if (-not ([System.Management.Automation.PSTypeName]'SrzInstall.NativeMethods').Type) {
+                Add-Type -Namespace SrzInstall -Name NativeMethods -MemberDefinition @"
 [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
 public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
 "@ -ErrorAction SilentlyContinue
+            }
             try {
                 $result = [UIntPtr]::Zero
-                [Win32.NativeMethods]::SendMessageTimeout([IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, "Environment", 2, 5000, [ref]$result) | Out-Null
+                [SrzInstall.NativeMethods]::SendMessageTimeout([IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, "Environment", 2, 5000, [ref]$result) | Out-Null
             } catch {
                 Write-Verbose "WM_SETTINGCHANGE broadcast skipped: $_"
             }

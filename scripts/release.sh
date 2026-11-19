@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
-# Navigate to the repository root
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "${REPO_ROOT}"
+trap 'rm -f Cargo.toml.tmp' EXIT
 
 # Ensure cargo is in PATH
 if ! command -v cargo >/dev/null 2>&1 && [ -f "$HOME/.cargo/bin/cargo" ]; then
@@ -124,6 +124,10 @@ fi
 
 # Check current git branch
 CURRENT_BRANCH=$(git branch --show-current)
+if [ -z "${CURRENT_BRANCH}" ]; then
+  echo "Error: Detached HEAD state; check out a branch before releasing." >&2
+  exit 1
+fi
 if [ "${CURRENT_BRANCH}" != "master" ] && [ "${CURRENT_BRANCH}" != "main" ]; then
   echo "Warning: You are currently on branch '${CURRENT_BRANCH}', not 'master'."
   if [ "${AUTO_YES}" != "true" ] && [ "${DRY_RUN}" != "true" ]; then
@@ -135,60 +139,35 @@ if [ "${CURRENT_BRANCH}" != "master" ] && [ "${CURRENT_BRANCH}" != "main" ]; the
   fi
 fi
 
-# Check (read-only) whether tag already exists locally or remotely
-LOCAL_TAG_EXISTS=false
-if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
-  LOCAL_TAG_EXISTS=true
-fi
+resolve_tag_overwrite() {
+  local scope="$1"
+  local exists="$2"
+  [ "${exists}" = "true" ] || return 1
+  if [ "${FORCE}" = "true" ]; then
+    return 0
+  elif [ "${DRY_RUN}" = "true" ]; then
+    echo "Notice: ${scope} git tag '${TAG}' already exists (would require -f / confirmation to overwrite)."
+    return 1
+  elif [ "${AUTO_YES}" != "true" ]; then
+    read -r -p "${scope} git tag '${TAG}' already exists. Delete and re-tag '${TAG}'? [y/N]: " CONFIRM_RETAG
+    [ "${CONFIRM_RETAG}" = "y" ] || [ "${CONFIRM_RETAG}" = "Y" ] && return 0
+    echo "Release aborted." >&2
+    exit 1
+  else
+    echo "Error: ${scope} git tag '${TAG}' already exists. Use -f / --force to overwrite." >&2
+    exit 1
+  fi
+}
 
+LOCAL_TAG_EXISTS=false
+git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null 2>&1 && LOCAL_TAG_EXISTS=true
 REMOTE_TAG_EXISTS=false
-if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
-  REMOTE_TAG_EXISTS=true
-fi
+git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1 && REMOTE_TAG_EXISTS=true
 
 DELETE_LOCAL_TAG=false
 DELETE_REMOTE_TAG=false
-
-if [ "${LOCAL_TAG_EXISTS}" = "true" ]; then
-  if [ "${FORCE}" = "true" ]; then
-    DELETE_LOCAL_TAG=true
-  elif [ "${DRY_RUN}" = "true" ]; then
-    echo "Notice: Local git tag '${TAG}' already exists (would require -f / confirmation to overwrite)."
-  elif [ "${AUTO_YES}" != "true" ]; then
-    echo "Warning: Local git tag '${TAG}' already exists."
-    read -r -p "Delete and re-create local tag '${TAG}'? [y/N]: " CONFIRM_LOCAL_RETAG
-    if [ "${CONFIRM_LOCAL_RETAG}" = "y" ] || [ "${CONFIRM_LOCAL_RETAG}" = "Y" ]; then
-      DELETE_LOCAL_TAG=true
-    else
-      echo "Release aborted." >&2
-      exit 1
-    fi
-  else
-    echo "Error: Local git tag '${TAG}' already exists. Use -f / --force to overwrite." >&2
-    exit 1
-  fi
-fi
-
-if [ "${REMOTE_TAG_EXISTS}" = "true" ]; then
-  if [ "${FORCE}" = "true" ]; then
-    DELETE_REMOTE_TAG=true
-  elif [ "${DRY_RUN}" = "true" ]; then
-    echo "Notice: Remote git tag '${TAG}' already exists on origin (would require -f / confirmation to overwrite)."
-  elif [ "${AUTO_YES}" != "true" ]; then
-    echo "Warning: Remote tag '${TAG}' already exists on origin (likely from a previous failed release)."
-    echo "Note: Crates.io packages are immutable. If '${TAG}' was already published, retagging will not update crates.io (bump patch/minor instead)."
-    read -r -p "Delete and re-tag '${TAG}' on origin to retrigger release? [y/N]: " CONFIRM_REMOTE_RETAG
-    if [ "${CONFIRM_REMOTE_RETAG}" = "y" ] || [ "${CONFIRM_REMOTE_RETAG}" = "Y" ]; then
-      DELETE_REMOTE_TAG=true
-    else
-      echo "Release aborted." >&2
-      exit 1
-    fi
-  else
-    echo "Error: Remote tag '${TAG}' already exists on origin. Use -f / --force to overwrite." >&2
-    exit 1
-  fi
-fi
+resolve_tag_overwrite "Local" "${LOCAL_TAG_EXISTS}" && DELETE_LOCAL_TAG=true
+resolve_tag_overwrite "Remote" "${REMOTE_TAG_EXISTS}" && DELETE_REMOTE_TAG=true
 
 echo "=================================================="
 echo " srz Release Helper"
@@ -272,11 +251,11 @@ if [ "${DRY_RUN}" = "true" ]; then
   exit 0
 fi
 
-if git diff --quiet Cargo.toml Cargo.lock; then
-  echo "==> No Cargo.toml / Cargo.lock changes to commit."
+if git diff --quiet Cargo.toml Cargo.lock && { [ ! -f "docs/src/changelog.md" ] || git diff --quiet docs/src/changelog.md; }; then
+  echo "==> No release file changes to commit."
 else
   echo ""
-  echo "==> Committing version bump..."
+  echo "==> Committing release prep..."
   git add Cargo.toml Cargo.lock
   if [ -f "docs/src/changelog.md" ] && ! git diff --quiet docs/src/changelog.md; then
     git add docs/src/changelog.md

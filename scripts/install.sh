@@ -5,16 +5,25 @@ main() {
   REPO="NewGuy012/srz"
   INSTALL_DIR="${INSTALL_DIR:-${HOME}/.local/bin}"
 
-  # Helper for robust downloads with curl or wget
   download_file() {
     url="$1"
     dest="$2"
     if command -v curl >/dev/null 2>&1; then
-      curl -fsSL "${url}" -o "${dest}"
+      curl --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 300 -fsSL "${url}" -o "${dest}"
     elif command -v wget >/dev/null 2>&1; then
-      wget -q -O "${dest}" "${url}"
+      wget --https-only --secure-protocol=TLSv1_2 --timeout=30 -q -O "${dest}" "${url}"
     else
       echo "Error: Neither curl nor wget found in PATH. Please install either tool to proceed." >&2
+      exit 1
+    fi
+  }
+
+  allow_insecure_bypass() {
+    reason="$1"
+    if [ "${FORCE:-}" = "1" ]; then
+      echo "Warning: ${reason}; bypassing due to FORCE=1."
+    else
+      echo "Error: ${reason}. Run with 'FORCE=1 ./scripts/install.sh' to bypass." >&2
       exit 1
     fi
   }
@@ -94,12 +103,13 @@ main() {
 
   echo "Installing srz for ${TARGET}..."
   TMP_DIR="$(mktemp -d 2>/dev/null || mktemp -d -t 'srz-install')"
+  TMP_TARGET=""
   if [ -z "${TMP_DIR}" ] || [ ! -d "${TMP_DIR}" ]; then
     echo "Error: Failed to create temporary directory." >&2
     exit 1
   fi
   cleanup() {
-    rm -rf "${TMP_DIR:-}"
+    rm -rf "${TMP_DIR:-}" "${TMP_TARGET:-}"
   }
   trap cleanup EXIT
   trap 'exit 130' INT
@@ -115,42 +125,21 @@ main() {
   # Download and verify SHA256 checksum
   SHA_URL="${DOWNLOAD_URL}.sha256"
   if ! download_file "${SHA_URL}" "${TMP_DIR}/srz.tar.gz.sha256"; then
-    if [ -n "${FORCE:-}" ]; then
-      echo "Warning: Could not download SHA256 checksum from ${SHA_URL}; bypassing due to FORCE=1."
-    else
-      echo "Error: Failed to download SHA256 checksum file from ${SHA_URL}." >&2
-      echo "Aborting installation for security. Run with 'FORCE=1 ./scripts/install.sh' to bypass." >&2
-      exit 1
-    fi
+    allow_insecure_bypass "Could not download SHA256 checksum from ${SHA_URL}"
   else
     echo "Verifying SHA256 checksum..."
     EXPECTED_SHA="$(awk '{print $1}' "${TMP_DIR}/srz.tar.gz.sha256" | tr -d '\r' | head -n 1 | tr '[:upper:]' '[:lower:]')"
     if [ -z "${EXPECTED_SHA}" ]; then
-      if [ -n "${FORCE:-}" ]; then
-        echo "Warning: SHA256 checksum file was empty; bypassing due to FORCE=1."
-      else
-        echo "Error: SHA256 checksum file was empty. Aborting installation for security." >&2
-        exit 1
-      fi
+      allow_insecure_bypass "SHA256 checksum file was empty"
     elif ! printf '%s\n' "${EXPECTED_SHA}" | grep -Eq '^[0-9a-f]{64}$'; then
-      if [ -n "${FORCE:-}" ]; then
-        echo "Warning: Invalid SHA256 checksum format; bypassing due to FORCE=1."
-      else
-        echo "Error: Checksum file does not contain a valid 64-character SHA256 hash." >&2
-        echo "Aborting installation for security. Run with 'FORCE=1 ./scripts/install.sh' to bypass." >&2
-        exit 1
-      fi
+      allow_insecure_bypass "Checksum file does not contain a valid 64-character SHA256 hash"
     else
       if command -v sha256sum >/dev/null 2>&1; then
         COMPUTED_SHA="$(sha256sum "${TMP_DIR}/srz.tar.gz" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')"
       elif command -v shasum >/dev/null 2>&1; then
         COMPUTED_SHA="$(shasum -a 256 "${TMP_DIR}/srz.tar.gz" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')"
       else
-        echo "Warning: Neither sha256sum nor shasum found; cannot compute local hash."
-        if [ -z "${FORCE:-}" ]; then
-          echo "Error: Aborting because SHA256 tools are missing. Run with 'FORCE=1' to bypass." >&2
-          exit 1
-        fi
+        allow_insecure_bypass "Neither sha256sum nor shasum found; cannot verify SHA256 checksum"
         COMPUTED_SHA="${EXPECTED_SHA}"
       fi
 
@@ -178,12 +167,10 @@ main() {
     echo "Error: Failed to create temporary file in ${INSTALL_DIR}." >&2
     exit 1
   }
-  if ! cat "${TMP_DIR}/unpacked/srz" > "${TMP_TARGET}"; then
-    rm -f "${TMP_TARGET}"
-    exit 1
-  fi
+  cat "${TMP_DIR}/unpacked/srz" > "${TMP_TARGET}"
   chmod 0755 "${TMP_TARGET}"
   mv -f "${TMP_TARGET}" "${INSTALL_DIR}/srz"
+  TMP_TARGET=""
 
   echo "✔ Successfully installed srz to ${INSTALL_DIR}/srz"
 

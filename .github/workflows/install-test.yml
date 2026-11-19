@@ -68,7 +68,7 @@ jobs:
           cat scripts/install.sh | INSTALL_DIR="${RUNNER_TEMP}/bin_pipe" VERSION="v0.7.10" sh
           "${RUNNER_TEMP}/bin_pipe/srz" --version
 
-      - name: Test invalid semver and multiline injection validation
+      - name: Test invalid semver and malformed checksum rejection
         run: |
           mkdir -p "${RUNNER_TEMP}/bin_invalid"
           for bad_ver in "invalid-semver-string" "V0.7.10" $'0.7.10\nfoo'; do
@@ -77,7 +77,11 @@ jobs:
               exit 1
             fi
           done
-          echo "✔ Correctly rejected invalid semver strings."
+          if INSTALL_DIR="${RUNNER_TEMP}/bin_invalid" VERSION="0.0.0-nonexistent" ./scripts/install.sh; then
+            echo "::error::install.sh failed to abort on missing release checksum/asset!"
+            exit 1
+          fi
+          echo "✔ Correctly rejected invalid semver strings and missing releases."
 
       - name: Test self-upgrade round-trip (v0.7.9 -> latest)
         run: |
@@ -167,10 +171,10 @@ jobs:
 
           & $ExePath --version
 
-      - name: Test invalid and uppercase semver validation
+      - name: Test invalid, uppercase, and trailing-newline semver validation
         shell: pwsh
         run: |
-          foreach ($badVer in @("invalid-semver-string", "V0.7.10")) {
+          foreach ($badVer in @("invalid-semver-string", "V0.7.10", "0.7.10`n")) {
             $InstallDir = Join-Path $env:RUNNER_TEMP "bin_invalid"
             $env:INSTALL_DIR = $InstallDir
             $env:VERSION = $badVer

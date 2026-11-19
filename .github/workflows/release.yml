@@ -151,69 +151,48 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: cargo build --release --locked --target "$TARGET"
 
-      - name: Package asset & generate completions (Unix)
-        if: matrix.archive == 'tar.gz'
-        env:
-          VERSION: ${{ needs.verify-version.outputs.version }}
-          TARGET: ${{ matrix.target }}
-        run: |
-          ARCHIVE_VERSION="srz-${VERSION}-${TARGET}.tar.gz"
-          ARCHIVE_LATEST="srz-${TARGET}.tar.gz"
-
-          STAGE_DIR="staging-${TARGET}"
-          mkdir -p "${STAGE_DIR}/completions"
-
-          cp "target/${TARGET}/release/srz" "${STAGE_DIR}/"
-          cp README.md LICENSE "${STAGE_DIR}/"
-
-          # Generate shell completions using the built release binary
-          "${STAGE_DIR}/srz" completions bash > "${STAGE_DIR}/completions/srz.bash"
-          "${STAGE_DIR}/srz" completions zsh > "${STAGE_DIR}/completions/_srz"
-          "${STAGE_DIR}/srz" completions fish > "${STAGE_DIR}/completions/srz.fish"
-          "${STAGE_DIR}/srz" completions powershell > "${STAGE_DIR}/completions/_srz.ps1"
-          "${STAGE_DIR}/srz" completions elvish > "${STAGE_DIR}/completions/srz.elv"
-
-          # Create archive with root binary and bundled documentation / completions
-          tar -czf "${ARCHIVE_VERSION}" -C "${STAGE_DIR}" srz README.md LICENSE completions
-          cp "${ARCHIVE_VERSION}" "${ARCHIVE_LATEST}"
-
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "${ARCHIVE_VERSION}" > "${ARCHIVE_VERSION}.sha256"
-            sha256sum "${ARCHIVE_LATEST}" > "${ARCHIVE_LATEST}.sha256"
-          else
-            shasum -a 256 "${ARCHIVE_VERSION}" > "${ARCHIVE_VERSION}.sha256"
-            shasum -a 256 "${ARCHIVE_LATEST}" > "${ARCHIVE_LATEST}.sha256"
-          fi
-
-      - name: Package asset & generate completions (Windows)
-        if: matrix.archive == 'zip'
+      - name: Package asset & generate completions
         shell: bash
         env:
           VERSION: ${{ needs.verify-version.outputs.version }}
           TARGET: ${{ matrix.target }}
+          ARCHIVE_EXT: ${{ matrix.archive }}
         run: |
-          ARCHIVE_VERSION="srz-${VERSION}-${TARGET}.zip"
-          ARCHIVE_LATEST="srz-${TARGET}.zip"
+          set -euo pipefail
+          EXE=""
+          [ "${ARCHIVE_EXT}" = "zip" ] && EXE=".exe"
+          BIN="srz${EXE}"
+          ARCHIVE_VERSION="srz-${VERSION}-${TARGET}.${ARCHIVE_EXT}"
+          ARCHIVE_LATEST="srz-${TARGET}.${ARCHIVE_EXT}"
 
           STAGE_DIR="staging-${TARGET}"
           mkdir -p "${STAGE_DIR}/completions"
-
-          cp "target/${TARGET}/release/srz.exe" "${STAGE_DIR}/"
+          cp "target/${TARGET}/release/${BIN}" "${STAGE_DIR}/"
           cp README.md LICENSE "${STAGE_DIR}/"
 
-          # Generate shell completions using the built release binary
-          "./${STAGE_DIR}/srz.exe" completions bash > "${STAGE_DIR}/completions/srz.bash"
-          "./${STAGE_DIR}/srz.exe" completions zsh > "${STAGE_DIR}/completions/_srz"
-          "./${STAGE_DIR}/srz.exe" completions fish > "${STAGE_DIR}/completions/srz.fish"
-          "./${STAGE_DIR}/srz.exe" completions powershell > "${STAGE_DIR}/completions/_srz.ps1"
-          "./${STAGE_DIR}/srz.exe" completions elvish > "${STAGE_DIR}/completions/srz.elv"
+          "./${STAGE_DIR}/${BIN}" completions bash > "${STAGE_DIR}/completions/srz.bash"
+          "./${STAGE_DIR}/${BIN}" completions zsh > "${STAGE_DIR}/completions/_srz"
+          "./${STAGE_DIR}/${BIN}" completions fish > "${STAGE_DIR}/completions/srz.fish"
+          "./${STAGE_DIR}/${BIN}" completions powershell > "${STAGE_DIR}/completions/_srz.ps1"
+          "./${STAGE_DIR}/${BIN}" completions elvish > "${STAGE_DIR}/completions/srz.elv"
 
-          ROOT_DIR="$(pwd)"
-          (cd "${STAGE_DIR}" && 7z a "${ROOT_DIR}/${ARCHIVE_VERSION}" srz.exe README.md LICENSE completions)
+          if [ "${ARCHIVE_EXT}" = "zip" ]; then
+            ROOT_DIR="$(pwd)"
+            (cd "${STAGE_DIR}" && 7z a "${ROOT_DIR}/${ARCHIVE_VERSION}" "${BIN}" README.md LICENSE completions)
+          else
+            tar -czf "${ARCHIVE_VERSION}" -C "${STAGE_DIR}" "${BIN}" README.md LICENSE completions
+          fi
           cp "${ARCHIVE_VERSION}" "${ARCHIVE_LATEST}"
 
-          sha256sum "${ARCHIVE_VERSION}" > "${ARCHIVE_VERSION}.sha256"
-          sha256sum "${ARCHIVE_LATEST}" > "${ARCHIVE_LATEST}.sha256"
+          sha256_file() {
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$1" > "$1.sha256"
+            else
+              shasum -a 256 "$1" > "$1.sha256"
+            fi
+          }
+          sha256_file "${ARCHIVE_VERSION}"
+          sha256_file "${ARCHIVE_LATEST}"
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -424,16 +403,19 @@ jobs:
           SHA_X86_LINUX=$(awk '{print $1}' "dist/srz-${TAG}-x86_64-unknown-linux-gnu.tar.gz.sha256" | head -1)
           SHA_ARM_LINUX=$(awk '{print $1}' "dist/srz-${TAG}-aarch64-unknown-linux-gnu.tar.gz.sha256" | head -1)
 
-          if [ -z "$SHA_ARM64_MAC" ] || [ -z "$SHA_X86_LINUX" ] || [ -z "$SHA_ARM_LINUX" ]; then
-            echo "::error::Could not extract all required sha256 checksums from local artifacts."
-            exit 1
-          fi
+          for sha in "$SHA_ARM64_MAC" "$SHA_X86_LINUX" "$SHA_ARM_LINUX"; do
+            if [ -z "$sha" ] || [[ ! "$sha" =~ ^[0-9a-fA-F]{64}$ ]]; then
+              echo "::error::Invalid or missing sha256 checksum in local artifacts: '${sha}'"
+              exit 1
+            fi
+          done
 
           echo "macOS aarch64 SHA256: ${SHA_ARM64_MAC}"
           echo "Linux x86_64  SHA256: ${SHA_X86_LINUX}"
           echo "Linux aarch64 SHA256: ${SHA_ARM_LINUX}"
 
           AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${TAP_TOKEN}" | base64 | tr -d '\n')"
+          echo "::add-mask::${AUTH_HEADER}"
           git -c "http.https://github.com/.extraheader=${AUTH_HEADER}" clone "https://github.com/NewGuy012/homebrew-tap.git" tap
           cd tap
 
