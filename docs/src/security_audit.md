@@ -3,7 +3,7 @@
 **Project:** `srz` (Summarize CLI)  
 **Repository:** [github.com/NewGuy012/srz](https://github.com/NewGuy012/srz)  
 **Language & Platform:** Rust (Edition 2024) · macOS / Linux / Windows  
-**Cumulative Posture:** 🛡️ **100% Safe Rust** (`#![forbid(unsafe_code)]` enforced) · ✅ **Audit #1–#11 Findings Resolved** · ✅ **180 / 180 Consolidated Tests Passing (174 unit + 6 integration)**
+**Cumulative Posture:** 🛡️ **100% Safe Rust** (`#![forbid(unsafe_code)]` enforced) · ✅ **Audit #1–#12 Findings Resolved** · ✅ **99 / 99 Consolidated Tests Passing (95 unit + 4 integration)**
 
 This document serves as the reverse-chronological security audit ledger (latest audit first) for `srz`. Each audit section is recorded with its execution timestamp, assessed scope, identified vulnerabilities, implemented remediations, and verification results.
 
@@ -13,6 +13,7 @@ This document serves as the reverse-chronological security audit ledger (latest 
 
 | Audit | Execution Date & Time | Primary Focus | Issues Resolved | Status |
 |:---:|:---|:---|:---:|:---:|
+| **[Audit #12](#audit-12)** | **2026-11-18 17:30:00 PST** | Secret Redaction (`api_key` `Debug` + CLI warning + exclusive `0o600` config), Terminal CSI/OSC/ESC-Smuggling & BiDi Filter, Single-Doc CSP (`img-src 'self' data:;`), Prompt Title Fencing (`<source_document>`), Process Reaping, Installer/CI Checksum Validation & Log Masking, Test Suite Consolidation (`180` → `99`) | Hardening & Consolidation | ✅ Complete |
 | **[Audit #11](#audit-11)** | **2026-11-17 06:30:00 PST** | Supply-Chain Pruning (`ratatui` removal, `toml`/`tokio` slimming), `PublicDnsResolver` DNS-Rebinding Guard, LLM Base-URL/Credential/Redirect Hardening, PDF/EPUB/ZIP & O(N) Parser Bounds, Prompt Tag Attribute Escaping, UNC `//` URL Rejection, `0700`/`0600` & `sync_all` Storage Hardening, CLI Secret/Bounds Validation | Hardening Pass | ✅ Complete |
 | **[Audit #10](#audit-10)** | **2026-11-12 16:56:00 PST** | `ZipReader` & `tar.gz` Archive Bomb Hardening, Stream Markdown/SSE/Progress Terminal & Buffer Bounds, Document TOCTOU & PDF Text Layer Caps, Google News SSRF Validation, LLM Error UTF-8 Safety, and Chat Session Range / CSV Formula Hardening | 8 / 8 | ✅ Complete |
 | **[Audit #9](#audit-9)** | **2026-11-09 11:30:00 PST** | Open Library SSRF/Path Traversal Validation, Bounded Document Extraction, CSV Formula Injection Neutralization, Terminal History/Chat Sanitization, Atomic Upgrade Rollback Guard, RAII TUI Terminal Session Cleanup, and Architectural Consolidation | 6 / 6 | ✅ Complete |
@@ -27,6 +28,21 @@ This document serves as the reverse-chronological security audit ledger (latest 
 
 * **[Cumulative Verification & Test Suite](#verification)**
 * **[Production Hardening & Residual Risk Recommendations](#recommendations)**
+
+---
+
+<a id="audit-12"></a>
+## 📅 Audit #12 — November 18, 2026 · 05:30 PM PST (End-to-End Hardening, Leak Elimination, Code Consolidation & Pipeline Security)
+
+### Overview & Scope
+- **Trigger:** Full codebase audit across `system`, `storage`, `sources`, `engine`, `ui`, `commands`, `config`, `tests/`, installer scripts, and GitHub Actions workflows (`1d8e3a9`..`a5edfd4`).
+- **Outcome:** Closed residual secret-exposure, escape-smuggling, child-process leak, prompt-title injection, HTML beacon/CSP, and installer/CI validation gaps while consolidating duplicate logic and shrinking the automated test suite from 180 to **99 high-signal tests** (`95` unit + `4` integration) with zero clippy/rustdoc warnings.
+
+### Key Hardening Controls Implemented
+* **Secrets & Config Hardening (`src/config.rs`, `src/commands/mod.rs`, `src/system/fs_util.rs`):** Added manual `Debug` implementations on `Cli` and `ProfileConfig` redacting non-empty `api_key` values, warned when `--api-key` is passed via CLI arguments, commented out `# api_key = "sk-..."` in generated templates, switched `srz config init` to exclusive `create_new(true)` + `0o600` creation (`write_private_file_exclusive`), sanitized config/TOML scalars and paths, validated positive `MAX_NEWS_LIMIT`, and rejected conflicting `srz ask` session management flags.
+* **Prompt, Storage & Runtime Hardening (`src/commands/ask.rs`, `summarize.rs`, `storage/{db,cache}.rs`, `sources/`, `engine/`, `system/`):** Encapsulated bounded untrusted document titles inside `<source_document>` in `srz ask`, unified dispatch into `commands::execute` (eliminating masked DB failures in `with_db`), moved blocking PDF/file/stdin reads into `spawn_blocking`, fixed remote PDF `page.url` and `CachedSummary` book `url` persistence, fixed `Cache::prune` / `redb` encapsulation, and hardened `system` (`zip`, `upgrade`, `fs_util`, `text_util`), `sources` (PDF/EPUB/SSRF/YouTube/scraper), and `engine` (LLM/SSE/BM25/budget).
+* **Terminal, Markdown, TUI & CSP Hardening (`src/ui/terminal.rs`, `markdown.rs`, `tui.rs`, `render.rs`):** Neutralized `\x1b\x1b]52` double-ESC smuggling and added bounded CSI / 4096-char OSC caps (`sanitize_terminal_text_cow`), enforced `MAX_DEPTH = 32` and `\\` UNC URL rejection in Markdown, eliminated `ProgressBar` `Arc` cycles via `SpinnerShared` + `Condvar` + `Drop`, separated stdout/stderr color resolution (`NO_COLOR`), always reaped `$PAGER`/browser children, added TTY + single `Once` panic-hook restore + `Ctrl+C/D/Q` + `Ctrl+U` + BiDi/control filter guards in TUI, tightened single-doc HTML CSP to `img-src 'self' data:;`, and refused symlinks when reusing cached view files (`ensure_view_files_unique`).
+* **Installer, Release & CI Hardening (`scripts/install.{sh,ps1}`, `scripts/release.sh`, `.githooks/pre-commit`, `.github/workflows/`):** Enforced HTTPS/TLSv1.2 + timeouts + strict `FORCE=1` bypass helper + tmp target cleanup in `install.sh`, anchored PowerShell semver with `\z` (blocking trailing newlines) + `-TimeoutSec 60` in `install.ps1`, added detached-HEAD checks & cleanup trap in `release.sh`, pinned `mdbook-mermaid` (`0.17.1`) and `mdbook-katex` (`0.10.0`) in `docs.yml`, validated 64-hex SHA-256 checksums and masked `AUTH_HEADER` (`::add-mask::`) in `release.yml`, and expanded negative tests in `install-test.yml`.
 
 ---
 
@@ -1388,13 +1404,13 @@ cargo clippy --locked --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features
 ```
 
-### Complete Test Suite Breakdown (180 Total Consolidated Tests)
+### Complete Test Suite Breakdown (99 Consolidated High-Signal Tests)
 
 | Test Suite Target | Tests | Verified Security & Operational Controls | Result |
 |:---|:---:|:---|:---:|
-| **`src/lib.rs` (unit tests)** | 174 | Custom `ZipReader` entry-cap/symlink/deflate bounds, bounded `StreamMarkdownRenderer` & `ProgressBar` escape sanitization, SSE split `<think>` & reasoning limits, unified FD-based TOCTOU & symlink-safe `read_file_bytes_limited`, PDF `FlateDecode` pre-flight & text layer caps, `PublicDnsResolver` DNS-rebinding & SIIT/site-local IPv6 checks, LLM URL/credential/redirect guards, `srz upgrade` HTTPS-only redirect validation & rollback, EPUB decompression & manifest caps, `XmlScanner` / chunker O(N) invariants, UNC `//` URL blocking, `$PAGER` fallback & bounded `read_line_bounded`, chat key-range & CSV escaping, `DynamicBudget`, cache TTL/LRU & SHA-256 keys, derived shell completions | ✅ Pass |
-| **`tests/integration_tests.rs` (integration)** | 6 | Cross-module CLI target resolution & typo guards, config TOML deserialization, `--profile` & `--max-tokens` merge/error validation, PDF asset extraction & search/news/LLM client construction, `recommend`/`doctor` execution | ✅ Pass |
-| **Total** | **180 / 180** | **Zero Failures · Zero Ignored · Zero Clippy/Rustdoc Warnings · `#![forbid(unsafe_code)]`** | ✅ **100% Pass** |
+| **`src/lib.rs` (unit tests)** | 95 | Custom `ZipReader` entry-cap/symlink/deflate bounds, bounded `StreamMarkdownRenderer` & `ProgressBar` `Drop`/escape sanitization (CSI/OSC/ESC-smuggling/`NO_COLOR`), SSE `<think>` & reasoning limits, FD-based TOCTOU/symlink/exclusive `0600` `fs_util`, PDF `FlateDecode` pre-flight & text layer caps, `PublicDnsResolver` DNS-rebinding & SIIT/site-local IPv6 checks, LLM URL/credential/redirect guards, `srz upgrade` HTTPS-only redirect & rollback, EPUB decompression & manifest caps, `XmlScanner` / chunker O(N) invariants, UNC `\\`/`//`/`/\` URL & `MAX_DEPTH` blocking, single-doc HTML CSP (`img-src 'self' data:;`), `$PAGER` reap & bounded `read_line_bounded`, chat key-range & CSV escaping, `Cli` `api_key` `Debug` redaction & target/flag validation, `DynamicBudget`, cache TTL/LRU & SHA-256 keys, derived shell completions | ✅ Pass |
+| **`tests/integration_tests.rs` (integration)** | 4 | Cross-module CLI target resolution & typo guards, global flags & `stream_mode`, config TOML deserialization with `--profile`/`--max-tokens` merge/error validation, PDF asset extraction & search/news/LLM client construction | ✅ Pass |
+| **Total** | **99 / 99** | **Zero Failures · Zero Ignored · Zero Clippy/Rustdoc Warnings · `#![forbid(unsafe_code)]`** | ✅ **100% Pass** |
 
 ---
 

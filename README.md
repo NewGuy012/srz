@@ -172,7 +172,7 @@ context_window = 32768
 [profiles.openai]
 base_url = "https://api.openai.com/v1"
 model = "gpt-4o-mini"
-api_key = "sk-..."
+# api_key = "sk-..." # Prefer OPENAI_API_KEY env var or ensure 0600 permissions
 ```
 
 Switch profiles on the fly with `--profile`:

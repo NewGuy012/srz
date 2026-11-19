@@ -66,7 +66,7 @@ Local targets receive similarly intelligent routing. If `<TARGET>` matches an ex
 | `--style <STYLE>` | | Summary format preset: `concise` (default), `bullets`, `detailed`. |
 | `--model <MODEL>` | | Override the configured LLM model name. |
 | `--base-url <URL>` | | Local or remote OpenAI-compatible base URL (default: `http://localhost:9931/v1`). |
-| `--api-key <KEY>` | | OpenAI API key (optional for local LLMs). |
+| `--api-key <KEY>` | | OpenAI API key (optional for local LLMs; prefers `OPENAI_API_KEY` or `config.toml`, and warns when passed via CLI). |
 | `--profile <NAME>` | | Load a named configuration profile from `config.toml`. |
 | `--config <PATH>` | | Custom configuration file path (defaults to `$SRZ_CONFIG` / `$SRZ_CONFIG_PATH` / `~/.config/srz/config.toml`). |
 | `--context-window <N>` | | Override server context window size in tokens (must be `> 0`; clamped to `2,048`–`2,097,152`; auto-detected if omitted). |
@@ -106,6 +106,8 @@ Launches a lightweight interactive, full-screen `crossterm` terminal dashboard f
 | `y` / `c` | Copy summary markdown to system clipboard |
 | `d` | Delete selected summary from history |
 | `Esc` / `q` | Exit search focus, close reader view, or quit application |
+| `Ctrl+U` | Clear the active search filter query (while focused or browsing) |
+| `Ctrl+C` / `Ctrl+D` / `Ctrl+Q` | Exit immediately |
 
 ---
 
@@ -134,12 +136,13 @@ Performs question-answering grounded directly on document context, protected wit
   ```
   *Inside the REPL, ask questions naturally. Type `exit`, `quit`, or press `Ctrl+C` / `Ctrl+D` to end the session.*
 
-### Session Management Flags
+### Session Management & Output Flags
 
 * `--chats`: List saved persistent chat sessions stored in local storage.
-* `--resume <ID>`: Resume a previous conversation session by ID while preserving the original source `target_type` and `target_url`.
+* `--resume <ID>`: Resume a previous conversation session by ID while preserving the original source `target_type` and `target_url` (emits a warning if source re-loading fails and falls back to the stored library summary).
 * `--show-chat <ID>`: Print complete transcript of a past chat session.
 * `--delete-chat <ID>`: Delete a saved chat session.
+* Conflicting session management flags (`--chats`, `--resume`, `--show-chat`, `--delete-chat`) are rejected upfront, and `srz ask` also honors `--json` and `-o` / `--output`.
 
 ---
 
@@ -226,8 +229,9 @@ srz cache <SUBCOMMAND>
 
 * `srz cache dir`: Display the absolute path to the local cache directory (`~/.cache/srz`).
 * `srz cache size`: Show disk usage broken down by pages, search metadata, summaries, and views.
-* `srz cache prune`: Evict expired items based on age or disk size budget:
+* `srz cache prune`: Evict expired items based on age or disk size budget (running with no flags enforces the configured `max_size_mb` cap):
   ```bash
+  srz cache prune
   srz cache prune --older-than 14d
   srz cache prune --max-size 500MB
   ```
@@ -244,7 +248,7 @@ srz config <SUBCOMMAND>
 
 * `srz config path`: Display path to `config.toml` and report whether it exists.
 * `srz config show`: Print currently active configuration settings.
-* `srz config init`: Generate a starter `~/.config/srz/config.toml` file tailored to your host RAM, CPU, and recommended context window.
+* `srz config init`: Atomically generate a `0600` starter `~/.config/srz/config.toml` tailored to your host RAM, CPU, and recommended context window (refuses to overwrite existing files).
 
 ---
 

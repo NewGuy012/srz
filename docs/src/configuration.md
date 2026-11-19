@@ -55,7 +55,7 @@ auto_prune = true         # Opportunistic background cleanup
 [profiles.openai]
 base_url = "https://api.openai.com/v1"
 model = "gpt-4o-mini"
-api_key = "sk-..."
+# api_key = "sk-..." # Prefer OPENAI_API_KEY env var or ensure 0600 permissions
 
 # Quick mode: Fast concise summaries for news and short articles
 [profiles.fast]
@@ -100,7 +100,7 @@ srz "https://news.ycombinator.com" --profile fast
 
 ## Precedence & Resolution Order
 
-Runtime configuration follows a predictable layered resolution model (`Cli::apply_config`). Explicit command-line arguments take top priority, followed by environment variables (`OPENAI_*`, intentionally omitted from `clap` help output so secrets never print in `--help`), ahead of `config.toml`. Within `config.toml`, named profile settings (`--profile <NAME>`, which errors cleanly if unknown) override root-level settings, and `Config::load_default` surfaces malformed file/parse errors explicitly. When `max_tokens` is unset across CLI/profile/root layers, `effective_max_tokens()` defaults directly to the active `--style` preset:
+Runtime configuration follows a predictable layered resolution model (`Cli::apply_config`). Explicit command-line arguments take top priority (note: passing `--api-key` directly emits a shell-history/process-table warning), followed by environment variables (`OPENAI_*`, intentionally omitted from `clap` help output so secrets never print in `--help`), ahead of `config.toml`. Within `config.toml`, named profile settings (`--profile <NAME>`, which errors cleanly if unknown) override root-level settings, non-empty `api_key` values are redacted in `Debug` output (`ProfileConfig` / `Cli`), and `Config::load_default` surfaces malformed file/parse errors explicitly. When `max_tokens` is unset across CLI/profile/root layers, `effective_max_tokens()` defaults directly to the active `--style` preset:
 
 1. **Explicit CLI flags** (e.g. `--model`, `--base-url`, `--style`, `--max-tokens`, `--stream`, `--show-thinking`, `--context-window`).
 2. **Environment variables** (`OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_API_KEY`).
@@ -118,13 +118,13 @@ The `[cache]` table controls how `srz` manages disk storage across `srz.db` and 
 | :--- | :--- | :--- | :--- |
 | `max_size_mb` | integer | `500` | Total storage budget in megabytes across `srz.db` and `views/`. LRU eviction triggers when exceeded. |
 | `pages_ttl_days` | integer | `7` | Retention for cached web pages, YouTube transcripts, and PDF text in `srz.db`. |
-| `news_ttl_hours` | integer | `2` | Short-lived retention for news articles and syndication feeds to prevent stale briefings. |
+| `news_ttl_hours` | integer | `2` | Short-lived retention for news articles and syndication feeds to prevent stale briefings (must be `> 0`). |
 | `search_ttl_days` | integer | `14` | Retention for Open Library book metadata and search query candidates. |
 | `summaries_ttl_days` | integer | `90` | Cache lookup retention window for generated summaries in `srz.db` (`(target, model, style)`). |
 | `views_ttl_days` | integer | `14` | Retention for opt-in standalone HTML and Markdown view files in `views/` (generated via `--open`). |
 | `auto_prune` | boolean | `true` | Enables opportunistic background cache cleanup (throttled to once every 24 hours via `~/.cache/srz/.last_prune`). |
 
-> 🔒 **Privacy & Isolation**: All databases and view files are created with owner-only Unix permissions (`0700` directories, `0600` files), `config.toml` rejects symlinks and oversized files (`CWE-59`), and Unix loads emit a permission warning if a config storing a non-empty `api_key` is readable by group or world (`mode & 0o077 != 0`). To completely bypass caching for a single command, pass `--no-cache`. View file export (`.html`/`.md`) is strictly opt-in via `--open` or explicit output flags (`--output`).
+> 🔒 **Privacy & Isolation**: All databases and view files are created with owner-only Unix permissions (`0700` directories, `0600` files). `srz config init` creates `config.toml` atomically (`create_new(true)` / `0600`) without overwriting existing files, `Config::load_from_path` rejects symlinks and oversized files (`CWE-59`), and Unix loads emit a permission warning if a config storing a non-empty `api_key` is readable by group or world (`mode & 0o077 != 0`). To completely bypass caching for a single command, pass `--no-cache`. View file export (`.html`/`.md`) is strictly opt-in via `--open` or explicit output flags (`--output`).
 
 ---
 
