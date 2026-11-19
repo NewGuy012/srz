@@ -196,7 +196,7 @@ pub(crate) fn handle_config(
                     crate::fs_util::create_private_dir_all(parent)?;
                 }
                 let hw = crate::system::hardware::HardwareProfile::detect();
-                let template = Config::template_for_hardware(&hw);
+                let template = Config::template_for_hardware(hw);
                 crate::fs_util::write_private_file(&default_path, template.as_bytes())?;
                 Ui::success(&format!(
                     "Initialized config file tailored for your hardware ({:.1} GB RAM, {}) at {}",

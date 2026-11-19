@@ -1,6 +1,6 @@
-pub mod fs_util;
+pub(crate) mod fs_util;
 pub mod hardware;
-pub mod sha256;
-pub mod text_util;
-pub mod upgrade;
-pub mod zip;
+pub(crate) mod sha256;
+pub(crate) mod text_util;
+pub(crate) mod upgrade;
+pub(crate) mod zip;

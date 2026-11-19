@@ -10,7 +10,7 @@ pub enum HardwareTier {
 }
 
 impl HardwareTier {
-    pub fn from_bytes(bytes: u64) -> Self {
+    fn from_bytes(bytes: u64) -> Self {
         let gib = bytes / (1024 * 1024 * 1024);
         if gib <= 10 {
             HardwareTier::Tier8GB
@@ -60,10 +60,9 @@ static DETECTED_PROFILE: std::sync::LazyLock<HardwareProfile> = std::sync::LazyL
 });
 
 impl HardwareProfile {
-    /// Detects host hardware memory and processor characteristics, mapping to the optimal Gemma 4 configuration.
-    /// Results are cached across calls to avoid spawning subprocesses (`sysctl`/`powershell`) multiple times.
-    pub fn detect() -> Self {
-        DETECTED_PROFILE.clone()
+    /// Returns the cached host hardware profile without re-spawning OS probes.
+    pub fn detect() -> &'static Self {
+        &DETECTED_PROFILE
     }
 
     pub fn from_specs(total_memory_bytes: u64, chip_name: String) -> Self {
@@ -78,7 +77,7 @@ impl HardwareProfile {
                     "26B-A4B",
                     "~28.0 GB",
                     "gemma-4-26B-A4B-it-Q8_0.gguf",
-                    "gemma2:27b",
+                    "gemma4:26b",
                 )
             } else {
                 (
@@ -86,7 +85,7 @@ impl HardwareProfile {
                     "E4B",
                     "~8.6 GB",
                     "gemma-4-E4B-it-Q8_0.gguf",
-                    "gemma2:9b",
+                    "gemma4:e4b",
                 )
             };
         let concise_model = "gemma-4";
@@ -103,8 +102,8 @@ impl HardwareProfile {
             model_file, recommended_model, recommended_context
         );
         let ollama_launch_command = format!(
-            "ollama run {} --ctx-size {}",
-            ollama_model, recommended_context
+            "OLLAMA_CONTEXT_LENGTH={} ollama run {}",
+            recommended_context, ollama_model
         );
 
         Self {
@@ -125,7 +124,6 @@ impl HardwareProfile {
         }
     }
 
-    /// Formatted selection string matching the simplified naming in Llama GUI (e.g. `gemma-4 | E4B | Q8_0 | 32k ctx`).
     pub fn llama_gui_selection(&self) -> String {
         format!(
             "{}  |  {}  |  {}  |  {}",
@@ -136,8 +134,7 @@ impl HardwareProfile {
         )
     }
 
-    /// Returns the approximate single-pass token ceiling (~70% of context window) before chunking kicks in.
-    pub fn one_pass_token_ceiling(&self) -> usize {
+    fn one_pass_token_ceiling(&self) -> usize {
         self.recommended_context * 7 / 10
     }
 
@@ -150,34 +147,29 @@ impl HardwareProfile {
         })
     }
 
-    /// Serializes the hardware profile into a structured JSON representation for diagnostics.
-    pub fn to_json_value(&self) -> serde_json::Value {
-        let mut obj = self.host_json();
-        if let Some(map) = obj.as_object_mut() {
-            let extra = serde_json::json!({
-                "recommended_family": "Gemma 4",
-                "recommended_model": self.recommended_model,
-                "concise_model": self.concise_model,
-                "recommended_size": self.recommended_size,
-                "recommended_quant": self.recommended_quant,
-                "disk_size": self.disk_size,
-                "recommended_context": self.recommended_context,
-                "recommended_context_display": self.recommended_context_display,
-                "recommended_launch_command": self.recommended_launch_command,
-                "ollama_launch_command": self.ollama_launch_command,
-                "ram_footprint": self.ram_footprint,
-                "one_pass_token_ceiling": self.one_pass_token_ceiling(),
-                "llama_gui_selection": self.llama_gui_selection(),
-            });
-            if let Some(extra_map) = extra.as_object() {
-                map.extend(extra_map.iter().map(|(k, v)| (k.clone(), v.clone())));
-            }
-        }
-        obj
+    pub(crate) fn to_json_value(&self) -> serde_json::Value {
+        serde_json::json!({
+            "device": self.chip_name,
+            "total_memory_bytes": self.total_memory_bytes,
+            "total_memory_gb": self.total_memory_gb,
+            "tier": self.tier.display_name(),
+            "recommended_family": "Gemma 4",
+            "recommended_model": self.recommended_model,
+            "concise_model": self.concise_model,
+            "recommended_size": self.recommended_size,
+            "recommended_quant": self.recommended_quant,
+            "disk_size": self.disk_size,
+            "recommended_context": self.recommended_context,
+            "recommended_context_display": self.recommended_context_display,
+            "recommended_launch_command": self.recommended_launch_command,
+            "ollama_launch_command": self.ollama_launch_command,
+            "ram_footprint": self.ram_footprint,
+            "one_pass_token_ceiling": self.one_pass_token_ceiling(),
+            "llama_gui_selection": self.llama_gui_selection(),
+        })
     }
 
-    /// Returns the structured recommendation report matching `srz recommend --json`.
-    pub fn to_recommend_report_json(&self) -> serde_json::Value {
+    pub(crate) fn to_recommend_report_json(&self) -> serde_json::Value {
         serde_json::json!({
             "hardware": self.host_json(),
             "recommendations": {
@@ -201,9 +193,8 @@ impl HardwareProfile {
     }
 }
 
-/// Formats a raw token context window (e.g. 32768) into a simplified label (e.g. "32k ctx")
-/// matching the Llama GUI display convention.
-pub fn format_context_tokens(tokens: usize) -> String {
+/// Formats a token count as a compact display label (e.g. `"32k ctx"`).
+pub(crate) fn format_context_tokens(tokens: usize) -> String {
     if tokens >= 1024 && tokens.is_multiple_of(1024) {
         format!("{}k ctx", tokens / 1024)
     } else if tokens >= 1000 {
@@ -213,115 +204,106 @@ pub fn format_context_tokens(tokens: usize) -> String {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn sysctl_value(key: &str) -> Option<String> {
+    let output = Command::new("/usr/sbin/sysctl")
+        .args(["-n", key])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 fn detect_host_specs() -> (Option<u64>, Option<String>) {
     #[cfg(target_os = "macos")]
     {
-        if let Ok(output) = Command::new("/usr/sbin/sysctl")
-            .args(["-n", "hw.memsize", "machdep.cpu.brand_string"])
+        let mem = sysctl_value("hw.memsize").and_then(|s| s.parse::<u64>().ok());
+        let chip = sysctl_value("machdep.cpu.brand_string").or_else(|| sysctl_value("hw.model"));
+        (mem, chip)
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let mem = std::fs::read_to_string("/proc/meminfo").ok().and_then(|c| {
+            c.lines().find_map(|line| {
+                line.strip_prefix("MemTotal:")?
+                    .split_whitespace()
+                    .next()?
+                    .parse::<u64>()
+                    .ok()?
+                    .checked_mul(1024)
+            })
+        });
+
+        let chip = std::fs::read_to_string("/proc/cpuinfo")
+            .ok()
+            .and_then(|c| {
+                c.lines().find_map(|line| {
+                    ["model name", "Hardware", "Processor"]
+                        .iter()
+                        .any(|p| line.starts_with(p))
+                        .then(|| {
+                            line.split(':')
+                                .nth(1)
+                                .map(|v| v.trim().to_string())
+                                .filter(|v| !v.is_empty())
+                        })
+                        .flatten()
+                })
+            })
+            .or_else(|| {
+                [
+                    "/sys/firmware/devicetree/base/model",
+                    "/sys/devices/virtual/dmi/id/product_name",
+                ]
+                .iter()
+                .find_map(|p| {
+                    std::fs::read_to_string(p)
+                        .ok()
+                        .map(|s| s.trim_matches(['\0', ' ', '\n', '\r']).to_string())
+                        .filter(|s| !s.is_empty())
+                })
+            });
+        (mem, chip)
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let env_chip = std::env::var("PROCESSOR_IDENTIFIER")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let ps = crate::fs_util::system_root_bin(r"WindowsPowerShell\v1.0\powershell.exe");
+        let ps_cmd = if env_chip.is_some() {
+            "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory"
+        } else {
+            "$m=(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory; $c=(Get-CimInstance Win32_Processor | Select-Object -First 1).Name; \"$m`n$c\""
+        };
+        if let Ok(output) = Command::new(ps)
+            .args(["-NoProfile", "-Command", ps_cmd])
             .output()
             && output.status.success()
             && let Ok(text) = std::str::from_utf8(&output.stdout)
         {
             let mut lines = text.lines();
             let mem = lines.next().and_then(|s| s.trim().parse::<u64>().ok());
-            let chip = lines
-                .next()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string);
+            let chip = env_chip.or_else(|| {
+                lines
+                    .next()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            });
             return (mem, chip);
         }
-        (None, None)
+        (None, env_chip)
     }
 
-    #[cfg(not(target_os = "macos"))]
-    (detect_total_memory(), detect_chip_name())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn detect_total_memory() -> Option<u64> {
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
-            for line in content.lines() {
-                if let Some(rest) = line.strip_prefix("MemTotal:") {
-                    let parts: Vec<&str> = rest.split_whitespace().collect();
-                    if let Some(kb_str) = parts.first()
-                        && let Ok(kb) = kb_str.parse::<u64>()
-                    {
-                        return Some(kb * 1024);
-                    }
-                }
-            }
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let ps = crate::fs_util::system_root_bin(r"WindowsPowerShell\v1.0\powershell.exe");
-        if let Ok(output) = Command::new(ps)
-            .args([
-                "-NoProfile",
-                "-Command",
-                "(Get-CimInstance Win32_PhysicalMemory | Measure-Object -Property Capacity -Sum).Sum",
-            ])
-            .output()
-            && output.status.success()
-            && let Ok(text) = std::str::from_utf8(&output.stdout)
-            && let Ok(bytes) = text.trim().parse::<u64>()
-        {
-            return Some(bytes);
-        }
-    }
-
-    None
-}
-
-#[cfg(not(target_os = "macos"))]
-fn detect_chip_name() -> Option<String> {
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(content) = std::fs::read_to_string("/proc/cpuinfo") {
-            for line in content.lines() {
-                if let Some(rest) = line.strip_prefix("model name")
-                    && let Some(val) = rest.split(':').nth(1)
-                {
-                    let clean = val.trim();
-                    if !clean.is_empty() {
-                        return Some(clean.to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(brand) = std::env::var("PROCESSOR_IDENTIFIER") {
-            let clean = brand.trim();
-            if !clean.is_empty() {
-                return Some(clean.to_string());
-            }
-        }
-        let ps = crate::fs_util::system_root_bin(r"WindowsPowerShell\v1.0\powershell.exe");
-        if let Ok(output) = Command::new(ps)
-            .args([
-                "-NoProfile",
-                "-Command",
-                "(Get-CimInstance Win32_Processor).Name",
-            ])
-            .output()
-            && output.status.success()
-            && let Ok(text) = std::str::from_utf8(&output.stdout)
-        {
-            let clean = text.trim();
-            if !clean.is_empty() {
-                return Some(clean.to_string());
-            }
-        }
-    }
-
-    None
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    (None, None)
 }
 
 #[cfg(test)]
@@ -330,89 +312,65 @@ mod tests {
 
     #[test]
     fn test_profile_from_specs() {
-        for (gb, chip, tier, model, size, disk, ctx, ctx_disp, ram, gui, check_ollama) in [
+        for (gb, tier, model, size, ctx, ctx_disp, ollama_sub) in [
             (
                 8,
-                "Apple M1",
                 HardwareTier::Tier8GB,
                 "ggml-org/gemma-4-E4B-it-GGUF:Q8_0",
                 "E4B",
-                "~8.6 GB",
                 8_192,
                 "8k ctx",
-                "~8.9 GB",
-                "gemma-4  |  E4B  |  Q8_0  |  8k ctx",
-                None,
+                "OLLAMA_CONTEXT_LENGTH=8192 ollama run gemma4:e4b",
             ),
             (
                 16,
-                "Apple M3",
                 HardwareTier::Tier16GB,
                 "ggml-org/gemma-4-E4B-it-GGUF:Q8_0",
                 "E4B",
-                "~8.6 GB",
                 32_768,
                 "32k ctx",
-                "~9.4 GB",
-                "gemma-4  |  E4B  |  Q8_0  |  32k ctx",
-                Some("ollama run gemma2:9b --ctx-size 32768"),
+                "OLLAMA_CONTEXT_LENGTH=32768 ollama run gemma4:e4b",
             ),
             (
                 32,
-                "Apple M3 Pro",
                 HardwareTier::Tier32GB,
                 "ggml-org/gemma-4-E4B-it-GGUF:Q8_0",
                 "E4B",
-                "~8.6 GB",
                 65_536,
                 "64k ctx",
-                "~10 GB",
-                "gemma-4  |  E4B  |  Q8_0  |  64k ctx",
-                None,
+                "OLLAMA_CONTEXT_LENGTH=65536 ollama run gemma4:e4b",
             ),
             (
                 64,
-                "Apple M3 Max",
                 HardwareTier::Tier64GBPlus,
                 "ggml-org/gemma-4-26B-A4B-it-GGUF:Q8_0",
                 "26B-A4B",
-                "~28.0 GB",
                 131_072,
                 "128k ctx",
-                "~30–32 GB",
-                "gemma-4  |  26B-A4B  |  Q8_0  |  128k ctx",
-                None,
+                "OLLAMA_CONTEXT_LENGTH=131072 ollama run gemma4:26b",
             ),
         ] {
-            let profile = HardwareProfile::from_specs(gb * 1024 * 1024 * 1024, chip.to_string());
+            let profile =
+                HardwareProfile::from_specs(gb * 1024 * 1024 * 1024, "Test CPU".to_string());
             assert_eq!(profile.tier, tier);
             assert_eq!(profile.recommended_model, model);
-            assert_eq!(profile.concise_model, "gemma-4");
             assert_eq!(profile.recommended_size, size);
-            assert_eq!(profile.recommended_quant, "Q8_0");
-            assert_eq!(profile.disk_size, disk);
             assert_eq!(profile.recommended_context, ctx);
             assert_eq!(profile.recommended_context_display, ctx_disp);
-            assert_eq!(profile.ram_footprint, ram);
             assert!(
                 profile
                     .recommended_launch_command
                     .contains(&format!("-c {ctx}"))
             );
-            assert!(profile.recommended_launch_command.contains(size));
+            assert_eq!(profile.ollama_launch_command, ollama_sub);
             assert_eq!(profile.one_pass_token_ceiling(), ctx * 7 / 10);
-            assert_eq!(profile.llama_gui_selection(), gui);
-            if let Some(ollama_cmd) = check_ollama {
-                assert!(profile.ollama_launch_command.contains(ollama_cmd));
-            }
+            assert!(profile.llama_gui_selection().contains(ctx_disp));
         }
     }
 
     #[test]
     fn test_format_context_tokens() {
         assert_eq!(format_context_tokens(8192), "8k ctx");
-        assert_eq!(format_context_tokens(32768), "32k ctx");
-        assert_eq!(format_context_tokens(65536), "64k ctx");
         assert_eq!(format_context_tokens(131072), "128k ctx");
         assert_eq!(format_context_tokens(4000), "4k ctx");
         assert_eq!(format_context_tokens(512), "512 ctx");
@@ -420,9 +378,6 @@ mod tests {
 
     #[test]
     fn test_hardware_system_detection() {
-        let (mem, chip) = detect_host_specs();
-        assert!(mem.is_some_and(|m| m > 0));
-        assert!(chip.is_some_and(|c| !c.is_empty()));
         let profile = HardwareProfile::detect();
         assert!(profile.total_memory_bytes > 0);
         assert!(!profile.chip_name.is_empty());

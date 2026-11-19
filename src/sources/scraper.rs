@@ -401,7 +401,7 @@ fn filter_public_addrs(
 }
 
 /// DNS resolver that enforces SSRF IP validation on resolved addresses to block DNS rebinding.
-struct PublicDnsResolver;
+pub(crate) struct PublicDnsResolver;
 
 impl reqwest::dns::Resolve for PublicDnsResolver {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {

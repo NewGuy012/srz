@@ -72,7 +72,7 @@ pub fn open_in_browser(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-pub use crate::system::text_util::{slugify, slugify_unique};
+use crate::system::text_util::slugify_unique;
 
 const SHARED_THEME_CSS: &str = r#"    :root {
       --bg: #faf9f5;
@@ -644,6 +644,7 @@ pub fn ensure_index_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::system::text_util::slugify;
 
     #[test]
     fn test_is_safe_markdown_url() {

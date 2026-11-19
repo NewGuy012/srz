@@ -149,7 +149,7 @@ pub async fn handle_doctor(
 
     // Print Hardware Profile
     println!("Hardware:");
-    print_host_device_info(&hw);
+    print_host_device_info(hw);
     println!(
         "  • Recommended: {} [{} {}] · {} ({})",
         hw.recommended_model,
@@ -311,7 +311,7 @@ pub fn handle_recommend(as_json: bool) -> Result<()> {
     Ui::header("srz Recommended Model & Context Length");
 
     println!("Host Machine:");
-    print_host_device_info(&hw);
+    print_host_device_info(hw);
     println!();
 
     println!("Recommended Local LLM Setup (Llama GUI / llama.cpp):");

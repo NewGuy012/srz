@@ -513,10 +513,8 @@ mod tests {
     use crate::cli::NewsTimeframe;
     use crate::storage::db::NewSummaryRecord;
 
-    fn test_cache(label: &str) -> (crate::fs_util::TempDir, Cache) {
-        let tmp =
-            crate::fs_util::TempDir::new_in(std::env::temp_dir(), &format!("srz_test_{label}_"))
-                .expect("Failed to create temporary directory");
+    fn test_cache(_label: &str) -> (crate::fs_util::TempDir, Cache) {
+        let tmp = crate::fs_util::tempdir().expect("Failed to create temporary directory");
         let cache = Cache::with_dir(tmp.path().to_path_buf(), true);
         (tmp, cache)
     }

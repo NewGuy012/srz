@@ -336,7 +336,7 @@ impl Database {
         for attempt in 0..5 {
             match RedbDb::create(path) {
                 Ok(db) => {
-                    fs_util::set_private_file_perms(path);
+                    let _ = fs_util::set_unix_mode(path, 0o600);
                     init_redb_schema(&db)?;
                     return Ok(Self { db: Arc::new(db) });
                 }

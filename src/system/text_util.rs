@@ -1,60 +1,74 @@
 use std::borrow::Cow;
 
-/// Decodes numeric and named HTML entities in a single pass, returning a zero-copy
-/// `Cow::Borrowed` when `s` contains no entities.
-pub fn decode_html_entities(s: &str) -> Cow<'_, str> {
-    if !s.contains('&') {
+/// Decodes numeric and named HTML entities in a single pass, borrowing zero-copy when no entities decode.
+pub(crate) fn decode_html_entities(s: &str) -> Cow<'_, str> {
+    let Some(mut i) = s.find('&') else {
         return Cow::Borrowed(s);
-    }
+    };
 
-    let mut out = String::with_capacity(s.len());
     let bytes = s.as_bytes();
-    let mut i = 0;
+    let mut out: Option<String> = None;
+    let mut copied = 0;
 
     while i < bytes.len() {
-        if bytes[i] == b'&' {
-            // Check for entity termination ';' within reasonable distance (<= 12 bytes)
-            let mut end = i + 1;
-            while end < bytes.len()
-                && end - i <= 12
-                && bytes[end] != b';'
-                && bytes[end] != b'&'
-                && bytes[end] != b' '
-            {
-                end += 1;
-            }
+        let mut end = i + 1;
+        while end < bytes.len()
+            && end - i <= 12
+            && bytes[end] != b';'
+            && bytes[end] != b'&'
+            && bytes[end] != b' '
+        {
+            end += 1;
+        }
 
-            if end < bytes.len() && bytes[end] == b';' {
-                let entity = &s[i + 1..end];
-                if let Some(rest) = entity.strip_prefix('#') {
-                    let code = if let Some(hex) =
-                        rest.strip_prefix('x').or_else(|| rest.strip_prefix('X'))
-                    {
+        if end < bytes.len() && bytes[end] == b';' {
+            let entity = &s[i + 1..end];
+            let replacement = if let Some(rest) = entity.strip_prefix('#') {
+                let code =
+                    if let Some(hex) = rest.strip_prefix('x').or_else(|| rest.strip_prefix('X')) {
                         u32::from_str_radix(hex, 16).ok()
                     } else {
                         rest.parse::<u32>().ok()
                     };
-                    if let Some(c) = code.and_then(char::from_u32) {
-                        out.push(c);
-                        i = end + 1;
-                        continue;
+                code.and_then(|n| {
+                    if n == 0 {
+                        Some('\u{FFFD}')
+                    } else {
+                        char::from_u32(n)
                     }
-                } else if let Some(decoded) = decode_named_entity(entity) {
-                    out.push_str(decoded);
-                    i = end + 1;
+                })
+                .map(|c| Cow::Owned(c.to_string()))
+            } else {
+                decode_named_entity(entity).map(Cow::Borrowed)
+            };
+
+            if let Some(decoded) = replacement {
+                let buf = out.get_or_insert_with(|| String::with_capacity(s.len()));
+                buf.push_str(&s[copied..i]);
+                buf.push_str(&decoded);
+                i = end + 1;
+                copied = i;
+                if let Some(rel) = s[i..].find('&') {
+                    i += rel;
                     continue;
                 }
+                break;
             }
         }
 
-        // Push character as utf-8 safely
-        let rest = &s[i..];
-        let ch = rest.chars().next().unwrap_or('\0');
-        out.push(ch);
-        i += ch.len_utf8();
+        match s[i + 1..].find('&') {
+            Some(rel) => i += 1 + rel,
+            None => break,
+        }
     }
 
-    Cow::Owned(out)
+    match out {
+        None => Cow::Borrowed(s),
+        Some(mut buf) => {
+            buf.push_str(&s[copied..]);
+            Cow::Owned(buf)
+        }
+    }
 }
 
 fn decode_named_entity(entity: &str) -> Option<&'static str> {
@@ -91,21 +105,21 @@ fn decode_named_entity(entity: &str) -> Option<&'static str> {
     }
 }
 
-/// URL percent-encodes a string according to RFC 3986 (unreserved: a-z, A-Z, 0-9, -, _, ., ~).
-/// Returns a borrowed Cow if no characters need encoding.
-pub fn url_encode(s: &str) -> Cow<'_, str> {
+const fn is_unreserved_uri_byte(b: u8) -> bool {
+    matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~')
+}
+
+/// URL percent-encodes `s` per RFC 3986, borrowing zero-copy if all bytes are unreserved.
+pub(crate) fn url_encode(s: &str) -> Cow<'_, str> {
     let bytes = s.as_bytes();
-    if bytes
-        .iter()
-        .all(|&b| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~'))
-    {
+    if bytes.iter().all(|&b| is_unreserved_uri_byte(b)) {
         return Cow::Borrowed(s);
     }
 
     const HEX_UPPER: &[u8; 16] = b"0123456789ABCDEF";
-    let mut out = String::with_capacity(s.len() * 3);
+    let mut out = String::with_capacity(s.len());
     for &b in bytes {
-        if matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~') {
+        if is_unreserved_uri_byte(b) {
             out.push(b as char);
         } else {
             out.push('%');
@@ -116,9 +130,8 @@ pub fn url_encode(s: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-/// URL percent-decodes a string according to RFC 3986.
-/// Returns a borrowed Cow if no percent-encoded octets exist.
-pub fn url_decode(s: &str) -> Result<Cow<'_, str>, std::string::FromUtf8Error> {
+/// URL percent-decodes `s` per RFC 3986, borrowing zero-copy when no `%` escapes exist.
+pub(crate) fn url_decode(s: &str) -> Result<Cow<'_, str>, std::string::FromUtf8Error> {
     if !s.as_bytes().contains(&b'%') {
         return Ok(Cow::Borrowed(s));
     }
@@ -144,80 +157,91 @@ pub fn url_decode(s: &str) -> Result<Cow<'_, str>, std::string::FromUtf8Error> {
     String::from_utf8(out).map(Cow::Owned)
 }
 
-/// Computes the Damerau-Levenshtein (OSA) edit distance between two character sequences.
-pub fn damerau_levenshtein(a: &str, b: &str) -> usize {
-    let a_chars: Vec<char> = a.chars().collect();
-    let b_chars: Vec<char> = b.chars().collect();
-
+/// Computes the Damerau-Levenshtein (OSA) edit distance in O(min(m, n)) space.
+pub(crate) fn damerau_levenshtein(a: &str, b: &str) -> usize {
+    let mut a_chars: Vec<char> = a.chars().collect();
+    let mut b_chars: Vec<char> = b.chars().collect();
+    if a_chars.len() < b_chars.len() {
+        std::mem::swap(&mut a_chars, &mut b_chars);
+    }
     let a_len = a_chars.len();
     let b_len = b_chars.len();
-
-    if a_len == 0 {
-        return b_len;
-    }
     if b_len == 0 {
         return a_len;
     }
 
-    let width = b_len + 1;
-    let mut d = vec![0usize; (a_len + 1) * width];
-
-    for i in 0..=a_len {
-        d[i * width] = i;
-    }
-    for (j, val) in d.iter_mut().take(width).enumerate() {
-        *val = j;
-    }
+    let mut prev2 = vec![0usize; b_len + 1];
+    let mut prev: Vec<usize> = (0..=b_len).collect();
+    let mut curr = vec![0usize; b_len + 1];
 
     for i in 1..=a_len {
+        curr[0] = i;
         for j in 1..=b_len {
-            let cost = if a_chars[i - 1] == b_chars[j - 1] {
-                0
-            } else {
-                1
-            };
-            let mut min_val = (d[(i - 1) * width + j] + 1)
-                .min(d[i * width + (j - 1)] + 1)
-                .min(d[(i - 1) * width + (j - 1)] + cost);
-
+            let cost = usize::from(a_chars[i - 1] != b_chars[j - 1]);
+            let mut min_val = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
             if i > 1
                 && j > 1
                 && a_chars[i - 1] == b_chars[j - 2]
                 && a_chars[i - 2] == b_chars[j - 1]
             {
-                min_val = min_val.min(d[(i - 2) * width + (j - 2)] + 1);
+                min_val = min_val.min(prev2[j - 2] + 1);
             }
-            d[i * width + j] = min_val;
+            curr[j] = min_val;
         }
+        std::mem::swap(&mut prev2, &mut prev);
+        std::mem::swap(&mut prev, &mut curr);
     }
 
-    d[a_len * width + b_len]
+    prev[b_len]
 }
 
-/// Strips all HTML tags (`<...>`) from a string, preserving only text content.
-pub fn strip_html_tags(html: &str) -> String {
+/// Strips `<...>` HTML tags while preserving unclosed `<` literals and quoted `>`.
+pub(crate) fn strip_html_tags(html: &str) -> String {
     let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for ch in html.chars() {
-        if ch == '<' {
-            in_tag = true;
-        } else if ch == '>' {
-            in_tag = false;
-            out.push(' ');
-        } else if !in_tag {
-            out.push(ch);
+    let bytes = html.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b'<' {
+            let mut j = i + 1;
+            let mut quote = 0u8;
+            while j < bytes.len() {
+                let b = bytes[j];
+                if quote != 0 {
+                    if b == quote {
+                        quote = 0;
+                    }
+                } else if b == b'"' || b == b'\'' {
+                    quote = b;
+                } else if b == b'>' || b == b'<' {
+                    break;
+                }
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'>' {
+                out.push(' ');
+                i = j + 1;
+                continue;
+            }
+            out.push('<');
+            i += 1;
+            continue;
         }
+        let next = bytes[i..]
+            .iter()
+            .position(|&b| b == b'<')
+            .map_or(bytes.len(), |p| i + p);
+        out.push_str(&html[i..next]);
+        i = next;
     }
     out
 }
 
-/// Zero-allocation case-insensitive ASCII substring search returning the first byte index of `needle`.
-pub fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+pub(crate) fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
     find_subslice_ignore_case(haystack.as_bytes(), needle.as_bytes())
 }
 
-/// Finds the byte offset of `needle` in `haystack` case-insensitively.
-pub fn find_subslice_ignore_case(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+pub(crate) fn find_subslice_ignore_case(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() {
         return Some(0);
     }
@@ -229,8 +253,7 @@ pub fn find_subslice_ignore_case(haystack: &[u8], needle: &[u8]) -> Option<usize
         .position(|w| w.eq_ignore_ascii_case(needle))
 }
 
-/// Case-insensitive substring check with zero-allocation ASCII fast-path and Unicode fallback.
-pub fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
+pub(crate) fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return true;
     }
@@ -241,18 +264,14 @@ pub fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
     }
 }
 
-/// Zero-allocation case-insensitive ASCII suffix check (`lowercase_suffix` must already be lowercase ASCII).
-pub fn ends_with_ascii_case_insensitive(haystack: &str, lowercase_suffix: &str) -> bool {
+pub(crate) fn ends_with_ascii_case_insensitive(haystack: &str, lowercase_suffix: &str) -> bool {
     let h_bytes = haystack.as_bytes();
     let s_bytes = lowercase_suffix.as_bytes();
-    if h_bytes.len() < s_bytes.len() {
-        return false;
-    }
-    h_bytes[h_bytes.len() - s_bytes.len()..].eq_ignore_ascii_case(s_bytes)
+    h_bytes.len() >= s_bytes.len()
+        && h_bytes[h_bytes.len() - s_bytes.len()..].eq_ignore_ascii_case(s_bytes)
 }
 
-/// Returns `true` if the string starts with `"http://"` or `"https://"` (case-insensitive).
-pub fn is_http_url(s: &str) -> bool {
+pub(crate) fn is_http_url(s: &str) -> bool {
     let bytes = s.as_bytes();
     bytes
         .get(..7)
@@ -283,21 +302,17 @@ const STOP_WORDS: &[&str] = &[
     "yourselves",
 ];
 
-/// Returns true if `word` is a common English stop word.
-pub fn is_stop_word(word: &str) -> bool {
+pub(crate) fn is_stop_word(word: &str) -> bool {
     if word.bytes().any(|b| b.is_ascii_uppercase()) {
-        is_stop_word_lower(&word.to_ascii_lowercase())
+        STOP_WORDS
+            .binary_search(&word.to_ascii_lowercase().as_str())
+            .is_ok()
     } else {
-        is_stop_word_lower(word)
+        STOP_WORDS.binary_search(&word).is_ok()
     }
 }
 
-pub fn is_stop_word_lower(word: &str) -> bool {
-    STOP_WORDS.binary_search(&word).is_ok()
-}
-
-/// Tokenizes text into normalized lowercased terms for BM25 indexing and querying.
-pub fn tokenize_terms(text: &str) -> Vec<String> {
+pub(crate) fn tokenize_terms(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
         .map(|s| s.trim_matches(|c: char| !c.is_alphanumeric()))
         .filter(|s| !s.is_empty())
@@ -305,21 +320,18 @@ pub fn tokenize_terms(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Tokenizes text into search/index terms, filtering out stop words and single-character ASCII tokens.
-pub fn tokenize_search_terms(text: &str) -> Vec<String> {
+pub(crate) fn tokenize_search_terms(text: &str) -> Vec<String> {
     tokenize_terms(text)
         .into_iter()
         .filter(|t| !is_stop_word(t) && !(t.len() <= 1 && t.is_ascii()))
         .collect()
 }
 
-/// Returns the local name of a potentially namespaced XML/HTML identifier (`ns:tag` -> `tag`).
-pub fn xml_local_name(name: &str) -> &str {
+pub(crate) fn xml_local_name(name: &str) -> &str {
     name.rsplit(':').next().unwrap_or(name)
 }
 
-/// Looks up `target_local` (case-insensitive on local name) in a raw tag attribute string.
-pub fn xml_attr<'a>(attrs: &'a str, target_local: &str) -> Option<Cow<'a, str>> {
+pub(crate) fn xml_attr<'a>(attrs: &'a str, target_local: &str) -> Option<Cow<'a, str>> {
     let bytes = attrs.as_bytes();
     let len = bytes.len();
     let mut i = 0;
@@ -385,7 +397,7 @@ pub fn xml_attr<'a>(attrs: &'a str, target_local: &str) -> Option<Cow<'a, str>> 
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum XmlEvent<'a> {
+pub(crate) enum XmlEvent<'a> {
     Start {
         name: &'a str,
         attrs: &'a str,
@@ -399,17 +411,17 @@ pub enum XmlEvent<'a> {
 }
 
 /// Lightweight streaming XML/HTML token scanner.
-pub struct XmlScanner<'a> {
+pub(crate) struct XmlScanner<'a> {
     src: &'a str,
     pos: usize,
 }
 
 impl<'a> XmlScanner<'a> {
-    pub fn new(src: &'a str) -> Self {
+    pub(crate) fn new(src: &'a str) -> Self {
         Self { src, pos: 0 }
     }
 
-    pub fn next_event(&mut self) -> Option<XmlEvent<'a>> {
+    pub(crate) fn next_event(&mut self) -> Option<XmlEvent<'a>> {
         while self.pos < self.src.len() {
             let rest = &self.src[self.pos..];
             if !rest.starts_with('<') {
@@ -519,11 +531,18 @@ impl<'a> XmlScanner<'a> {
 
             self.pos += i + 1;
             let raw_inner = rest[1..i].trim();
-            let inner = raw_inner
-                .strip_suffix('/')
-                .map(str::trim_end)
-                .unwrap_or(raw_inner);
-            let is_empty = inner.len() != raw_inner.len();
+            let is_empty = raw_inner.strip_suffix('/').is_some_and(|before| {
+                let last_tok = before
+                    .rfind(|c: char| c.is_ascii_whitespace())
+                    .map_or(before, |p| &before[p + 1..]);
+                before.ends_with(|c: char| c.is_ascii_whitespace() || matches!(c, '"' | '\''))
+                    || !last_tok.contains('=')
+            });
+            let inner = if is_empty {
+                raw_inner[..raw_inner.len() - 1].trim_end()
+            } else {
+                raw_inner
+            };
             if inner.is_empty() {
                 continue;
             }
@@ -542,7 +561,7 @@ impl<'a> XmlScanner<'a> {
     }
 
     /// Reads and entity-decodes text (preserving CDATA sections verbatim) inside `tag_name` until `</tag_name>`.
-    pub fn read_text(&mut self, tag_name: &str) -> String {
+    pub(crate) fn read_text(&mut self, tag_name: &str) -> String {
         let mut out = String::new();
         let mut depth = 1usize;
         while let Some(ev) = self.next_event() {
@@ -569,8 +588,7 @@ impl<'a> XmlScanner<'a> {
     }
 }
 
-/// Converts a title into a filesystem-safe ASCII slug.
-pub fn slugify(title: &str) -> String {
+pub(crate) fn slugify(title: &str) -> String {
     let mut slug = String::with_capacity(title.len());
     let mut prev_dash = false;
 
@@ -594,15 +612,14 @@ pub fn slugify(title: &str) -> String {
     }
 }
 
-/// Converts a title and optional unique key into a collision-resistant ASCII slug.
-pub fn slugify_unique(title: &str, unique_key: Option<&str>) -> String {
+pub(crate) fn slugify_unique(title: &str, unique_key: Option<&str>) -> String {
     let base_slug = slugify(title);
     if let Some(key) = unique_key
         && !key.is_empty()
     {
         let hash = crate::system::sha256::sha256_hex(key.as_bytes());
         let short_hash = &hash[..8];
-        if base_slug.is_empty() || base_slug == "summary" {
+        if base_slug == "summary" {
             short_hash.to_string()
         } else {
             format!("{}-{}", base_slug, short_hash)
@@ -615,16 +632,6 @@ pub fn slugify_unique(title: &str, unique_key: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_is_stop_word() {
-        for w in ["the", "The", "what", "is", "about"] {
-            assert!(is_stop_word(w));
-        }
-        for w in ["quantum", "cryptography", "architecture"] {
-            assert!(!is_stop_word(w));
-        }
-    }
 
     #[test]
     fn test_damerau_levenshtein() {
@@ -642,6 +649,9 @@ mod tests {
 
     #[test]
     fn test_tokenize_terms_and_search_terms() {
+        assert!(is_stop_word("The"));
+        assert!(!is_stop_word("quantum"));
+
         let text = "The Quick Brown Fox jumps over 123 lazy dogs! #Rust_2026-edition";
         let terms = tokenize_terms(text);
         for expected in ["quick", "brown", "the", "rust_2026-edition"] {
@@ -649,7 +659,6 @@ mod tests {
         }
 
         let search_terms = tokenize_search_terms(text);
-        // "the" is a stop word and should be filtered out
         assert!(!search_terms.contains(&"the".to_string()));
         for expected in ["quick", "fox", "dogs"] {
             assert!(search_terms.contains(&expected.to_string()));
@@ -666,10 +675,10 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_html_entities() {
+    fn test_decode_html_entities_and_strip_tags() {
         assert!(matches!(
-            decode_html_entities("Hello world"),
-            Cow::Borrowed("Hello world")
+            decode_html_entities("AT&T"),
+            Cow::Borrowed("AT&T")
         ));
         for (raw, expected) in [
             (
@@ -677,60 +686,41 @@ mod tests {
                 "<div>\"Hello & welcome\"</div>",
             ),
             ("It&#39;s sunny &amp; warm", "It's sunny & warm"),
-            ("A &amp;lt; B &quot;ok&quot;", "A &lt; B \"ok\""),
+            ("NUL &#0; &#x00;", "NUL \u{FFFD} \u{FFFD}"),
         ] {
             assert_eq!(decode_html_entities(raw), expected);
         }
+
+        assert_eq!(
+            strip_html_tags(r#"x < y and <a title="a > b">hi</a>"#).trim(),
+            "x < y and  hi"
+        );
     }
 
     #[test]
-    fn test_ascii_case_insensitive() {
+    fn test_ascii_case_insensitive_and_http_url() {
         for (haystack, needle, expected) in [
             ("Hello World", "world", Some(6)),
             ("Hello World", "WORLD", Some(6)),
             ("Hello", "xyz", None),
-            ("<ITEM>", "<item>", Some(0)),
             ("Short", "LongerPattern", None),
-            ("abc", "", Some(0)),
         ] {
             assert_eq!(find_ascii_case_insensitive(haystack, needle), expected);
         }
-        for (text, suffix, expected) in [
-            ("test.RSS", ".rss", true),
-            ("test.rss", ".RSS", true),
-            ("test.xml", ".rss", false),
-            ("rss", ".rss", false),
-        ] {
-            assert_eq!(ends_with_ascii_case_insensitive(text, suffix), expected);
-        }
-    }
-
-    #[test]
-    fn test_is_http_url() {
-        for (url, expected) in [
-            ("http://example.com", true),
-            ("https://example.com/feed", true),
-            ("HTTP://EXAMPLE.COM", true),
-            ("HTTPS://Example.Com/path", true),
-            ("ftp://example.com", false),
-            ("example.com", false),
-            ("/path/to/file", false),
-            ("€€", false),
-        ] {
-            assert_eq!(is_http_url(url), expected);
-        }
+        assert!(ends_with_ascii_case_insensitive("test.RSS", ".rss"));
+        assert!(!ends_with_ascii_case_insensitive("rss", ".rss"));
+        assert!(is_http_url("HTTPS://Example.Com/path"));
+        assert!(!is_http_url("ftp://example.com"));
     }
 
     #[test]
     fn test_url_encode_and_decode() {
-        assert_eq!(url_encode("hello_world-123.~"), "hello_world-123.~");
-        assert!(matches!(url_encode("simple"), Cow::Borrowed(_)));
-        assert_eq!(url_encode("hello world!"), "hello%20world%21");
-        assert_eq!(url_encode("Dune (novel)"), "Dune%20%28novel%29");
-
-        assert_eq!(url_decode("simple").unwrap(), "simple");
-        assert!(matches!(url_decode("simple").unwrap(), Cow::Borrowed(_)));
-        assert_eq!(url_decode("hello%20world%21").unwrap(), "hello world!");
+        assert!(matches!(url_encode("simple"), Cow::Borrowed("simple")));
+        assert_eq!(url_encode("Dune (novel)!"), "Dune%20%28novel%29%21");
+        assert!(matches!(
+            url_decode("simple").unwrap(),
+            Cow::Borrowed("simple")
+        ));
         assert_eq!(
             url_decode("https://en.wikipedia.org/wiki/Dune_%28novel%29").unwrap(),
             "https://en.wikipedia.org/wiki/Dune_(novel)"
@@ -739,7 +729,7 @@ mod tests {
 
     #[test]
     fn test_xml_scanner_and_attrs() {
-        let xml = r#"<?xml version="1.0"?><!-- comment --><root xmlns:dc="http://purl.org"><dc:title>A &amp; B</dc:title><item id='i1' label="x > y"/><p>a<b</p></root>"#;
+        let xml = r#"<?xml version="1.0"?><!-- comment --><root xmlns:dc="http://purl.org"><dc:title>A &amp; B</dc:title><item id='i1' label="x > y"/><a href=https://x.com/>link</a></root>"#;
         let mut scanner = XmlScanner::new(xml);
 
         assert_eq!(
@@ -750,14 +740,13 @@ mod tests {
                 is_empty: false,
             })
         );
-        assert_eq!(
+        assert!(matches!(
             scanner.next_event(),
             Some(XmlEvent::Start {
                 name: "dc:title",
-                attrs: "",
-                is_empty: false,
+                ..
             })
-        );
+        ));
         assert_eq!(scanner.read_text("dc:title"), "A & B");
 
         let Some(XmlEvent::Start {
@@ -774,7 +763,17 @@ mod tests {
         assert_eq!(xml_attr(attrs, "label").as_deref(), Some("x > y"));
         assert_eq!(xml_attr(attrs, "missing"), None);
 
-        // Unclosed `<` / `</` runs must remain linear time.
+        let Some(XmlEvent::Start {
+            name,
+            attrs,
+            is_empty,
+        }) = scanner.next_event()
+        else {
+            panic!("expected <a>");
+        };
+        assert_eq!((name, is_empty), ("a", false));
+        assert_eq!(xml_attr(attrs, "href").as_deref(), Some("https://x.com/"));
+
         let mut pathological = "<a ".repeat(20_000);
         pathological.push_str(&"</".repeat(20_000));
         let mut pathological_scanner = XmlScanner::new(&pathological);

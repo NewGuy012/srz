@@ -2,9 +2,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use crate::chunker::{TextChunker, TokenizerKind};
-use crate::system::text_util::{
-    find_ascii_case_insensitive, is_stop_word, is_stop_word_lower, tokenize_terms,
-};
+use crate::system::text_util::{find_ascii_case_insensitive, is_stop_word, tokenize_terms};
 
 #[inline]
 fn is_word_boundary(text: &str, start: usize, len: usize) -> bool {
@@ -441,7 +439,7 @@ fn score_segments_centroid_bm25(segments: &[Segment<'_>]) -> Vec<f64> {
             } else {
                 scratch.extend(tok.chars().flat_map(char::to_lowercase));
             }
-            if is_stop_word_lower(&scratch) {
+            if is_stop_word(&scratch) {
                 continue;
             }
 

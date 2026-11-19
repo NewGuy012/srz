@@ -1068,7 +1068,7 @@ mod tests {
     #[test]
     fn test_template_for_hardware_is_valid_toml() {
         let template =
-            Config::template_for_hardware(&crate::system::hardware::HardwareProfile::detect());
+            Config::template_for_hardware(crate::system::hardware::HardwareProfile::detect());
         let cfg: Config =
             toml::from_str(&template).expect("hardware template must parse as valid TOML");
         assert_eq!(cfg.base_url.as_deref(), Some("http://localhost:9931/v1"));

@@ -61,7 +61,7 @@ fn process_block(state: &mut [u32; 8], block: &[u8; 64]) {
 }
 
 /// Computes the lowercase hex FIPS 180-4 SHA-256 digest of `data`.
-pub fn sha256_hex(data: &[u8]) -> String {
+pub(crate) fn sha256_hex(data: &[u8]) -> String {
     use std::fmt::Write;
 
     let mut state = INITIAL_H;
