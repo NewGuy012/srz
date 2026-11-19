@@ -1,13 +1,8 @@
 pub mod cache;
 pub mod db;
 
-pub use cache::{
-    Cache, CachePolicy, CacheStats, PruneOptions, PruneStats, parse_bytes, parse_duration,
-};
-pub use db::Database;
-
 #[cfg(test)]
-pub(super) fn make_summary<'a>(
+fn make_summary<'a>(
     target_type: &'a str,
     title: &'a str,
     author: Option<&'a str>,
