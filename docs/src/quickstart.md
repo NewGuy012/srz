@@ -119,40 +119,38 @@ Gemma 4 models offer exceptional reasoning density and instruction adherence per
 
 ## 3. Basic Usage Examples
 
-### Summarize a Webpage or Article
-Pass any URL directly. `srz` extracts clean text using Mozilla Readability, stripping ads and sidebars:
+### Summarize a Webpage, YouTube Video, or Remote PDF
+Pass any HTTP(S) URL to `srz web`. It automatically routes YouTube links to timed-text captions, `.pdf` URLs to the binary PDF extractor, and standard articles through Mozilla Readability:
 
 ```bash
-srz "https://en.wikipedia.org/wiki/Rust_(programming_language)"
+# Web article
+srz web "https://en.wikipedia.org/wiki/Rust_(programming_language)"
+
+# YouTube video
+srz web "https://youtu.be/5C_HPTJg5ek"
 ```
 
-### Summarize a YouTube Video
-Extract and synthesize closed-caption transcripts from YouTube URLs:
+### Summarize a Local Document (PDF, EPUB, HTML, Markdown, Text)
+Pass any local file path to `srz document`. It automatically detects PDF, EPUB, HTML, Markdown, JSON, and plain text by extension and magic bytes:
 
 ```bash
-srz "https://youtu.be/5C_HPTJg5ek"
-```
-
-### Summarize a Local PDF, EPUB, or Document
-Pass a path to a `.pdf`, `.epub`, `.html`, `.md`, `.txt`, or `.json` file:
-
-```bash
-srz assets/document.pdf
+srz document assets/document.pdf
 ```
 
 ### Summarize Unix Standard Input
-Pipe terminal command output, logs, or git diffs directly into `srz`:
+Pipe terminal command output, logs, or git diffs directly into `srz stdin`:
 
 ```bash
-git diff | srz -
-cat server.log | srz -
+git diff | srz stdin
+cat server.log | srz stdin
 ```
 
 ### Summarize a Book by Title
-`srz` queries Open Library and Wikipedia to enrich book metadata and synopses before summarizing:
+`srz book` queries Open Library and Wikipedia to enrich book metadata and synopses before summarizing:
 
 ```bash
-srz "The Rust Programming Language" --open
+srz book "The Rust Programming Language" --open
+srz book "Dune" --author "Frank Herbert"
 ```
 
 ### Summarize Live News & RSS Feeds
@@ -166,7 +164,7 @@ srz news "Rust language updates"
 srz news "artificial intelligence" -t day
 
 # Or summarize any RSS, Atom, or JSON feed directly
-srz "https://blog.rust-lang.org/feed.xml"
+srz news "https://blog.rust-lang.org/feed.xml"
 ```
 
 ---
@@ -179,8 +177,11 @@ Ask targeted questions or start an interactive chat session grounded directly in
 # Ask a question about your most recently summarized item
 srz ask "What are the main findings?"
 
-# Ask a question about a specific document or file
-srz ask assets/document.pdf "What are the primary conclusions?"
+# Ask a question about a specific document, URL, book, or saved summary
+srz ask --document assets/document.pdf "What are the primary conclusions?"
+srz ask --web "https://youtu.be/5C_HPTJg5ek" "What are the key points?"
+srz ask --book "Dune" --author "Frank Herbert" "What is the role of Arrakis?"
+srz ask --library "rust history" "When was Rust 1.0 released?"
 
 # Launch an interactive multi-turn chat REPL (type 'exit' or Ctrl+D to quit)
 srz ask -i

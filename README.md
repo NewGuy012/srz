@@ -109,17 +109,20 @@ srz recommend
 
 ### Summarize
 ```bash
-srz "https://en.wikipedia.org/wiki/Rust_(programming_language)" # Web article
-srz "https://youtu.be/5C_HPTJg5ek"          # YouTube video
-srz assets/document.pdf                     # PDF document
-srz news "Rust language updates"            # Live news digest
+srz web "https://en.wikipedia.org/wiki/Rust_(programming_language)" # Web article
+srz web "https://youtu.be/5C_HPTJg5ek"          # YouTube video
+srz document assets/document.pdf                # Local document (PDF, EPUB, MD, HTML, TXT)
+srz book "The Rust Programming Language"        # Book synopsis & metadata
+srz news "Rust language updates"                # Live news digest
+git diff | srz stdin                            # Piped stdin stream
 ```
 
 ### Ask & Chat
 ```bash
-srz ask "What are the main findings?"              # Ask latest read
-srz ask assets/document.pdf "Summary"              # Ask document or URL (YouTube, PDF, web)
-srz ask -i                                         # Interactive chat
+srz ask "What are the main findings?"                      # Ask latest read
+srz ask --document assets/document.pdf "Summary"           # Ask local document
+srz ask --web "https://youtu.be/5C_HPTJg5ek" "Key points?" # Ask web URL / YouTube / PDF
+srz ask -i                                                 # Interactive chat
 ```
 
 ### Library, Search & Telemetry
@@ -178,7 +181,7 @@ model = "gpt-4o-mini"
 Switch profiles on the fly with `--profile`:
 
 ```bash
-srz "The Rust Programming Language" --profile openai
+srz book "The Rust Programming Language" --profile openai
 ```
 
 

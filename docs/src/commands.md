@@ -1,6 +1,6 @@
 # Command Reference
 
-`srz` provides a unified CLI interface where root targets are automatically routed based on input structure, accompanied by specialized subcommands.
+`srz` uses explicit subcommands for every ingestion source (`web`, `document`, `book`, `news`, `stdin`) alongside interactive Q&A (`ask`) and library utilities.
 
 ---
 
@@ -8,12 +8,11 @@
 
 | Category | Command / Flag | Description |
 | :--- | :--- | :--- |
-| **Ingestion** | `srz <URL>` | Summarizes articles, blogs, documentation, RSS/Atom/JSON feeds, or online PDFs. |
-| | `srz <YOUTUBE_URL>` | Extracts timed-text transcripts and chapters from YouTube videos. |
-| | `srz "Book Title"` | Resolves synopses from Wikipedia and Open Library by title alone. |
-| | `srz <FILE>` | Ingests local `.pdf`, `.epub`, `.html`, `.md`, `.txt`, or `.json` documents (20 MB ceiling). |
-| | `cat ... \| srz -` | Reads piped command outputs, logs, or `git diff` streams (10 MB ceiling). |
-| | `srz news "<topic\|feed_url>" [-t all]` | Aggregates and summarizes top stories from Google News RSS or any RSS/Atom/JSON feed URL. |
+| **Ingestion** | `srz web <URL>` | Summarizes webpages (Readability), YouTube video transcripts, or remote `.pdf` URLs. |
+| | `srz document <PATH>` | Ingests local documents (`.pdf`, `.epub`, `.html`, `.md`, `.txt`, `.json`, or extensionless PDF/EPUB/HTML via magic bytes; 20 MB ceiling). |
+| | `srz book "<TITLE>" [--author <A>]` | Resolves book metadata and synopses from Open Library, Wikipedia, and DuckDuckGo. |
+| | `srz news "<TOPIC\|FEED_URL>" [-t all]` | Aggregates and summarizes top stories from Google News RSS or any RSS/Atom/JSON feed URL. |
+| | `cat ... \| srz stdin` | Reads piped command outputs, logs, or `git diff` streams (10 MB ceiling). |
 | **Styling & Output** | `--style <PRESET>` | 3 summary formats: `concise` (default), `bullets`, `detailed`. |
 | | `--max-tokens <NUM>` | Sets max completion tokens (style defaults: `concise` `1536`, `bullets` `2048`, `detailed` `8192`). |
 | | `--context-window <NUM>` | Overrides auto-detected server context window in tokens (e.g. `32768`). |
@@ -24,7 +23,7 @@
 | | `--json` | Emits machine-readable JSON on `stdout` for script integration. |
 | | `--stream` | Streams LLM output tokens live to `stdout` as they are generated. |
 | | `--show-thinking` (`--thinking`) | Streams full raw model reasoning trace to `stderr` instead of compact `💭` timing lines. |
-| **Interactive Tools** | `srz ask [TARGET] [Q]` | Grounded Q&A against a document, URL, file, or latest read (alias `chat`). |
+| **Interactive Tools** | `srz ask [--web\|--document\|--book\|--library] [Q]` | Grounded Q&A against a web URL, local document, book, saved summary, or latest read (alias `chat`). |
 | | `srz ask -i` | Interactive multi-turn chat REPL grounded on source context. |
 | | `srz ask [--chats\|--resume <ID>]` | Lists saved chat sessions or resumes a previous multi-turn conversation. |
 | | `srz ask [--show-chat\|--delete-chat] <ID>` | Inspects or deletes a persisted multi-turn chat session transcript. |
@@ -45,19 +44,23 @@
 
 ---
 
-## 1. Root Target Dispatch (`srz <TARGET>`)
+## 1. Ingestion Subcommands (`web`, `document`, `book`, `stdin`)
 
 ```bash
-srz <TARGET> [FLAGS]
+srz web <URL> [FLAGS]
+srz document <PATH> [FLAGS]
+srz book <TITLE> [--author <AUTHOR>] [FLAGS]
+srz stdin [FLAGS]
 ```
 
-### How Target Auto-Detection Works
+### Explicit Intent, Scoped Format Detection
 
-Instead of forcing you to memorize dedicated subcommands like `srz web`, `srz file`, or `srz book`, `srz` inspects the structure of your `<TARGET>` argument and dispatches it through specialized ingestion pipelines:
+Instead of guessing intent from bare root strings, `srz` requires an explicit top-level subcommand (`web`, `document`, `book`, `news`, or `stdin`) and keeps format detection strictly inside the two container subcommands:
 
-When `<TARGET>` begins with `http://` or `https://`, the router analyzes the URL domain and path. Links pointing to `youtube.com` or `youtu.be` route directly to the YouTube timed-text caption client. If the URL path or query parameters indicate a syndication feed (such as `.rss`, `.xml`, `.atom`, or `/feed`), the target is parsed via the universal syndication engine. All other standard web links pass to the web scraper, where Mozilla Readability scores DOM container density to strip navigation bars, advertisements, and cookie notices.
-
-Local targets receive similarly intelligent routing. If `<TARGET>` matches an existing file path or ends with a standard document extension (`.pdf`, `.epub`, `.html`, `.htm`, `.md`, `.markdown`, `.txt`, `.text`, or `.json`), the document loader reads and validates the file under a 20 MB ceiling. Passing a single hyphen (`-`) tells `srz` to ingest data from standard input, enabling seamless pipeline integration with commands like `git diff | srz -`. Queries beginning with `news ` (or `headlines` / `"current|latest ... updates|stories"`) route to the Google News RSS aggregator, while any remaining freeform text strings are treated as book titles, triggering concurrent metadata and synopsis resolution across Open Library and Wikipedia.
+* **`srz web <URL>`**: Requires an `http://` or `https://` URL. Links pointing to `youtube.com` or `youtu.be` route directly to the YouTube timed-text caption and chapter client; URLs ending in `.pdf` download and extract binary PDF text; all other web links pass to the Mozilla Readability scraper (`dom_smoothie`) to strip navigation bars, advertisements, and boilerplate.
+* **`srz document <PATH>`**: Reads local files (under a 20 MB ceiling, expanding leading `~`). Format is detected automatically from file extension **and** magic-byte signatures: PDFs (`%PDF-`), EPUB ebooks (ZIP + `application/epub+zip` / `META-INF/container.xml`), HTML (`<!doctype` / `<html` / `<body`), Markdown, JSON, and plain text.
+* **`srz book <TITLE> [--author <AUTHOR>]`**: Queries Open Library, Wikipedia, and DuckDuckGo concurrently to fetch metadata and targeted plot/overview synopses, falling back to Open Library descriptions or LLM trained knowledge when needed.
+* **`srz stdin`**: Reads piped text, logs, or diffs from standard input (`cat file.diff | srz stdin`, 10 MB ceiling), automatically normalizing HTML if detected.
 
 ### Global Flags
 
@@ -114,7 +117,7 @@ Launches a lightweight interactive, full-screen `crossterm` terminal dashboard f
 ## 3. Grounded Q&A & Multi-Turn Chat (`srz ask`)
 
 ```bash
-srz ask [TARGET] [QUESTION] [FLAGS]
+srz ask [--web <URL> | --document <PATH> | --book <TITLE> [--author <AUTHOR>] | --library <QUERY>] [QUESTION] [FLAGS]
 # Alias: srz chat
 ```
 
@@ -124,20 +127,23 @@ Performs question-answering grounded directly on document context, protected wit
   ```bash
   srz ask "What are the main findings?"
   ```
-* **Single-turn query against a specific document, web page, YouTube video, or remote PDF**:
+* **Single-turn query against an explicit web page, YouTube video, local document, book, or saved summary**:
   ```bash
-  srz ask assets/document.pdf "What are the primary conclusions?"
-  srz ask "https://www.youtube.com/watch?v=5C_HPTJg5ek" "What are the key points in this talk?"
+  srz ask --document assets/document.pdf "What are the primary conclusions?"
+  srz ask --web "https://www.youtube.com/watch?v=5C_HPTJg5ek" "What are the key points in this talk?"
+  srz ask --book "Dune" --author "Frank Herbert" "Who are the Fremen?"
+  srz ask --library "rust history" "When did 1.0 ship?"
   ```
 * **Interactive multi-turn chat REPL**:
   ```bash
   srz ask -i
-  srz ask assets/document.pdf -i
+  srz ask --document assets/document.pdf -i
   ```
   *Inside the REPL, ask questions naturally. Type `exit`, `quit`, or press `Ctrl+C` / `Ctrl+D` to end the session.*
 
 ### Session Management & Output Flags
 
+* `--web <URL>`, `--document <PATH>`, `--book <TITLE>` (with optional `--author <AUTHOR>`), `--library <QUERY>`: Mutually exclusive source selectors (`--author` requires `--book`; cannot be combined with session management flags).
 * `--chats`: List saved persistent chat sessions stored in local storage.
 * `--resume <ID>`: Resume a previous conversation session by ID while preserving the original source `target_type` and `target_url` (emits a warning if source re-loading fails and falls back to the stored library summary).
 * `--show-chat <ID>`: Print complete transcript of a past chat session.
@@ -158,11 +164,9 @@ Aggregates and synthesizes top news stories from Google News RSS topics or direc
   ```bash
   srz news "artificial intelligence" -t week
   ```
-* **Summarize Direct RSS/Atom Feed**:
+* **Summarize Direct RSS/Atom/JSON Feed**:
   ```bash
   srz news "https://blog.rust-lang.org/feed.xml"
-  # Or pass directly as root target:
-  srz "https://blog.rust-lang.org/feed.xml"
   ```
 * `-t, --timeframe <TIMEFRAME>`: Recency filter: `all` (default), `day` (past 24h), `week` (past 7 days), `month` (past 30 days).
 * `-l, --limit <N>`: Maximum number of articles to aggregate (default: 5, max: 50).

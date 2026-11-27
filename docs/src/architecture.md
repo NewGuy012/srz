@@ -13,15 +13,15 @@ The diagram below illustrates how input targets flow through ingestion, resoluti
 ```mermaid
 flowchart TD
     subgraph Inputs["1. Input Ingestion & Routing"]
-        CLI["CLI Args / Env / config.toml"] --> Router{"Router / Auto-Detect"}
-        Router -->|"YouTube URL"| YTFlow["YouTube Timed-Text Client"]
-        Router -->|"Web URL (http://...)"| WebFlow["Web Scraper (dom_smoothie Readability)"]
-        Router -->|"PDF File (.pdf)"| PDFFlow["Pure-Rust PDF Extractor"]
-        Router -->|"EPUB Book (.epub)"| EPUBFlow["Pure-Rust Zero-Dependency EPUB Extractor"]
-        Router -->|"Local Path or Stdin (-)"| FileFlow["File / Stdin Reader"]
-        Router -->|"Book Title"| BookFlow["Book Pipeline"]
-        Router -->|"News Query, RSS or Atom"| NewsFlow["Universal Feed Parser (XmlScanner)"]
-        Router -->|"ask [TARGET] [Q]"| AskFlow["Grounded Q&A Handler"]
+        CLI["CLI Args / Env / config.toml"] --> Router{"Subcommand Router"}
+        Router -->|"srz web &lt;URL&gt; (YouTube)"| YTFlow["YouTube Timed-Text Client"]
+        Router -->|"srz web &lt;URL&gt; (Article)"| WebFlow["Web Scraper (dom_smoothie Readability)"]
+        Router -->|"srz web (.pdf) / srz document (PDF)"| PDFFlow["Pure-Rust PDF Extractor"]
+        Router -->|"srz document (EPUB)"| EPUBFlow["Pure-Rust Zero-Dependency EPUB Extractor"]
+        Router -->|"srz document (Text/HTML) or srz stdin"| FileFlow["File / Stdin Reader"]
+        Router -->|"srz book &lt;TITLE&gt;"| BookFlow["Book Pipeline"]
+        Router -->|"srz news &lt;TOPIC|FEED&gt;"| NewsFlow["Universal Feed Parser (XmlScanner)"]
+        Router -->|"srz ask [--web|--document|--book|--library]"| AskFlow["Grounded Q&A Handler"]
         Router -->|"browse / tui"| TuiFlow["Crossterm TUI Library Explorer"]
         Router -->|"Utility Subcommands"| UtilFlow["Utility Handlers"]
     end
@@ -74,7 +74,7 @@ The codebase is organized into seven domain modules under `src/`, separating com
 ```text
 src/
 ├── commands/     # CLI subcommand workflows (summarize, ask, library, diagnostics, completions)
-├── config.rs     # CLI parsing, auto-detection heuristics, bounds validation, and config profiles
+├── config.rs     # Explicit subcommands, AskSource flags, bounds validation, and config profiles
 ├── engine/       # SSE streaming client, dynamic token budgeting, and chunkers
 ├── sources/      # Content ingestion: web scraper, book search, YouTube, and feeds
 ├── storage/      # Embedded redb cache, library database, and pruning
@@ -97,7 +97,7 @@ Most of `srz`'s reusable building blocks live inside `src/` (made available thro
 | | [`src/commands/ask.rs`](https://github.com/NewGuy012/srz/blob/master/src/commands/ask.rs) | `commands::ask` | Grounded Q&A with `<source_document>` title fencing, KV-cache-stable Turn-1 + query-shift Turn-N BM25 retrieval, auto re-fetch / `--resume` fallback warnings, REPL recovery, `--json`/`-o`, and chat persistence. |
 | | [`src/commands/library.rs`](https://github.com/NewGuy012/srz/blob/master/src/commands/library.rs) | `commands::library` | Handlers for `history`, `stats`, `find` (title-weighted offline search), and `export`. |
 | | [`src/commands/diagnostics.rs`](https://github.com/NewGuy012/srz/blob/master/src/commands/diagnostics.rs) | `commands::diagnostics` | Backend verification (`doctor`), model enumeration, and hardware recommendations. |
-| **Configuration** | [`src/config.rs`](https://github.com/NewGuy012/srz/blob/master/src/config.rs) | `config` | `clap` CLI parser, `Debug` `api_key` redaction, style-based `effective_max_tokens()`, input/limit/profile validation, `ResolvedAction::Subcommand`, target auto-detection heuristics, symlink/permission-checked loading, and safe template generation. |
+| **Configuration** | [`src/config.rs`](https://github.com/NewGuy012/srz/blob/master/src/config.rs) | `config` | `clap` CLI parser, `Debug` `api_key` redaction, style-based `effective_max_tokens()`, input/limit/profile validation, explicit `Commands` / `ResolvedAction` / `AskSource` routing, symlink/permission-checked loading, and safe template generation. |
 | **Engine** | [`src/engine/compressor.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/compressor.rs) | `engine::compressor` | CPU Heading-Skeleton + Centroid BM25 Stratified Salience Compression and Robertson-Sparck Jones BM25 context retrieval for `srz ask`. |
 | | [`src/engine/llm.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/llm.rs) | `engine::llm` | High-level LLM client enforcing base-URL scheme, credential, cleartext `api_key`, and non-redirect (`Policy::none()`) guards, wiring `max_completion`, and streaming/non-streaming orchestration. |
 | | [`src/engine/sse.rs`](https://github.com/NewGuy012/srz/blob/master/src/engine/sse.rs) | `engine::sse` | Zero-copy SSE parser, `ThinkingState` machine buffering split `<think>` tags across chunks, `reasoning_content` support, and generation rate tracking. |
@@ -138,7 +138,7 @@ sequenceDiagram
     participant LLM as LlmClient (SseStreamState)
     participant DB as Single Database (srz.db)
 
-    User->>CLI: srz "The Hobbit"
+    User->>CLI: srz book "The Hobbit"
     CLI->>DB: Check summary cache (cache_key_to_id -> history)
     alt Cache Hit (Sub-millisecond)
         DB-->>CLI: Return cached summary & reasoning
@@ -189,57 +189,54 @@ When the AI finishes, `srz` saves the summary, word counts, and reasoning notes 
 
 ---
 
-## 3. Ingestion Router & Auto-Detection Subsystem
+## 3. Explicit Subcommand Router & Scoped Format Detection
 
-Instead of making you remember separate subcommands like `srz web`, `srz file`, or `srz book`, `srz <TARGET>` looks at what you typed—whether it's a web link, a local file path, a news query, or a book title—and picks the right reader automatically.
+Instead of guessing intent from bare root strings, `srz` requires explicit subcommands (`web`, `document`, `book`, `news`, `stdin`, `ask`) and scopes automatic format detection strictly inside `srz web` and `srz document`:
 
-### Target Classification Decision Flow
+### Subcommand & Format Dispatch Flow
 
 ```mermaid
 flowchart TD
-    Start["srz &lt;TARGET&gt;"] --> StdinCheck{"Target is '-'?"}
-    StdinCheck -- Yes --> StdinFlow["ResolvedAction::Stdin<br/>(Unix pipes, git diffs)"]
-    StdinCheck -- No --> HttpCheck{"Starts with http:// or https://?"}
+    Root["srz &lt;COMMAND&gt;"] --> WebCmd["srz web &lt;URL&gt;"]
+    Root --> DocCmd["srz document &lt;PATH&gt;"]
+    Root --> BookCmd["srz book &lt;TITLE&gt; [--author]"]
+    Root --> NewsCmd["srz news &lt;TOPIC|FEED&gt;"]
+    Root --> StdinCmd["srz stdin"]
+    Root --> AskCmd["srz ask [--web|--document|--book|--library]"]
 
-    HttpCheck -- Yes --> FeedCheck{"is_feed_url(...)?"}
-    FeedCheck -- Yes --> NewsFeed["ResolvedAction::News<br/>(RSS, Atom, JSON feed)"]
-    FeedCheck -- No --> WebFlow["ResolvedAction::Web<br/>(Dispatches to URL sub-router)"]
+    WebCmd --> YTCheck{"YouTube host?"}
+    YTCheck -- Yes --> YTFlow["YouTube Timed-Text Client"]
+    YTCheck -- No --> PDFUrlCheck{"Ends in .pdf?"}
+    PDFUrlCheck -- Yes --> RemotePDF["Remote PDF Extractor"]
+    PDFUrlCheck -- No --> ArticleFlow["Readability Web Scraper"]
 
-    HttpCheck -- No --> FileCheck{"is_file_like(...) or Path::is_file()?"}
-    FileCheck -- Yes --> FileFlow["ResolvedAction::File<br/>(PDF, EPUB, MD, HTML, TXT, JSON)"]
-
-    FileCheck -- No --> NewsQueryCheck{"is_news_query(...)?"}
-    NewsQueryCheck -- Yes --> NewsSearch["ResolvedAction::News<br/>(Google News RSS aggregator)"]
-
-    NewsQueryCheck -- No --> TypoCheck{"suggest_command(...)?"}
-    TypoCheck -- Match Found --> TypoErr["Error with Suggestion<br/>('tip: did you mean srz doctor?')"]
-    TypoCheck -- No Match --> BookFlow["ResolvedAction::Book<br/>(Open Library &amp; Wikipedia)"]
+    DocCmd --> DocSniff{"Extension or Magic Bytes"}
+    DocSniff -- ".pdf or %PDF-" --> LocalPDF["PdfExtractor"]
+    DocSniff -- ".epub or EPUB ZIP" --> EPUB["EpubExtractor"]
+    DocSniff -- "HTML / MD / TXT / JSON" --> TextDoc["HTML Normalizer / Plain Text"]
 ```
 
-### How Inputs Are Matched (in Priority Order)
+### How Inputs Are Routed
 
-#### Piped Text, Web Links & News Feeds
-`srz` checks the most specific input types first. Passing `"-"` reads text piped in from another command (such as `git diff | srz -`). Web addresses starting with `http://` or `https://` are checked for common RSS/Atom/JSON feed endings (like `.rss`, `.atom`, `/feed`, `/rss.xml`, or `?format=rss`): feed URLs go straight to the news digest reader, while all other links go to the web/video reader.
+#### Web Links (`srz web <URL>`)
+`srz web` accepts `http://` and `https://` URLs and routes special link types automatically: YouTube URLs (`youtube.com`, `youtu.be`) pull timed-text captions and chapters without downloading video files, `.pdf` URLs download binary PDF bytes into `PdfExtractor`, and all other webpages pass through `dom_smoothie` Readability extraction.
 
-#### Local Documents & News Searches
-Anything that isn't a web URL is checked against files on your computer. Any existing file on disk, path prefix (`./`, `../`, `/`, `~`), or document extension (`.pdf`, `.epub`, `.md`, `.markdown`, `.txt`, `.text`, `.html`, `.htm`, `.json`) is read straight from your drive. If it isn't a file path, `srz` checks whether it sounds like a news request—such as starting with `news` or `headlines`, or asking for `"latest ... updates/stories"`—strips conversational filler, and searches Google News.
+#### Local Documents & Stdin (`srz document <PATH>`, `srz stdin`)
+`srz document` expands leading `~`, reads local files up to 20 MB in a single bounded read, and auto-detects the format from file extension **and** magic-byte signatures (`%PDF-` for PDFs, `PK\x03\x04` + EPUB metadata for EPUB archives, HTML tags for HTML normalization, and Markdown/JSON/plain text). Piped streams use `srz stdin` (`cat ... | srz stdin`, 10 MB ceiling).
 
-#### Typo Checks & Book Lookups
-Before assuming leftover text is a book title, `srz` compares single words against built-in command names (`TOP_LEVEL_COMMANDS`). If you mistyped a command (like `srz doctur`), it stops and suggests the right spelling (`srz doctor`) instead of searching for a book by that name. Any remaining text is treated as a book title.
+#### Books & News (`srz book`, `srz news`)
+`srz book <TITLE> [--author <AUTHOR>]` runs concurrent Open Library, Wikipedia, and DuckDuckGo resolution—eliminating false triggers on titles containing words like `"News"`—while `srz news <TOPIC_OR_FEED_URL>` aggregates Google News RSS queries or direct RSS/Atom/JSON feed URLs.
 
 ### Smart URL Handling & Follow-Up Context
 
-#### YouTube, Remote PDFs & Webpages
-Within web links, `srz` routes special links automatically. YouTube links (`youtube.com/watch`, `youtu.be/`, `/shorts/`) pull subtitles and chapters directly without downloading video files. Links ending in `.pdf` extract readable text from the PDF, and ordinary webpages are fetched and stripped of ads and menus.
-
 #### Follow-Up Q&A (`srz ask`)
-`srz ask` works with a target plus a question (`srz ask article.pdf "what changed?"`), or with just a question on its own (`srz ask "what changed?"`). Local file targets share the canonical `file://` page cache in `srz.db` (`load_file_with_cache`) between `srz <file>` and `srz ask <file>`. In multi-turn sessions, Turn 1 stabilizes the initial `<source_document>` context prefix for server KV-cache reuse, while follow-up turns retrieve targeted BM25 passages whenever the active question shifts focus. When you leave out the target or pass `--resume`, `srz` automatically resolves your read from `srz.db`, refreshes expired sources where possible, and warns explicitly if it falls back to the stored library summary.
+`srz ask` pairs optional explicit source flags (`--web <URL>`, `--document <PATH>`, `--book <TITLE> [--author <A>]`, `--library <QUERY>`) with a question (`srz ask --document article.pdf "what changed?"`), or defaults to your latest saved read (`srz ask "what changed?"`). Local document targets share the canonical `file://` page cache in `srz.db` (`load_file_with_cache`) between `srz document <file>` and `srz ask --document <file>`. In multi-turn sessions, Turn 1 stabilizes the initial `<source_document>` context prefix for server KV-cache reuse, while follow-up turns retrieve targeted BM25 passages whenever the active question shifts focus. When you leave out source flags or pass `--resume`, `srz` resolves your read from `srz.db`, refreshes expired non-news sources where possible, and warns explicitly if it falls back to the stored library summary.
 
 #### Multi-Model Routers & Proxies
 If you use a local router or proxy that serves multiple AI models (`llama.cpp` routers often report a placeholder `n_ctx: 0`), `srz` notices automatically and sends a second check specifically for your selected model so it still gets the right context window size.
 
 #### Faster Book Lookups
-When you ask `srz` about a book (`srz "The Hobbit"`), five built-in shortcuts keep uncached searches quick:
+When you summarize a book (`srz book "The Hobbit"`), five built-in shortcuts keep uncached searches quick:
 1. **Run startup checks in parallel**: Checks your AI server's settings at the same time it searches online for the book, instead of waiting for one before starting the other.
 2. **Wikipedia first**: Queries Wikipedia's fast APIs (~100–150ms) before falling back to slower web scraping—skipping backup searches completely whenever a strong match is found.
 3. **Skip web-page clutter early**: Cuts off references, bibliographies, and page footers before converting HTML, reducing memory use by roughly 70%.
@@ -443,5 +440,5 @@ Every public web request (`srz` articles, remote PDFs, feeds, DuckDuckGo search 
 - 🦀 [**Rust Learning Guide**](rust_learning_guide.md): In-depth systems programming concepts and architectural tour of `srz`.
 - 🛡️ [**Security Audit**](security_audit.md): Complete vulnerability analysis and threat mitigation verification.
 - 📋 [**Changelog**](changelog.md): Release history, version highlights, and breaking changes.
-- 📖 [**Command Reference**](commands.md): Complete CLI reference, auto-detection rules, subcommands, and flags.
+- 📖 [**Command Reference**](commands.md): Complete CLI reference, explicit subcommand routing, format detection, and flags.
 - ⚙️ [**Configuration Guide**](configuration.md): Config file schema, named profiles, and cache retention tuning.

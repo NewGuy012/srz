@@ -266,14 +266,14 @@ Structs allow you to package related values together into named types, creating 
   #[derive(Debug, PartialEq, Eq)]
   pub enum ResolvedAction<'a> {
       Web { url: &'a str },
-      Book { title: &'a str },
-      File { path: PathBuf },
+      Document { path: PathBuf },
+      Book { title: &'a str, author: Option<&'a str> },
       Stdin, // Holds no data at all!
       Subcommand(&'a Commands),
       // ...
   }
   ```
-  A `Web` command *only* holds a URL slice; a `File` command holds an owned `PathBuf`; `Stdin` holds no data at all; and `Subcommand` borrows the matched `Commands` variant directly.
+  A `Web` action *only* holds a URL slice; a `Document` action holds an owned `PathBuf`; `Book` holds a title and optional author; `Stdin` holds no data at all; and `Subcommand` borrows the matched `Commands` variant directly.
 - 🔄 **If you know other languages:** In C, Java, or TypeScript, enums are usually just numbers or string labels. In Rust, each enum variant can carry unique data payloads, making invalid combinations impossible to construct.
 - 📖 **The Rust Book Reference:** [Chapter 6.1: Defining an Enum](https://doc.rust-lang.org/book/ch06-01-defining-an-enum.html)
 
@@ -1194,7 +1194,7 @@ flowchart TD
     end
 
     Hw -.-> GemmaSteering -.-> Resolver
-    Resolver -->|"Web, Book, File, News, EPUB, or YouTube"| Sources
+    Resolver -->|"Web, Book, Document, News, or Stdin"| Sources
     Resolver -->|"Cache Fast-Path Hit"| Storage
     Resolver -->|"Grounded Q&A / Chat"| AskFlow
     AskFlow --> Sources

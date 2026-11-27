@@ -87,13 +87,13 @@ Named profiles allow you to switch between multiple models, inference endpoints,
 
 ```bash
 # Use default local backend
-srz "The Rust Programming Language"
+srz book "The Rust Programming Language"
 
 # Use the cloud profile defined under [profiles.openai]
-srz "The Rust Programming Language" --profile openai
+srz book "The Rust Programming Language" --profile openai
 
 # Use the fast profile defined under [profiles.fast]
-srz "https://news.ycombinator.com" --profile fast
+srz web "https://news.ycombinator.com" --profile fast
 ```
 
 ---

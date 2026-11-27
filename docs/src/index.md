@@ -20,7 +20,7 @@
 Most AI tools require subscriptions and send your private data to cloud servers. `srz` is built to be simple, fast, and completely private:
 
 - **100% Private** — Everything runs directly on your computer. Your files, documents, and reading history never leave your machine.
-- **One Tool for Any Content** — Summarize web articles, YouTube videos, PDFs, books, and news feeds with a single command. Clutter and ads are removed automatically.
+- **One Tool for Any Content** — Summarize web articles, YouTube videos, PDFs, books, and news feeds using clean, explicit subcommands (`web`, `document`, `book`, `news`, `stdin`). Clutter and ads are removed automatically.
 - **Built-in Offline Search** — Your summaries are saved locally so you can easily search and browse your past reading history anytime, even without an internet connection.
 
 ---
@@ -36,7 +36,7 @@ Browse through the chapters:
 
 - [**Installation**](installation.md): Quick one-line curl/PowerShell scripts, Homebrew tap, Cargo build, precompiled releases, and in-place self-upgrades.
 - [**Quick Start**](quickstart.md): Connect your local LLM backend (Llama-macOS, Llama-Windows, llama.cpp, Ollama, LM Studio) and run your first summaries.
-- [**Command Reference**](commands.md): In-depth guide covering CLI auto-detection, subcommands, flags, interactive TUI keybindings, and session management.
+- [**Command Reference**](commands.md): In-depth guide covering explicit subcommands, format detection, flags, interactive TUI keybindings, and session management.
 - [**Configuration**](configuration.md): `config.toml` structure, named profiles, storage limits, and cache retention policies.
 - [**Architecture & Design**](architecture.md): Systems architecture, lifecycle sequence flows, ingestion pipelines, embedded `redb` schema, offline library search & BM25 Q&A grounding, performance optimizations, and security model.
 
