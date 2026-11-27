@@ -31,7 +31,7 @@ toml = { version = "1", default-features = false, features = ["parse", "serde"] 
 flate2 = "1"
 crossterm = { version = "0.29", default-features = false, features = ["events", "windows"] }
 pdf-extract = "0.12"
-dom_smoothie = "0.19"
+dom_smoothie = "0.20"
 
 [dev-dependencies]
 
