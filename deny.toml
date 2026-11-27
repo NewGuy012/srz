@@ -21,6 +21,11 @@ confidence-threshold = 0.8
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+skip = [
+    { crate = "core-foundation:0.9", reason = "system-configuration 0.7 (via hyper-util) uses 0.9 while rustls-platform-verifier and security-framework use 0.10" },
+    { crate = "cpufeatures:0.2", reason = "aes 0.8 and sha2 0.10 use 0.2 while chacha20 0.10 (via rand 0.10) uses 0.3 inside lopdf 0.42" },
+    { crate = "syn:2", reason = "derive_more-impl, jni-macros, jni-sys-macros, and phf_macros use syn 2 while other proc-macros use syn 3" },
+]
 
 [sources]
 unknown-registry = "deny"
