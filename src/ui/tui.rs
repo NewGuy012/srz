@@ -149,7 +149,7 @@ pub(crate) enum TuiAction {
     #[default]
     Exit,
     Ask {
-        target: String,
+        id: i64,
     },
 }
 
@@ -255,8 +255,7 @@ fn handle_key_event(key: KeyEvent, state: &mut AppState, db: &Database) -> KeyOu
         }
         KeyCode::Char('a') => {
             if let Some(item) = state.selected_item() {
-                let target = item.url.clone().unwrap_or_else(|| item.title.clone());
-                return KeyOutcome::Done(TuiAction::Ask { target });
+                return KeyOutcome::Done(TuiAction::Ask { id: item.id });
             }
         }
         KeyCode::Char('/') => state.is_filtering = true,

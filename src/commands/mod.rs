@@ -4,7 +4,9 @@ mod library;
 mod summarize;
 
 use crate::cache::Cache;
-use crate::config::{CacheCommand, Cli, Commands, Config, ConfigSubcommand, ResolvedAction, Shell};
+use crate::config::{
+    AskSource, CacheCommand, Cli, Commands, Config, ConfigSubcommand, ResolvedAction, Shell,
+};
 use crate::ui::{Ui, sanitize_terminal_text};
 use anyhow::{Context, Result};
 use clap::{CommandFactory, ValueEnum};
@@ -250,13 +252,13 @@ fn try_cached_summary(action: &ResolvedAction<'_>, args: &Cli, cache: &Cache) ->
             Some((*url).to_string()),
             "summary",
         )),
-        ResolvedAction::Book { title } => Some((
+        ResolvedAction::Book { title, author } => Some((
             "book",
-            Cache::book_cache_title(title, None),
+            Cache::book_cache_title(title, *author),
             None,
             "book summary",
         )),
-        ResolvedAction::File { path } => file_cache_key(path)
+        ResolvedAction::Document { path } => file_cache_key(path)
             .map(|k| ("file", k, Some(canonical_file_url_string(path)), "summary")),
         ResolvedAction::News {
             topic, timeframe, ..
@@ -386,14 +388,14 @@ async fn dispatch_async(
                     };
                     match tui_action {
                         crate::ui::TuiAction::Exit => break,
-                        crate::ui::TuiAction::Ask { target } => {
+                        crate::ui::TuiAction::Ask { id } => {
                             let scraper = crate::scraper::WebScraper::new()?;
                             match init_llm(args) {
                                 Ok(llm) => {
                                     let llm = llm.init_with_capabilities(Some(cache)).await;
                                     if let Err(err) = handle_ask(
                                         AskArgs {
-                                            target: Some(target),
+                                            source: AskSource::LibraryId(id),
                                             interactive: true,
                                             ..Default::default()
                                         },
@@ -442,10 +444,10 @@ async fn dispatch_async(
                 Err(err) => Err(err),
             }
         }
-        ResolvedAction::Book { title } => {
+        ResolvedAction::Book { title, author } => {
             let (llm, prep) = tokio::join!(
                 llm.init_with_capabilities(Some(cache)),
-                prepare_book_query(title, &scraper, cache)
+                prepare_book_query(title, *author, &scraper, cache)
             );
             summarize_prepared_book(prep, &llm, &scraper, cache, args).await
         }
@@ -453,7 +455,7 @@ async fn dispatch_async(
             let llm = llm.init_with_capabilities(Some(cache)).await;
             match other {
                 ResolvedAction::Ask {
-                    target,
+                    source,
                     question,
                     interactive,
                     resume,
@@ -461,7 +463,7 @@ async fn dispatch_async(
                 } => {
                     return handle_ask(
                         AskArgs {
-                            target: target.clone(),
+                            source: source.clone(),
                             question: question.clone(),
                             interactive: *interactive,
                             resume: *resume,
@@ -474,7 +476,7 @@ async fn dispatch_async(
                     .await
                     .map_err(|e| e.context("Ask failed"));
                 }
-                ResolvedAction::File { path } => {
+                ResolvedAction::Document { path } => {
                     handle_file(path, &scraper, &llm, cache, args).await
                 }
                 ResolvedAction::Stdin => handle_stdin(&scraper, &llm, args).await,
@@ -826,6 +828,9 @@ fn generate_completions_script(shell: Shell) -> String {
         completions) COMPREPLY=( $(compgen -W "{shells}" -- ${{cur}}) ); return 0 ;;
         cache) COMPREPLY=( $(compgen -W "{cache_cmds}" -- ${{cur}}) ); return 0 ;;
         config) COMPREPLY=( $(compgen -W "{config_cmds}" -- ${{cur}}) ); return 0 ;;
+        document|--document) COMPREPLY=( $(compgen -f -- ${{cur}}) ); return 0 ;;
+        book) COMPREPLY=( $(compgen -W "--author -a ${{opts}}" -- ${{cur}}) ); return 0 ;;
+        ask) COMPREPLY=( $(compgen -W "--web --document --book --author --library -i --interactive --chats --resume --show-chat --delete-chat ${{opts}}" -- ${{cur}}) ); return 0 ;;
     esac
 
     COMPREPLY=( $(compgen -W "${{opts}}" -- ${{cur}}) )
@@ -865,6 +870,11 @@ _srz() {{
         command) _describe -t commands 'srz commands' commands ;;
         args)
             case $line[1] in
+                web) _arguments '*:URL:_urls' ;;
+                document) _files ;;
+                book) _arguments '(-a --author)'{{-a,--author}}'[Optional author name]:AUTHOR:' '*:TITLE:' ;;
+                stdin) _arguments ;;
+                ask) _arguments '--web=[HTTP(S) URL]:URL:_urls' '--document=[Local document file]:FILE:_files' '--book=[Book title]:TITLE:' '--author=[Book author]:AUTHOR:' '--library=[Saved library query]:QUERY:' '(-i --interactive)'{{-i,--interactive}}'[Interactive chat]' '--chats[List saved chats]' '--resume=[Resume chat ID]:ID:' '--show-chat=[Show chat ID]:ID:' '--delete-chat=[Delete chat ID]:ID:' '*:QUESTION:' ;;
                 cache) _values 'cache command' {cache_cmds} ;;
                 config) _values 'config command' {config_cmds} ;;
                 completions) _values 'shell' {shells} ;;
@@ -891,7 +901,19 @@ _srz "$@"
             }
             let _ = write!(
                 out,
-                "complete -c srz -n \"__fish_seen_subcommand_from cache\" -a \"{cache_cmds}\"\n\
+                "complete -c srz -n \"__fish_seen_subcommand_from document\" -F\n\
+                 complete -c srz -n \"__fish_seen_subcommand_from book\" -s a -l author -r -d \"Optional author name\"\n\
+                 complete -c srz -n \"__fish_seen_subcommand_from ask\" -l web -r -d \"Ground Q&A on URL\"\n\
+                 complete -c srz -n \"__fish_seen_subcommand_from ask\" -l document -r -F -d \"Ground Q&A on local file\"\n\
+                 complete -c srz -n \"__fish_seen_subcommand_from ask\" -l book -r -d \"Ground Q&A on book title\"\n\
+                 complete -c srz -n \"__fish_seen_subcommand_from ask\" -l author -r -d \"Book author\"\n\
+                 complete -c srz -n \"__fish_seen_subcommand_from ask\" -l library -r -d \"Ground Q&A on saved library entry\"\n\
+                 complete -c srz -n \"__fish_seen_subcommand_from ask\" -s i -l interactive -d \"Interactive multi-turn chat\"\n\
+                 complete -c srz -n \"__fish_seen_subcommand_from ask\" -l chats -d \"List saved chats\"\n\
+                 complete -c srz -n \"__fish_seen_subcommand_from ask\" -l resume -r -d \"Resume chat session ID\"\n\
+                 complete -c srz -n \"__fish_seen_subcommand_from ask\" -l show-chat -r -d \"Show chat session ID\"\n\
+                 complete -c srz -n \"__fish_seen_subcommand_from ask\" -l delete-chat -r -d \"Delete chat session ID\"\n\
+                 complete -c srz -n \"__fish_seen_subcommand_from cache\" -a \"{cache_cmds}\"\n\
                  complete -c srz -n \"__fish_seen_subcommand_from config\" -a \"{config_cmds}\"\n\
                  complete -c srz -n \"__fish_seen_subcommand_from completions\" -a \"{shells}\"\n\
                  complete -c srz -n \"__fish_seen_subcommand_from export\" -a \"{formats}\"\n\
@@ -911,6 +933,8 @@ _srz "$@"
         $commands + $flags
     }} else {{
         switch ($elements[$prevIndex].Extent.Text) {{
+            'book'        {{ @('--author', '-a') + $flags }}
+            'ask'         {{ @('--web', '--document', '--book', '--author', '--library', '-i', '--interactive', '--chats', '--resume', '--show-chat', '--delete-chat') + $flags }}
             'cache'       {{ @({cache_cmds}) }}
             'config'      {{ @({config_cmds}) }}
             'completions' {{ @({shells}) }}
@@ -948,6 +972,8 @@ _srz "$@"
         }} elif (== $prev config) {{ put {config_cmds}
         }} elif (== $prev completions) {{ put {shells}
         }} elif (== $prev export) {{ put {formats}
+        }} elif (== $prev book) {{ put --author -a {flags_space}
+        }} elif (== $prev ask) {{ put --web --document --book --author --library -i --interactive --chats --resume --show-chat --delete-chat {flags_space}
         }} elif (== $prev --style) {{ put {styles}
         }} elif (== $prev --paging) {{ put {paging}
         }} elif (or (== $prev -t) (== $prev --timeframe)) {{ put {timeframes}
@@ -973,7 +999,17 @@ mod tests {
             Shell::Elvish,
         ] {
             let script = generate_completions_script(shell);
-            for required in ["cache", "browse", "recommend", "bullets"] {
+            for required in [
+                "web",
+                "document",
+                "book",
+                "news",
+                "stdin",
+                "cache",
+                "browse",
+                "recommend",
+                "bullets",
+            ] {
                 assert!(
                     script.contains(required),
                     "shell {shell:?} missing '{required}'"

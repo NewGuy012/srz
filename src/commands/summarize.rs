@@ -474,6 +474,7 @@ pub(super) async fn handle_news(
 
 pub(super) struct PreparedBookQuery {
     title: String,
+    requested_author: Option<String>,
     resolved_title: String,
     resolved_author: Option<String>,
     work_key: Option<String>,
@@ -513,14 +514,16 @@ async fn fetch_or_cache_candidates(
 
 pub(super) async fn prepare_book_query(
     title: &str,
+    author: Option<&str>,
     scraper: &WebScraper,
     cache: &Cache,
 ) -> PreparedBookQuery {
     let searcher = BookSearcher::with_client(scraper.client().clone());
 
     let (resolved_title, resolved_author, work_key, candidates) =
-        if let Some(Some(meta)) = cache.get_book_metadata(title, None) {
-            if let Some(ref a) = meta.author {
+        if let Some(Some(meta)) = cache.get_book_metadata(title, author) {
+            let effective_author = meta.author.clone().or_else(|| author.map(str::to_string));
+            if let Some(ref a) = effective_author {
                 let year_str = meta
                     .first_publish_year
                     .map(|y| format!(" ({y})"))
@@ -532,38 +535,39 @@ pub(super) async fn prepare_book_query(
             }
             let cands = fetch_or_cache_candidates(
                 &meta.canonical_title,
-                meta.author.as_deref(),
+                effective_author.as_deref(),
                 cache,
                 &searcher,
             )
             .await;
-            (meta.canonical_title, meta.author, meta.work_key, cands)
-        } else if let Some(cached) = cache.get_search_results(title, None) {
+            (meta.canonical_title, effective_author, meta.work_key, cands)
+        } else if let Some(cached) = cache.get_search_results(title, author) {
             Ui::info(&format!(
                 "Loaded {} search candidate(s) from local cache.",
                 cached.len()
             ));
-            (title.to_string(), None, None, cached)
+            (title.to_string(), author.map(str::to_string), None, cached)
         } else {
             let spinner = Ui::spinner(
                 "Searching web for book synopsis & metadata (Wikipedia / DDG / Open Library)...",
             );
             let (meta_opt, mut raw_candidates) = tokio::join!(
-                searcher.resolve_book_metadata(title, None),
-                searcher.search_raw_candidates(title, None)
+                searcher.resolve_book_metadata(title, author),
+                searcher.search_raw_candidates(title, author)
             );
             let (effective_title, effective_author, work_key) = if let Some(meta) = meta_opt {
-                cache.set_book_metadata(title, None, &Some(meta.clone()));
+                cache.set_book_metadata(title, author, &Some(meta.clone()));
+                let effective_author = meta.author.or_else(|| author.map(str::to_string));
                 let year_str = meta
                     .first_publish_year
                     .map(|y| format!(" ({y})"))
                     .unwrap_or_default();
-                let done = match &meta.author {
+                let done = match &effective_author {
                     Some(a) => format!("Identified \"{}\" by {a}{year_str}", meta.canonical_title),
                     None => format!("Identified \"{}\"", meta.canonical_title),
                 };
                 Ui::finish_spinner(&spinner, &done);
-                (meta.canonical_title, meta.author, meta.work_key)
+                (meta.canonical_title, effective_author, meta.work_key)
             } else {
                 let done = if raw_candidates.is_empty() {
                     "No web results found.".to_string()
@@ -571,7 +575,7 @@ pub(super) async fn prepare_book_query(
                     format!("Found {} search candidate(s) online.", raw_candidates.len())
                 };
                 Ui::finish_spinner(&spinner, &done);
-                (title.to_string(), None, None)
+                (title.to_string(), author.map(str::to_string), None)
             };
 
             rank_candidates(
@@ -591,6 +595,7 @@ pub(super) async fn prepare_book_query(
 
     PreparedBookQuery {
         title: title.to_string(),
+        requested_author: author.map(str::to_string),
         resolved_title,
         resolved_author,
         work_key,
@@ -771,7 +776,7 @@ pub(super) async fn summarize_prepared_book(
         (out, 0, None)
     };
 
-    let title_key = Cache::book_cache_title(&prep.title, None);
+    let title_key = Cache::book_cache_title(&prep.title, prep.requested_author.as_deref());
     Ok(SummaryOutcome::from_llm(
         "book",
         book_display,

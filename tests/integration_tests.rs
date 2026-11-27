@@ -1,7 +1,7 @@
 use clap::{CommandFactory, FromArgMatches, Parser};
 use srz::config::{
-    CacheCommand, Cli, Commands, Config, ExportFormat, NewsTimeframe, PagingMode, ProfileConfig,
-    ResolvedAction, SummaryStyle,
+    AskSource, CacheCommand, Cli, Commands, Config, ExportFormat, NewsTimeframe, PagingMode,
+    ProfileConfig, ResolvedAction, SummaryStyle,
 };
 use srz::engine::llm::StreamMode;
 use std::path::PathBuf;
@@ -16,14 +16,14 @@ fn news_action(topic: &str, timeframe: NewsTimeframe, limit: usize) -> ResolvedA
 }
 
 fn ask_action(
-    target: Option<&str>,
+    source: AskSource,
     question: Option<&str>,
     interactive: bool,
     list_chats: bool,
     resume: Option<i64>,
 ) -> ResolvedAction<'static> {
     ResolvedAction::Ask {
-        target: target.map(str::to_string),
+        source,
         question: question.map(str::to_string),
         interactive,
         list_chats,
@@ -37,33 +37,34 @@ fn ask_action(
 fn test_cli_action_resolution_and_validation() {
     for (argv, expected) in [
         (
-            &["srz", "https://example.com/article"][..],
+            &["srz", "web", "https://example.com/article"][..],
             ResolvedAction::Web {
                 url: "https://example.com/article",
             },
         ),
         (
-            &["srz", "https://youtu.be/5C_HPTJg5ek"][..],
+            &["srz", "web", "https://youtu.be/5C_HPTJg5ek"][..],
             ResolvedAction::Web {
                 url: "https://youtu.be/5C_HPTJg5ek",
             },
         ),
-        (&["srz", "-"][..], ResolvedAction::Stdin),
+        (&["srz", "stdin"][..], ResolvedAction::Stdin),
         (
-            &["srz", "Cargo.toml"][..],
-            ResolvedAction::File {
+            &["srz", "document", "Cargo.toml"][..],
+            ResolvedAction::Document {
                 path: PathBuf::from("Cargo.toml"),
             },
         ),
         (
-            &["srz", "assets/document.pdf"][..],
-            ResolvedAction::File {
+            &["srz", "document", "assets/document.pdf"][..],
+            ResolvedAction::Document {
                 path: PathBuf::from("assets/document.pdf"),
             },
         ),
         (
             &[
                 "srz",
+                "book",
                 "The Great Gatsby",
                 "--style",
                 "concise",
@@ -71,20 +72,36 @@ fn test_cli_action_resolution_and_validation() {
             ][..],
             ResolvedAction::Book {
                 title: "The Great Gatsby",
+                author: None,
             },
         ),
         (
-            &["srz", "9/11 Commission Report"][..],
+            &["srz", "book", "9/11 Commission Report"][..],
             ResolvedAction::Book {
                 title: "9/11 Commission Report",
+                author: None,
             },
         ),
         (
-            &["srz", "https://blog.rust-lang.org/feed.xml"][..],
+            &["srz", "book", "Dune", "--author", "Frank Herbert"][..],
+            ResolvedAction::Book {
+                title: "Dune",
+                author: Some("Frank Herbert"),
+            },
+        ),
+        (
+            &["srz", "book", "The Shipping News"][..],
+            ResolvedAction::Book {
+                title: "The Shipping News",
+                author: None,
+            },
+        ),
+        (
+            &["srz", "news", "https://blog.rust-lang.org/feed.xml"][..],
             news_action("https://blog.rust-lang.org/feed.xml", NewsTimeframe::All, 5),
         ),
         (
-            &["srz", "current javascript news"][..],
+            &["srz", "news", "current javascript news"][..],
             news_action("javascript", NewsTimeframe::All, 5),
         ),
         (
@@ -95,11 +112,12 @@ fn test_cli_action_resolution_and_validation() {
             &[
                 "srz",
                 "ask",
+                "--web",
                 "https://example.com",
                 "What is the key takeaway?",
             ][..],
             ask_action(
-                Some("https://example.com"),
+                AskSource::Web("https://example.com".to_string()),
                 Some("What is the key takeaway?"),
                 false,
                 false,
@@ -107,16 +125,64 @@ fn test_cli_action_resolution_and_validation() {
             ),
         ),
         (
-            &["srz", "ask", "What are the limitations?"][..],
-            ask_action(None, Some("What are the limitations?"), false, false, None),
+            &["srz", "ask", "--document", "assets/document.pdf", "-i"][..],
+            ask_action(
+                AskSource::Document(PathBuf::from("assets/document.pdf")),
+                None,
+                true,
+                false,
+                None,
+            ),
         ),
         (
-            &["srz", "ask", "The Hobbit"][..],
-            ask_action(Some("The Hobbit"), None, false, false, None),
+            &[
+                "srz",
+                "ask",
+                "--book",
+                "The Hobbit",
+                "--author",
+                "J.R.R. Tolkien",
+            ][..],
+            ask_action(
+                AskSource::Book {
+                    title: "The Hobbit".to_string(),
+                    author: Some("J.R.R. Tolkien".to_string()),
+                },
+                None,
+                false,
+                false,
+                None,
+            ),
+        ),
+        (
+            &[
+                "srz",
+                "ask",
+                "--library",
+                "rust history",
+                "When did 1.0 release?",
+            ][..],
+            ask_action(
+                AskSource::LibraryQuery("rust history".to_string()),
+                Some("When did 1.0 release?"),
+                false,
+                false,
+                None,
+            ),
+        ),
+        (
+            &["srz", "ask", "What are the limitations?"][..],
+            ask_action(
+                AskSource::Latest,
+                Some("What are the limitations?"),
+                false,
+                false,
+                None,
+            ),
         ),
         (
             &["srz", "ask", "--resume", "42"][..],
-            ask_action(None, None, true, false, Some(42)),
+            ask_action(AskSource::Latest, None, true, false, Some(42)),
         ),
     ] {
         let cli = Cli::parse_from(argv);
@@ -142,18 +208,28 @@ fn test_cli_action_resolution_and_validation() {
         })
     ));
 
-    let typo_err = Cli::parse_from(["srz", "doctur"])
-        .resolve_action()
-        .unwrap_err()
-        .to_string();
-    assert!(typo_err.contains("Unrecognized command 'doctur'"));
-    assert!(typo_err.contains("tip: a similar command exists: 'doctor'"));
-
-    assert!(Cli::parse_from(["srz"]).resolve_action().is_err());
+    // Legacy implicit auto-detection and mutually exclusive ask sources fail parsing
     for bad_argv in [
+        &["srz"][..],
+        &["srz", "Dune"][..],
+        &["srz", "https://example.com"][..],
+        &["srz", "-"][..],
+        &["srz", "Cargo.toml"][..],
+        &["srz", "current javascript news"][..],
+        &["srz", "doctur"][..],
+        &["srz", "version"][..],
         &["srz", "--unknown-flag-xyz"][..],
-        &["srz", "Dune", "--style", "super-long"][..],
+        &["srz", "book", "Dune", "--style", "super-long"][..],
         &["srz", "completions", "unknown_shell"][..],
+        &[
+            "srz",
+            "ask",
+            "--web",
+            "https://example.com",
+            "--document",
+            "Cargo.toml",
+        ][..],
+        &["srz", "ask", "target", "question"][..],
     ] {
         assert!(Cli::try_parse_from(bad_argv).is_err(), "{bad_argv:?}");
     }
@@ -161,11 +237,11 @@ fn test_cli_action_resolution_and_validation() {
 
 #[test]
 fn test_cli_global_flags_and_stream_mode() {
-    let default_cli = Cli::parse_from(["srz", "Dune"]);
+    let default_cli = Cli::parse_from(["srz", "book", "Dune"]);
     assert_eq!(default_cli.style, SummaryStyle::Concise);
     assert_eq!(default_cli.paging, PagingMode::Auto);
     assert_eq!(
-        Cli::parse_from(["srz", "Dune", "--style", "detailed"]).effective_max_tokens(),
+        Cli::parse_from(["srz", "book", "Dune", "--style", "detailed"]).effective_max_tokens(),
         SummaryStyle::Detailed.default_max_tokens()
     );
     assert!(matches!(
@@ -173,7 +249,7 @@ fn test_cli_global_flags_and_stream_mode() {
         StreamMode::Buffered
     ));
 
-    let stream_cli = Cli::parse_from(["srz", "Dune", "--stream"]);
+    let stream_cli = Cli::parse_from(["srz", "book", "Dune", "--stream"]);
     assert!(matches!(
         stream_cli.stream_mode("Dune"),
         StreamMode::Stdout {
@@ -181,8 +257,8 @@ fn test_cli_global_flags_and_stream_mode() {
         }
     ));
     for buffered in [
-        &["srz", "Dune", "--stream", "-o", "out.md"][..],
-        &["srz", "Dune", "--stream", "--json"][..],
+        &["srz", "book", "Dune", "--stream", "-o", "out.md"][..],
+        &["srz", "book", "Dune", "--stream", "--json"][..],
     ] {
         assert!(matches!(
             Cli::parse_from(buffered).stream_mode("Dune"),
@@ -240,7 +316,7 @@ context_window = 65536
         },
         ..Default::default()
     };
-    let applied = parse_with_config(&["srz", "The Hobbit"], &synthetic);
+    let applied = parse_with_config(&["srz", "book", "The Hobbit"], &synthetic);
     assert_eq!(applied.base_url, "http://ollama:11434/v1");
     assert_eq!(applied.effective_max_tokens(), 2048);
     assert!(applied.stream);
@@ -249,6 +325,7 @@ context_window = 65536
     let cli_override = parse_with_config(
         &[
             "srz",
+            "book",
             "The Hobbit",
             "--base-url",
             "http://cli/v1",
@@ -262,7 +339,7 @@ context_window = 65536
     assert_eq!(cli_override.style, SummaryStyle::Detailed);
     assert_eq!(cli_override.context_window, Some(65536));
 
-    let bad_matches = Cli::command().get_matches_from(["srz", "Dune", "--profile", "nope"]);
+    let bad_matches = Cli::command().get_matches_from(["srz", "book", "Dune", "--profile", "nope"]);
     let mut bad_args = Cli::from_arg_matches(&bad_matches).unwrap();
     assert!(bad_args.apply_config(&config, Some(&bad_matches)).is_err());
 }

@@ -1,14 +1,14 @@
 use crate::cache::Cache;
 use crate::chunker::TokenizerKind;
 use crate::commands::{file_url, print_execution_error, print_json, read_line_bounded};
-use crate::config::{Cli, PagingMode, expand_tilde, is_file_like};
+use crate::config::{AskSource, Cli, PagingMode};
 use crate::db::Database;
 use crate::engine::compressor::select_relevant_context_bm25;
 use crate::engine::llm::{LlmClient, RequestMessage, StreamMode};
 use crate::engine::prompts::format_untrusted_section;
 use crate::render::target_icon;
 use crate::scraper::WebScraper;
-use crate::search::BookSearcher;
+use crate::search::{BookSearcher, rank_candidates};
 use crate::system::text_util::is_http_url;
 use crate::ui::{
     Ui, display_summary_full, render_markdown, sanitize_terminal_text, sanitize_terminal_text_cow,
@@ -44,7 +44,8 @@ async fn resolve_cached_page_or_fetch(
         if let Some(page) = cache.get_page(u) {
             return (page.title.unwrap_or(fallback_title), page.content);
         }
-        if is_http_url(u)
+        if target_type != "news"
+            && is_http_url(u)
             && let Ok(page) = fetch_url_content(u, scraper, cache, false).await
         {
             return (page.title.unwrap_or(fallback_title), page.content);
@@ -62,39 +63,104 @@ async fn resolve_cached_page_or_fetch(
     (fallback_title, fallback_content)
 }
 
+async fn resolve_book_context(
+    title: &str,
+    author: Option<&str>,
+    scraper: &WebScraper,
+    cache: &Cache,
+) -> Result<(String, String, String, Option<String>)> {
+    Ui::info(&format!(
+        "Searching online for book '{}'...",
+        sanitize_title(title)
+    ));
+    let searcher = BookSearcher::with_client(scraper.client().clone());
+    let (meta_opt, mut candidates) = tokio::join!(
+        searcher.resolve_book_metadata(title, author),
+        searcher.search_raw_candidates(title, author)
+    );
+    let (effective_title, effective_author, work_key) = if let Some(meta) = meta_opt {
+        (
+            meta.canonical_title,
+            meta.author.or_else(|| author.map(str::to_string)),
+            meta.work_key,
+        )
+    } else {
+        (title.to_string(), author.map(str::to_string), None)
+    };
+    rank_candidates(
+        &effective_title,
+        effective_author.as_deref(),
+        &mut candidates,
+    );
+
+    for cand in &candidates {
+        if let Ok(page) =
+            fetch_or_cache_page_with(&cand.url, cache, None, scraper.scrape(&cand.url)).await
+        {
+            Ui::info(&format!(
+                "Using online reference: {} ({})",
+                sanitize_title(&cand.title),
+                cand.url
+            ));
+            let resolved_title = page.title.unwrap_or_else(|| effective_title.clone());
+            return Ok((
+                resolved_title,
+                page.content,
+                "book".to_string(),
+                Some(cand.url.clone()),
+            ));
+        }
+    }
+
+    if let Some(work_key) = work_key
+        && let Some(desc) = searcher.fetch_work_description(&work_key).await
+    {
+        let work_url = format!(
+            "https://openlibrary.org/{}",
+            work_key.trim().trim_start_matches('/')
+        );
+        return Ok((effective_title, desc, "book".to_string(), Some(work_url)));
+    }
+
+    anyhow::bail!("Could not resolve online reference for book: '{title}'");
+}
+
 async fn resolve_document_context(
-    target: Option<&str>,
+    source: &AskSource,
     scraper: &WebScraper,
     cache: &Cache,
     db_opt: Option<&Database>,
 ) -> Result<(String, String, String, Option<String>)> {
-    if let Some(target_str) = target {
-        let trimmed = target_str.trim();
-
-        if is_http_url(trimmed) {
-            let page = fetch_url_content(trimmed, scraper, cache, false).await?;
-            let title = page.title.unwrap_or_else(|| trimmed.to_string());
-            let target_type = target_type_for_url(trimmed).to_string();
-            return Ok((title, page.content, target_type, Some(trimmed.to_string())));
+    match source {
+        AskSource::Web(url) => {
+            let page = fetch_url_content(url, scraper, cache, false).await?;
+            let title = page.title.unwrap_or_else(|| url.clone());
+            let target_type = target_type_for_url(url).to_string();
+            Ok((title, page.content, target_type, Some(url.clone())))
         }
-
-        let expanded = expand_tilde(trimmed);
-        if expanded.exists() {
-            let (doc, _) = load_file_with_cache(&expanded, scraper, cache).await?;
-            let canonical = canonical_file_url_string(&expanded);
-            return Ok((
-                doc.title.unwrap_or_else(|| trimmed.to_string()),
+        AskSource::Document(path) => {
+            if !path.exists() {
+                anyhow::bail!("File not found: {:?}", path);
+            }
+            let (doc, _) = load_file_with_cache(path, scraper, cache).await?;
+            let canonical = canonical_file_url_string(path);
+            Ok((
+                doc.title.unwrap_or_else(|| path.display().to_string()),
                 doc.content,
                 "file".to_string(),
                 Some(canonical),
-            ));
-        } else if is_file_like(trimmed) {
-            anyhow::bail!("File not found: {:?}", expanded);
+            ))
         }
-
-        if let Some(db) = db_opt
-            && let Some(hit) = db.search(trimmed)?.into_iter().next()
-        {
+        AskSource::Book { title, author } => {
+            resolve_book_context(title, author.as_deref(), scraper, cache).await
+        }
+        AskSource::LibraryQuery(query) => {
+            let db = db_opt.context("Database unavailable to search saved library")?;
+            let hit = db
+                .search(query)?
+                .into_iter()
+                .next()
+                .with_context(|| format!("No saved summary found matching '{query}'"))?;
             Ui::info(&format!(
                 "Matched library document: '{}'",
                 sanitize_title(&hit.title)
@@ -114,54 +180,53 @@ async fn resolve_document_context(
                 fallback_summary,
             )
             .await;
-            return Ok((title, content, target_type, hit.url));
+            Ok((title, content, target_type, hit.url))
         }
-
-        Ui::info(&format!("Searching online for '{trimmed}'..."));
-        let searcher = BookSearcher::with_client(scraper.client().clone());
-        let candidates = searcher.search_candidates(trimmed, None).await;
-        if let Some(best) = candidates.first() {
+        AskSource::LibraryId(id) => {
+            let db = db_opt.context("Database unavailable to load saved library item")?;
+            let item = db
+                .get_library_item_by_id(*id)?
+                .with_context(|| format!("Library entry #{id} not found"))?;
             Ui::info(&format!(
-                "Using online reference: {} ({})",
-                sanitize_title(&best.title),
-                best.url
+                "Answering based on library entry: '{}'",
+                sanitize_title(&item.meta.title)
             ));
-            let page =
-                fetch_or_cache_page_with(&best.url, cache, None, scraper.scrape(&best.url)).await?;
-            let title = page.title.unwrap_or_else(|| best.title.clone());
-            return Ok((
-                title,
-                page.content,
-                "book".to_string(),
-                Some(best.url.clone()),
-            ));
+            let (title, content) = resolve_cached_page_or_fetch(
+                scraper,
+                cache,
+                &item.meta.target_type,
+                item.meta.url.as_deref(),
+                item.meta.title,
+                item.summary,
+            )
+            .await;
+            Ok((title, content, item.meta.target_type, item.meta.url))
         }
+        AskSource::Latest => {
+            let db = db_opt.context("Database unavailable to look up previous summary")?;
+            let latest = db.get_latest_summary()?.context(
+                "No previous summary found in history. Specify a source explicitly:\n  srz ask --web <URL> <QUESTION>\n  srz ask --document <PATH> <QUESTION>",
+            )?;
 
-        anyhow::bail!("Could not resolve target document: '{target_str}'");
+            Ui::info(&format!(
+                "Answering based on latest read: '{}'",
+                sanitize_title(&latest.title)
+            ));
+
+            let latest_url = latest.meta.url.clone();
+            let latest_type = latest.meta.target_type.clone();
+            let (title, content) = resolve_cached_page_or_fetch(
+                scraper,
+                cache,
+                &latest_type,
+                latest_url.as_deref(),
+                latest.meta.title,
+                latest.summary,
+            )
+            .await;
+            Ok((title, content, latest_type, latest_url))
+        }
     }
-
-    let db = db_opt.context("Database unavailable to look up previous summary")?;
-    let latest = db.get_latest_summary()?.context(
-        "No previous summary found in history. Please specify a document or URL to ask about:\n  srz ask <URL_OR_FILE> <QUESTION>",
-    )?;
-
-    Ui::info(&format!(
-        "Answering based on latest read: '{}'",
-        sanitize_title(&latest.title)
-    ));
-
-    let latest_url = latest.meta.url.clone();
-    let latest_type = latest.meta.target_type.clone();
-    let (title, content) = resolve_cached_page_or_fetch(
-        scraper,
-        cache,
-        &latest_type,
-        latest_url.as_deref(),
-        latest.meta.title,
-        latest.summary,
-    )
-    .await;
-    Ok((title, content, latest_type, latest_url))
 }
 
 fn format_grounded_context_with_budget_and_tokenizer(
@@ -290,7 +355,7 @@ pub(super) fn handle_ask_management(
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct AskArgs {
-    pub target: Option<String>,
+    pub source: AskSource,
     pub question: Option<String>,
     pub interactive: bool,
     pub resume: Option<i64>,
@@ -317,7 +382,7 @@ pub(super) async fn handle_ask(
     let mut chat_id = ask_args.resume;
     let mut history: Vec<(String, String)> = Vec::new();
     let AskArgs {
-        target,
+        source,
         question,
         interactive,
         resume,
@@ -342,30 +407,22 @@ pub(super) async fn handle_ask(
             }
         }
 
-        let source_lookup = session.target_url.as_deref().or(Some(&session.title));
-        let (resolved_title, resolved_content) = match resolve_document_context(
-            source_lookup,
+        let stored_summary = db_ref
+            .search(&session.title)
+            .ok()
+            .and_then(|hits| hits.into_iter().next())
+            .and_then(|hit| db_ref.get_library_item_by_id(hit.id).ok().flatten())
+            .map(|item| item.summary)
+            .unwrap_or_else(|| session.title.clone());
+        let (resolved_title, resolved_content) = resolve_cached_page_or_fetch(
             scraper,
             cache,
-            db.as_ref(),
+            &session.target_type,
+            session.target_url.as_deref(),
+            session.title.clone(),
+            stored_summary,
         )
-        .await
-        {
-            Ok((t, c, _, _)) => (t, c),
-            Err(err) => {
-                Ui::warn(&format!(
-                    "Could not reload original document ({err:#}); falling back to saved library summary."
-                ));
-                let stored_summary = db_ref
-                    .search(&session.title)
-                    .ok()
-                    .and_then(|hits| hits.into_iter().next())
-                    .and_then(|hit| db_ref.get_library_item_by_id(hit.id).ok().flatten())
-                    .map(|item| item.summary)
-                    .unwrap_or_else(|| session.title.clone());
-                (session.title.clone(), stored_summary)
-            }
-        };
+        .await;
 
         (
             resolved_title,
@@ -374,7 +431,7 @@ pub(super) async fn handle_ask(
             session.target_url,
         )
     } else {
-        resolve_document_context(target.as_deref(), scraper, cache, db.as_ref()).await?
+        resolve_document_context(&source, scraper, cache, db.as_ref()).await?
     };
 
     let safe_title = sanitize_title(&title);
@@ -797,5 +854,77 @@ mod tests {
         .await;
         assert_eq!(title, "notes.txt");
         assert_eq!(content, "Cached full document body.");
+
+        // Explicit AskSource routing: Document, missing Document, LibraryId, LibraryQuery, Latest
+        let (doc_title, doc_content, doc_type, _) = resolve_document_context(
+            &AskSource::Document(file_path.clone()),
+            &scraper,
+            &cache,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(doc_title, "notes.txt");
+        assert_eq!(doc_content, "Cached full document body.");
+        assert_eq!(doc_type, "file");
+
+        assert!(
+            resolve_document_context(
+                &AskSource::Document(tmp.path().join("missing.txt")),
+                &scraper,
+                &cache,
+                None,
+            )
+            .await
+            .is_err()
+        );
+
+        let db = cache.open_database().unwrap();
+        db.record_summary(
+            &crate::db::NewSummaryRecord {
+                target_type: "news",
+                title: "News: rust",
+                author: Some("5 news sources"),
+                url: Some("https://news.google.com/search?q=rust"),
+                style: "concise",
+                model: "gemma-4",
+                word_count: 100,
+                prompt_tokens: None,
+                completion_tokens: None,
+                duration_ms: 0,
+                tokens_per_second: None,
+                summary: "Rust 2024 news briefing summary.",
+                reasoning: None,
+            },
+            None,
+        )
+        .unwrap();
+        let news_id = db.get_latest_summary().unwrap().unwrap().meta.id;
+
+        let (lib_title, lib_content, lib_type, _) =
+            resolve_document_context(&AskSource::LibraryId(news_id), &scraper, &cache, Some(&db))
+                .await
+                .unwrap();
+        assert_eq!(lib_title, "News: rust");
+        assert_eq!(lib_content, "Rust 2024 news briefing summary.");
+        assert_eq!(lib_type, "news");
+
+        let (q_title, q_content, _, _) = resolve_document_context(
+            &AskSource::LibraryQuery("rust".to_string()),
+            &scraper,
+            &cache,
+            Some(&db),
+        )
+        .await
+        .unwrap();
+        assert_eq!(q_title, "News: rust");
+        assert_eq!(q_content, "Rust 2024 news briefing summary.");
+
+        let (latest_title, latest_content, _, _) =
+            resolve_document_context(&AskSource::Latest, &scraper, &cache, Some(&db))
+                .await
+                .unwrap();
+        assert_eq!(latest_title, "News: rust");
+        assert_eq!(latest_content, "Rust 2024 news briefing summary.");
     }
 }

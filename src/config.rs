@@ -136,18 +136,14 @@ fn redact_secret(secret: &str) -> &'static str {
 #[command(
     name = "srz",
     version,
-    about = "Modular CLI to summarize URLs, documents, books, YouTube, news, and Q&A using local LLMs",
+    about = "Modular CLI to summarize web links, documents, books, news, and Q&A using local LLMs",
     long_about = "A fast, modular CLI that extracts and summarizes web pages, YouTube transcripts, \
-                  local PDF/EPUB/text files, stdin, books, and news feeds via OpenAI-compatible \
+                  local PDF/EPUB/text documents, stdin, books, and news feeds via OpenAI-compatible \
                   backends (llama.cpp, Ollama, LM Studio, vLLM, or cloud endpoints)."
 )]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Option<Commands>,
-
-    /// Auto-detected target (URL, local file, news query, book title, or '-' for stdin)
-    #[arg(value_name = "TARGET")]
-    pub target: Option<String>,
+    pub command: Commands,
 
     /// Local OpenAI-compatible base URL
     #[arg(long, global = true, default_value = "http://localhost:9931/v1")]
@@ -230,7 +226,6 @@ impl fmt::Debug for Cli {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Cli")
             .field("command", &self.command)
-            .field("target", &self.target)
             .field("base_url", &self.base_url)
             .field("model", &self.model)
             .field("api_key", &redact_secret(&self.api_key))
@@ -255,6 +250,27 @@ impl fmt::Debug for Cli {
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 pub enum Commands {
+    /// Summarize a webpage, YouTube video, or remote PDF URL
+    Web {
+        /// HTTP(S) URL to summarize (webpage, YouTube video, or remote PDF)
+        url: String,
+    },
+    /// Summarize a local document (PDF, EPUB, HTML, Markdown, JSON, or plain text)
+    Document {
+        /// Path to the local document file
+        path: String,
+    },
+    /// Summarize a book using Open Library, Wikipedia, and web synopses
+    Book {
+        /// Book title
+        title: String,
+
+        /// Optional author name to disambiguate the book
+        #[arg(short, long)]
+        author: Option<String>,
+    },
+    /// Summarize text piped from standard input
+    Stdin,
     /// Manage the local disk cache (dir, size, clean, prune)
     Cache {
         #[command(subcommand)]
@@ -299,14 +315,31 @@ pub enum Commands {
         #[arg(short, long)]
         output: PathBuf,
     },
-    /// Ask questions grounded on a document, URL, file, or the most recent read
+    /// Ask questions grounded on a webpage, document, book, saved summary, or latest read
     #[command(alias = "chat")]
     Ask {
-        /// Target document (URL/file/title) or question
-        first: Option<String>,
+        /// Optional question to ask (omit to enter interactive chat mode)
+        question: Option<String>,
 
-        /// Question to ask (when target is provided as the first argument)
-        second: Option<String>,
+        /// Ground Q&A on an HTTP(S) URL (webpage, YouTube video, or remote PDF)
+        #[arg(long, value_name = "URL", group = "ask_source")]
+        web: Option<String>,
+
+        /// Ground Q&A on a local document file
+        #[arg(long, value_name = "PATH", group = "ask_source")]
+        document: Option<String>,
+
+        /// Ground Q&A on a book title (resolved via online synopsis / Open Library)
+        #[arg(long, value_name = "TITLE", group = "ask_source")]
+        book: Option<String>,
+
+        /// Optional author name when using `--book`
+        #[arg(long, value_name = "AUTHOR")]
+        author: Option<String>,
+
+        /// Ground Q&A on a saved summary in your local library
+        #[arg(long, value_name = "QUERY", group = "ask_source")]
+        library: Option<String>,
 
         /// Run in interactive multi-turn chat mode
         #[arg(short, long)]
@@ -396,16 +429,31 @@ pub enum ConfigSubcommand {
     Init,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum AskSource {
+    #[default]
+    Latest,
+    Web(String),
+    Document(PathBuf),
+    Book {
+        title: String,
+        author: Option<String>,
+    },
+    LibraryQuery(String),
+    LibraryId(i64),
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum ResolvedAction<'a> {
     Web {
         url: &'a str,
     },
+    Document {
+        path: PathBuf,
+    },
     Book {
         title: &'a str,
-    },
-    File {
-        path: PathBuf,
+        author: Option<&'a str>,
     },
     Stdin,
     News {
@@ -414,7 +462,7 @@ pub enum ResolvedAction<'a> {
         limit: usize,
     },
     Ask {
-        target: Option<String>,
+        source: AskSource,
         question: Option<String>,
         interactive: bool,
         list_chats: bool,
@@ -447,112 +495,165 @@ impl Cli {
         if self.context_window == Some(0) {
             anyhow::bail!("--context-window must be greater than 0");
         }
-        if let Some(cmd) = &self.command {
-            match cmd {
-                Commands::History { limit } if *limit == 0 => {
-                    anyhow::bail!("--limit must be greater than 0");
+        match &self.command {
+            Commands::Web { url } => {
+                let trimmed = url.trim();
+                if !crate::system::text_util::is_http_url(trimmed) {
+                    anyhow::bail!(
+                        "`srz web` requires an http:// or https:// URL (got '{trimmed}')"
+                    );
                 }
-                Commands::Find { query } if query.trim().is_empty() => {
-                    anyhow::bail!("Search query must not be empty");
-                }
-                Commands::Ask {
-                    first,
-                    second,
-                    interactive,
-                    chats,
-                    resume,
-                    show_chat,
-                    delete_chat,
-                } => {
-                    let mgmt_count = usize::from(*chats)
-                        + usize::from(show_chat.is_some())
-                        + usize::from(delete_chat.is_some());
-                    if mgmt_count > 1 {
-                        anyhow::bail!("--chats, --show-chat, and --delete-chat cannot be combined");
-                    }
-                    let (target, question) = match (first.as_deref(), second.as_deref()) {
-                        (Some(f), Some(s)) => {
-                            (Some(f.trim().to_string()), Some(s.trim().to_string()))
-                        }
-                        (Some(f), None) if is_probable_question(f) => {
-                            (None, Some(f.trim().to_string()))
-                        }
-                        (Some(f), None) => (Some(f.trim().to_string()), None),
-                        (None, _) => (None, None),
-                    };
-                    Ok(ResolvedAction::Ask {
-                        target,
-                        question,
-                        interactive: *interactive || resume.is_some(),
-                        list_chats: *chats,
-                        resume: *resume,
-                        show_chat: *show_chat,
-                        delete_chat: *delete_chat,
-                    })
-                }
-                Commands::News {
-                    topic,
-                    timeframe,
-                    limit,
-                } => {
-                    let max_limit = crate::sources::news::MAX_NEWS_LIMIT;
-                    if *limit == 0 || *limit > max_limit {
-                        anyhow::bail!("--limit must be between 1 and {max_limit}");
-                    }
-                    let clean_topic =
-                        if crate::sources::news::GoogleNewsClient::is_direct_feed(topic) {
-                            topic.trim().to_string()
-                        } else {
-                            clean_news_query(topic)
-                        };
-                    Ok(ResolvedAction::News {
-                        topic: clean_topic,
-                        timeframe: *timeframe,
-                        limit: *limit,
-                    })
-                }
-                _ => Ok(ResolvedAction::Subcommand(cmd)),
+                Ok(ResolvedAction::Web { url: trimmed })
             }
-        } else if let Some(target) = &self.target {
-            let trimmed = target.trim();
-            if trimmed == "-" {
-                Ok(ResolvedAction::Stdin)
-            } else if crate::system::text_util::is_http_url(trimmed) {
-                if is_feed_url(trimmed) {
-                    Ok(ResolvedAction::News {
-                        topic: trimmed.to_string(),
-                        timeframe: NewsTimeframe::All,
-                        limit: DEFAULT_NEWS_LIMIT,
-                    })
-                } else {
-                    Ok(ResolvedAction::Web { url: trimmed })
+            Commands::Document { path } => {
+                let trimmed = path.trim();
+                if trimmed.is_empty() {
+                    anyhow::bail!("Document path must not be empty");
                 }
-            } else if is_file_like(trimmed) {
-                Ok(ResolvedAction::File {
+                if crate::system::text_util::is_http_url(trimmed) {
+                    anyhow::bail!(
+                        "`srz document` only accepts local file paths; use `srz web` for URLs"
+                    );
+                }
+                Ok(ResolvedAction::Document {
                     path: expand_tilde(trimmed),
                 })
-            } else if is_news_query(trimmed) {
-                Ok(ResolvedAction::News {
-                    topic: clean_news_query(trimmed),
-                    timeframe: NewsTimeframe::All,
-                    limit: DEFAULT_NEWS_LIMIT,
-                })
-            } else if trimmed.eq_ignore_ascii_case("version") {
-                anyhow::bail!(
-                    "Unrecognized command '{trimmed}'. Run `srz --version` to print the version."
-                );
-            } else if let Some(suggestion) = suggest_command(trimmed) {
-                anyhow::bail!(
-                    "Unrecognized command '{trimmed}'.\n\n  \
-                     tip: a similar command exists: '{suggestion}'"
-                );
-            } else {
-                Ok(ResolvedAction::Book { title: trimmed })
             }
-        } else {
-            anyhow::bail!(
-                "Please provide a URL, local file, book title, or '-' for stdin. Run `srz --help` for details."
-            );
+            Commands::Book { title, author } => {
+                let trimmed = title.trim();
+                if trimmed.is_empty() {
+                    anyhow::bail!("Book title must not be empty");
+                }
+                let clean_author = author.as_deref().map(str::trim).filter(|a| !a.is_empty());
+                Ok(ResolvedAction::Book {
+                    title: trimmed,
+                    author: clean_author,
+                })
+            }
+            Commands::Stdin => Ok(ResolvedAction::Stdin),
+            Commands::History { limit } if *limit == 0 => {
+                anyhow::bail!("--limit must be greater than 0");
+            }
+            Commands::Find { query } if query.trim().is_empty() => {
+                anyhow::bail!("Search query must not be empty");
+            }
+            Commands::Ask {
+                question,
+                web,
+                document,
+                book,
+                author,
+                library,
+                interactive,
+                chats,
+                resume,
+                show_chat,
+                delete_chat,
+            } => {
+                let mgmt_count = usize::from(*chats)
+                    + usize::from(show_chat.is_some())
+                    + usize::from(delete_chat.is_some());
+                if mgmt_count > 1 {
+                    anyhow::bail!("--chats, --show-chat, and --delete-chat cannot be combined");
+                }
+                if author.is_some() && book.is_none() {
+                    anyhow::bail!("--author can only be used with --book");
+                }
+                let has_source =
+                    web.is_some() || document.is_some() || book.is_some() || library.is_some();
+                if has_source && (mgmt_count > 0 || resume.is_some()) {
+                    anyhow::bail!(
+                        "Source flags (--web, --document, --book, --library) cannot be combined with session management flags"
+                    );
+                }
+                let clean_question = question
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|q| !q.is_empty())
+                    .map(str::to_string);
+                if clean_question.is_some() && mgmt_count > 0 {
+                    anyhow::bail!(
+                        "A question cannot be combined with --chats, --show-chat, or --delete-chat"
+                    );
+                }
+
+                let source = if let Some(url) = web {
+                    let trimmed = url.trim();
+                    if !crate::system::text_util::is_http_url(trimmed) {
+                        anyhow::bail!(
+                            "`--web` requires an http:// or https:// URL (got '{trimmed}')"
+                        );
+                    }
+                    AskSource::Web(trimmed.to_string())
+                } else if let Some(path) = document {
+                    let trimmed = path.trim();
+                    if trimmed.is_empty() {
+                        anyhow::bail!("`--document` path must not be empty");
+                    }
+                    if crate::system::text_util::is_http_url(trimmed) {
+                        anyhow::bail!(
+                            "`--document` only accepts local file paths; use `--web` for URLs"
+                        );
+                    }
+                    AskSource::Document(expand_tilde(trimmed))
+                } else if let Some(title) = book {
+                    let trimmed = title.trim();
+                    if trimmed.is_empty() {
+                        anyhow::bail!("`--book` title must not be empty");
+                    }
+                    let clean_author = author
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|a| !a.is_empty())
+                        .map(str::to_string);
+                    AskSource::Book {
+                        title: trimmed.to_string(),
+                        author: clean_author,
+                    }
+                } else if let Some(query) = library {
+                    let trimmed = query.trim();
+                    if trimmed.is_empty() {
+                        anyhow::bail!("`--library` query must not be empty");
+                    }
+                    AskSource::LibraryQuery(trimmed.to_string())
+                } else {
+                    AskSource::Latest
+                };
+
+                Ok(ResolvedAction::Ask {
+                    source,
+                    question: clean_question,
+                    interactive: *interactive || resume.is_some(),
+                    list_chats: *chats,
+                    resume: *resume,
+                    show_chat: *show_chat,
+                    delete_chat: *delete_chat,
+                })
+            }
+            Commands::News {
+                topic,
+                timeframe,
+                limit,
+            } => {
+                let max_limit = crate::sources::news::MAX_NEWS_LIMIT;
+                if *limit == 0 || *limit > max_limit {
+                    anyhow::bail!("--limit must be between 1 and {max_limit}");
+                }
+                if topic.trim().is_empty() {
+                    anyhow::bail!("News topic or feed URL must not be empty");
+                }
+                let clean_topic = if crate::sources::news::GoogleNewsClient::is_direct_feed(topic) {
+                    topic.trim().to_string()
+                } else {
+                    clean_news_query(topic)
+                };
+                Ok(ResolvedAction::News {
+                    topic: clean_topic,
+                    timeframe: *timeframe,
+                    limit: *limit,
+                })
+            }
+            cmd => Ok(ResolvedAction::Subcommand(cmd)),
         }
     }
 
@@ -662,104 +763,6 @@ pub(crate) fn expand_tilde(s: &str) -> PathBuf {
     PathBuf::from(s)
 }
 
-pub fn is_file_like(s: &str) -> bool {
-    if crate::system::text_util::is_http_url(s) {
-        return false;
-    }
-    let expanded = expand_tilde(s);
-    if expanded.exists() {
-        return true;
-    }
-    if s.starts_with("./")
-        || s.starts_with("../")
-        || s.starts_with('/')
-        || s.starts_with("~/")
-        || s == "~"
-        || s.contains('\\')
-        || (s.len() >= 3 && s.as_bytes()[0].is_ascii_alphabetic() && s.as_bytes()[1] == b':')
-        || (s.contains('/') && !s.chars().any(char::is_whitespace))
-    {
-        return true;
-    }
-    if let Some(ext) = expanded.extension().and_then(|e| e.to_str()) {
-        const FILE_LIKE_EXTS: &[&str] = &[
-            "pdf", "md", "markdown", "txt", "text", "html", "htm", "epub", "json",
-        ];
-        FILE_LIKE_EXTS
-            .iter()
-            .any(|&target| ext.eq_ignore_ascii_case(target))
-    } else {
-        false
-    }
-}
-
-/// Returns `true` if `url` is an HTTP(S) syndication feed URL (RSS, Atom, or JSON Feed).
-pub fn is_feed_url(url: &str) -> bool {
-    let trimmed = url.trim();
-    if !crate::system::text_util::is_http_url(trimmed) {
-        return false;
-    }
-    let without_fragment = trimmed.split('#').next().unwrap_or(trimmed);
-    let (path_part, query_part) = match without_fragment.split_once('?') {
-        Some((p, q)) => (p, Some(q)),
-        None => (without_fragment, None),
-    };
-    let trimmed_path = path_part.trim_end_matches('/');
-    const FEED_SUFFIXES: &[&str] = &[
-        ".rss",
-        ".atom",
-        "/rss",
-        "/feed",
-        "/atom",
-        "/feed.xml",
-        "/rss.xml",
-        "/atom.xml",
-        "/index.xml",
-        "/feed.json",
-    ];
-    if FEED_SUFFIXES.iter().any(|&suffix| {
-        crate::system::text_util::ends_with_ascii_case_insensitive(trimmed_path, suffix)
-    }) || crate::system::text_util::find_ascii_case_insensitive(trimmed_path, "/rss/").is_some()
-    {
-        return true;
-    }
-    if let Some(q) = query_part {
-        const QUERY_PATTERNS: &[&str] = &["format=rss", "format=atom", "output=rss", "feed=rss"];
-        if QUERY_PATTERNS.iter().any(|&pattern| {
-            crate::system::text_util::find_ascii_case_insensitive(q, pattern).is_some()
-        }) {
-            return true;
-        }
-    }
-    false
-}
-
-pub fn is_news_query(s: &str) -> bool {
-    let mut words = s.split_whitespace();
-    let Some(first) = words.next() else {
-        return false;
-    };
-    if first.eq_ignore_ascii_case("news") || first.eq_ignore_ascii_case("headlines") {
-        return true;
-    }
-    let first_is_recent =
-        first.eq_ignore_ascii_case("current") || first.eq_ignore_ascii_case("latest");
-    let mut has_update_or_story = false;
-
-    for word in words {
-        if word.eq_ignore_ascii_case("news") || word.eq_ignore_ascii_case("headlines") {
-            return true;
-        }
-        if first_is_recent
-            && (word.eq_ignore_ascii_case("updates") || word.eq_ignore_ascii_case("stories"))
-        {
-            has_update_or_story = true;
-        }
-    }
-
-    first_is_recent && has_update_or_story
-}
-
 pub fn clean_news_query(s: &str) -> String {
     const STOP_WORDS: &[&str] = &[
         "current",
@@ -786,88 +789,6 @@ pub fn clean_news_query(s: &str) -> String {
     } else {
         words.join(" ")
     }
-}
-
-pub fn is_probable_question(s: &str) -> bool {
-    let trimmed = s.trim();
-    if trimmed.ends_with('?') {
-        return true;
-    }
-    let Some(first_word) = trimmed.split_whitespace().next() else {
-        return false;
-    };
-    if trimmed.len() <= first_word.len() {
-        return false;
-    }
-    const QUESTION_PREFIXES: &[&str] = &[
-        "what",
-        "why",
-        "how",
-        "who",
-        "when",
-        "where",
-        "which",
-        "can",
-        "could",
-        "should",
-        "would",
-        "is",
-        "are",
-        "explain",
-        "summarize",
-        "tell",
-        "describe",
-        "clarify",
-    ];
-    QUESTION_PREFIXES
-        .iter()
-        .any(|prefix| first_word.eq_ignore_ascii_case(prefix))
-}
-
-/// Suggests a matching subcommand for a single-token typo, or `None` for non-commands.
-pub fn suggest_command(input: &str) -> Option<String> {
-    let trimmed = input.trim();
-
-    if trimmed.is_empty()
-        || trimmed.contains(char::is_whitespace)
-        || trimmed.contains('/')
-        || trimmed.contains('\\')
-        || trimmed.len() < 3
-    {
-        return None;
-    }
-
-    let input_lower = trimmed.to_ascii_lowercase();
-    let root = <Cli as clap::CommandFactory>::command();
-    let mut candidates: Vec<String> = root
-        .get_subcommands()
-        .flat_map(|s| std::iter::once(s.get_name()).chain(s.get_all_aliases()))
-        .chain(["help"])
-        .map(str::to_string)
-        .collect();
-    candidates.sort();
-    candidates.dedup();
-
-    if let Some(exact) = candidates.iter().find(|cmd| input_lower == cmd.as_str()) {
-        return Some(exact.clone());
-    }
-
-    let input_len = input_lower.chars().count();
-    candidates
-        .into_iter()
-        .filter_map(|cmd| {
-            let cmd_len = cmd.chars().count();
-            let dist = crate::system::text_util::damerau_levenshtein(&input_lower, &cmd);
-            let is_candidate = match input_len {
-                0..=2 => false,
-                3 => cmd_len == 3 && dist == 1,
-                4 => cmd_len <= 5 && dist == 1,
-                _ => (cmd_len as isize - input_len as isize).abs() <= 2 && dist <= 2,
-            };
-            is_candidate.then_some((cmd, dist))
-        })
-        .min_by_key(|&(_, dist)| dist)
-        .map(|(cmd, _)| cmd)
 }
 
 #[derive(Clone, Default, Deserialize, PartialEq, Eq)]
@@ -1115,7 +1036,7 @@ mod tests {
             assert!(cfg.profiles.contains_key(key));
         }
 
-        let mut cli = Cli::parse_from(["srz", "Dune"]);
+        let mut cli = Cli::parse_from(["srz", "book", "Dune"]);
         cli.api_key = "sk-top-secret".into();
         let prof = ProfileConfig {
             api_key: Some("sk-profile-secret".into()),
@@ -1173,7 +1094,8 @@ mod tests {
                 .contains("OPENAI_API_KEY=")
         );
 
-        let matches = Cli::command().get_matches_from(["srz", "Dune", "--model", "cli-model"]);
+        let matches =
+            Cli::command().get_matches_from(["srz", "book", "Dune", "--model", "cli-model"]);
         let mut cli = Cli::from_arg_matches(&matches).unwrap();
         let cfg = Config {
             settings: ProfileConfig {
@@ -1193,28 +1115,28 @@ mod tests {
         assert_eq!(cli.api_key, "sk-env-secret");
         assert_eq!(cli.base_url, "http://cfg/v1");
 
-        // "version" must not self-suggest, and slash-containing titles must not become files.
-        assert_eq!(suggest_command("version"), None);
-        assert!(!is_file_like("9/11 Commission Report"));
-        assert!(is_file_like("assets/document.pdf"));
-        assert!(
-            Cli::parse_from(["srz", "srz version"])
-                .resolve_action()
-                .is_ok()
-        );
-        assert!(
-            Cli::parse_from(["srz", "version"])
-                .resolve_action()
-                .is_err()
-        );
-
         for invalid in [
-            &["srz", "Dune", "--max-tokens", "0"][..],
-            &["srz", "Dune", "--context-window", "0"][..],
+            &["srz", "book", "Dune", "--max-tokens", "0"][..],
+            &["srz", "book", "Dune", "--context-window", "0"][..],
+            &["srz", "web", "not-a-url"][..],
+            &["srz", "document", "https://example.com/a.pdf"][..],
+            &["srz", "document", "   "][..],
+            &["srz", "book", "   "][..],
+            &["srz", "news", "   "][..],
             &["srz", "history", "--limit", "0"][..],
             &["srz", "news", "rust", "--limit", "0"][..],
             &["srz", "news", "rust", "--limit", "999"][..],
             &["srz", "ask", "--chats", "--delete-chat", "1"][..],
+            &["srz", "ask", "--author", "Frank Herbert"][..],
+            &[
+                "srz",
+                "ask",
+                "--web",
+                "https://example.com",
+                "--resume",
+                "1",
+            ][..],
+            &["srz", "ask", "--chats", "What happened?"][..],
             &["srz", "find", "   "][..],
         ] {
             assert!(
