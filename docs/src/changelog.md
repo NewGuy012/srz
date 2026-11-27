@@ -22,6 +22,19 @@ All notable changes to `srz` are documented in this file.
 
 ---
 
+## v0.7.15
+
+### Summary
+
+> Replaces implicit root target auto-detection with explicit subcommands (`web`, `document`, `book`, `news`, `stdin`) and explicit `srz ask` source flags, keeping format auto-detection scoped strictly inside `web` and `document`.
+
+### Changes
+- **Explicit Ingestion Subcommands (`BREAKING`)**: Replaced root `<TARGET>` auto-detection with `srz web <URL>`, `srz document <PATH>`, `srz book <TITLE> [--author <AUTHOR>]`, `srz news <TOPIC|FEED_URL>`, and `srz stdin`, preventing book titles or command typos from misrouting.
+- **Scoped Format Detection**: Kept automatic URL routing inside `srz web` (YouTube captions, remote `.pdf` URLs, and generic webpages) and added magic-byte sniffing (`%PDF-`, EPUB ZIP, HTML) alongside extension checks in `srz document`.
+- **Explicit `srz ask` Flags & Shell Completions**: Replaced positional `srz ask` target guessing with mutually exclusive `--web`, `--document`, `--book` (`--author`), and `--library` flags (defaulting to the latest read when omitted), updated `srz browse` direct chat handoff, and refreshed shell completions and docs.
+
+---
+
 ## v0.7.14
 
 ### Summary
