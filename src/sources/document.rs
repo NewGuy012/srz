@@ -82,6 +82,27 @@ fn finalize_document_page(
     })
 }
 
+fn looks_like_pdf(bytes: &[u8]) -> bool {
+    bytes[..bytes.len().min(1024)]
+        .windows(5)
+        .any(|w| w == b"%PDF-")
+}
+
+fn looks_like_epub(bytes: &[u8]) -> bool {
+    if !bytes.starts_with(b"PK\x03\x04") {
+        return false;
+    }
+    let Ok(archive) = ZipReader::new(bytes) else {
+        return false;
+    };
+    if let Ok(mt) = archive.read_file("mimetype", 128)
+        && mt.trim_ascii() == b"application/epub+zip"
+    {
+        return true;
+    }
+    archive.file_names().any(|n| n == "META-INF/container.xml")
+}
+
 pub struct DocumentLoader;
 
 impl DocumentLoader {
@@ -93,18 +114,19 @@ impl DocumentLoader {
                 .unwrap_or_else(|| "Local File".to_string())
         };
 
-        let mut page = if path
+        let bytes = read_file_bytes_limited(path, MAX_FILE_BYTES, false, "Document")?;
+        let is_pdf_ext = path
             .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
-        {
-            PdfExtractor::extract_file(path)?
-        } else if path
+            .is_some_and(|e| e.eq_ignore_ascii_case("pdf"));
+        let is_epub_ext = path
             .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("epub"))
-        {
-            EpubExtractor::extract_file(path)?
+            .is_some_and(|e| e.eq_ignore_ascii_case("epub"));
+
+        let mut page = if is_pdf_ext || (!is_epub_ext && looks_like_pdf(&bytes)) {
+            PdfExtractor::extract_from_bytes(&bytes, Some(path))?
+        } else if is_epub_ext || looks_like_epub(&bytes) {
+            EpubExtractor::extract_from_bytes(&bytes, Some(path))?
         } else {
-            let bytes = read_file_bytes_limited(path, MAX_FILE_BYTES, false, "Document")?;
             let raw = bytes_to_lossy_utf8(bytes);
             let (content, word_count, title) = Self::normalize_or_plain_text(
                 scraper,
@@ -327,12 +349,7 @@ impl PdfExtractor {
         let doc_res = pdf_extract::Document::load_mem(bytes);
         let mut doc = match doc_res {
             Ok(d) => d,
-            Err(_)
-                if bytes[..bytes.len().min(1024)]
-                    .windows(5)
-                    .any(|w| w == b"%PDF-")
-                    && bytes.windows(2).any(|w| w == b"\r\n") =>
-            {
+            Err(_) if looks_like_pdf(bytes) && bytes.windows(2).any(|w| w == b"\r\n") => {
                 let mut normalized = Vec::with_capacity(bytes.len());
                 for (i, &b) in bytes.iter().enumerate() {
                     if b == b'\r' && bytes.get(i + 1) == Some(&b'\n') {
@@ -455,11 +472,6 @@ impl PdfExtractor {
 struct EpubExtractor;
 
 impl EpubExtractor {
-    fn extract_file(path: &Path) -> Result<ScrapedPage> {
-        let bytes = read_file_bytes_limited(path, MAX_FILE_BYTES, false, "EPUB")?;
-        Self::extract_from_bytes(&bytes, Some(path))
-    }
-
     fn extract_from_bytes(bytes: &[u8], path: Option<&Path>) -> Result<ScrapedPage> {
         let archive = ZipReader::new(bytes).context("Failed to open EPUB as zip archive")?;
         let opf_path = find_opf_path(&archive)?;
@@ -775,5 +787,30 @@ mod tests {
             resolve_epub_path("OEBPS/text/", "..\\..\\secret%2ffile.xhtml?v=1#top"),
             "secret/file.xhtml"
         );
+
+        // Extensionless PDF and EPUB sniffing in DocumentLoader::load_file
+        let scraper = WebScraper::new().unwrap();
+        let pdf_bytes =
+            std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/document.pdf")).unwrap();
+        let pdf_no_ext = temp_dir.path().join("paper_without_ext");
+        std::fs::write(&pdf_no_ext, &pdf_bytes).unwrap();
+        let loaded_pdf = DocumentLoader::load_file(&pdf_no_ext, &scraper).unwrap();
+        assert!(loaded_pdf.content.contains("THE HISTORY OF RUST"));
+
+        let epub_no_ext = temp_dir.path().join("book_without_ext");
+        std::fs::write(&epub_no_ext, &epub_bytes).unwrap();
+        let loaded_epub = DocumentLoader::load_file(&epub_no_ext, &scraper).unwrap();
+        assert_eq!(loaded_epub.title.as_deref(), Some("The Great Gatsby"));
+        assert!(loaded_epub.content.contains("West Egg"));
+
+        let html_no_ext = temp_dir.path().join("article_without_ext");
+        std::fs::write(
+            &html_no_ext,
+            "<!DOCTYPE html><html><head><title>Sniffed HTML</title></head><body><p>Hello extensionless HTML document content.</p></body></html>",
+        )
+        .unwrap();
+        let loaded_html = DocumentLoader::load_file(&html_no_ext, &scraper).unwrap();
+        assert_eq!(loaded_html.title.as_deref(), Some("Sniffed HTML"));
+        assert!(loaded_html.content.contains("Hello extensionless HTML"));
     }
 }
