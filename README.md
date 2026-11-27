@@ -2,6 +2,22 @@
   <img src="assets/logo.svg" alt="srz - Rust CLI for Summarizing Webpages, Books, and Streams" width="760">
 </p>
 
+<p align="center">
+  <a href="https://newguy012.github.io/srz/"><img src="https://img.shields.io/badge/Docs-Read_the_Book-2563eb?style=for-the-badge&logo=mdbook&logoColor=white" alt="Docs: Read the Book"></a>
+  <a href="https://crates.io/crates/srz"><img src="https://img.shields.io/crates/v/srz?style=for-the-badge&logo=rust&logoColor=white&label=Crates.io&color=f74c00" alt="Crates.io"></a>
+  <a href="https://github.com/NewGuy012/srz/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/NewGuy012/srz/ci.yml?branch=master&style=for-the-badge&logo=githubactions&logoColor=white&label=CI" alt="CI Status"></a>
+  <a href="https://github.com/NewGuy012/srz/blob/master/LICENSE"><img src="https://img.shields.io/github/license/NewGuy012/srz?style=for-the-badge&logo=opensourceinitiative&logoColor=white&color=475569" alt="License: BSD-3-Clause"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/NewGuy012/srz/blob/master/Cargo.toml"><img src="https://img.shields.io/badge/Rust-%3E%3D1.85-dea584?style=flat&logo=rust&logoColor=white" alt="Rust >=1.85"></a>
+  <a href="https://github.com/NewGuy012/srz/blob/master/src/lib.rs"><img src="https://img.shields.io/badge/Unsafe-forbidden-3178c6?style=flat" alt="Unsafe: forbidden"></a>
+  <a href="https://crates.io/crates/redb"><img src="https://img.shields.io/badge/redb-%3E%3D5.0-38bdf8?style=flat" alt="redb >=5.0"></a>
+  <a href="#configuring-your-llm-backend"><img src="https://img.shields.io/badge/LLM-Local--First-0f766e?style=flat" alt="LLM: Local-First"></a>
+  <a href="#usage"><img src="https://img.shields.io/badge/Formats-.pdf%20%C2%B7%20.epub%20%C2%B7%20.md%20%C2%B7%20.html-7c3aed?style=flat" alt="Formats: .pdf, .epub, .md, .html"></a>
+  <a href="#installation"><img src="https://img.shields.io/badge/OS-macOS%20%C2%B7%20Linux%20%C2%B7%20Win-ea580c?style=flat" alt="OS: macOS, Linux, Windows"></a>
+</p>
+
 # `srz` (Summarize)
 
 `srz` (Summarize) is a high-performance, modular Rust CLI tool for extracting and synthesizing structured summaries using local OpenAI-compliant LLMs (such as **llama.cpp**, **Ollama**, **LM Studio**, or **vLLM**) from:
